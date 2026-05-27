@@ -3,7 +3,8 @@
 ctx strips the MCP tool definitions Claude Code doesn't need for the current task, tracks what each session actually costs, and serves a local dashboard. Install with no Rust required — just `gh` authenticated to the goshippo org.
 
 ```bash
-gh repo clone goshippo/ctx /tmp/ctx-src && bash /tmp/ctx-src/scripts/install.sh
+gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
+bash ~/Documents/ctx/scripts/install.sh
 ctx setup
 ```
 
@@ -54,7 +55,8 @@ Quick paths:
 
 - **Claude Code in an IDE (recommended):** Run these in a terminal, then reload the IDE window.
   ```bash
-  gh repo clone goshippo/ctx /tmp/ctx-src && bash /tmp/ctx-src/scripts/install.sh
+  gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
+  bash ~/Documents/ctx/scripts/install.sh
   ctx setup
   ctx profile generate   # build profiles from your actual MCP stack
   ctx use <profile>
@@ -97,8 +99,8 @@ Contributor-level diagrams, module tables, and pipeline detail: [ARCHITECTURE.md
 **Pre-built binary (no Rust required) — requires `gh` authenticated to the goshippo org:**
 
 ```bash
-gh repo clone goshippo/ctx /tmp/ctx-src
-bash /tmp/ctx-src/scripts/install.sh
+gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
+bash ~/Documents/ctx/scripts/install.sh
 ctx setup
 ctx profile generate
 ```
