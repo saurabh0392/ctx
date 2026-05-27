@@ -201,6 +201,9 @@ pub struct Config {
     /// When `Some(false)`, session embeddings are not computed and existing embedding rows are cleared on ingest.
     #[serde(default)]
     pub embeddings_enabled: Option<bool>,
+    /// Gap in minutes between requests before a new session is started. Default: 30.
+    #[serde(default)]
+    pub session_gap_minutes: Option<u64>,
 }
 
 fn default_true() -> bool {

@@ -99,29 +99,6 @@ pub fn record(tools_removed: usize, tokens_saved: usize, profile: &str, trace: T
     });
 }
 
-pub fn record_gates(profile: &str, trace: TraceInfo) {
-    let _ = crate::config::ensure_dir();
-    append(&Record {
-        ts: Utc::now().to_rfc3339(),
-        tools_removed: 0,
-        tokens_saved: 0,
-        compress_chars_saved: 0,
-        profile: profile.to_string(),
-        removed_servers: vec![],
-        kept_servers: vec![],
-        auto_selected: trace.auto_selected,
-        auto_trigger: trace.auto_trigger,
-        inject_fired: trace.inject_fired,
-        coach_kind: trace.coach_kind,
-        budget_fired: trace.budget_fired,
-        behavior_kind: trace.behavior_kind,
-        working_directory: trace.working_directory.clone(),
-        tools_sent_count: 0,
-        mcp_tools_invoked: vec![],
-        tools_sent_by_server: HashMap::new(),
-    });
-}
-
 pub fn record_compress(chars_saved: usize) {
     let _ = crate::config::ensure_dir();
     append(&Record {
@@ -177,7 +154,10 @@ fn record_belongs_to_session(rec: &Record) -> bool {
 }
 
 pub fn group_into_sessions(records: &[Record]) -> Vec<Session> {
-    let gap = chrono::Duration::minutes(30);
+    let gap_mins = crate::config::Config::load()
+        .session_gap_minutes
+        .unwrap_or(30) as i64;
+    let gap = chrono::Duration::minutes(gap_mins);
     let mut sessions: Vec<Session> = Vec::new();
     let mut current: Option<(DateTime<Utc>, DateTime<Utc>, usize, usize, usize, String, String)> =
         None;

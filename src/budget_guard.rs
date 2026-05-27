@@ -4,8 +4,19 @@ use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
-// Blended estimate for "how expensive is this session so far" warnings.
-const RATE_USD_PER_MTOK: f64 = 2.0;
+/// Per-model input pricing in USD/MTok (Anthropic list rates as of 2025).
+/// Used for budget-warning estimates only — intentionally conservative (no cache discount).
+fn rate_for_model(body: &Value) -> f64 {
+    let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
+    if model.starts_with("claude-opus") {
+        15.0
+    } else if model.starts_with("claude-haiku") {
+        0.80
+    } else {
+        // Sonnet and anything unrecognised: use Sonnet input rate as the safe default.
+        3.0
+    }
+}
 
 static WARNED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
 
@@ -41,7 +52,7 @@ pub(crate) fn check_with_threshold(body: &[u8], threshold: f64) -> Option<String
         return None;
     }
 
-    let estimated = estimate_cost(messages);
+    let estimated = estimate_cost(&value);
     if estimated < threshold {
         return None;
     }
@@ -56,19 +67,24 @@ pub(crate) fn check_with_threshold(body: &[u8], threshold: f64) -> Option<String
 
     Some(format!(
         "[ctx budget alert] This session has consumed an estimated ${:.0} in API costs \
-         (before caching discounts -- actual is typically 40-60% lower). \
+         (before caching discounts -- actual is typically 40-60% lower; estimated at ${:.2}/MTok input). \
          Session alert threshold is ~${:.0} (derived from your monthly budget in ~/.ctx/config.toml). \
          Use the AskUserQuestion tool BEFORE responding to the user's last message. \
          Ask: \"This session has used ~${:.0} in estimated API costs. Continue?\" \
          with options [\"Continue\", \"Wrap up and start a new session\"]. \
          Wait for their choice before proceeding.",
-        estimated, threshold, estimated
+        estimated, rate_for_model(&value), threshold, estimated
     ))
 }
 
-fn estimate_cost(messages: &[Value]) -> f64 {
+fn estimate_cost(body: &Value) -> f64 {
+    let messages = match body.get("messages").and_then(|m| m.as_array()) {
+        Some(m) => m,
+        None => return 0.0,
+    };
     let chars: usize = messages.iter().map(content_chars).sum();
-    (chars as f64 / 4.0 / 1_000_000.0) * RATE_USD_PER_MTOK
+    let rate = rate_for_model(body);
+    (chars as f64 / 4.0 / 1_000_000.0) * rate
 }
 
 fn content_chars(msg: &Value) -> usize {
@@ -114,11 +130,15 @@ mod tests {
     use super::*;
 
     fn make_body(msgs: &[(&str, &str)]) -> Vec<u8> {
+        make_body_with_model(msgs, "claude-sonnet-4-6")
+    }
+
+    fn make_body_with_model(msgs: &[(&str, &str)], model: &str) -> Vec<u8> {
         let arr: Vec<Value> = msgs
             .iter()
             .map(|(role, text)| serde_json::json!({"role": role, "content": text}))
             .collect();
-        serde_json::to_vec(&serde_json::json!({"messages": arr})).unwrap()
+        serde_json::to_vec(&serde_json::json!({"model": model, "messages": arr})).unwrap()
     }
 
     #[test]
@@ -139,6 +159,29 @@ mod tests {
         let text = result.unwrap();
         assert!(text.contains("AskUserQuestion"));
         assert!(text.contains("before caching discounts"));
+    }
+
+    #[test]
+    fn opus_costs_more_than_haiku_for_same_content() {
+        let content = "z".repeat(4_000_000); // 4M chars = ~1M tokens
+        let opus_body = make_body_with_model(&[("user", &content)], "claude-opus-4-7");
+        let haiku_body = make_body_with_model(&[("user", &content)], "claude-haiku-4-5");
+        let opus_val: Value = serde_json::from_slice(&opus_body).unwrap();
+        let haiku_val: Value = serde_json::from_slice(&haiku_body).unwrap();
+        let opus_cost = estimate_cost(&opus_val);
+        let haiku_cost = estimate_cost(&haiku_val);
+        assert!(opus_cost > haiku_cost, "Opus ({opus_cost}) should cost more than Haiku ({haiku_cost})");
+        // 15.0 / 0.80 = 18.75x ratio
+        assert!(opus_cost / haiku_cost > 10.0, "Expected >10x ratio, got {}", opus_cost / haiku_cost);
+    }
+
+    #[test]
+    fn unknown_model_defaults_to_sonnet_rate() {
+        let body = make_body_with_model(&[("user", &"z".repeat(4_000_000))], "claude-unknown-model");
+        let val: Value = serde_json::from_slice(&body).unwrap();
+        let sonnet_body = make_body_with_model(&[("user", &"z".repeat(4_000_000))], "claude-sonnet-4-6");
+        let sonnet_val: Value = serde_json::from_slice(&sonnet_body).unwrap();
+        assert!((estimate_cost(&val) - estimate_cost(&sonnet_val)).abs() < 0.001);
     }
 
     #[test]

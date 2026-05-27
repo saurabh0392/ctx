@@ -28,12 +28,13 @@ if (global.__CTX_FILTER_PATCHED__) {
   const STOP_WORDS = new Set([
     'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were',
     'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
-    'will', 'would', 'should', 'shall', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as',
+    'will', 'would', 'could', 'should', 'may', 'might', 'shall', 'can',
+    'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as',
     'into', 'through', 'during', 'before', 'after', 'above', 'below',
     'i', 'you', 'it', 'this', 'that', 'they', 'we', 'he', 'she',
     'my', 'your', 'its', 'their', 'our', 'me', 'him', 'her', 'us',
     'what', 'how', 'why', 'when', 'where', 'which', 'who',
-    'also', 'now', 'up', 'out', 'so', 'if', 'then',
+    'just', 'also', 'now', 'up', 'out', 'so', 'if', 'then',
     'please', 'ok', 'okay', 'yes', 'no', 'not',
   ]);
 
@@ -366,9 +367,18 @@ if (global.__CTX_FILTER_PATCHED__) {
     } catch (_e) {}
   }
 
-  function estimateSessionUsd(messages) {
+  /** Per-model input rate in USD/MTok — mirrors budget_guard.rs::rate_for_model. */
+  function rateForModel(model) {
+    const m = String(model || '').toLowerCase();
+    if (m.startsWith('claude-opus')) return 15.0;
+    if (m.startsWith('claude-haiku')) return 0.80;
+    return 3.0; // sonnet and unknown: sonnet input rate
+  }
+
+  /** Estimate session cost from the full request object (needs o.model + o.messages). */
+  function estimateSessionUsd(o) {
+    const messages = o && Array.isArray(o.messages) ? o.messages : [];
     let chars = 0;
-    if (!Array.isArray(messages)) return 0;
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (!m || !m.content) continue;
@@ -381,7 +391,7 @@ if (global.__CTX_FILTER_PATCHED__) {
         }
       }
     }
-    return (chars / 4 / 1000000) * 2.0;
+    return (chars / 4 / 1000000) * rateForModel(o && o.model);
   }
 
   function budgetDedupKey(messages) {
@@ -477,7 +487,7 @@ if (global.__CTX_FILTER_PATCHED__) {
       }
     }
 
-    const est = estimateSessionUsd(o.messages || []);
+    const est = estimateSessionUsd(o);
     const th = cfg.session_budget_threshold_usd || 25;
     if (est >= th) {
       const bk = budgetDedupKey(o.messages || []);
@@ -509,7 +519,31 @@ if (global.__CTX_FILTER_PATCHED__) {
       const line = JSON.stringify(rec) + '\n';
       fs.appendFileSync(path.join(ctxDir(), 'analytics.jsonl'), line, 'utf8');
     } catch (_e) {}
+    const pe = process.env.CTX_DASHBOARD_PORT;
+    const cfg = loadCfg();
+    const port = pe != null && pe !== ''
+      ? Number(pe)
+      : typeof cfg.dashboard_port === 'number' ? cfg.dashboard_port : 8789;
     postIngestRequest(rec);
+    postTriggerIngest(port);
+  }
+
+  /**
+   * Ask the dashboard to run an incremental ingest so the current turn is immediately
+   * visible in all dashboard views. Fire-and-forget — errors are silently ignored.
+   * The dashboard debounces concurrent calls with an AtomicBool, so rapid turns are safe.
+   */
+  function postTriggerIngest(port) {
+    const opts = {
+      hostname: '127.0.0.1',
+      port: port,
+      path: '/api/trigger-ingest',
+      method: 'POST',
+      headers: { 'Content-Length': 0 },
+    };
+    const req = http.request(opts);
+    req.on('error', function () { /* dashboard not running — ignore */ });
+    req.end();
   }
 
   /** Dual-write the same record into ctx.db via the local dashboard (SQLite lives in Rust). */

@@ -104,13 +104,14 @@ fn detect_reask(user_texts: &[String]) -> Option<CoachSignal> {
         return None; // too short to be meaningful
     }
 
-    // Compare against turns 2, 3, 4 positions back (skip the immediately prior turn
-    // because back-and-forth clarification is normal)
+    // Compare against turns 2 and 3 positions back (skip current and the immediately
+    // prior turn because back-and-forth clarification is normal). Mirrors filter.js
+    // which does slice(-4, -1).reverse() then skips index 0.
     let lookback: Vec<&String> = user_texts
         .iter()
         .rev()
-        .skip(2) // skip current + one prior
-        .take(3)
+        .skip(2) // skip current (0) + immediately prior (1)
+        .take(2) // check positions 2 and 3 back only
         .collect();
 
     for prior in lookback {

@@ -406,28 +406,24 @@ fn run_gates_inner(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     };
 
     let removed = filter_result.tools_removed;
+    // Capture server lists before moving filter_result.body into bytes.
+    let removed_servers = filter_result.removed_servers;
+    let kept_servers = filter_result.kept_servers;
     let mut bytes = filter_result.body;
+
+    // tokens_saved is measured before gates add content to the body.
+    let tokens_saved = if removed > 0 {
+        let saved = bytes_before.saturating_sub(bytes.len()) / 4;
+        eprintln!("[ctx] -{removed} tools (~{saved} tokens)  profile={effective_slug}");
+        saved
+    } else {
+        0
+    };
 
     let mut inject_fired = false;
     let mut coach_kind: Option<String> = None;
     let mut budget_fired = false;
     let mut behavior_kind: Option<String> = None;
-
-    if removed > 0 {
-        let tokens_saved = bytes_before.saturating_sub(bytes.len()) / 4;
-        eprintln!("[ctx] -{removed} tools (~{tokens_saved} tokens)  profile={effective_slug}");
-        analytics::record(removed, tokens_saved, &effective_slug, analytics::TraceInfo {
-            removed_servers: filter_result.removed_servers,
-            kept_servers: filter_result.kept_servers,
-            auto_selected,
-            auto_trigger: auto_trigger.clone(),
-            inject_fired: false,
-            coach_kind: None,
-            budget_fired: false,
-            behavior_kind: None,
-            working_directory: working_directory.clone(),
-        });
-    }
 
     if config.inject_enabled {
         if let Some(prefix) = crate::inject::load_prefix() {
@@ -455,29 +451,27 @@ fn run_gates_inner(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         bytes = crate::inject::inject_system(&bytes, &warning);
     }
 
-    if removed == 0 && (inject_fired || coach_kind.is_some() || budget_fired || behavior_kind.is_some() || auto_selected) {
-        analytics::record(0, 0, &effective_slug, analytics::TraceInfo {
-            removed_servers: vec![],
-            kept_servers: vec![],
+    // Write exactly one analytics record per request, combining filter and gate info.
+    // Previously this was split into two partial records (filter info written before gates
+    // ran, gate info written after), which caused double-counting in session aggregation.
+    let anything_happened = removed > 0
+        || inject_fired
+        || coach_kind.is_some()
+        || budget_fired
+        || behavior_kind.is_some()
+        || auto_selected;
+
+    if anything_happened {
+        analytics::record(removed, tokens_saved, &effective_slug, analytics::TraceInfo {
+            removed_servers,
+            kept_servers,
             auto_selected,
             auto_trigger,
             inject_fired,
             coach_kind,
             budget_fired,
             behavior_kind,
-            working_directory: working_directory.clone(),
-        });
-    } else if removed > 0 && (inject_fired || coach_kind.is_some() || budget_fired || behavior_kind.is_some()) {
-        analytics::record_gates(&effective_slug, analytics::TraceInfo {
-            removed_servers: vec![],
-            kept_servers: vec![],
-            auto_selected: false,
-            auto_trigger: None,
-            inject_fired,
-            coach_kind,
-            budget_fired,
-            behavior_kind,
-            working_directory: working_directory.clone(),
+            working_directory,
         });
     }
 
