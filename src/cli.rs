@@ -80,6 +80,63 @@ pub enum Commands {
     },
     /// Run as an MCP server over stdio (JSON-RPC). Exposes ctx data to LLM clients.
     Mcp,
+    /// Dry-run a prompt through the ctx pipeline (no tokens consumed)
+    Simulate {
+        /// Prompt text (reads from stdin if omitted)
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Working directory to simulate from
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Session ID for coaching context
+        #[arg(long)]
+        session: Option<String>,
+        /// Override profile (default: auto-select or current)
+        #[arg(long)]
+        profile: Option<String>,
+        /// Compare all profiles side by side
+        #[arg(long)]
+        all_profiles: bool,
+        /// Replay the last N hook traces
+        #[arg(long)]
+        replay_last: Option<usize>,
+        /// Output JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Named context modes (profile + toggles bundled)
+    #[command(args_conflicts_with_subcommands = true)]
+    Mode {
+        /// Mode name to activate (e.g. ctx mode debug)
+        name: Option<String>,
+        #[command(subcommand)]
+        command: Option<ModeCommand>,
+    },
+    /// A/B experiment status and self-tuning recommendations
+    Experiment {
+        #[command(subcommand)]
+        command: ExperimentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ModeCommand {
+    /// List configured modes
+    List,
+    /// Show one mode definition
+    Show { name: String },
+    /// Save current settings as a named mode
+    Save { name: String },
+}
+
+#[derive(Subcommand)]
+pub enum ExperimentCommand {
+    /// Show experiment state and ab-results.json recommendations
+    Status,
+    /// Apply recommendations to config.toml
+    Apply,
+    /// Clear ab-results.json
+    Reset,
 }
 
 #[derive(Subcommand)]

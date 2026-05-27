@@ -607,6 +607,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
             post(api_settings_refresh_adaptive_prefix),
         )
         .route("/api/settings/reset-watermark", post(api_settings_reset_watermark))
+        .route("/api/settings/mode", post(api_settings_mode))
         .route("/api/settings/purge-prompts", post(api_settings_purge_prompts))
         .route("/api/settings/delete-data", post(api_settings_delete_data))
         .route("/api/settings/export", get(api_settings_export))
@@ -619,6 +620,10 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/requests", get(api_requests))
         .route("/api/hook-events", get(api_hook_events))
         .route("/api/hook-traces", get(api_hook_traces))
+        .route("/api/task-costs", get(api_task_costs))
+        .route("/api/simulate", post(api_simulate))
+        .route("/api/ab-report", get(api_ab_report))
+        .route("/api/ab-daily", get(api_ab_daily))
         // Projects + tool heatmap
         .route("/api/projects", get(api_projects))
         .route("/api/tool-usage", get(api_tool_usage))
@@ -637,11 +642,21 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
 
     let url = format!("http://{addr}");
     println!("ctx dashboard running at {url}");
+    println!(
+        "Event stream: ~/.ctx/ctx.sock (profile, budget, experiment, last-trace, adaptive-status)"
+    );
     if !no_open {
         let _ = open::that(&url);
     }
 
-    axum::serve(listener, app).await?;
+    crate::socket::spawn_socket_task();
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
+    crate::socket::cleanup_socket_file();
     Ok(())
 }
 
@@ -1062,6 +1077,15 @@ struct SettingsRowCounts {
 }
 
 #[derive(Serialize)]
+struct ModeListEntry {
+    name: String,
+    profile: String,
+    inject_enabled: bool,
+    coaching_enabled: bool,
+    adaptive_prefix_enabled: bool,
+}
+
+#[derive(Serialize)]
 struct SettingsFileEntry {
     name: String,
     size_bytes: u64,
@@ -1087,6 +1111,12 @@ struct SettingsGetResponse {
     monthly_actual_spend_baseline_usd: Option<f64>,
     store_prompt_text: bool,
     embeddings_enabled: bool,
+    dev_mode: bool,
+    ab_test: crate::config::AbTestConfig,
+    active_mode: Option<String>,
+    modes: Vec<ModeListEntry>,
+    auto_apply_recommendations: bool,
+    tuning_recommendations: Option<crate::tuning::AbResultsFile>,
     system_prefix_preview: String,
     ctx_home: String,
     ctx_active_since: Option<String>,
@@ -1171,6 +1201,27 @@ async fn api_settings_get() -> impl IntoResponse {
         monthly_actual_spend_baseline_usd: cfg.monthly_actual_spend_baseline_usd,
         store_prompt_text: cfg.store_prompt_text_enabled(),
         embeddings_enabled: cfg.embeddings_enabled(),
+        dev_mode: cfg.dev_mode,
+        ab_test: cfg.ab_test.clone().unwrap_or_default(),
+        active_mode: cfg.active_mode.clone(),
+        modes: {
+            let mut names: Vec<_> = cfg.modes.keys().cloned().collect();
+            names.sort();
+            names
+                .into_iter()
+                .filter_map(|name| {
+                    cfg.modes.get(&name).map(|m| ModeListEntry {
+                        name,
+                        profile: m.profile.clone(),
+                        inject_enabled: m.inject_enabled,
+                        coaching_enabled: m.coaching_enabled,
+                        adaptive_prefix_enabled: m.adaptive_prefix_enabled,
+                    })
+                })
+                .collect()
+        },
+        auto_apply_recommendations: cfg.auto_apply_recommendations,
+        tuning_recommendations: crate::tuning::load_ab_results(),
         system_prefix_preview,
         ctx_home: crate::config::ctx_dir().to_string_lossy().into_owned(),
         ctx_active_since,
@@ -1195,7 +1246,15 @@ struct SettingsPostBody {
     monthly_actual_spend_usd: Option<f64>,
     store_prompt_text: Option<bool>,
     embeddings_enabled: Option<bool>,
+    dev_mode: Option<bool>,
+    ab_test: Option<crate::config::AbTestConfig>,
+    auto_apply_recommendations: Option<bool>,
     system_prefix: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SettingsModeBody {
+    mode: String,
 }
 
 async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoResponse {
@@ -1236,6 +1295,15 @@ async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoRespo
     if let Some(v) = body.embeddings_enabled {
         cfg.embeddings_enabled = Some(v);
     }
+    if let Some(v) = body.dev_mode {
+        cfg.dev_mode = v;
+    }
+    if let Some(ab) = body.ab_test {
+        cfg.ab_test = Some(ab);
+    }
+    if let Some(v) = body.auto_apply_recommendations {
+        cfg.auto_apply_recommendations = v;
+    }
     if let Some(prefix) = &body.system_prefix {
         if let Err(e) = (|| -> anyhow::Result<()> {
             crate::config::ensure_dir()?;
@@ -1265,6 +1333,13 @@ async fn api_settings_refresh_adaptive_prefix() -> impl IntoResponse {
     match crate::adaptive::regenerate_adaptive_prefix_file() {
         Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn api_settings_mode(Json(body): Json<SettingsModeBody>) -> impl IntoResponse {
+    match crate::modes::switch_mode(body.mode.trim()) {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "mode": body.mode })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
 
@@ -1601,6 +1676,58 @@ async fn api_hook_events(Query(q): Query<HookEventsQuery>) -> Json<Vec<crate::db
 // Hook traces — hybrid rows from hooks, enriched by JSONL ingest
 // ---------------------------------------------------------------------------
 
+#[derive(Deserialize)]
+struct SimulateBody {
+    prompt: Option<String>,
+    cwd: Option<String>,
+    session_id: Option<String>,
+    model: Option<String>,
+    profile: Option<String>,
+    #[serde(default)]
+    all_profiles: bool,
+}
+
+#[derive(Serialize)]
+struct SimulateResponse {
+    result: Option<crate::simulate::SimulateResult>,
+    all_profiles: Option<Vec<crate::simulate::SimulateResult>>,
+}
+
+async fn api_simulate(Json(body): Json<SimulateBody>) -> impl IntoResponse {
+    let cwd = body.cwd.as_deref().unwrap_or(".");
+    let prompt = body.prompt.as_deref().unwrap_or("");
+    let session_id = body.session_id.as_deref();
+    let model = body.model.as_deref();
+    let profile = body.profile.as_deref();
+
+    if body.all_profiles {
+        match crate::simulate::simulate_all_profiles(cwd, prompt, session_id, model) {
+            Ok(results) => Json(SimulateResponse {
+                result: None,
+                all_profiles: Some(results),
+            })
+            .into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        match crate::simulate::simulate_pipeline(cwd, prompt, session_id, model, profile) {
+            Ok(r) => Json(SimulateResponse {
+                result: Some(r),
+                all_profiles: None,
+            })
+            .into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    }
+}
+
+async fn api_task_costs() -> Json<Vec<crate::db::TaskCostGroup>> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(vec![]);
+    };
+    Json(crate::db::load_task_costs(&conn).unwrap_or_default())
+}
+
 #[derive(Deserialize, Default)]
 struct HookTracesQuery {
     limit: Option<usize>,
@@ -1619,6 +1746,200 @@ async fn api_hook_traces(Query(q): Query<HookTracesQuery>) -> Json<Vec<crate::db
     };
     let wm = watermark_ts(&conn, &since_q);
     Json(crate::db::load_hook_traces(&conn, limit, offset, wm.as_deref()).unwrap_or_default())
+}
+
+// ---------------------------------------------------------------------------
+// A/B experiment reports
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct AbCohortMetrics {
+    count: i64,
+    avg_cost_usd: f64,
+    avg_input_tokens: f64,
+    avg_output_tokens: f64,
+    correction_rate_pct: f64,
+}
+
+#[derive(Serialize)]
+struct AbFeatureReport {
+    feature: String,
+    treatment: AbCohortMetrics,
+    control: AbCohortMetrics,
+    cost_delta_pct: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct AbDailyRow {
+    date: String,
+    feature: String,
+    group: String,
+    count: i64,
+    avg_cost: f64,
+    avg_tokens: f64,
+}
+
+fn ab_cohort_metrics(
+    conn: &rusqlite::Connection,
+    group_pattern: &str,
+    wm: Option<&str>,
+) -> AbCohortMetrics {
+    let mut sql = String::from(
+        "SELECT COUNT(*),
+                AVG(cost_usd),
+                AVG(input_tokens),
+                AVG(output_tokens),
+                SUM(CASE WHEN coach_kind IS NOT NULL AND coach_kind != '' THEN 1 ELSE 0 END)
+         FROM hook_traces
+         WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE ?1",
+    );
+    if wm.is_some() {
+        sql.push_str(" AND ts >= ?2");
+    }
+    let row: (i64, Option<f64>, Option<f64>, Option<f64>, i64) = if let Some(since) = wm {
+        conn.query_row(&sql, rusqlite::params![group_pattern, since], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap_or((0, None, None, None, 0))
+    } else {
+        conn.query_row(&sql, rusqlite::params![group_pattern], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap_or((0, None, None, None, 0))
+    };
+    let count = row.0;
+    let correction_rate_pct = if count > 0 {
+        (row.4 as f64 / count as f64) * 100.0
+    } else {
+        0.0
+    };
+    AbCohortMetrics {
+        count,
+        avg_cost_usd: row.1.unwrap_or(0.0),
+        avg_input_tokens: row.2.unwrap_or(0.0),
+        avg_output_tokens: row.3.unwrap_or(0.0),
+        correction_rate_pct,
+    }
+}
+
+fn ab_cost_delta_pct(treatment: &AbCohortMetrics, control: &AbCohortMetrics) -> Option<f64> {
+    if control.count == 0 || control.avg_cost_usd <= 0.0 {
+        return None;
+    }
+    Some(((treatment.avg_cost_usd - control.avg_cost_usd) / control.avg_cost_usd) * 100.0)
+}
+
+async fn api_ab_report(Query(q): Query<SinceQuery>) -> Json<Vec<AbFeatureReport>> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(vec![]);
+    };
+    let wm = watermark_ts(&conn, &q);
+    let features = [
+        ("profile", "%P:T%", "%P:C%"),
+        ("inject", "%I:T%", "%I:C%"),
+        ("adaptive", "%A:T%", "%A:C%"),
+        ("coaching", "%C:T%", "%C:C%"),
+    ];
+    let mut out = Vec::new();
+    for (name, t_pat, c_pat) in features {
+        let treatment = ab_cohort_metrics(&conn, t_pat, wm.as_deref());
+        let control = ab_cohort_metrics(&conn, c_pat, wm.as_deref());
+        let cost_delta_pct = ab_cost_delta_pct(&treatment, &control);
+        out.push(AbFeatureReport {
+            feature: name.to_string(),
+            treatment,
+            control,
+            cost_delta_pct,
+        });
+    }
+    Json(out)
+}
+
+async fn api_ab_daily(Query(q): Query<SinceQuery>) -> Json<Vec<AbDailyRow>> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(vec![]);
+    };
+    let wm = watermark_ts(&conn, &q);
+    let base = r#"
+        SELECT substr(ts, 1, 10) AS day,
+               feature,
+               grp,
+               COUNT(*),
+               AVG(cost_usd),
+               AVG(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))
+        FROM (
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'profile' AS feature, 'treatment' AS grp
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%P:T%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'profile', 'control'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%P:C%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'inject', 'treatment'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%I:T%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'inject', 'control'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%I:C%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'adaptive', 'treatment'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%A:T%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'adaptive', 'control'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%A:C%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'coaching', 'treatment'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%C:T%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'coaching', 'control'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%C:C%'
+        )
+        WHERE 1=1
+    "#;
+    let sql = if wm.is_some() {
+        format!("{base} AND ts >= ?1 GROUP BY day, feature, grp ORDER BY day DESC")
+    } else {
+        format!("{base} GROUP BY day, feature, grp ORDER BY day DESC")
+    };
+    let map_row = |r: &rusqlite::Row<'_>| {
+        Ok(AbDailyRow {
+            date: r.get(0)?,
+            feature: r.get(1)?,
+            group: r.get(2)?,
+            count: r.get(3)?,
+            avg_cost: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+            avg_tokens: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+        })
+    };
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(&sql) {
+        if let Some(since) = wm.as_deref() {
+            if let Ok(rows) = stmt.query_map([since], map_row) {
+                for row in rows.flatten() {
+                    out.push(row);
+                }
+            }
+        } else if let Ok(rows) = stmt.query_map([], map_row) {
+            for row in rows.flatten() {
+                out.push(row);
+            }
+        }
+    }
+    Json(out)
 }
 
 // ---------------------------------------------------------------------------

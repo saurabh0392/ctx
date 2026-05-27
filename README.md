@@ -193,6 +193,104 @@ ctx ingest
 
 When running Claude Code in an IDE or terminal, the dashboard ingests hook payloads (`POST /api/hook/event`) and legacy paths still hit `POST /api/trigger-ingest` when `filter.js` runs under Node. Desktop sessions require a manual `ctx ingest` run (or the periodic background service where installed).
 
+## A/B experiments (optional)
+
+You can measure whether each gate (profile filter, system prefix, adaptive prefix, coaching) actually lowers cost per request. Add to `~/.ctx/config.toml`:
+
+```toml
+[ab_test]
+profile_pct = 50
+inject_pct = 100
+adaptive_pct = 50
+coaching_pct = 100
+```
+
+Each prompt gets an independent coin flip per feature. Control requests skip that gate but still appear in `hook_traces` with an `ab_group` label like `P:T I:C A:T C:T`. After ingest enriches rows with cost data, open the dashboard with `?dev=1` or enable `dev_mode = true` in config to use the Experiment tab. Settings also has sliders and Start/Stop 50/50 buttons.
+
+Omit `[ab_test]` entirely for normal operation (all gates always on, no experiment metadata).
+
+After enough enriched hook traces, ctx writes `~/.ctx/ab-results.json` with per-feature verdicts (beneficial, no benefit, harmful, insufficient data). Use the Settings recommendation card or:
+
+```bash
+ctx experiment status    # A/B config + recommendations
+ctx experiment apply     # disable features with no benefit; clear experiment
+ctx experiment reset     # remove ab-results.json
+```
+
+Set `auto_apply_recommendations = true` in config to apply recommendations automatically after each ingest.
+
+## Context modes
+
+Bundle profile + inject + coaching + adaptive into one named preset in `~/.ctx/config.toml`:
+
+```toml
+[modes.debug]
+profile = "minimal"
+inject_enabled = true
+coaching_enabled = true
+adaptive_prefix_enabled = false
+
+[modes.review]
+profile = "carrier"
+inject_enabled = true
+coaching_enabled = false
+adaptive_prefix_enabled = true
+```
+
+```bash
+ctx mode debug           # switch to a mode
+ctx mode list
+ctx mode show review
+ctx mode save focus      # save current toggles as a mode
+```
+
+The dashboard Settings tab has a mode dropdown (`POST /api/settings/mode`). Request Trace rows show a mode chip when `active_mode` is set.
+
+## Local event stream (Unix socket)
+
+While `ctx dashboard` runs, a read-only socket listens at `~/.ctx/ctx.sock`. Newline-delimited JSON request/response (one line each, connection closes).
+
+| Request | Response fields |
+| --- | --- |
+| `{"q":"profile"}` | `profile`, `mode` |
+| `{"q":"budget"}` | `remaining_usd`, `used_usd`, `pct` |
+| `{"q":"experiment"}` | `active`, `profile_pct`, … |
+| `{"q":"last-trace"}` | `ts`, `profile`, `tokens_saved`, `cost_usd` |
+| `{"q":"adaptive-status"}` | `enabled`, `chars`, `budget`, `stale` |
+
+Shell prompt example (`~/.zshrc`):
+
+```bash
+ctx_prompt() {
+  local p=$(echo '{"q":"profile"}' | nc -U ~/.ctx/ctx.sock 2>/dev/null | jq -r '.profile // empty')
+  [[ -n "$p" ]] && echo " ctx:$p"
+}
+PROMPT='%~ $(ctx_prompt) %# '
+```
+
+tmux status bar:
+
+```bash
+set -g status-right '#(echo {"q":"budget"} | nc -U ~/.ctx/ctx.sock | jq -r "\"$\" + (.remaining_usd | tostring)")'
+```
+
+If the dashboard is not running, the socket file is absent. Consumers should fail silently.
+
+## Simulate (dry-run)
+
+Run a prompt through the full pipeline without consuming tokens:
+
+```bash
+ctx simulate --prompt "fix the bug" --cwd /path/to/project
+ctx simulate --prompt "fix the bug" --all-profiles
+ctx simulate --replay-last 5
+ctx simulate --prompt "test" --json
+```
+
+Shows gates fired, tools stripped, tokens saved, injected context preview, and per-request cost estimate. `--all-profiles` compares every profile against the same prompt. `--replay-last N` re-runs recent hook traces to compare actual vs simulated results.
+
+The dashboard has a Simulate tab under Dev mode (same gate as Experiment). `POST /api/simulate` returns `SimulateResult` JSON.
+
 ## Coaching (hook mode)
 
 When `coaching_enabled` is true in `~/.ctx/config.toml` (default), `UserPromptSubmit` reads the tail of the session JSONL under `~/.claude/projects/` (matched by `session_id`), runs the same rule-based coach as the proxy path, and appends the suggestion to `hookSpecificOutput.additionalContext` so Claude sees it on the next model call. Severe correction fatigue (five or more correction-style turns in the last six user messages) returns `decision: "block"` with a `reason` so you start a fresh session instead of burning more context.
@@ -212,6 +310,8 @@ When `coaching_enabled` is true in `~/.ctx/config.toml` (default), `UserPromptSu
 | `session_gap_minutes` | `30` | Idle minutes between turns before a new session boundary in analytics |
 | `proxy_port` | `8788` | Local MITM proxy listen port |
 | `dashboard_port` | `8789` | Dashboard HTTP listen port |
+| `active_mode` | (none) | Last mode applied via `ctx mode` or dashboard |
+| `auto_apply_recommendations` | `false` | Apply self-tuning after ingest when true |
 
 ## Repository layout (short)
 

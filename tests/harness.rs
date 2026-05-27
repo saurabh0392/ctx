@@ -72,4 +72,30 @@ impl CtxHarness {
         )
         .expect("insert tool_invocation");
     }
+
+    /// Insert a hook_traces row (for subagent / mode journey tests).
+    pub fn seed_hook_trace(
+        &self,
+        session_id: &str,
+        parent_session_id: Option<&str>,
+        mode: Option<&str>,
+        cost_usd: f64,
+        enriched: bool,
+    ) {
+        let conn = self.open();
+        conn.execute(
+            r#"INSERT INTO hook_traces (
+                ts, session_id, parent_session_id, working_directory, profile, mode,
+                tools_kept, tools_removed, tokens_saved, cost_usd, enriched
+            ) VALUES (datetime('now'), ?1, ?2, '/tmp/project', 'carrier', ?3, 5, 10, 42000, ?4, ?5)"#,
+            rusqlite::params![
+                session_id,
+                parent_session_id,
+                mode,
+                cost_usd,
+                enriched as i64
+            ],
+        )
+        .expect("insert hook_trace");
+    }
 }

@@ -1,0 +1,11 @@
+<div class="tab-panel" id="tab-profiles">
+
+  <div class="page-title">MCP Profiles</div>
+  <div class="page-sub">Control which tools Claude sees. A tighter profile means lower cost per turn and a more focused Claude.</div>
+  <div class="section-sub" style="margin-top:-28px;margin-bottom:16px">Profile analytics respect the Data bar: counts reflect sessions started after ctx install unless you choose All time.</div>
+  <button class="new-profile-btn" onclick="openNewProfileModal()">+ New profile</button>
+  <button type="button" class="new-profile-btn" style="margin-left:8px;background:var(--surface3)" onclick="regeneratePersonalProfile()">Regenerate personal</button>
+  <div class="profiles-grid" id="profiles-grid"><div class="empty">Loading...</div></div>
+</div>
+
+<!-- ═══ Tab 4: Request Trace ═══ -->

@@ -9,8 +9,9 @@ which ctx && ctx setup --uninstall
 ```
 
 This removes:
-- NODE_OPTIONS from ~/.claude/settings.json
-- PreToolUse hooks from ~/.claude/settings.json
+- Legacy NODE_OPTIONS / filter.js preload from ~/.claude/settings.json (if present)
+- UserPromptSubmit and PreToolUse ctx hooks from ~/.claude/settings.json
+- allowedMcpServers profile entries managed by ctx
 - ctx MCP server from ~/.claude/settings.json and ~/.cursor/mcp.json
 - LaunchAgents: com.ctx.proxy, com.ctx.dashboard, com.ctx.ingest
 

@@ -406,6 +406,20 @@ body {
 .trace-ctx-band-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--primary); margin-bottom: 8px; }
 .trace-ctx-band p { font-size: 12px; color: var(--t2); line-height: 1.7; margin: 0; }
 .trace-ctx-band strong { color: var(--t1); }
+.ctx-bullet-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--t2); line-height: 1.65; }
+.ctx-bullet { margin-bottom: 6px; position: relative; }
+.ctx-bullet-toggle { cursor: pointer; color: var(--primary); font-weight: 700; margin-left: 6px; user-select: none; }
+.ctx-bullet-detail { display: none; margin-top: 6px; padding-left: 4px; font-size: 11px; color: var(--t3); line-height: 1.55; }
+.ctx-bullet.expanded .ctx-bullet-detail { display: block; }
+.trace-prompt-preview { border-left: 3px solid var(--primary-border); padding: 8px 12px; margin: 10px 0 14px; font-size: 12px; color: var(--t2); line-height: 1.55; max-height: 4.5em; overflow: hidden; }
+.trace-prompt-preview.expanded { max-height: none; }
+.ab-chip { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-left: 4px; }
+.ab-chip-t { background: rgba(34,197,94,.15); color: #86efac; }
+.ab-chip-c { background: rgba(251,146,60,.15); color: #fdba74; }
+.ab-experiment-banner { background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.35); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: #fde68a; margin-bottom: 16px; }
+.ab-feature-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+.ab-slider-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 13px; }
+.ab-slider-row input[type=range] { flex: 1; }
 .trace-response { font-size: 12px; color: var(--t2); margin-bottom: 16px; line-height: 1.6; }
 .trace-response strong { color: var(--t1); }
 .trace-token-impact { background: var(--surface2); border-radius: 10px; padding: 14px 16px; }
@@ -652,6 +666,13 @@ body {
   <div class="nav-item" onclick="showTab('settings',this)">
     <span class="nav-icon">⚙️</span> Settings
   </div>
+  <div class="nav-section" id="nav-dev-section" style="display:none">Dev</div>
+  <div class="nav-item" id="nav-dev-experiment" style="display:none" onclick="showTab('experiment',this)">
+    <span class="nav-icon">🧪</span> Experiment
+  </div>
+  <div class="nav-item" id="nav-dev-simulate" style="display:none" onclick="showTab('simulate',this)">
+    <span class="nav-icon">🔬</span> Simulate
+  </div>
 
   <!-- Efficiency score (populated by JS) -->
   <div class="sb-score-card" id="sb-score-card" style="display:none">
@@ -680,6 +701,7 @@ body {
   <div class="sb-proxy">
     <span class="status-dot off" id="status-dot"></span>
     <span id="status-text">Checking...</span>
+    <div id="socket-status" style="font-size:10px;color:var(--t4);margin-top:4px">Event stream: —</div>
   </div>
 </aside>
 
@@ -921,6 +943,12 @@ body {
     <div id="intel-clusters-body"></div>
   </div>
 
+  <div class="card" style="margin-bottom:20px" id="task-costs-card">
+    <div class="section-head">Cost by task</div>
+    <div class="section-sub">Groups requests by parent session. When you use subagents (Cursor Task tool, Claude Code sub-agents), each child session appears nested under its parent.</div>
+    <div id="task-costs-body"><div class="empty">Loading…</div></div>
+  </div>
+
   <!-- Session trace table -->
   <div class="card" style="margin-bottom:40px">
     <div class="section-head">Sessions by cost</div>
@@ -987,6 +1015,71 @@ body {
   </div>
 </div>
 
+<!-- ═══ Tab: Experiment (dev) ═══ -->
+<div class="tab-panel" id="tab-experiment">
+  <div class="page-title">Experiment</div>
+  <div class="page-sub">Compare treatment vs control for each ctx gate. Per-request coin flips; enriched after ingest.</div>
+  <div id="exp-status-bar" class="card" style="margin-bottom:16px;padding:14px 18px;font-size:13px;color:var(--t2)">Loading…</div>
+  <div id="exp-empty" class="empty" style="display:none"></div>
+  <div id="exp-body" style="display:none">
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-head">Feature breakdown</div>
+      <div id="exp-feature-cards"></div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-head">Daily cohort</div>
+      <div class="section-sub">Calendar day the requests were sent. Delta % is treatment vs control average cost.</div>
+      <div id="exp-daily-table" style="overflow-x:auto"></div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-head">Cost trend</div>
+      <div class="section-sub">Cost per request over time. Diverging lines mean the feature is having an effect.</div>
+      <label style="font-size:12px;color:var(--t3)">Feature</label>
+      <select id="exp-chart-feature" onchange="renderAbTrendChart()" style="margin:6px 0 12px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+        <option value="profile">Profile</option>
+        <option value="inject">Inject</option>
+        <option value="adaptive">Adaptive</option>
+        <option value="coaching">Coaching</option>
+      </select>
+      <canvas id="exp-trend-chart" height="120"></canvas>
+    </div>
+    <div class="card">
+      <div class="section-head">Experiment requests</div>
+      <div id="exp-trace-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Tab 8: Simulate (dev) ═══ -->
+<div class="tab-panel" id="tab-simulate">
+  <div class="page-title">Simulate</div>
+  <div class="page-sub">Dry-run a prompt through the ctx pipeline. No tokens consumed. Uses your current config and profiles.</div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-head">Input</div>
+    <label style="font-size:12px;color:var(--t3)">Prompt</label>
+    <textarea id="sim-prompt" rows="4" placeholder="Paste a prompt here" style="width:100%;margin:6px 0 10px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></textarea>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:12px;color:var(--t3)">Working directory</label>
+        <input type="text" id="sim-cwd" placeholder="/Users/you/project" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+      </div>
+      <div style="min-width:140px">
+        <label style="font-size:12px;color:var(--t3)">Profile override</label>
+        <select id="sim-profile" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+          <option value="">(auto)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button type="button" class="modal-btn primary" onclick="runSimulate()">Run</button>
+      <button type="button" class="modal-btn secondary" onclick="runSimulateAllProfiles()">Compare all profiles</button>
+      <button type="button" class="modal-btn secondary" onclick="runSimulateReplay()">Replay last 10 traces</button>
+    </div>
+  </div>
+
+  <div id="sim-result" style="display:none"></div>
+</div>
 <!-- ═══ Tab 6: Settings ═══ -->
 <div class="tab-panel" id="tab-settings">
   <div class="page-title">Settings</div>
@@ -1020,6 +1113,28 @@ body {
     </div>
   </div>
 
+  <div class="card" style="margin-bottom:20px" id="set-modes-card">
+    <div class="section-head">Context mode</div>
+    <div class="section-sub">A mode bundles your profile, prefix, coaching, and adaptive settings into one switch. Define modes in <code>config.toml</code> under <code>[modes.*]</code>.</div>
+    <label style="font-size:12px;color:var(--t3)">Active mode</label>
+    <select id="set-mode" style="width:100%;max-width:320px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></select>
+    <p id="set-modes-empty" class="section-sub" style="display:none;margin:0">No modes configured. Add a <code>[modes.debug]</code> section to <code>~/.ctx/config.toml</code> to get started.</p>
+    <button type="button" class="modal-btn primary" onclick="saveSettingsMode()">Apply mode</button>
+  </div>
+
+  <div class="card" style="margin-bottom:20px;display:none" id="set-tuning-card">
+    <div class="section-head">Self-tuning recommendations</div>
+    <div class="section-sub">From your A/B experiment data. Run <code>ctx experiment apply</code> to write changes to config.</div>
+    <div id="set-tuning-body"></div>
+    <label style="display:flex;align-items:center;gap:10px;margin-top:12px;cursor:pointer">
+      <input type="checkbox" id="set-auto-apply"> Auto-apply recommendations after each ingest
+    </label>
+    <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+      <button type="button" class="modal-btn secondary" onclick="applyTuningRecommendations()">Apply recommendations</button>
+      <button type="button" class="modal-btn secondary" onclick="saveAutoApplyTuning()">Save auto-apply</button>
+    </div>
+  </div>
+
   <div class="card" style="margin-bottom:20px">
     <div class="section-head">Filtering</div>
     <label style="font-size:12px;color:var(--t3)">Active profile</label>
@@ -1047,6 +1162,24 @@ body {
     <label style="font-size:12px;color:var(--t3)">System prefix (saved to file)</label>
     <textarea id="set-prefix" rows="10" style="width:100%;margin-top:6px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
     <div style="margin-top:12px"><button type="button" class="modal-btn primary" onclick="saveSettingsFiltering()">Save filtering</button></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-head">Experiments</div>
+    <div class="section-sub">Set any slider below 100% to skip that gate on some requests. Results appear in the Experiment tab (enable dev mode or add <code>?dev=1</code> to the URL).</div>
+    <div id="ab-experiment-banner" class="ab-experiment-banner" style="display:none"></div>
+    <div class="ab-slider-row"><span style="width:100px">Profile</span><input type="range" id="ab-profile-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-profile-val">100%</span></div>
+    <div class="ab-slider-row"><span style="width:100px">Inject</span><input type="range" id="ab-inject-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-inject-val">100%</span></div>
+    <div class="ab-slider-row"><span style="width:100px">Adaptive</span><input type="range" id="ab-adaptive-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-adaptive-val">100%</span></div>
+    <div class="ab-slider-row"><span style="width:100px">Coaching</span><input type="range" id="ab-coaching-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-coaching-val">100%</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px">
+      <button type="button" class="modal-btn secondary" onclick="startAbExperiment5050()">Start 50/50 experiment</button>
+      <button type="button" class="modal-btn secondary" onclick="stopAbExperiment()">Stop experiment</button>
+      <button type="button" class="modal-btn primary" onclick="saveAbExperiment()">Save percentages</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:10px;margin-top:14px;cursor:pointer">
+      <input type="checkbox" id="set-dev-mode"> Show Experiment tab in sidebar (dev mode)
+    </label>
   </div>
 
   <div class="card" style="margin-bottom:20px">
@@ -1181,6 +1314,8 @@ function applyDashboardSinceReload() {
   loadSavings().catch(console.error);
   if (window._psLoaded) loadPromptStats().catch(console.error);
   if (window._traceLoaded) loadTrace().catch(console.error);
+  const exp = document.getElementById('tab-experiment');
+  if (exp && exp.classList.contains('active')) loadExperimentTab().catch(console.error);
   loadPipeline().catch(console.error);
   const st = document.getElementById('tab-settings');
   if (st && st.classList.contains('active')) loadSettingsTab();
@@ -1318,6 +1453,34 @@ async function loadSettingsTab() {
     }
     const sinceDisp = document.getElementById('set-ctx-since-display');
     if (sinceDisp) sinceDisp.textContent = s.ctx_active_since || '(none)';
+    const ab = s.ab_test || {};
+    const setPct = (id, v) => { const el = document.getElementById(id); if (el) el.value = String(v ?? 100); };
+    setPct('ab-profile-pct', ab.profile_pct);
+    setPct('ab-inject-pct', ab.inject_pct);
+    setPct('ab-adaptive-pct', ab.adaptive_pct);
+    setPct('ab-coaching-pct', ab.coaching_pct);
+    syncAbSliderLabels();
+    const devCk = document.getElementById('set-dev-mode');
+    if (devCk) devCk.checked = !!s.dev_mode;
+    const modeSel = document.getElementById('set-mode');
+    const modesEmpty = document.getElementById('set-modes-empty');
+    if (modeSel) {
+      const modes = s.modes || [];
+      if (modes.length) {
+        modeSel.innerHTML = '<option value="">(none)</option>' + modes.map(m =>
+          `<option value="${esc(m.name)}"${s.active_mode === m.name ? ' selected' : ''}>${esc(m.name)} — ${esc(m.profile)}</option>`
+        ).join('');
+        if (modesEmpty) modesEmpty.style.display = 'none';
+        modeSel.disabled = false;
+      } else {
+        modeSel.innerHTML = '';
+        if (modesEmpty) modesEmpty.style.display = 'block';
+        modeSel.disabled = true;
+      }
+    }
+    const autoApply = document.getElementById('set-auto-apply');
+    if (autoApply) autoApply.checked = !!s.auto_apply_recommendations;
+    renderTuningRecommendations(s.tuning_recommendations);
     document.getElementById('set-prefix').value = s.system_prefix_preview || '';
     const profs = await fetch('/api/profiles').then(r => r.json());
     const sel = document.getElementById('set-profile');
@@ -1405,6 +1568,255 @@ async function resetDashboardWatermark() {
   alert('Watermark cleared.');
 }
 
+function readAbTestFromSliders() {
+  const v = id => parseInt(document.getElementById(id).value, 10) || 0;
+  return {
+    profile_pct: v('ab-profile-pct'),
+    inject_pct: v('ab-inject-pct'),
+    adaptive_pct: v('ab-adaptive-pct'),
+    coaching_pct: v('ab-coaching-pct')
+  };
+}
+
+function syncAbSliderLabels() {
+  const pairs = [
+    ['ab-profile-pct', 'ab-profile-val'],
+    ['ab-inject-pct', 'ab-inject-val'],
+    ['ab-adaptive-pct', 'ab-adaptive-val'],
+    ['ab-coaching-pct', 'ab-coaching-val']
+  ];
+  const ab = readAbTestFromSliders();
+  pairs.forEach(([sid, lid]) => {
+    const el = document.getElementById(lid);
+    if (el) el.textContent = (document.getElementById(sid).value || '100') + '%';
+  });
+  const banner = document.getElementById('ab-experiment-banner');
+  if (!banner) return;
+  const active = ab.profile_pct < 100 || ab.inject_pct < 100 || ab.adaptive_pct < 100 || ab.coaching_pct < 100;
+  if (active) {
+    banner.style.display = 'block';
+    banner.textContent = 'Experiment active. Some requests skip gates below 100%. Check the Experiment tab for results. Stop when you have enough data.';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+async function saveAbExperiment() {
+  const body = { ab_test: readAbTestFromSliders() };
+  const devCk = document.getElementById('set-dev-mode');
+  if (devCk) body.dev_mode = devCk.checked;
+  await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await loadSettingsTab();
+  initDevModeNav();
+  alert('Experiment settings saved.');
+}
+
+async function startAbExperiment5050() {
+  ['ab-profile-pct','ab-inject-pct','ab-adaptive-pct','ab-coaching-pct'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '50';
+  });
+  syncAbSliderLabels();
+  await saveAbExperiment();
+}
+
+async function stopAbExperiment() {
+  ['ab-profile-pct','ab-inject-pct','ab-adaptive-pct','ab-coaching-pct'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '100';
+  });
+  syncAbSliderLabels();
+  await saveAbExperiment();
+}
+
+function initDevModeNav() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('dev') === '1') localStorage.setItem('ctx_dev', '1');
+  let show = localStorage.getItem('ctx_dev') === '1';
+  const devCk = document.getElementById('set-dev-mode');
+  if (devCk && devCk.checked) show = true;
+  fetch('/api/settings').then(r => r.json()).then(s => {
+    if (s.dev_mode) show = true;
+    const sec = document.getElementById('nav-dev-section');
+    const nav = document.getElementById('nav-dev-experiment');
+    const navSim = document.getElementById('nav-dev-simulate');
+    if (sec) sec.style.display = show ? 'block' : 'none';
+    if (nav) nav.style.display = show ? 'flex' : 'none';
+    if (navSim) navSim.style.display = show ? 'flex' : 'none';
+  }).catch(() => {});
+}
+
+let _abDailyRows = [];
+let _abTrendChart = null;
+
+function abVerdictLine(feature, t, c) {
+  if (t.count < 100 || c.count < 100) {
+    return 'Not enough data to draw a conclusion. Need 100+ requests per group. Keep the experiment running.';
+  }
+  if (t.avg_cost_usd <= 0 && c.avg_cost_usd <= 0) return 'No cost data yet on enriched rows.';
+  const delta = c.avg_cost_usd > 0 ? ((c.avg_cost_usd - t.avg_cost_usd) / c.avg_cost_usd) * 100 : 0;
+  if (Math.abs(delta) < 3) return 'No meaningful cost difference after ' + (t.count + c.count) + ' requests.';
+  const names = { profile: 'Profile filtering', inject: 'System prefix', adaptive: 'Adaptive prefix', coaching: 'Coaching' };
+  const label = names[feature] || feature;
+  if (delta > 0) return label + ' saves ' + delta.toFixed(0) + '% per request vs control. Keep it enabled.';
+  return label + ' costs ' + Math.abs(delta).toFixed(0) + '% more per request vs control. Review whether it is worth it.';
+}
+
+async function loadExperimentTab() {
+  const status = document.getElementById('exp-status-bar');
+  const empty = document.getElementById('exp-empty');
+  const body = document.getElementById('exp-body');
+  try {
+    const settings = await fetch('/api/settings').then(r => r.json());
+    const ab = settings.ab_test || {};
+    const active = ab.profile_pct < 100 || ab.inject_pct < 100 || ab.adaptive_pct < 100 || ab.coaching_pct < 100;
+    if (status) {
+      status.textContent = active
+        ? `Experiment running: Profile ${ab.profile_pct}%, Inject ${ab.inject_pct}%, Adaptive ${ab.adaptive_pct}%, Coaching ${ab.coaching_pct}%`
+        : 'No experiment active. Set one or more feature percentages below 100% in Settings to start.';
+    }
+    const report = await fetch(appendSince('/api/ab-report')).then(r => r.json());
+    _abDailyRows = await fetch(appendSince('/api/ab-daily')).then(r => r.json());
+    const enrichedCount = report.reduce((s, f) => s + f.treatment.count + f.control.count, 0);
+    const hasAbRows = enrichedCount > 0;
+    if (!active && !hasAbRows) {
+      if (empty) {
+        empty.style.display = 'block';
+        empty.textContent = 'No experiment data yet. Go to Settings, set one or more feature percentages below 100%, and start sending prompts. Results appear here after each ingest cycle (every 5 minutes).';
+      }
+      if (body) body.style.display = 'none';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    if (body) body.style.display = 'block';
+    if (enrichedCount > 0 && enrichedCount < 100 && empty) {
+      empty.style.display = 'block';
+      empty.textContent = 'Collecting data. ' + enrichedCount + ' enriched requests so far. Reliable comparisons need at least 100 per group. Keep working normally.';
+    }
+    const cards = document.getElementById('exp-feature-cards');
+    if (cards) {
+      cards.innerHTML = report.map(f => {
+        const t = f.treatment, c = f.control;
+        return `<div class="ab-feature-card">
+          <div style="font-weight:700;margin-bottom:8px;text-transform:capitalize">${esc(f.feature)}</div>
+          <div style="font-size:12px;color:var(--t2);line-height:1.6">
+            <div>${t.count} treatment, ${c.count} control</div>
+            <div>Avg cost: ${fmtCost(t.avg_cost_usd)} vs ${fmtCost(c.avg_cost_usd)}${f.cost_delta_pct != null ? ' (' + f.cost_delta_pct.toFixed(1) + '%)' : ''}</div>
+            <div>Avg input tokens: ${Math.round(t.avg_input_tokens).toLocaleString()} vs ${Math.round(c.avg_input_tokens).toLocaleString()}</div>
+            <div>Correction rate: ${t.correction_rate_pct.toFixed(0)}% vs ${c.correction_rate_pct.toFixed(0)}%</div>
+            <div style="margin-top:8px;color:var(--t1)">${esc(abVerdictLine(f.feature, t, c))}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    renderAbDailyTable();
+    renderAbTrendChart();
+    const traces = await fetch(appendSince('/api/hook-traces?limit=50')).then(r => r.json());
+    const expTraces = (traces || []).filter(h => h.ab_group);
+    const list = document.getElementById('exp-trace-list');
+    if (list) {
+      list.innerHTML = expTraces.length
+        ? expTraces.map((ht, i) => hookTraceRow(ht, 'exp-' + i)).join('')
+        : '<div class="empty">No experiment hook traces yet.</div>';
+    }
+  } catch (e) {
+    if (status) status.textContent = 'Could not load experiment data: ' + e;
+  }
+}
+
+function renderAbDailyTable() {
+  const el = document.getElementById('exp-daily-table');
+  if (!el || !_abDailyRows.length) { if (el) el.innerHTML = '<div class="empty">No daily rows yet.</div>'; return; }
+  const byDate = {};
+  _abDailyRows.forEach(r => {
+    if (!byDate[r.date]) byDate[r.date] = {};
+    const key = r.feature + ':' + r.group;
+    byDate[r.date][key] = r;
+  });
+  const dates = Object.keys(byDate).sort().reverse();
+  const feat = document.getElementById('exp-chart-feature')?.value || 'profile';
+  let html = '<table style="width:100%;font-size:12px;border-collapse:collapse"><tr><th>Date</th><th>T requests</th><th>C requests</th><th>Avg cost T</th><th>Avg cost C</th><th>Delta %</th></tr>';
+  dates.forEach(d => {
+    const t = byDate[d][feat + ':treatment'];
+    const c = byDate[d][feat + ':control'];
+    const delta = (t && c && c.avg_cost > 0) ? ((t.avg_cost - c.avg_cost) / c.avg_cost * 100) : null;
+    const rowStyle = delta != null && delta < 0 ? 'background:rgba(34,197,94,.08)' : (delta > 0 ? 'background:rgba(239,68,68,.08)' : '');
+    html += `<tr style="${rowStyle}"><td>${esc(d)}</td><td>${t ? t.count : '—'}</td><td>${c ? c.count : '—'}</td><td>${t ? fmtCost(t.avg_cost) : '—'}</td><td>${c ? fmtCost(c.avg_cost) : '—'}</td><td>${delta != null ? delta.toFixed(1) + '%' : '—'}</td></tr>`;
+  });
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+async function saveSettingsMode() {
+  const mode = document.getElementById('set-mode')?.value;
+  if (!mode) { alert('Select a mode first.'); return; }
+  const r = await fetch('/api/settings/mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode })
+  });
+  if (!r.ok) { alert('Mode switch failed: ' + await r.text()); return; }
+  await loadSettingsTab();
+  alert('Mode applied.');
+}
+
+function renderTuningRecommendations(results) {
+  const card = document.getElementById('set-tuning-card');
+  const body = document.getElementById('set-tuning-body');
+  if (!card || !body) return;
+  if (!results || !results.features || !results.features.length) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  body.innerHTML = results.features.map(f => {
+    const cls = f.verdict === 'beneficial' ? 'insight-card' : 'section-sub';
+    return `<div class="${cls}" style="margin-bottom:10px"><div style="font-size:11px;text-transform:uppercase;color:var(--t3)">${esc(f.verdict)} · ${esc(f.feature)}</div><div style="font-size:13px;color:var(--t2);margin-top:4px">${esc(f.message)}</div></div>`;
+  }).join('');
+  if (results.auto_applied_log && results.auto_applied_log.length) {
+    body.innerHTML += '<p class="section-sub" style="margin-top:8px"><strong>Auto-applied:</strong> ' +
+      results.auto_applied_log.map(esc).join('; ') + '</p>';
+  }
+}
+
+async function saveAutoApplyTuning() {
+  const body = { auto_apply_recommendations: document.getElementById('set-auto-apply').checked };
+  await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  alert('Saved auto-apply preference.');
+}
+
+async function applyTuningRecommendations() {
+  alert('Run: ctx experiment apply');
+}
+
+function renderAbTrendChart() {
+  const feat = document.getElementById('exp-chart-feature')?.value || 'profile';
+  renderAbDailyTable();
+  const canvas = document.getElementById('exp-trend-chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const labels = [...new Set(_abDailyRows.map(r => r.date))].sort();
+  const tPts = labels.map(d => {
+    const r = _abDailyRows.find(x => x.date === d && x.feature === feat && x.group === 'treatment');
+    return r ? r.avg_cost : null;
+  });
+  const cPts = labels.map(d => {
+    const r = _abDailyRows.find(x => x.date === d && x.feature === feat && x.group === 'control');
+    return r ? r.avg_cost : null;
+  });
+  if (_abTrendChart) _abTrendChart.destroy();
+  _abTrendChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Treatment', data: tPts, borderColor: '#86efac', tension: 0.2 },
+        { label: 'Control', data: cPts, borderColor: '#fdba74', tension: 0.2 }
+      ]
+    },
+    options: { responsive: true, plugins: { legend: { labels: { color: '#94a3b8' } } }, scales: { x: { ticks: { color: '#64748b' } }, y: { ticks: { color: '#64748b' } } } }
+  });
+}
+
 // ─── Tab navigation ───────────────────────────────────────
 function showTab(id, el) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
@@ -1416,6 +1828,8 @@ function showTab(id, el) {
   if (id === 'trace' && !window._traceLoaded) { window._traceLoaded = true; loadTrace(); }
   if (id === 'pipeline') loadPipeline();
   if (id === 'settings') loadSettingsTab();
+  if (id === 'experiment') loadExperimentTab();
+  if (id === 'simulate') loadSimulateTab();
 }
 
 let _psInterval = null;
@@ -1487,6 +1901,8 @@ async function loadSavings() {
     dot.className = 'status-dot ' + (stats.proxy_listening ? 'on' : 'off');
     txt.textContent = stats.proxy_listening ? 'Proxy active' : 'Proxy offline';
   }
+  const sockEl = document.getElementById('socket-status');
+  if (sockEl) sockEl.textContent = 'Event stream: active';
 
   // Core derived metrics
   const oldest = sessions.length ? sessions[sessions.length - 1] : null;
@@ -1969,6 +2385,34 @@ async function loadPromptStats() {
     document.getElementById('spend-sessions-table').innerHTML = `<div class="empty">No Claude conversations found.</div>`;
   }
   await loadIntelligencePanels();
+  await loadTaskCosts();
+}
+
+async function loadTaskCosts() {
+  const el = document.getElementById('task-costs-body');
+  if (!el) return;
+  try {
+    const groups = await fetch('/api/task-costs').then(r => r.json());
+    if (!groups.length) {
+      el.innerHTML = '<div class="empty">No subagent data found. This card populates when Claude Code spawns child sessions (via the Task tool or sub-agents). Regular single-session work appears on the Prompt Stats charts above.</div>';
+      return;
+    }
+    el.innerHTML = groups.map((g, gi) => {
+      const childRows = (g.children || []).map(c =>
+        `<tr><td><code>${esc(c.session_id)}</code></td><td>${fmtCost(c.cost_usd)}</td><td>${c.requests}</td><td>${fmtK(c.tokens_saved)}</td></tr>`
+      ).join('');
+      return `<details class="task-cost-group" style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;padding:8px 12px" ${gi < 3 ? 'open' : ''}>
+        <summary style="cursor:pointer;font-size:13px;color:var(--t1)">
+          <code>${esc(g.parent_session)}</code> — ${fmtCost(g.total_cost_usd)} · ${g.total_requests} requests
+          <span style="font-size:11px;color:var(--t3);margin-left:8px">${esc(g.working_directory || '')}</span>
+        </summary>
+        <p class="section-sub" style="margin:8px 0 6px">Total cost across ${g.total_requests} requests in this task group. Click to expand child sessions.</p>
+        <table style="width:100%;font-size:12px"><thead><tr><th>Session</th><th>Cost</th><th>Requests</th><th>Tokens saved</th></tr></thead><tbody>${childRows}</tbody></table>
+      </details>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Could not load task costs: ' + esc(String(e)) + '</div>';
+  }
 }
 
 async function loadIntelligencePanels() {
@@ -2392,11 +2836,33 @@ async function loadTrace() {
   }).join('');
 }
 
+function renderAbBadges(abGroup) {
+  if (!abGroup) return '';
+  return abGroup.split(/\s+/).filter(Boolean).map(p => {
+    const m = p.match(/^([PIAC]):([TC])$/);
+    if (!m) return '';
+    const cls = m[2] === 'T' ? 'ab-chip-t' : 'ab-chip-c';
+    return `<span class="ab-chip ${cls}">${esc(p)}</span>`;
+  }).join('');
+}
+
+function renderCtxBulletList(items) {
+  return '<ul class="ctx-bullet-list">' + items.map(it => {
+    const detail = it.detail
+      ? `<span class="ctx-bullet-toggle" onclick="event.stopPropagation();this.parentElement.classList.toggle('expanded')">+</span><div class="ctx-bullet-detail">${it.detail}</div>`
+      : '';
+    return `<li class="ctx-bullet">${it.line}${detail}</li>`;
+  }).join('') + '</ul>';
+}
+
 function hookTraceRow(ht, i) {
   const ts = fmtTs(ht.ts);
   const profileLabel = ht.profile || 'all';
   const autoChip = ht.auto_selected
     ? `<span class="trace-auto-chip">auto: ${ht.auto_trigger || 'matched'}</span>`
+    : '';
+  const modeChip = ht.mode
+    ? `<span class="trace-profile-chip" title="This request used the ${esc(ht.mode)} mode (profile and feature toggles bundled)">${esc(ht.mode)}</span>`
     : '';
 
   const enrichedBadge = ht.enriched
@@ -2418,15 +2884,29 @@ function hookTraceRow(ht, i) {
   const pctCut = totalTools > 0 ? Math.round(toolsRemoved / totalTools * 100) : 0;
   const savingsCost = (tokensSaved / 1_000_000) * 0.30;
 
-  let ctxLines = [];
-  ctxLines.push(`Applied <strong>${esc(profileLabel)}</strong> profile (via allowedMcpServers).`);
-  if (toolsRemoved > 0) {
-    ctxLines.push(`Kept ${toolsKept} tools, stripped ${toolsRemoved} tools (${pctCut}% cut).`);
+  const ctxItems = [];
+  ctxItems.push({
+    line: `Applied <strong>${esc(profileLabel)}</strong> profile (via allowedMcpServers).`,
+    detail: toolsRemoved > 0
+      ? `Kept ${toolsKept} tools, stripped ${toolsRemoved} (${pctCut}% cut).`
+      : 'All MCP servers allowed (no strip).'
+  });
+  if (ht.inject_fired) {
+    ctxItems.push({ line: 'Prepended <strong>system_prefix.md</strong>.', detail: 'Static prefix from ~/.ctx/system_prefix.md.' });
   }
-  if (ht.inject_fired) ctxLines.push('Prepended <strong>system_prefix.md</strong>.');
-  if (ht.adaptive_fired) ctxLines.push('Appended <strong>adaptive_prefix.md</strong> (behavioral profile).');
-  if (ht.coach_kind) ctxLines.push(`Coaching: <strong>${esc(ht.coach_kind)}</strong>.`);
-  if (ht.budget_fired) ctxLines.push('Session cost alert fired.');
+  if (ht.adaptive_fired) {
+    ctxItems.push({ line: 'Appended <strong>adaptive_prefix.md</strong>.', detail: 'Behavioral profile from indexed sessions.' });
+  }
+  if (ht.coach_kind) {
+    ctxItems.push({ line: `Coaching: <strong>${esc(ht.coach_kind)}</strong>.`, detail: 'Suggestion injected into additionalContext.' });
+  }
+  if (ht.budget_fired) ctxItems.push({ line: 'Session cost alert fired.', detail: '' });
+  const ctxBullets = renderCtxBulletList(ctxItems);
+
+  const promptPreview = ht.human_text_prefix
+    ? `<div class="trace-prompt-preview" onclick="event.stopPropagation();this.classList.toggle('expanded')">${esc(ht.human_text_prefix)}</div>`
+    : '<div class="trace-prompt-preview" style="color:var(--t4)">Prompt text available after next ingest.</div>';
+  const abBadges = renderAbBadges(ht.ab_group);
 
   const savingsBar = totalTools > 0 ? `<div class="trace-token-impact">
       <div class="trace-token-impact-title">Token impact</div>
@@ -2462,9 +2942,10 @@ function hookTraceRow(ht, i) {
       ${ht.working_directory ? `<code>${esc(ht.working_directory)}</code><br>` : ''}
       ${ts}
     </div>
+    ${promptPreview}
     <div class="trace-ctx-band">
       <div class="trace-ctx-band-title">What ctx did</div>
-      <p>${ctxLines.join(' ')}</p>
+      ${ctxBullets}
     </div>
     ${savingsBar}
     ${costLine}
@@ -2505,7 +2986,9 @@ function hookTraceRow(ht, i) {
     <div class="trace-summary">
       <div class="trace-ts">${ts}</div>
       <div class="trace-profile-chip">${profileLabel}</div>
+      ${modeChip}
       ${autoChip}
+      ${abBadges}
       ${enrichedBadge}
       <div class="trace-stat">${savingsSummary}</div>
       <div class="trace-cost">${costSummary}</div>
@@ -2558,18 +3041,19 @@ function traceRow(req, i) {
   const pctCut = totalTools > 0 ? Math.round(req.tools_removed / totalTools * 100) : 0;
 
   // ── Left panel: Your interaction ──
-  let ctxLines = [];
-  ctxLines.push(`Applied <strong>${esc(profileLabel)}</strong> profile.`);
-  if (req.kept_servers.length) {
-    ctxLines.push(`Kept ${req.kept_servers.length} server${req.kept_servers.length !== 1 ? 's' : ''} (${keptTools} tools), stripped ${req.removed_servers.length} server${req.removed_servers.length !== 1 ? 's' : ''} (${req.tools_removed} tools).`);
-  } else {
-    ctxLines.push(`Stripped <strong>${req.tools_removed}</strong> tools, saving <strong>${fmtK(req.tokens_saved)}</strong> tokens.`);
-  }
-  if (req.inject_fired) ctxLines.push('Prepended <strong>system_prefix.md</strong>.');
-  if (req.coach_kind) ctxLines.push(`Coaching: <strong>${esc(req.coach_kind)}</strong>.`);
-  if (req.budget_fired) ctxLines.push('Session cost alert fired.');
-  if (req.behavior_kind) ctxLines.push(`Behavior guard: <strong>${esc(req.behavior_kind)}</strong>.`);
-  if (req.compress_chars_saved > 0) ctxLines.push(`Compressed <strong>${fmtK(req.compress_chars_saved)}</strong> chars of bash output.`);
+  const ctxItems = [];
+  ctxItems.push({
+    line: `Applied <strong>${esc(profileLabel)}</strong> profile.`,
+    detail: req.kept_servers.length
+      ? `Kept: ${req.kept_servers.map(s => esc(serverDisplayName(s))).join(', ')}. Removed: ${req.removed_servers.map(s => esc(serverDisplayName(s))).join(', ') || 'none'}.`
+      : `Stripped ${req.tools_removed} tools.`
+  });
+  if (req.inject_fired) ctxItems.push({ line: 'Prepended <strong>system_prefix.md</strong>.', detail: '' });
+  if (req.coach_kind) ctxItems.push({ line: `Coaching: <strong>${esc(req.coach_kind)}</strong>.`, detail: '' });
+  if (req.budget_fired) ctxItems.push({ line: 'Session cost alert fired.', detail: '' });
+  if (req.behavior_kind) ctxItems.push({ line: `Behavior guard: <strong>${esc(req.behavior_kind)}</strong>.`, detail: '' });
+  if (req.compress_chars_saved > 0) ctxItems.push({ line: `Compressed <strong>${fmtK(req.compress_chars_saved)}</strong> chars of bash output.`, detail: '' });
+  const ctxBullets = renderCtxBulletList(ctxItems);
 
   let responseHtml = '';
   if (req.mcp_tools_invoked && req.mcp_tools_invoked.length) {
@@ -2592,7 +3076,7 @@ function traceRow(req, i) {
     </div>
     <div class="trace-ctx-band">
       <div class="trace-ctx-band-title">What ctx did</div>
-      <p>${ctxLines.join(' ')}</p>
+      ${ctxBullets}
     </div>
     <div class="trace-response">${responseHtml}</div>
     <div class="trace-token-impact">
@@ -2801,6 +3285,201 @@ function toggleGfRow(i) {
   if (row) row.classList.toggle('expanded');
 }
 
+// ─── Tab 8: Simulate ──────────────────────────────────────
+
+async function loadSimulateTab() {
+  const profileSel = document.getElementById('sim-profile');
+  if (!profileSel) return;
+  try {
+    const profs = await fetch('/api/profiles').then(r => r.json());
+    profileSel.innerHTML = '<option value="">(auto)</option>' +
+      (profs || []).map(p => `<option value="${esc(p.slug)}">${esc(p.display || p.slug)}</option>`).join('');
+  } catch (_) {}
+  const hookTraces = await fetch('/api/hook-traces?limit=1').then(r => r.json()).catch(() => []);
+  if (hookTraces.length) {
+    const last = hookTraces[0];
+    if (!document.getElementById('sim-cwd').value && last.working_directory) {
+      document.getElementById('sim-cwd').value = last.working_directory;
+    }
+    if (!document.getElementById('sim-prompt').value && last.human_text_prefix) {
+      document.getElementById('sim-prompt').value = last.human_text_prefix;
+    }
+  }
+}
+
+async function runSimulate() {
+  const body = {
+    prompt: document.getElementById('sim-prompt').value,
+    cwd: document.getElementById('sim-cwd').value || '.',
+    profile: document.getElementById('sim-profile').value || null,
+  };
+  const el = document.getElementById('sim-result');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="empty">Running simulation...</div>';
+  try {
+    const resp = await fetch('/api/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (resp.result) {
+      el.innerHTML = renderSimResult(resp.result);
+    } else {
+      el.innerHTML = '<div class="empty">No result returned.</div>';
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Simulation failed: ' + esc(String(e)) + '</div>';
+  }
+}
+
+async function runSimulateAllProfiles() {
+  const body = {
+    prompt: document.getElementById('sim-prompt').value,
+    cwd: document.getElementById('sim-cwd').value || '.',
+    all_profiles: true,
+  };
+  const el = document.getElementById('sim-result');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="empty">Comparing profiles...</div>';
+  try {
+    const resp = await fetch('/api/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (resp.all_profiles && resp.all_profiles.length) {
+      el.innerHTML = renderProfileComparison(resp.all_profiles);
+    } else {
+      el.innerHTML = '<div class="empty">No profiles found. Run ctx profile generate first.</div>';
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Comparison failed: ' + esc(String(e)) + '</div>';
+  }
+}
+
+async function runSimulateReplay() {
+  const el = document.getElementById('sim-result');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="empty">Replaying traces...</div>';
+  try {
+    const traces = await fetch('/api/hook-traces?limit=10').then(r => r.json());
+    if (!traces.length) {
+      el.innerHTML = '<div class="empty">No hook traces found. Send a prompt through Claude Code first.</div>';
+      return;
+    }
+    const results = [];
+    for (const t of traces) {
+      const resp = await fetch('/api/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: t.human_text_prefix || '',
+          cwd: t.working_directory || '.',
+          profile: t.profile || null,
+        }),
+      }).then(r => r.json());
+      results.push({ trace: t, sim: resp.result });
+    }
+    el.innerHTML = renderReplayTable(results);
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Replay failed: ' + esc(String(e)) + '</div>';
+  }
+}
+
+function renderSimResult(r) {
+  const total = r.tools_kept + r.tools_removed;
+  const pct = total > 0 ? Math.round(r.tools_removed / total * 100) : 0;
+  const gates = [
+    { name: 'Auto-Profile', fired: r.auto_selected, detail: r.auto_selected ? 'matched ' + esc(r.auto_trigger || 'cwd') + ' -> ' + esc(r.profile_slug) : 'no switch' },
+    { name: 'Profile Filter', fired: r.tools_removed > 0, detail: r.tools_removed > 0 ? '-' + r.tools_removed + ' tools from ' + total : 'no tools stripped' },
+    { name: 'Inject', fired: r.inject_fired, detail: r.inject_fired ? 'system_prefix.md (' + r.inject_chars + ' chars)' : 'not active' },
+    { name: 'Adaptive', fired: r.adaptive_fired, detail: r.adaptive_fired ? 'adaptive_prefix.md (' + r.adaptive_chars + ' chars)' : 'not active' },
+    { name: 'Coaching', fired: r.coaching_fired, detail: r.coach_kind || 'no signal' },
+    { name: 'Budget Guard', fired: r.budget_blocked, detail: r.budget_blocked ? 'BLOCKED' : 'within budget' },
+  ];
+  if (r.fatigue_blocked) gates.push({ name: 'Fatigue', fired: true, detail: 'session would be blocked' });
+
+  const gateHtml = gates.map(g => {
+    const icon = g.fired ? '<span style="color:#22c55e">+</span>' : '<span style="color:var(--t4)">.</span>';
+    return `<div style="display:flex;gap:8px;font-size:13px;margin-bottom:4px">${icon} <strong style="width:120px">${g.name}</strong> <span style="color:var(--t2)">${g.detail}</span></div>`;
+  }).join('');
+
+  const ctxPreview = r.additional_context
+    ? `<div class="card" style="margin-top:14px"><div class="section-head">Injected context (${r.additional_context.length} chars)</div><pre style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow:auto;color:var(--t2)">${esc(r.additional_context.slice(0, 2000))}</pre></div>`
+    : '';
+
+  return `<div class="card" style="margin-bottom:16px">
+    <div class="section-head">Pipeline result</div>
+    <div style="margin-bottom:12px;font-size:13px;color:var(--t2)">
+      <strong>${esc(r.profile_slug)}</strong> (${esc(r.effective_profile)})${r.auto_selected ? ' — auto-selected' : ''}<br>
+      ${r.tools_kept} tools kept, ${r.tools_removed} stripped (${pct}% cut), ~${fmtK(r.tokens_saved)} tokens saved
+    </div>
+    <div class="section-head" style="font-size:12px;margin-top:12px">Gates</div>
+    ${gateHtml}
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="section-head">Cost estimate (per request)</div>
+    <div style="display:flex;gap:40px;font-size:14px">
+      <div><div style="font-size:11px;color:var(--t3)">Without ctx</div><div style="font-size:20px;font-weight:700">${fmtCost(r.estimated_cost_without_ctx)}</div></div>
+      <div><div style="font-size:11px;color:var(--t3)">With ctx</div><div style="font-size:20px;font-weight:700;color:var(--green)">${fmtCost(r.estimated_cost_with_ctx)}</div></div>
+      <div><div style="font-size:11px;color:var(--t3)">Savings</div><div style="font-size:20px;font-weight:700;color:var(--green)">${fmtCost(r.savings_usd)} (${r.savings_pct.toFixed(0)}%)</div></div>
+    </div>
+  </div>
+  ${ctxPreview}`;
+}
+
+function renderProfileComparison(results) {
+  const rows = results.map(r => {
+    const total = r.tools_kept + r.tools_removed;
+    return `<tr>
+      <td><strong>${esc(r.profile_slug)}</strong></td>
+      <td>${r.tools_kept}</td>
+      <td>${r.tools_removed}</td>
+      <td>${fmtK(r.tokens_saved)}</td>
+      <td>${fmtCost(r.estimated_cost_with_ctx)}</td>
+      <td>${r.savings_pct.toFixed(0)}%</td>
+    </tr>`;
+  }).join('');
+  const bars = results.map(r => {
+    const w = Math.max(2, r.savings_pct);
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="width:80px;font-size:12px;text-align:right">${esc(r.profile_slug)}</span>
+      <div style="height:16px;width:${w}%;max-width:400px;background:linear-gradient(90deg,#22c55e,#86efac);border-radius:4px"></div>
+      <span style="font-size:11px;color:var(--t3)">${r.savings_pct.toFixed(0)}%</span>
+    </div>`;
+  }).join('');
+  const best = results[0];
+  return `<div class="card" style="margin-bottom:16px">
+    <div class="section-head">Profile comparison</div>
+    <div class="section-sub">Each bar shows how many tokens this profile would strip from the same prompt. Taller bars save more.</div>
+    ${bars}
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <table style="width:100%;font-size:12px"><thead><tr><th>Profile</th><th>Tools</th><th>Stripped</th><th>Tokens Saved</th><th>Est. Cost</th><th>Savings</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>
+  ${best && best.savings_pct > 0 ? `<div class="card"><div class="section-head">Best fit: ${esc(best.profile_slug)} (${best.savings_pct.toFixed(0)}% savings)</div></div>` : ''}`;
+}
+
+function renderReplayTable(items) {
+  if (!items.length) return '<div class="empty">No traces to replay.</div>';
+  const rows = items.map(({ trace: t, sim: s }) => {
+    if (!s) return '';
+    const match = t.tools_kept === s.tools_kept && t.tools_removed === s.tools_removed;
+    const style = match ? '' : 'background:rgba(239,68,68,.06)';
+    return `<tr style="${style}">
+      <td>${esc(t.ts.slice(0, 19))}</td>
+      <td>${esc(t.profile)}</td>
+      <td>${t.tools_kept}</td><td>${s.tools_kept}</td>
+      <td>${fmtK(t.tokens_saved)}</td><td>${fmtK(s.tokens_saved)}</td>
+      <td>${match ? '<span style="color:#22c55e">match</span>' : '<span style="color:#ef4444">diff</span>'}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="card">
+    <div class="section-head">Replay: actual vs simulated</div>
+    <div class="section-sub">Red rows indicate a discrepancy between what happened and what the simulation predicts now.</div>
+    <table style="width:100%;font-size:12px"><thead><tr><th>Timestamp</th><th>Profile</th><th>Kept(A)</th><th>Kept(S)</th><th>Saved(A)</th><th>Saved(S)</th><th>Match</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+}
 // ─── Profile analytics ────────────────────────────────────
 async function loadProfileAnalytics() {
   const [stats, profiles] = await Promise.all([
@@ -2880,6 +3559,7 @@ function toggleTheme() {
 // ─── Boot ─────────────────────────────────────────────────
 let _userProfile = { long_session_threshold: 26, correction_threshold: 40, calibrated: false, median_session_turns: 15 };
 fetch('/api/user-profile').then(r => r.json()).then(p => { _userProfile = p; }).catch(() => {});
+initDevModeNav();
 loadSavings().catch(e => { console.error('loadSavings failed:', e); document.getElementById('narrative-body').textContent = 'Dashboard loaded. Some panels may be unavailable.'; });
 setInterval(() => loadSavings().catch(console.error), 30_000);
 </script>

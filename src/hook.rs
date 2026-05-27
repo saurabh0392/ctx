@@ -110,6 +110,15 @@ fn tail_user_texts_from_jsonl(path: &Path) -> Vec<String> {
 
 /// Prior user rows from session JSONL (tail scan), plus the in-flight prompt as the last turn.
 fn coaching_user_texts(session_id: Option<&str>, current_prompt: &str) -> Vec<String> {
+    coaching_user_texts_inner(session_id, current_prompt)
+}
+
+/// Public wrapper for `simulate.rs` -- reads session JSONL without side effects.
+pub fn coaching_user_texts_public(session_id: Option<&str>, current_prompt: &str) -> Vec<String> {
+    coaching_user_texts_inner(session_id, current_prompt)
+}
+
+fn coaching_user_texts_inner(session_id: Option<&str>, current_prompt: &str) -> Vec<String> {
     let mut out = session_id
         .and_then(|sid| find_claude_session_jsonl(sid))
         .map(|p| tail_user_texts_from_jsonl(&p))
@@ -127,6 +136,66 @@ fn coach_kind_for_signal(sig: &crate::coach::CoachSignal) -> &'static str {
     }
 }
 
+fn profile_savings(profile_slug: &str) -> (usize, usize, usize) {
+    let profiles = crate::profiles::load_all();
+    if let Some(p) = profiles.get(profile_slug) {
+        let kept = p.tool_count();
+        let removed = crate::profiles::TOTAL_TOOLS.saturating_sub(kept);
+        let saved = p.savings_vs_all();
+        (kept, removed, saved)
+    } else {
+        (crate::profiles::TOTAL_TOOLS, 0, 0)
+    }
+}
+
+fn parent_session_from_input(input: &Value) -> Option<&str> {
+    input
+        .get("parentSessionId")
+        .or_else(|| input.get("parent_session_id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+}
+
+fn record_hook_trace(
+    session_id: Option<&str>,
+    parent_session_id: Option<&str>,
+    cwd: &str,
+    profile: &str,
+    mode: Option<&str>,
+    auto_selected: bool,
+    auto_trigger: Option<&str>,
+    inject_fired: bool,
+    coach_kind: Option<&str>,
+    budget_fired: bool,
+    tools_kept: usize,
+    tools_removed: usize,
+    tokens_saved: usize,
+    adaptive_fired: bool,
+    ab_group: Option<&str>,
+) {
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        let _ = crate::db::insert_hook_trace(
+            &conn,
+            session_id,
+            parent_session_id,
+            cwd,
+            profile,
+            mode,
+            auto_selected,
+            auto_trigger,
+            inject_fired,
+            coach_kind,
+            budget_fired,
+            tools_kept,
+            tools_removed,
+            tokens_saved,
+            adaptive_fired,
+            ab_group,
+        );
+    }
+}
+
 /// `UserPromptSubmit` handler: auto-profile, budget hard-stop, system prefix via `additionalContext`.
 /// Optional JSONL-based coaching. Records a hook_trace row for the dashboard request trace.
 pub fn user_prompt_submit() -> Result<()> {
@@ -137,24 +206,46 @@ pub fn user_prompt_submit() -> Result<()> {
     let cwd = input["cwd"].as_str().unwrap_or("");
     let prompt = input["prompt"].as_str().unwrap_or("");
     let session_id = input["session_id"].as_str().or_else(|| input["sessionId"].as_str());
+    let parent_session_id = parent_session_from_input(&input);
     let pseudo_system = format!("Primary working directory: {cwd}\n");
 
     let mut cfg = crate::config::Config::load();
+    let active_mode_name = cfg.active_mode.clone();
+    let ab_request_key = crate::ab::request_key(session_id, cwd, prompt);
+    let (ab, ab_group) = if let Some(ab_cfg) = cfg.ab_test.clone() {
+        let assignments = crate::ab::AbAssignments::from_config(&ab_cfg, &ab_request_key);
+        let group = crate::ab::AbAssignments::format_group(&ab_cfg, &assignments);
+        (assignments, group)
+    } else {
+        (
+            crate::ab::AbAssignments {
+                profile: true,
+                inject: true,
+                adaptive: true,
+                coaching: true,
+            },
+            None,
+        )
+    };
+
     let active = cfg.active_profile.as_deref().unwrap_or("all").to_string();
 
     let mut auto_selected = false;
     let mut auto_trigger: Option<String> = None;
 
-    if cfg.auto_profile_enabled {
+    if ab.profile && cfg.auto_profile_enabled {
         if let Some((new_slug, trigger)) = crate::profiles::auto_select(&pseudo_system, &active) {
             auto_selected = true;
             auto_trigger = Some(trigger);
             crate::profiles::apply_profile(&new_slug, true, true)?;
             cfg = crate::config::Config::load();
         }
+    } else if !ab.profile {
+        let _ = crate::profiles::apply_profile("all", true, true);
+        cfg = crate::config::Config::load();
     }
 
-    let effective_profile = cfg.active_profile.as_deref().unwrap_or("all").to_string();
+    let trace_profile = cfg.active_profile.as_deref().unwrap_or("all").to_string();
 
     if let Some(reason) = crate::budget_guard::hard_block_reason_for_prompt(prompt) {
         let out = json!({
@@ -165,42 +256,37 @@ pub fn user_prompt_submit() -> Result<()> {
         return Ok(());
     }
 
-    let coaching_texts = if cfg.coaching_enabled {
+    let coaching_enabled = cfg.coaching_enabled && ab.coaching;
+    let coaching_texts = if coaching_enabled {
         coaching_user_texts(session_id, prompt)
     } else {
         Vec::new()
     };
 
-    if cfg.coaching_enabled {
+    if coaching_enabled {
         if let Some(reason) = crate::coach::severe_correction_fatigue_reason(&coaching_texts) {
-            let profiles = crate::profiles::load_all();
-            let (tools_kept, tools_removed, tokens_saved) =
-                if let Some(p) = profiles.get(&effective_profile) {
-                    let kept = p.tool_count();
-                    let removed = crate::profiles::TOTAL_TOOLS.saturating_sub(kept);
-                    let saved = p.savings_vs_all();
-                    (kept, removed, saved)
-                } else {
-                    (crate::profiles::TOTAL_TOOLS, 0, 0)
-                };
-            if let Ok(conn) = crate::db::open_db() {
-                let _ = crate::db::ensure_schema(&conn);
-                let _ = crate::db::insert_hook_trace(
-                    &conn,
-                    session_id,
-                    cwd,
-                    &effective_profile,
-                    auto_selected,
-                    auto_trigger.as_deref(),
-                    false,
-                    Some("correction-fatigue"),
-                    false,
-                    tools_kept,
-                    tools_removed,
-                    tokens_saved,
-                    false,
-                );
-            }
+            let (tools_kept, tools_removed, tokens_saved) = if ab.profile {
+                profile_savings(&trace_profile)
+            } else {
+                profile_savings("all")
+            };
+            record_hook_trace(
+                session_id,
+                parent_session_id,
+                cwd,
+                &trace_profile,
+                active_mode_name.as_deref(),
+                auto_selected,
+                auto_trigger.as_deref(),
+                false,
+                Some("correction-fatigue"),
+                false,
+                tools_kept,
+                tools_removed,
+                tokens_saved,
+                false,
+                ab_group.as_deref(),
+            );
             let out = json!({
                 "decision": "block",
                 "reason": reason
@@ -212,7 +298,7 @@ pub fn user_prompt_submit() -> Result<()> {
 
     let mut inject_fired = false;
     let mut extra = String::new();
-    if cfg.inject_enabled {
+    if cfg.inject_enabled && ab.inject {
         if let Some(prefix) = crate::inject::load_prefix() {
             extra.push_str(prefix.trim());
             extra.push_str("\n\n");
@@ -221,7 +307,7 @@ pub fn user_prompt_submit() -> Result<()> {
     }
 
     let mut coach_kind: Option<String> = None;
-    if cfg.coaching_enabled {
+    if coaching_enabled {
         if let Some(sig) = crate::coach::detect_from_user_texts(&coaching_texts) {
             extra.push_str(sig.suggestion.trim());
             extra.push_str("\n\n");
@@ -235,7 +321,7 @@ pub fn user_prompt_submit() -> Result<()> {
         .or_else(|| input.pointer("/transcript/model").and_then(|x| x.as_str()));
     let max_adaptive = crate::adaptive::max_chars_for_hook_input(model_hint);
     let mut adaptive_fired = false;
-    if cfg.adaptive_prefix_enabled {
+    if cfg.adaptive_prefix_enabled && ab.adaptive {
         if let Some(ad) = crate::adaptive::load_adaptive_prefix() {
             let trimmed = crate::adaptive::truncate_to_char_budget(ad.trim(), max_adaptive);
             if !trimmed.is_empty() {
@@ -248,36 +334,29 @@ pub fn user_prompt_submit() -> Result<()> {
 
     let budget_fired = false;
 
-    // Compute savings from profile definition
-    let profiles = crate::profiles::load_all();
-    let (tools_kept, tools_removed, tokens_saved) = if let Some(p) = profiles.get(&effective_profile) {
-        let kept = p.tool_count();
-        let removed = crate::profiles::TOTAL_TOOLS.saturating_sub(kept);
-        let saved = p.savings_vs_all();
-        (kept, removed, saved)
+    let (tools_kept, tools_removed, tokens_saved) = if ab.profile {
+        profile_savings(&trace_profile)
     } else {
-        (crate::profiles::TOTAL_TOOLS, 0, 0)
+        profile_savings("all")
     };
 
-    // Record hook trace row for dashboard
-    if let Ok(conn) = crate::db::open_db() {
-        let _ = crate::db::ensure_schema(&conn);
-        let _ = crate::db::insert_hook_trace(
-            &conn,
-            session_id,
-            cwd,
-            &effective_profile,
-            auto_selected,
-            auto_trigger.as_deref(),
-            inject_fired,
-            coach_kind.as_deref(),
-            budget_fired,
-            tools_kept,
-            tools_removed,
-            tokens_saved,
-            adaptive_fired,
-        );
-    }
+    record_hook_trace(
+        session_id,
+        parent_session_id,
+        cwd,
+        &trace_profile,
+        active_mode_name.as_deref(),
+        auto_selected,
+        auto_trigger.as_deref(),
+        inject_fired,
+        coach_kind.as_deref(),
+        budget_fired,
+        tools_kept,
+        tools_removed,
+        tokens_saved,
+        adaptive_fired,
+        ab_group.as_deref(),
+    );
 
     if extra.trim().is_empty() {
         print!("{}", serde_json::to_string(&json!({}))?);

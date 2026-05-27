@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Smoke tests for ctx proxy gates in a fully isolated environment.
+# Smoke tests for ctx proxy gates in a fully isolated environment (legacy MITM path).
+# Native hook behavior is covered by `cargo test` (ab_hook, journey_ab_experiment, etc.).
 # No real Anthropic API calls -- a mock upstream captures each request body.
 
 set -euo pipefail
@@ -85,6 +86,48 @@ else
   exit 1
 fi
 bold "Using ctx: $CTX_BIN"
+
+# ============================================================
+bold ""
+bold "=== Native hook smoke (isolated CTX_HOME) ==="
+HOOK_TMP="$(mktemp -d)"
+export CTX_HOME="$HOOK_TMP"
+cat > "$HOOK_TMP/config.toml" <<'TOML'
+active_profile = "all"
+inject_enabled = false
+coaching_enabled = false
+auto_profile_enabled = false
+adaptive_prefix_enabled = false
+TOML
+
+run_hook() {
+  printf '%s\n' "$1" | CTX_HOME="$HOOK_TMP" "$CTX_BIN" hook user-prompt-submit >/dev/null 2>&1
+}
+
+run_hook '{"cwd":"/tmp","prompt":"smoke hook gate","session_id":"smoke-hook-1"}'
+if CTX_HOME="$HOOK_TMP" sqlite3 "$HOOK_TMP/ctx.db" "SELECT COUNT(*) FROM hook_traces;" 2>/dev/null | grep -q '^1$'; then
+  pass "Hook: user-prompt-submit writes hook_traces row"
+else
+  fail "Hook: expected 1 hook_traces row"
+fi
+
+echo "[ctx-smoke-hook-prefix]" > "$HOOK_TMP/system_prefix.md"
+cat > "$HOOK_TMP/config.toml" <<'TOML'
+active_profile = "all"
+inject_enabled = true
+coaching_enabled = false
+auto_profile_enabled = false
+adaptive_prefix_enabled = false
+TOML
+OUT=$(printf '%s\n' '{"cwd":"/tmp","prompt":"inject smoke","session_id":"smoke-hook-2"}' \
+  | CTX_HOME="$HOOK_TMP" "$CTX_BIN" hook user-prompt-submit 2>/dev/null || true)
+if echo "$OUT" | grep -q 'ctx-smoke-hook-prefix'; then
+  pass "Hook: inject_enabled prepends system_prefix.md to additionalContext"
+else
+  fail "Hook: system prefix missing from additionalContext"
+fi
+
+rm -rf "$HOOK_TMP"
 
 # ---- Start mock upstream that captures each request body ----
 python3 - "$CAPTURE_FILE" "$MOCK_PORT" <<'PYEOF' &

@@ -1010,6 +1010,7 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     tx.commit()?;
 
     let _ = crate::db::enrich_hook_traces(&conn);
+    let _ = crate::tuning::run_tuning_after_ingest(&conn);
 
     if crate::config::Config::load().adaptive_prefix_enabled {
         let _ = crate::adaptive::refresh_adaptive_prefix();

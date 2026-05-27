@@ -55,11 +55,11 @@ Steps:
    - ctx status should print profile info
 
 7. Explain to me what changed and what I need to do:
-   - NODE_OPTIONS was added to ~/.claude/settings.json. I should use Command Palette → Reload Window (Cmd+Shift+P on macOS, Ctrl+Shift+P on Windows/Linux) so Claude Code picks up filter.js without quitting.
+   - ctx merged allowedMcpServers and UserPromptSubmit hooks into ~/.claude/settings.json (native path). Reload the IDE window or restart Claude Code so hooks apply. Legacy NODE_OPTIONS filter preload is removed when present.
    - ctx registered as an MCP server. After reload I can ask about spend, tips, patterns in chat.
    - The GitHub MCP server was added to my MCP config. After reload I can work with GitHub PRs, issues, and repos from chat. It uses ~/.local/bin/github-mcp-server (no Docker).
    - Dashboard is at http://127.0.0.1:8789 and works immediately.
-   - Tell me to run Reload Window and explain why (re-reads NODE_OPTIONS and MCP server config).
+   - Tell me to run Reload Window and explain why (reloads Claude Code hooks and MCP server config).
 
 If any step fails, show the error and suggest a fix. Do not skip verification.
 ```
@@ -69,7 +69,7 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 ## What ctx does after install
 
 - **Saves tokens**: strips MCP tool definitions your sessions don't use (~40% reduction with auto-generated personal profile)
-- **Tracks spend**: dashboard at http://127.0.0.1:8789 with savings, spend charts, and efficiency scoring; updates after each turn when `filter.js` POSTs to the dashboard, no manual refresh
+- **Tracks spend**: dashboard at http://127.0.0.1:8789 with savings, spend charts, and efficiency scoring; ingest refreshes data from Claude Code transcripts on a schedule
 - **Profile generator**: `ctx profile generate` inspects your MCP stack and creates named profiles by category (data, design, comms, work, files, infra) with no usage history required
 - **LLM-accessible**: registered as an MCP server so you can ask about your ctx data in any chat
 - **Privacy**: all data under ~/.ctx/, zero telemetry, no network calls beyond your normal Anthropic API traffic
@@ -85,6 +85,52 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 | ctx_patterns | "Any repeat patterns in my usage?" |
 | ctx_settings | "What's ctx storing on my machine?" |
 | ctx_profiles | "What profiles are available?" |
+
+---
+
+## A/B experiments (optional)
+
+For comparing treatment vs control per gate (profile, inject, adaptive, coaching), add to `~/.ctx/config.toml`:
+
+```toml
+[ab_test]
+profile_pct = 50
+inject_pct = 100
+adaptive_pct = 50
+coaching_pct = 100
+
+dev_mode = true
+```
+
+Open http://127.0.0.1:8789/?dev=1 for the Experiment tab, or use Settings sliders. Omit `[ab_test]` for normal operation.
+
+Self-tuning writes `~/.ctx/ab-results.json` after ingest when cohorts are large enough. Commands: `ctx experiment status`, `ctx experiment apply`, `ctx experiment reset`. Optional `auto_apply_recommendations = true`.
+
+---
+
+## Context modes
+
+```toml
+[modes.debug]
+profile = "minimal"
+inject_enabled = true
+coaching_enabled = true
+adaptive_prefix_enabled = false
+```
+
+`ctx mode debug`, `ctx mode list`, `ctx mode show <name>`, `ctx mode save <name>`. Dashboard Settings has a mode dropdown.
+
+---
+
+## Unix socket
+
+While the dashboard runs, `~/.ctx/ctx.sock` accepts one-line JSON queries (`profile`, `budget`, `experiment`, `last-trace`, `adaptive-status`). Use `nc -U` from shell or tmux status scripts (see README).
+
+---
+
+## Simulate (dry-run)
+
+`ctx simulate --prompt "test" --cwd /path` runs the pipeline without consuming tokens. Add `--all-profiles` to compare profiles. Add `--replay-last 5` to replay recent traces. Add `--json` for machine-readable output. The dashboard Simulate tab (dev mode) provides the same via `POST /api/simulate`.
 
 ---
 

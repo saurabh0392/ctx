@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Isolated ctx + Claude CLI session. Does not touch ~/.claude/settings.json.
-# Ctrl+C exits Claude; the proxy is stopped automatically.
+# Quick local smoke for the native hook path (no MITM proxy).
+# Full coverage: cargo test (see README).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT="${CTX_TEST_PORT:-9788}"
+cd "$SCRIPT_DIR"
 
 if [[ -n "${CTX:-}" ]]; then
   CTX_BIN="$CTX"
@@ -17,43 +17,54 @@ else
 fi
 
 if [[ -z "$CTX_BIN" || ! -x "$CTX_BIN" ]]; then
-  echo "ctx binary not found. Run: cd \"$SCRIPT_DIR\" && cargo build"
+  echo "ctx binary not found. Run: cargo build"
   exit 1
 fi
 
-echo "Using: $CTX_BIN (proxy on :$PORT)"
-"$CTX_BIN" proxy start --port "$PORT" &
-PROXY_PID=$!
-cleanup() {
-  kill "$PROXY_PID" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
+CTX_TMP="$(mktemp -d)"
+export CTX_HOME="$CTX_TMP"
+trap 'rm -rf "$CTX_TMP"' EXIT
 
-sleep 1
+cat > "$CTX_HOME/config.toml" <<'TOML'
+active_profile = "all"
+inject_enabled = false
+coaching_enabled = false
+auto_profile_enabled = false
+adaptive_prefix_enabled = false
+TOML
+
+echo "Using: $CTX_BIN"
+echo "CTX_HOME: $CTX_HOME"
+echo ""
+
+echo "--- hook user-prompt-submit ---"
+printf '%s\n' '{"cwd":"/tmp","prompt":"ctx test.sh smoke","session_id":"test-sh-1"}' \
+  | CTX_HOME="$CTX_HOME" "$CTX_BIN" hook user-prompt-submit >/dev/null
+
+ROWS=$("$CTX_BIN" status 2>&1 | head -1 || true)
+echo "status: $ROWS"
+
+if command -v sqlite3 &>/dev/null && [[ -f "$CTX_HOME/ctx.db" ]]; then
+  N=$(sqlite3 "$CTX_HOME/ctx.db" "SELECT COUNT(*) FROM hook_traces;" 2>/dev/null || echo 0)
+  if [[ "$N" -ge 1 ]]; then
+    echo "hook_traces rows: $N (ok)"
+  else
+    echo "hook_traces empty (unexpected)" >&2
+    exit 1
+  fi
+fi
 
 echo ""
-echo "--- ctx test session (ANTHROPIC_BASE_URL=http://127.0.0.1:$PORT) ---"
-"$CTX_BIN" status 2>&1 | head -5 || true
+echo "--- cargo test (hook + power features) ---"
+cargo test \
+  --test hook_contract \
+  --test ab_hook \
+  --test journey_mode_switch \
+  --test journey_subagent_costs \
+  --test journey_socket \
+  --test journey_self_tuning \
+  --test dashboard_stitch_test \
+  2>&1
+
 echo ""
-
-CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
-if [[ -z "$CLAUDE_BIN" ]]; then
-  # Look inside Cursor's bundled extension
-  CLAUDE_BIN="$(ls -t "$HOME"/.cursor/extensions/anthropic.claude-code-*/resources/native-binary/claude 2>/dev/null | head -1 || true)"
-fi
-if [[ -z "$CLAUDE_BIN" || ! -x "$CLAUDE_BIN" ]]; then
-  echo "claude CLI not found in PATH or Cursor extensions. Run manually:"
-  echo "  ANTHROPIC_BASE_URL=http://127.0.0.1:$PORT <path-to-claude>"
-  exit 0
-fi
-
-# Use an isolated config dir so the test CLI never modifies ~/.claude/settings.json
-TEST_CONFIG_DIR="${TMPDIR:-/tmp}/ctx-test-claude-config"
-mkdir -p "$TEST_CONFIG_DIR"
-if [[ ! -f "$TEST_CONFIG_DIR/settings.json" ]]; then
-  echo '{"permissions":{"allow":[]},"model":"sonnet"}' > "$TEST_CONFIG_DIR/settings.json"
-fi
-
-echo "Claude: $CLAUDE_BIN"
-echo "Config: $TEST_CONFIG_DIR (isolated from ~/.claude)"
-ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" CLAUDE_CONFIG_DIR="$TEST_CONFIG_DIR" exec "$CLAUDE_BIN" "$@"
+echo "Done. For full suite: cargo test"

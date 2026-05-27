@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub fn ctx_dir() -> PathBuf {
@@ -331,10 +332,71 @@ pub struct Config {
     /// Gap in minutes between requests before a new session is started. Default: 30.
     #[serde(default)]
     pub session_gap_minutes: Option<u64>,
+    /// Per-feature A/B ratios. Omitted features default to 100 (always on).
+    #[serde(default)]
+    pub ab_test: Option<AbTestConfig>,
+    /// When true, dashboard shows the Experiment tab (also via `?dev=1` or localStorage).
+    #[serde(default)]
+    pub dev_mode: bool,
+    /// Named preset bundling profile + inject + coaching + adaptive toggles.
+    #[serde(default)]
+    pub modes: HashMap<String, ModeConfig>,
+    /// Active mode name (when set via `ctx mode` or dashboard).
+    #[serde(default)]
+    pub active_mode: Option<String>,
+    /// When true, apply self-tuning recommendations after ingest (disables features with no A/B benefit).
+    #[serde(default)]
+    pub auto_apply_recommendations: bool,
+}
+
+/// One context mode: profile + feature toggles.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ModeConfig {
+    pub profile: String,
+    #[serde(default = "default_true")]
+    pub inject_enabled: bool,
+    #[serde(default = "default_true")]
+    pub coaching_enabled: bool,
+    #[serde(default = "default_true")]
+    pub adaptive_prefix_enabled: bool,
+}
+
+/// Per-feature A/B percentages (0 = always control, 100 = always treatment).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AbTestConfig {
+    #[serde(default = "default_hundred")]
+    pub profile_pct: u8,
+    #[serde(default = "default_hundred")]
+    pub inject_pct: u8,
+    #[serde(default = "default_hundred")]
+    pub adaptive_pct: u8,
+    #[serde(default = "default_hundred")]
+    pub coaching_pct: u8,
+}
+
+fn default_hundred() -> u8 {
+    100
 }
 
 fn default_true() -> bool {
     true
+}
+
+impl Default for AbTestConfig {
+    fn default() -> Self {
+        Self {
+            profile_pct: 100,
+            inject_pct: 100,
+            adaptive_pct: 100,
+            coaching_pct: 100,
+        }
+    }
+}
+
+impl AbTestConfig {
+    pub fn effective() -> Self {
+        Config::load().ab_test.clone().unwrap_or_default()
+    }
 }
 
 impl Config {

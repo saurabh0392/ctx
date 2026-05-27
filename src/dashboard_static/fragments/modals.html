@@ -1,0 +1,30 @@
+<!-- Budget modal -->
+<div class="modal-backdrop" id="budget-modal">
+  <div class="modal">
+    <div class="modal-title">Monthly budget</div>
+    <label>Budget cap (USD)</label>
+    <input type="number" id="budget-input" placeholder="e.g. 800" min="1" step="10">
+    <label style="margin-top:12px">Actual spend from Anthropic billing (optional)</label>
+    <input type="number" id="actual-spend-input" placeholder="e.g. 661" min="0" step="1">
+    <div class="modal-actions">
+      <button class="modal-btn secondary" onclick="closeBudgetModal()">Cancel</button>
+      <button class="modal-btn primary" onclick="saveBudget()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- New profile modal -->
+<div class="modal-backdrop" id="new-profile-modal">
+  <div class="modal">
+    <div class="modal-title">Create profile</div>
+    <label>Name</label>
+    <input type="text" id="new-profile-name" placeholder="e.g. writing">
+    <label>MCP servers to include</label>
+    <div class="server-checklist" id="server-checklist"></div>
+    <div class="modal-actions">
+      <button class="modal-btn secondary" onclick="closeNewProfileModal()">Cancel</button>
+      <button class="modal-btn primary" onclick="createProfile()">Create</button>
+    </div>
+  </div>
+</div>
+

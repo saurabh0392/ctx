@@ -1,0 +1,30 @@
+<!-- ═══ Tab 8: Simulate (dev) ═══ -->
+<div class="tab-panel" id="tab-simulate">
+  <div class="page-title">Simulate</div>
+  <div class="page-sub">Dry-run a prompt through the ctx pipeline. No tokens consumed. Uses your current config and profiles.</div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-head">Input</div>
+    <label style="font-size:12px;color:var(--t3)">Prompt</label>
+    <textarea id="sim-prompt" rows="4" placeholder="Paste a prompt here" style="width:100%;margin:6px 0 10px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></textarea>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:12px;color:var(--t3)">Working directory</label>
+        <input type="text" id="sim-cwd" placeholder="/Users/you/project" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+      </div>
+      <div style="min-width:140px">
+        <label style="font-size:12px;color:var(--t3)">Profile override</label>
+        <select id="sim-profile" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+          <option value="">(auto)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button type="button" class="modal-btn primary" onclick="runSimulate()">Run</button>
+      <button type="button" class="modal-btn secondary" onclick="runSimulateAllProfiles()">Compare all profiles</button>
+      <button type="button" class="modal-btn secondary" onclick="runSimulateReplay()">Replay last 10 traces</button>
+    </div>
+  </div>
+
+  <div id="sim-result" style="display:none"></div>
+</div>

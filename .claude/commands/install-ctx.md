@@ -43,12 +43,12 @@ ctx setup --yes
 ```
 
 This does 6 things:
-1. Creates ~/.ctx/ with filter.js, CA cert, config, system_prefix.md
-2. Installs launchd agents for proxy (:8788), dashboard (:8789), and periodic ingest (Cursor only)
-3. Wires NODE_OPTIONS into ~/.claude/settings.json so filter.js runs in-process
+1. Creates ~/.ctx/ with config, system_prefix.md, optional filter.js/CA for legacy proxy
+2. Installs launchd agents for dashboard (:8789) and periodic ingest where supported
+3. Merges allowedMcpServers and UserPromptSubmit hooks into ~/.claude/settings.json
 4. Indexes existing Claude sessions into ~/.ctx/ctx.db
-5. Auto-generates an MCP profile from your tool usage history
-6. Registers ctx as an MCP server in settings.json and ~/.cursor/mcp.json
+5. Syncs filter-config.json and profile allowlists
+6. Registers ctx as an MCP server in settings.json and IDE MCP configs when present
 
 ## Verify
 
@@ -73,13 +73,13 @@ Explain this clearly to the user:
 
 > ctx is now installed and running. Three things changed; two need a window reload in Cursor:
 >
-> 1. **Tool filtering**: ctx added `NODE_OPTIONS` to `~/.claude/settings.json`. When Claude Code starts a new process, it loads `~/.ctx/filter.js` which strips unused MCP tool schemas before each API request. This reduces token usage by ~40%. It does not affect your prompts or responses.
+> 1. **Tool filtering (native hooks)**: ctx merged `allowedMcpServers` and a `UserPromptSubmit` hook into `~/.claude/settings.json`. On each prompt, the hook selects an MCP profile and strips unused tool schemas before the API call. This reduces token usage by ~40%. It does not change your prompts or responses. Legacy `NODE_OPTIONS` / `filter.js` preload is removed when present.
 >
 > 2. **MCP server**: ctx registered itself as an MCP server. After you reload the window, you can ask "what's my ctx spend?" or "show me cost tips" in any chat and Claude will call ctx directly.
 >
 > 3. **Dashboard**: Already running at http://127.0.0.1:8789. No reload needed for this.
 >
-> **Action required**: Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux), type `Reload Window`, and press Enter. This re-reads `NODE_OPTIONS` and MCP server config without quitting. If you only use Claude Code in a plain terminal, start a new session once instead.
+> **Action required**: Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux), type `Reload Window`, and press Enter. This reloads Claude Code hooks and MCP server config. If you only use Claude Code in a plain terminal, start a new session once instead.
 
 Also mention:
 - `ctx use carrier` or `ctx profile list` to switch MCP filter profiles
