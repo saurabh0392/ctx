@@ -10,8 +10,14 @@ If missing, stop and tell the user to install Rust first: https://rustup.rs
 
 ## Clone and install
 
+If `~/Documents/ctx` does not exist, clone it. If it already exists, pull latest.
+
 ```bash
-git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
+if [ -d ~/Documents/ctx ]; then
+  cd ~/Documents/ctx && git pull
+else
+  git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
+fi
 cd ~/Documents/ctx
 cargo install --path .
 ```

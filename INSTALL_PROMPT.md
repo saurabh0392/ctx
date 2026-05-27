@@ -14,8 +14,9 @@ Steps:
 1. Check that Rust is installed (`rustc --version`). If missing, tell me to install it from rustup.rs and stop.
 
 2. Clone and install:
-   git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
-   cd ~/Documents/ctx && cargo install --path .
+   If ~/Documents/ctx does not exist: git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
+   If it already exists: cd ~/Documents/ctx && git pull
+   Then: cd ~/Documents/ctx && cargo install --path .
 
 3. Run first-time setup:
    ctx setup --yes
