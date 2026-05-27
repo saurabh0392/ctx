@@ -2,7 +2,25 @@
 
 use anyhow::Result;
 use serde_json::json;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::time::Duration;
+
+/// Fire-and-forget: ask the dashboard to run `ingest_claude_jsonl()` so Cursor IDE sessions
+/// stay fresh (async HTTP hooks often do not run there; this runs once per user prompt).
+fn spawn_trigger_ingest(dashboard_port: u16) {
+    std::thread::spawn(move || {
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, dashboard_port));
+        let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(800)) else {
+            return;
+        };
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let req = format!(
+            "POST /api/trigger-ingest HTTP/1.1\r\nHost: 127.0.0.1:{dashboard_port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(req.as_bytes());
+    });
+}
 
 /// `UserPromptSubmit` handler: auto-profile, budget hard-stop, system prefix via `additionalContext`.
 pub fn user_prompt_submit() -> Result<()> {
@@ -52,5 +70,9 @@ pub fn user_prompt_submit() -> Result<()> {
         });
         print!("{}", serde_json::to_string(&out)?);
     }
+
+    let dash = cfg.dashboard_port.unwrap_or(8789);
+    spawn_trigger_ingest(dash);
+
     Ok(())
 }
