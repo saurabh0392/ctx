@@ -1,0 +1,2507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ctx: AI Efficiency</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" async></script>
+<style>
+:root {
+  /* Shippo dark palette — navy base, lime-green accent */
+  --bg:       #111c20;
+  --surface:  #182428;
+  --surface2: #1f2e33;
+  --surface3: #263840;
+  --border:   #2e4048;
+  --border2:  #3d5560;
+
+  /* Text */
+  --t1: #f0f5f0;
+  --t2: #9dbea8;
+  --t3: #7aab90;
+  --t4: #638c78;
+
+  /* Shippo brand green */
+  --primary:        #93c043;
+  --primary-lt:     #b0d46a;
+  --primary-glow:   rgba(147,192,67,.13);
+  --primary-border: rgba(147,192,67,.28);
+
+  /* Semantic */
+  --green:      #93c043;
+  --green-glow: rgba(147,192,67,.10);
+  --red:        #f87171;
+  --amber:      #fbbf24;
+  --blue:       #60a5fa;
+  --purple:     #c4b5fd;
+  --orange:     #fb923c;
+  --cyan:       #22d3ee;
+
+  --sidebar: 224px;
+}
+
+/* ── Light mode overrides ────────────────────────────────── */
+[data-theme="light"] {
+  --bg:       #f3f6f1;
+  --surface:  #ffffff;
+  --surface2: #edf2e9;
+  --surface3: #e2eadc;
+  --border:   #cad8c2;
+  --border2:  #afc4a4;
+
+  --t1: #1a2a1c;
+  --t2: #3a5240;
+  --t3: #728c70;
+  --t4: #b4cbb0;
+
+  --primary:        #5c8520;
+  --primary-lt:     #4a6e18;
+  --primary-glow:   rgba(92,133,32,.10);
+  --primary-border: rgba(92,133,32,.28);
+
+  --green:      #5c8520;
+  --green-glow: rgba(92,133,32,.10);
+  --red:        #c0392b;
+  --amber:      #b5860a;
+  --blue:       #2563eb;
+  --purple:     #7c3aed;
+}
+
+/* Sidebar stays dark navy in both modes (Shippo pattern) */
+[data-theme="light"] .sidebar {
+  background: #1f2e33;
+  border-right-color: #2e4048;
+}
+[data-theme="light"] .sb-logo { border-bottom-color: #2e4048; }
+[data-theme="light"] .nav-section { color: #3d5560; }
+[data-theme="light"] .nav-item { color: #8aaa90; }
+[data-theme="light"] .nav-item:hover { background: #263840; color: #b0d46a; }
+[data-theme="light"] .nav-item.active { background: rgba(147,192,67,.18); color: #b0d46a; border-color: rgba(147,192,67,.35); }
+[data-theme="light"] .sb-score-card { background: #263840; border-color: #2e4048; }
+[data-theme="light"] .sb-score-label { color: #5a7a68; }
+[data-theme="light"] .sb-score-text { color: #5a7a68; }
+[data-theme="light"] .sb-proxy { border-top-color: #2e4048; color: #5a7a68; }
+[data-theme="light"] .t3-on-sidebar { color: #5a7a68; }
+[data-theme="light"] .sb-logo-mark { color: #f0f5f0; }
+[data-theme="light"] .sb-logo-mark span { color: #b0d46a; }
+[data-theme="light"] .sb-logo-sub { color: #4d7060; }
+[data-theme="light"] #sb-gauge-val { color: #f0f5f0 !important; }
+[data-theme="light"] .score-big { color: #8aaa90 !important; }
+
+/* Theme toggle button */
+.theme-toggle {
+  margin: 12px 12px 0;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid #2e4048;
+  border-radius: 8px;
+  color: #8aaa90;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 24px);
+  transition: all .15s;
+}
+.theme-toggle:hover { background: #263840; color: #b0d46a; border-color: rgba(147,192,67,.3); }
+.theme-toggle-icon { font-size: 14px; }
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: "Inter", -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--t1);
+  min-height: 100vh; display: flex; font-size: 14px; line-height: 1.5;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+.sidebar {
+  width: var(--sidebar);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 24px 0;
+  flex-shrink: 0;
+  display: flex; flex-direction: column;
+  position: fixed; top: 0; left: 0; bottom: 0; z-index: 10;
+}
+.sb-logo { padding: 0 20px 24px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.sb-logo-mark { font-size: 20px; font-weight: 800; letter-spacing: -0.8px; color: var(--t1); }
+.sb-logo-mark span { color: var(--primary-lt); }
+.sb-logo-sub { font-size: 11px; color: var(--t3); margin-top: 2px; letter-spacing: .05em; text-transform: uppercase; }
+
+.nav-section { padding: 8px 14px 4px; font-size: 10px; font-weight: 600; color: var(--t4); letter-spacing: .09em; text-transform: uppercase; margin-top: 8px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; margin: 1px 8px;
+  border-radius: 8px; font-size: 13px; font-weight: 500;
+  color: var(--t3); cursor: pointer; transition: all .15s;
+  text-decoration: none; border: 1px solid transparent;
+}
+.nav-item:hover { background: var(--surface2); color: var(--t2); }
+.nav-item.active { background: var(--primary-glow); color: var(--primary-lt); border-color: var(--primary-border); }
+.nav-icon { font-size: 15px; opacity: .8; }
+
+.sb-score-card {
+  margin: 16px 12px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px;
+}
+.sb-score-label { font-size: 10px; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 10px; }
+.sb-score-row { display: flex; align-items: center; gap: 12px; }
+.sb-gauge { position: relative; width: 48px; height: 48px; flex-shrink: 0; }
+.sb-gauge svg { transform: rotate(-90deg); }
+.sb-score-val { font-size: 22px; font-weight: 800; }
+.sb-score-text { font-size: 11px; color: var(--t3); margin-top: 2px; }
+
+.sb-proxy { margin-top: auto; padding: 14px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--t3); }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.status-dot.on  { background: var(--green); box-shadow: 0 0 6px rgba(16,185,129,.5); }
+.status-dot.off { background: var(--red); }
+
+/* ── Main layout ─────────────────────────────────────────── */
+.main-wrap { margin-left: var(--sidebar); flex: 1; }
+.tab-panel { display: none; padding: 40px 48px; min-height: 100vh; }
+.tab-panel.active { display: block; }
+
+/* ── Typography ──────────────────────────────────────────── */
+.hero-label { font-size: 12px; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; }
+.hero-number {
+  font-size: 72px; font-weight: 800; line-height: 1;
+  background: linear-gradient(135deg, var(--t1) 60%, var(--t2));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  letter-spacing: -3px;
+}
+.hero-number.green {
+  background: linear-gradient(135deg, var(--green) 40%, #34d399);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.hero-sub { font-size: 14px; color: var(--t3); margin-top: 10px; }
+.badge-delta { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.badge-delta.up      { background: rgba(16,185,129,.1);  color: var(--green); }
+.badge-delta.down    { background: rgba(248,113,113,.1); color: var(--red); }
+.badge-delta.neutral { background: var(--surface2); color: var(--t3); }
+
+.page-title { font-size: 26px; font-weight: 700; color: var(--t1); letter-spacing: -.5px; margin-bottom: 6px; }
+.page-sub   { font-size: 14px; color: var(--t3); margin-bottom: 36px; }
+.section-head { font-size: 16px; font-weight: 600; color: var(--t1); margin-bottom: 4px; }
+.section-sub  { font-size: 12px; color: var(--t3); margin-bottom: 20px; }
+
+/* ── Cards ───────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px; transition: border-color .2s; }
+.card:hover { border-color: var(--border2); }
+.card.glow-green { box-shadow: 0 0 0 1px rgba(16,185,129,.15), 0 4px 24px rgba(16,185,129,.06); border-color: rgba(16,185,129,.2); }
+.card-sm { padding: 18px 20px; }
+
+/* ── KPI grid ────────────────────────────────────────────── */
+.kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 32px; }
+.kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 22px; transition: border-color .2s; }
+.kpi-card:hover { border-color: var(--border2); }
+.kpi-label { font-size: 11px; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 10px; }
+.kpi-val { font-size: 32px; font-weight: 800; color: var(--t1); line-height: 1; letter-spacing: -1px; }
+.kpi-val.green { color: var(--green); }
+.kpi-dim { font-size: 12px; color: var(--t3); margin-top: 6px; }
+.kpi-badge { display: inline-block; margin-top: 8px; font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 20px; background: var(--primary-glow); color: var(--primary-lt); }
+
+/* ── Chart ───────────────────────────────────────────────── */
+.chart-wrap { position: relative; height: 240px; margin-top: 4px; }
+
+/* ── Table ───────────────────────────────────────────────── */
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th { font-size: 11px; color: var(--t3); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.tbl td { font-size: 13px; color: var(--t2); padding: 13px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tbody tr:hover td { background: var(--surface2); }
+.tbl-clickable tbody tr { cursor: pointer; }
+
+/* ── Chips / Badges ──────────────────────────────────────── */
+.chip { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.chip-green  { background: rgba(16,185,129,.1);  color: var(--green); }
+.chip-blue   { background: rgba(96,165,250,.1);  color: var(--blue); }
+.chip-purple { background: rgba(196,181,253,.1); color: var(--purple); }
+.chip-amber  { background: rgba(251,191,36,.1);  color: var(--amber); }
+.chip-red    { background: rgba(248,113,113,.1); color: var(--red); }
+.chip-gray   { background: var(--surface2); color: var(--t3); }
+
+.flag-correction    { background: rgba(248,113,113,.1);  color: #f87171; }
+.flag-clarification { background: rgba(251,191,36,.1);   color: var(--amber); }
+.flag-long_dump     { background: rgba(251,146,60,.1);   color: var(--orange); }
+.flag-pre_compact   { background: rgba(196,181,253,.1);  color: var(--purple); }
+.flag-opus          { background: rgba(124,58,237,.12);  color: var(--primary-lt); }
+
+/* ── Tab 2: Prompt Stats ─────────────────────────────────── */
+.budget-hero {
+  background: linear-gradient(135deg, var(--surface) 60%, rgba(124,58,237,.06));
+  border: 1px solid var(--primary-border);
+  border-radius: 16px; padding: 28px 32px; margin-bottom: 28px;
+}
+.budget-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+.budget-spent { font-size: 48px; font-weight: 800; color: var(--t1); letter-spacing: -2px; line-height: 1; }
+.budget-of { font-size: 18px; font-weight: 400; color: var(--t3); margin-left: 4px; }
+.budget-set-btn {
+  font-size: 12px; font-weight: 600; color: var(--primary-lt);
+  background: var(--primary-glow); border: 1px solid var(--primary-border);
+  border-radius: 8px; padding: 6px 14px; cursor: pointer; transition: background .15s;
+}
+.budget-set-btn:hover { background: rgba(124,58,237,.22); }
+.budget-bar-track { background: var(--surface2); border-radius: 8px; height: 8px; margin: 8px 0; overflow: hidden; }
+.budget-bar-fill { height: 100%; border-radius: 8px; background: #22c55e; transition: width .8s cubic-bezier(.34,1.56,.64,1); }
+.budget-meta-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--t3); margin-top: 6px; }
+.budget-ctx-line { margin-top: 12px; font-size: 12px; color: var(--green); display: flex; align-items: center; gap: 6px; }
+
+/* Score card */
+.score-layout { display: grid; grid-template-columns: 180px 1fr; gap: 16px; margin-bottom: 20px; }
+.score-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.score-ring-wrap { position: relative; width: 80px; height: 80px; margin-bottom: 10px; }
+.score-ring-wrap svg { transform: rotate(-90deg); }
+.score-ring-val { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.score-big { font-size: 26px; font-weight: 800; line-height: 1; }
+.score-denom { font-size: 11px; color: var(--t3); }
+.score-label { font-size: 13px; font-weight: 700; color: var(--t1); margin-bottom: 4px; }
+.score-desc { font-size: 11px; color: var(--t3); line-height: 1.5; max-width: 160px; }
+
+.score-breakdown { display: flex; flex-direction: column; justify-content: center; padding: 2px 0; }
+.score-item { display: flex; align-items: center; gap: 10px; }
+.score-item-bar-wrap { flex: 1; background: var(--surface2); border-radius: 4px; height: 6px; overflow: hidden; }
+.score-item-bar { height: 100%; border-radius: 4px; transition: width .6s .2s; }
+.score-item-label { font-size: 12px; color: var(--t3); width: 120px; flex-shrink: 0; }
+.score-item-val { font-size: 12px; font-weight: 600; color: var(--t2); width: 30px; text-align: right; flex-shrink: 0; }
+
+/* Insight cards */
+.insights-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-bottom: 32px; }
+.insight-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px; position: relative; overflow: hidden; transition: border-color .15s;
+}
+.insight-card:hover { border-color: var(--border2); }
+.insight-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+.insight-card.model_cost::before     { background: linear-gradient(90deg, var(--primary), transparent); }
+.insight-card.context_fatigue::before{ background: linear-gradient(90deg, var(--purple), transparent); }
+.insight-card.session_length::before { background: linear-gradient(90deg, var(--amber), transparent); }
+.insight-card.correction_rate::before{ background: linear-gradient(90deg, var(--red), transparent); }
+.insight-number { font-size: 11px; font-weight: 700; color: var(--t4); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+.insight-title { font-size: 15px; font-weight: 600; color: var(--t1); margin-bottom: 8px; line-height: 1.4; }
+.insight-detail { font-size: 13px; color: var(--t3); line-height: 1.7; }
+.insight-saving { display: inline-flex; align-items: center; gap: 4px; margin-top: 12px; font-size: 12px; font-weight: 600; color: var(--primary-lt); background: var(--primary-glow); padding: 4px 10px; border-radius: 20px; }
+
+/* Session trace */
+.session-table-wrap { margin-top: 4px; }
+.trace-bar-wrap { display: flex; gap: 2px; height: 6px; border-radius: 4px; overflow: hidden; margin-top: 6px; }
+.trace-seg { height: 100%; border-radius: 2px; }
+.expand-panel { display: none; }
+.expand-panel.open { display: table-row; }
+
+.trace-viewer { display: grid; grid-template-columns: 240px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 12px 0 4px; }
+.trace-list { border-right: 1px solid var(--border); background: var(--surface); max-height: 300px; overflow-y: auto; }
+.trace-list-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .1s; }
+.trace-list-item:hover, .trace-list-item.active { background: var(--surface2); }
+.trace-list-item .tl-num  { font-size: 10px; font-weight: 600; color: var(--t4); margin-bottom: 3px; }
+.trace-list-item .tl-cost { font-size: 14px; font-weight: 700; color: var(--t1); }
+.trace-list-item .tl-bar  { height: 3px; background: var(--border); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.trace-list-item .tl-bar-fill { height: 100%; border-radius: 2px; background: var(--primary); }
+.turn-detail { background: var(--surface2); padding: 16px; max-height: 300px; overflow-y: auto; }
+.td-flags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.td-prompt {
+  font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+  font-size: 12px; color: var(--t2); line-height: 1.8;
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px; margin-bottom: 12px;
+  max-height: 180px; overflow-y: auto;
+}
+.td-tip {
+  font-size: 12px; color: var(--t2);
+  background: var(--primary-glow); border: 1px solid var(--primary-border);
+  border-radius: 8px; padding: 10px 14px; line-height: 1.7;
+}
+.td-tip::before { content: "💡 "; }
+.td-empty { font-size: 13px; color: var(--t4); padding: 24px 0; text-align: center; }
+
+/* Month tabs */
+.month-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.month-tab { padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid var(--border); color: var(--t3); background: transparent; transition: all .15s; }
+.month-tab:hover { border-color: var(--border2); color: var(--t2); }
+.month-tab.active { background: var(--primary-glow); border-color: var(--primary-border); color: var(--primary-lt); }
+
+/* ── Tab 3: Profiles ─────────────────────────────────────── */
+.profiles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-bottom: 32px; }
+.profile-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  padding: 22px; position: relative; transition: border-color .15s, box-shadow .15s;
+}
+.profile-card:hover { border-color: var(--border2); }
+.profile-card.is-active { border-color: var(--primary-border); box-shadow: 0 0 0 1px var(--primary-border), 0 4px 24px rgba(124,58,237,.10); }
+.profile-active-pip { position: absolute; top: 20px; right: 20px; font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 20px; background: var(--primary-glow); color: var(--primary-lt); }
+.profile-name { font-size: 17px; font-weight: 700; color: var(--t1); margin-bottom: 4px; }
+.profile-desc { font-size: 12px; color: var(--t3); margin-bottom: 16px; }
+.profile-meter { margin-bottom: 14px; }
+.profile-meter-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--t3); margin-bottom: 6px; }
+.profile-meter-track { background: var(--surface2); border-radius: 4px; height: 5px; overflow: hidden; }
+.profile-meter-fill { height: 100%; border-radius: 4px; background: var(--primary); }
+.server-wrap { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 16px; min-height: 28px; }
+.server-tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 500; }
+.server-tag.in  { background: var(--primary-glow); color: var(--primary-lt); }
+.server-tag.out { background: var(--surface2); color: var(--t4); }
+.profile-switch-btn { width: 100%; padding: 9px; border-radius: 8px; border: 1px solid var(--border2); color: var(--t2); background: transparent; cursor: pointer; font-size: 13px; font-weight: 500; transition: all .15s; }
+.profile-switch-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-lt); background: var(--primary-glow); }
+.profile-switch-btn:disabled { opacity: .35; cursor: default; }
+
+.new-profile-btn { margin-bottom: 24px; padding: 9px 20px; background: var(--primary); color: #111c20; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background .15s; }
+.new-profile-btn:hover { background: #7eaa35; }
+
+/* ── Profile analytics ───────────────────────────────────── */
+.pa-narrative { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 28px; margin-bottom: 20px; }
+.pa-narrative p { font-size: 14px; color: var(--t2); line-height: 1.75; margin: 0 0 12px; }
+.pa-narrative p:last-child { margin-bottom: 0; }
+.pa-narrative strong { color: var(--t1); font-weight: 700; }
+.pa-bar-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.pa-bar-row:last-child { border-bottom: none; }
+.pa-bar-label { font-size: 12px; font-weight: 600; color: var(--t1); width: 90px; flex-shrink: 0; }
+.pa-bar-track { flex: 1; background: var(--surface2); border-radius: 4px; height: 6px; overflow: hidden; }
+.pa-bar-fill { height: 100%; border-radius: 4px; background: var(--primary); transition: width .8s cubic-bezier(.34,1.1,.64,1); }
+.pa-bar-meta { font-size: 11px; color: var(--t3); width: 130px; text-align: right; flex-shrink: 0; }
+.pa-auto-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; background: var(--primary-glow); border: 1px solid var(--primary-border); border-radius: 20px; font-size: 11px; font-weight: 600; color: var(--primary); }
+
+/* ── Request Trace ───────────────────────────────────────── */
+.trace-row { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; overflow: hidden; cursor: pointer; transition: border-color .15s; }
+.trace-row:hover { border-color: var(--border2); }
+.trace-row.expanded { border-color: var(--primary-border); }
+.trace-summary { display: flex; align-items: center; gap: 14px; padding: 14px 18px; }
+.trace-ts { font-size: 11px; color: var(--t3); width: 110px; flex-shrink: 0; }
+.trace-profile-chip { font-size: 10px; font-weight: 700; padding: 2px 9px; border-radius: 10px; background: var(--primary-glow); color: var(--primary); border: 1px solid var(--primary-border); text-transform: uppercase; letter-spacing: .05em; flex-shrink: 0; }
+.trace-auto-chip { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(96,165,250,.1); color: #60a5fa; border: 1px solid rgba(96,165,250,.25); flex-shrink: 0; }
+.trace-stat { font-size: 12px; color: var(--t2); flex: 1; }
+.trace-stat strong { color: var(--t1); }
+.trace-cost { font-size: 12px; font-weight: 700; color: var(--green); flex-shrink: 0; }
+.trace-chevron { font-size: 10px; color: var(--t4); flex-shrink: 0; transition: transform .2s; }
+.trace-row.expanded .trace-chevron { transform: rotate(180deg); }
+.trace-detail { display: none; padding: 0 18px 20px; border-top: 1px solid var(--border); }
+.trace-row.expanded .trace-detail { display: block; }
+.trace-narrative { font-size: 13px; color: var(--t2); line-height: 1.75; margin: 16px 0 18px; }
+.trace-narrative strong { color: var(--t1); }
+.trace-server-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.trace-server-col { background: var(--surface2); border-radius: 10px; padding: 14px 16px; }
+.trace-server-col-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; }
+.trace-server-col.removed .trace-server-col-label { color: var(--red); }
+.trace-server-col.kept .trace-server-col-label { color: var(--green); }
+.trace-server-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; color: var(--t2); }
+.trace-server-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.trace-server-dot.removed { background: var(--red); }
+.trace-server-dot.kept { background: var(--green); }
+
+/* ── Trace two-panel layout ──────────────────────────────── */
+.trace-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-top: 16px; }
+.trace-story { padding-right: 20px; }
+.trace-story-eyebrow { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--t3); margin-bottom: 10px; }
+.trace-story-context { font-size: 12px; color: var(--t3); margin-bottom: 14px; line-height: 1.6; }
+.trace-story-context code { background: var(--surface2); padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+.trace-ctx-band { background: var(--surface2); border: 1px solid var(--primary-border); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.trace-ctx-band-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--primary); margin-bottom: 8px; }
+.trace-ctx-band p { font-size: 12px; color: var(--t2); line-height: 1.7; margin: 0; }
+.trace-ctx-band strong { color: var(--t1); }
+.trace-response { font-size: 12px; color: var(--t2); margin-bottom: 16px; line-height: 1.6; }
+.trace-response strong { color: var(--t1); }
+.trace-token-impact { background: var(--surface2); border-radius: 10px; padding: 14px 16px; }
+.trace-token-impact-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--t3); margin-bottom: 10px; }
+.trace-token-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
+.trace-token-bar-removed { background: rgba(248,113,113,.5); }
+.trace-token-bar-kept { background: rgba(147,192,67,.6); }
+.trace-token-label { font-size: 11px; color: var(--t2); line-height: 1.5; }
+.trace-token-label strong { color: var(--t1); }
+
+.trace-flow-panel { padding-left: 20px; border-left: 1px solid var(--border); }
+.trace-flow-eyebrow { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--t3); margin-bottom: 12px; }
+.trace-flow-node { position: relative; padding: 8px 12px; margin-bottom: 0; border-left: 3px solid var(--border); margin-left: 8px; padding-left: 16px; }
+.trace-flow-node:last-child { border-left-color: transparent; }
+.trace-flow-node::before { content: ''; position: absolute; left: -6px; top: 10px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); z-index: 1; }
+.trace-flow-node.fired::before { border-color: var(--node-accent, var(--primary)); background: var(--node-accent, var(--primary)); }
+.trace-flow-node.dimmed { opacity: .4; }
+.trace-flow-node-name { font-size: 11px; font-weight: 700; color: var(--t1); margin-bottom: 2px; }
+.trace-flow-node.fired .trace-flow-node-name { color: var(--node-accent, var(--primary)); }
+.trace-flow-node-desc { font-size: 11px; color: var(--t3); line-height: 1.4; }
+.trace-flow-node.fired .trace-flow-node-desc { color: var(--t2); }
+.trace-flow-node.anchor { border-left-color: transparent; }
+.trace-flow-node.anchor::before { border-color: var(--t3); background: var(--t3); }
+
+/* ── Modals ──────────────────────────────────────────────── */
+.modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); backdrop-filter: blur(4px); z-index: 100; align-items: center; justify-content: center; }
+.modal-backdrop.open { display: flex; }
+.modal { background: var(--surface); border: 1px solid var(--border2); border-radius: 16px; padding: 28px; width: 380px; box-shadow: 0 24px 48px rgba(0,0,0,.5); }
+.modal-title { font-size: 17px; font-weight: 700; color: var(--t1); margin-bottom: 20px; }
+.modal label { font-size: 11px; font-weight: 600; color: var(--t3); display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; }
+.modal input[type="number"], .modal input[type="text"] {
+  width: 100%; background: var(--bg); border: 1px solid var(--border2);
+  border-radius: 8px; color: var(--t1); font-size: 15px; padding: 10px 14px;
+  outline: none; margin-bottom: 18px; transition: border-color .15s, box-shadow .15s;
+}
+.modal input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(124,58,237,.12); }
+.modal-actions { display: flex; gap: 10px; margin-top: 4px; }
+.modal-btn { flex: 1; padding: 10px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; transition: background .15s; }
+.modal-btn.primary { background: var(--primary); color: #111c20; }
+.modal-btn.primary:hover { background: #7eaa35; }
+.modal-btn.secondary { background: var(--surface2); color: var(--t3); }
+.modal-btn.secondary:hover { background: var(--surface3); color: var(--t2); }
+.server-checklist { max-height: 200px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-bottom: 16px; }
+.server-check-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 13px; color: var(--t2); cursor: pointer; }
+.server-check-item:hover { background: var(--surface2); }
+.server-check-item input { accent-color: var(--primary); }
+
+/* ── Misc ────────────────────────────────────────────────── */
+.divider { height: 1px; background: var(--border); margin: 32px 0; }
+.empty { text-align: center; color: var(--t4); padding: 48px; font-size: 14px; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Savings: Narrative card ─────────────────────────────── */
+.narrative-card {
+  position: relative; overflow: hidden;
+  background: linear-gradient(135deg, var(--surface2) 0%, var(--surface) 100%);
+  border: 1px solid var(--border); border-radius: 16px;
+  padding: 32px 36px; margin-bottom: 24px;
+}
+.narrative-card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--primary), var(--primary-lt));
+}
+.narrative-eyebrow {
+  font-size: 11px; font-weight: 600; color: var(--t4);
+  text-transform: uppercase; letter-spacing: .09em; margin-bottom: 16px;
+}
+.narrative-body {
+  font-size: 16px; color: var(--t1); line-height: 1.85; margin-bottom: 24px;
+}
+.narrative-body strong { color: var(--primary); font-weight: 700; }
+.narrative-pills { display: flex; gap: 10px; flex-wrap: wrap; }
+.narrative-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; background: var(--surface3);
+  border: 1px solid var(--border); border-radius: 20px;
+  font-size: 12px; font-weight: 600; color: var(--t2);
+}
+.narrative-pill span { color: var(--primary); }
+.onboarding-steps { margin: 0; padding-left: 20px; color: var(--t2); font-size: 14px; line-height: 2; }
+.onboarding-steps li { margin-bottom: 4px; }
+.savings-econ { font-size: 12px; color: var(--t3); line-height: 1.65; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.savings-econ strong { color: var(--t2); }
+.proj-table { width: 100%; font-size: 12px; border-collapse: collapse; margin-top: 8px; }
+.proj-table th { text-align: left; color: var(--t4); font-weight: 600; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+.proj-table td { padding: 8px 6px; border-bottom: 1px solid var(--surface2); color: var(--t2); vertical-align: top; }
+.proj-table td.path { font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; max-width: 0; }
+.insights-split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+@media (max-width: 960px) { .insights-split { grid-template-columns: 1fr; } }
+
+/* ── Savings: Persona card ───────────────────────────────── */
+.persona-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 24px;
+  display: flex; flex-direction: column; gap: 0;
+}
+.persona-icon { font-size: 40px; line-height: 1; margin-bottom: 14px; }
+.persona-eyebrow { font-size: 10px; font-weight: 600; color: var(--t4); text-transform: uppercase; letter-spacing: .09em; margin-bottom: 5px; }
+.persona-name { font-size: 20px; font-weight: 800; color: var(--t1); letter-spacing: -.5px; }
+.persona-desc { font-size: 13px; color: var(--t2); line-height: 1.6; margin-top: 10px; }
+.persona-traits { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 9px; }
+.persona-trait { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.persona-trait-label { color: var(--t3); }
+.persona-trait-val { color: var(--t1); font-weight: 600; }
+
+/* ── Savings: Insights card ──────────────────────────────── */
+.insights-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 24px;
+}
+.insight-item { display: flex; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border); }
+.insight-item:first-child { padding-top: 0; }
+.insight-item:last-child { border-bottom: none; padding-bottom: 0; }
+.insight-dot {
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; flex-shrink: 0; margin-top: 1px;
+}
+.insight-dot.good { background: rgba(147,192,67,.15); color: var(--primary); }
+.insight-dot.warn { background: rgba(251,191,36,.12); color: var(--amber); }
+.insight-text { font-size: 13px; color: var(--t2); line-height: 1.65; }
+.insight-text strong { color: var(--t1); font-weight: 600; }
+
+/* ── Savings: compact session list ──────────────────────── */
+.sv-session { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.sv-session:last-child { border-bottom: none; }
+.sv-session-date { font-size: 13px; color: var(--t1); font-weight: 500; margin-bottom: 3px; }
+.sv-session-meta { font-size: 11px; color: var(--t3); }
+.sv-session-cost { font-size: 17px; font-weight: 700; color: var(--primary); }
+
+[data-theme="light"] .narrative-body strong { color: var(--green); }
+[data-theme="light"] .narrative-pill span { color: var(--green); }
+[data-theme="light"] .insight-dot.good { color: var(--green); }
+[data-theme="light"] .insight-dot.good { background: rgba(92,133,32,.12); }
+
+/* ── Tab 5: Pipeline ─────────────────────────────────────── */
+.gate-flow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0;
+  margin-bottom: 28px;
+  overflow-x: auto;
+}
+.gate-card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-right: none;
+  padding: 18px 14px;
+  overflow: hidden;
+  transition: border-color .15s, background .15s;
+}
+.gate-card:first-child { border-radius: 12px 0 0 12px; }
+.gate-card:last-child  { border-radius: 0 12px 12px 0; border-right: 1px solid var(--border); }
+.gate-card.fired { border-color: rgba(147,192,67,.3); background: rgba(147,192,67,.04); }
+.gate-card.fired + .gate-card { border-left-color: rgba(147,192,67,.3); }
+.gate-card.disabled { opacity: .4; }
+.gate-top-bar { position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+.gate-name { font-size: 12px; font-weight: 700; color: var(--t1); margin-bottom: 10px; margin-top: 4px; line-height: 1.3; }
+.gate-status-row { display: flex; align-items: center; gap: 5px; margin-bottom: 12px; }
+.gate-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.gate-dot.on   { background: var(--green); box-shadow: 0 0 5px rgba(147,192,67,.5); }
+.gate-dot.idle { background: var(--amber); }
+.gate-dot.off  { background: var(--t4); }
+.gate-status-text { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.gate-count { font-size: 30px; font-weight: 800; color: var(--t1); line-height: 1; }
+.gate-count-sub { font-size: 10px; color: var(--t3); margin-top: 3px; }
+.gate-detail { font-size: 10px; color: var(--t4); margin-top: 10px; line-height: 1.5; }
+.gate-tokens { font-size: 11px; color: var(--green); margin-top: 4px; font-weight: 600; }
+
+/* Activity feed */
+.gf-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.gf-row:last-child { border-bottom: none; }
+.gf-ts { font-size: 11px; color: var(--t4); width: 72px; flex-shrink: 0; padding-top: 3px; font-variant-numeric: tabular-nums; }
+.gf-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.gf-chip { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 10px; white-space: nowrap; }
+.gf-chip-filter   { background: rgba(147,192,67,.12);  color: var(--green); }
+.gf-chip-auto     { background: rgba(96,165,250,.12);  color: var(--blue); }
+.gf-chip-inject   { background: rgba(251,191,36,.12);  color: var(--amber); }
+.gf-chip-coach    { background: rgba(248,113,113,.12); color: var(--red); }
+.gf-chip-behavior { background: rgba(196,181,253,.12); color: var(--purple); }
+.gf-chip-budget   { background: rgba(251,146,60,.12);  color: var(--orange); }
+.gf-chip-compress { background: rgba(34,211,238,.12);  color: var(--cyan); }
+</style>
+</head>
+<body>
+
+<!-- ═══ Sidebar ═══ -->
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-mark">ctx<span>.</span></div>
+    <div class="sb-logo-sub">AI Efficiency</div>
+  </div>
+
+  <div class="nav-section">Overview</div>
+  <div class="nav-item active" onclick="showTab('savings',this)">
+    <span class="nav-icon">📈</span> Savings
+  </div>
+
+  <div class="nav-section">Insights</div>
+  <div class="nav-item" onclick="showTab('promptstats',this)">
+    <span class="nav-icon">🧠</span> Prompt Stats
+  </div>
+  <div class="nav-item" onclick="showTab('profiles',this)">
+    <span class="nav-icon">🎛</span> Profiles
+  </div>
+  <div class="nav-item" onclick="showTab('trace',this)">
+    <span class="nav-icon">🔍</span> Request Trace
+  </div>
+  <div class="nav-item" onclick="showTab('pipeline',this)">
+    <span class="nav-icon">⚡</span> Pipeline
+  </div>
+  <div class="nav-item" onclick="showTab('settings',this)">
+    <span class="nav-icon">⚙️</span> Settings
+  </div>
+
+  <!-- Efficiency score (populated by JS) -->
+  <div class="sb-score-card" id="sb-score-card" style="display:none">
+    <div class="sb-score-label">Efficiency score</div>
+    <div class="sb-score-row">
+      <div class="sb-gauge">
+        <svg width="48" height="48" viewBox="0 0 48 48">
+          <circle cx="24" cy="24" r="20" fill="none" stroke="#1a2438" stroke-width="5"/>
+          <circle id="sb-gauge-ring" cx="24" cy="24" r="20" fill="none" stroke="#22c55e" stroke-width="5"
+            stroke-dasharray="125.66" stroke-dashoffset="125.66" stroke-linecap="round"/>
+        </svg>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--t1)" id="sb-gauge-val">—</div>
+      </div>
+      <div>
+        <div class="sb-score-val" id="sb-score-val" style="color:var(--t3)">—</div>
+        <div class="sb-score-text" id="sb-score-text">Loading</div>
+      </div>
+    </div>
+  </div>
+
+  <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn">
+    <span class="theme-toggle-icon" id="theme-icon">☀️</span>
+    <span id="theme-label">Light mode</span>
+  </button>
+
+  <div class="sb-proxy">
+    <span class="status-dot off" id="status-dot"></span>
+    <span id="status-text">Checking...</span>
+  </div>
+</aside>
+
+<!-- ═══ Tab 1: Savings ═══ -->
+<div class="main-wrap">
+<div class="tab-panel active" id="tab-savings">
+
+  <!-- Narrative summary -->
+  <div class="narrative-card">
+    <div class="narrative-eyebrow" id="narrative-eyebrow">ctx usage summary</div>
+    <div class="narrative-body" id="narrative-body">Loading your usage summary...</div>
+    <div class="narrative-pills" id="narrative-pills"></div>
+  </div>
+
+  <div id="onboarding-wrap" class="card" style="display:none;margin-bottom:24px;border-color:rgba(147,192,67,.28)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div>
+        <div class="section-head" id="wiz-title">Welcome to ctx</div>
+        <div class="section-sub" id="wiz-sub">Data stays on this machine. Tune privacy, budget, and profile in a few steps.</div>
+      </div>
+      <button type="button" class="modal-btn secondary" style="flex-shrink:0" onclick="dismissOnboardingWizard()">Skip</button>
+    </div>
+    <div id="wiz-step-1" class="wiz-step" style="margin-top:16px">
+      <p style="color:var(--t2);font-size:14px;line-height:1.65;margin:0 0 12px">ctx stores metrics under <code id="wiz-ctx-home">~/.ctx</code>. No telemetry is sent out. Anthropic API traffic is unchanged except MCP tool lists are trimmed before the model sees them.</p>
+      <ul style="color:var(--t2);font-size:13px;line-height:1.7;margin:0 0 16px;padding-left:18px">
+        <li>Stored: token counts, cost estimates, optional truncated prompt text, MCP tool usage, optional embeddings.</li>
+        <li>Not stored here: API keys, full raw logs (only what ingest copies).</li>
+        <li>Dashboard loads Chart.js from a CDN; no session data is sent there.</li>
+      </ul>
+      <label style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer;font-size:14px;color:var(--t1)">
+        <input type="checkbox" id="wiz-store-prompt" checked> Store prompt text (first message + short turn prefixes for insights)
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;color:var(--t1)">
+        <input type="checkbox" id="wiz-embed" checked> Enable session embeddings (repeat-pattern alerts)
+      </label>
+      <div style="margin-top:16px"><button type="button" class="modal-btn primary" onclick="wizNext(2)">Next</button></div>
+    </div>
+    <div id="wiz-step-2" class="wiz-step" style="display:none;margin-top:16px">
+      <p style="color:var(--t2);font-size:14px;margin:0 0 12px">Set a monthly cap. You paste actual spend from Anthropic when you want the bar to match billing.</p>
+      <p style="margin:0 0 12px"><a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener" style="color:var(--primary)">Open Anthropic billing</a></p>
+      <label style="font-size:12px;color:var(--t3)">Budget cap (USD)</label>
+      <input type="number" id="wiz-budget" min="0" step="10" style="width:100%;max-width:280px;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+      <label style="font-size:12px;color:var(--t3);display:block;margin-top:12px">Actual spend this month (optional)</label>
+      <input type="number" id="wiz-actual" min="0" step="1" style="width:100%;max-width:280px;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button type="button" class="modal-btn secondary" onclick="wizNext(1)">Back</button>
+        <button type="button" class="modal-btn primary" onclick="wizNext(3)">Next</button>
+      </div>
+    </div>
+    <div id="wiz-step-3" class="wiz-step" style="display:none;margin-top:16px">
+      <p style="color:var(--t2);font-size:14px;margin:0 0 12px">Profiles strip unused MCP tool definitions so each request sends fewer tokens.</p>
+      <label style="font-size:12px;color:var(--t3)">Active profile</label>
+      <select id="wiz-profile" style="width:100%;max-width:320px;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></select>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button type="button" class="modal-btn secondary" onclick="wizNext(2)">Back</button>
+        <button type="button" class="modal-btn primary" onclick="wizNext(4)">Next</button>
+      </div>
+    </div>
+    <div id="wiz-step-4" class="wiz-step" style="display:none;margin-top:16px">
+      <p style="color:var(--t2);font-size:14px;margin:0 0 12px">Prefix text is injected into the system field on each request when enabled.</p>
+      <label style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer">
+        <input type="checkbox" id="wiz-inject" checked> Enable system prefix injection
+      </label>
+      <textarea id="wiz-prefix" rows="8" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button type="button" class="modal-btn secondary" onclick="wizNext(3)">Back</button>
+        <button type="button" class="modal-btn primary" onclick="wizNext(5)">Next</button>
+      </div>
+    </div>
+    <div id="wiz-step-5" class="wiz-step" style="display:none;margin-top:16px">
+      <p style="color:var(--t2);font-size:14px;margin:0 0 16px">You are set. Revisit this guide anytime from <strong>Settings</strong> → Setup guide.</p>
+      <button type="button" class="modal-btn primary" onclick="finishOnboardingWizard()">Done</button>
+    </div>
+  </div>
+
+  <div id="savings-econ-card" class="card card-sm" style="margin-bottom:24px;display:none">
+    <div class="section-head" style="margin-bottom:6px">How dollars are estimated</div>
+    <div class="section-sub" style="margin-bottom:0">Tool-schema stripping mostly hits Anthropic prompt cache reads.</div>
+    <div class="savings-econ" id="savings-econ-body"></div>
+  </div>
+
+  <!-- Persona + Insights -->
+  <div style="display:grid;grid-template-columns:260px 1fr;gap:20px;margin-bottom:24px">
+    <div class="persona-card">
+      <div class="persona-icon" id="persona-icon">📊</div>
+      <div class="persona-eyebrow">Your prompt profile</div>
+      <div class="persona-name" id="persona-name">Analyzing...</div>
+      <div class="persona-desc" id="persona-desc"></div>
+      <div class="persona-traits" id="persona-traits"></div>
+    </div>
+    <div class="insights-card">
+      <div class="section-head" style="margin-bottom:16px">What the data shows</div>
+      <div id="insights-list"><div class="empty" style="padding:20px 0">Loading insights...</div></div>
+    </div>
+  </div>
+
+  <!-- Cumulative chart -->
+  <div class="card" style="margin-bottom:24px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
+      <div>
+        <div class="section-head">Savings over time</div>
+        <div class="section-sub">Running total since ctx was installed</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--t3)">
+        <span style="display:inline-block;width:20px;height:2px;background:var(--primary);border-radius:2px"></span>
+        Cumulative saved
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="timeline-chart"></canvas></div>
+  </div>
+
+  <div class="insights-split">
+    <div class="card">
+      <div class="section-head">By project folder</div>
+      <div class="section-sub">Grouped by working directory parsed from the system prompt on each request.</div>
+      <div id="projects-body"><div class="empty" style="padding:16px 0">Loading…</div></div>
+    </div>
+    <div class="card">
+      <div class="section-head">MCP tool traffic</div>
+      <div class="section-sub">Sent counts come from tool definitions shipped to the model. Used counts come from tool_use blocks in assistant output when captured.</div>
+      <div id="tool-usage-body"><div class="empty" style="padding:16px 0">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- Recent sessions -->
+  <div class="card" style="padding-bottom:32px">
+    <div class="section-head" style="margin-bottom:16px">Recent sessions</div>
+    <div id="sessions-compact"></div>
+  </div>
+
+  <!-- How ctx works for you -->
+  <div style="margin-top:32px">
+    <div class="section-head">How ctx works for you</div>
+    <div class="section-sub">Which profiles you actually use, where ctx stepped in automatically, and what it saved.</div>
+    <div id="profile-analytics-body" style="margin-top:16px"><div class="empty">Loading...</div></div>
+  </div>
+
+</div>
+
+<!-- ═══ Tab 2: Prompt Stats ═══ -->
+<div class="tab-panel" id="tab-promptstats">
+
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">
+    <div class="page-title" style="margin-bottom:0">Prompt Stats</div>
+    <button onclick="refreshPromptStats()" id="ps-refresh-btn" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--t3);font-size:11px;padding:4px 10px;cursor:pointer">↻ Refresh</button>
+  </div>
+  <div class="page-sub">How your spend tracks against your budget, and what's driving your costs.</div>
+
+  <!-- Budget hero -->
+  <div class="budget-hero" id="budget-hero">
+    <div class="budget-top">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px" id="budget-month-label">This month</div>
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <div class="budget-spent" id="budget-spent">—</div>
+          <div class="budget-of" id="budget-of">spent</div>
+        </div>
+      </div>
+      <button class="budget-set-btn" onclick="openBudgetModal()">Set budget</button>
+    </div>
+    <div class="budget-bar-track" id="budget-bar-track" style="display:none">
+      <div class="budget-bar-fill" id="budget-bar-fill" style="width:0%"></div>
+    </div>
+    <div class="budget-meta-row" id="budget-meta"></div>
+    <div class="budget-ctx-line" id="budget-ctx" style="display:none">
+      <span style="font-size:14px">✦</span>
+      <span id="budget-ctx-text"></span>
+    </div>
+  </div>
+
+  <!-- Efficiency score + breakdown -->
+  <div class="score-layout">
+    <div class="score-card">
+      <div class="score-ring-wrap">
+        <svg width="80" height="80" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r="34" fill="none" stroke="#1a2438" stroke-width="6"/>
+          <circle id="score-ring" cx="40" cy="40" r="34" fill="none" stroke="#22c55e" stroke-width="6"
+            stroke-dasharray="213.63" stroke-dashoffset="213.63" stroke-linecap="round"
+            style="transition: stroke-dashoffset 1.2s cubic-bezier(.34,1.1,.64,1), stroke .4s"/>
+        </svg>
+        <div class="score-ring-val">
+          <div class="score-big" id="score-big" style="color:var(--t3)">—</div>
+          <div class="score-denom">/100</div>
+        </div>
+      </div>
+      <div class="score-label" id="score-label">Calculating...</div>
+      <div class="score-desc" id="score-desc">Analyzing your session patterns to score prompt efficiency.</div>
+    </div>
+
+    <div class="card" style="padding:16px 20px">
+      <div class="section-head" style="margin-bottom:10px">Score breakdown</div>
+      <div class="score-breakdown" id="score-breakdown">
+        <div class="empty" style="padding:20px">Loading sessions...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Advisor insights -->
+  <div style="margin-bottom:20px">
+    <div class="section-head">Where your budget is going</div>
+    <div class="section-sub">Data-grounded observations. Each one cites the actual figure from your sessions.</div>
+  </div>
+  <div class="insights-grid" id="insights-grid">
+    <div class="empty">Analyzing your sessions...</div>
+  </div>
+
+  <div class="card" id="intel-quality-wrap" style="margin-bottom:20px;display:none">
+    <div class="section-head">Coach notes on profile changes</div>
+    <div class="section-sub">Shows when correction patterns move after you switch MCP profiles.</div>
+    <div id="intel-quality-body"></div>
+  </div>
+
+  <div class="card" id="intel-patterns-wrap" style="margin-bottom:20px;display:block">
+    <div class="section-head">Repeat patterns</div>
+    <div class="section-sub">Rule-based checks on this month's indexed sessions (embedding similarity + spend).</div>
+    <div id="intel-patterns-body"><p class="section-sub" style="margin:0">Loading…</p></div>
+  </div>
+
+  <div class="card" id="intel-health-wrap" style="margin-bottom:20px;display:none">
+    <div class="section-head">Project rhythm by week</div>
+    <div class="section-sub">Spend and correction rate by working folder from indexed Claude sessions.</div>
+    <div id="intel-health-body"></div>
+  </div>
+
+  <div class="card" id="intel-clusters-wrap" style="margin-bottom:20px;display:none">
+    <div class="section-head">Prompt clusters</div>
+    <div class="section-sub">Groups similar opening user messages across sessions.</div>
+    <div id="intel-clusters-body"></div>
+  </div>
+
+  <!-- Session trace table -->
+  <div class="card" style="margin-bottom:40px">
+    <div class="section-head">Sessions by cost</div>
+    <div class="section-sub">Click any session to see a turn-by-turn trace with the most expensive prompts.</div>
+    <div class="month-tabs" id="month-tabs"></div>
+    <div id="spend-sessions-table"><div class="empty">Loading...</div></div>
+  </div>
+</div>
+
+<!-- ═══ Tab 3: Profiles ═══ -->
+<div class="tab-panel" id="tab-profiles">
+
+  <div class="page-title">MCP Profiles</div>
+  <div class="page-sub">Control which tools Claude sees. A tighter profile means lower cost per turn and a more focused Claude.</div>
+  <button class="new-profile-btn" onclick="openNewProfileModal()">+ New profile</button>
+  <button type="button" class="new-profile-btn" style="margin-left:8px;background:var(--surface3)" onclick="regeneratePersonalProfile()">Regenerate personal</button>
+  <div class="profiles-grid" id="profiles-grid"><div class="empty">Loading...</div></div>
+</div>
+
+<!-- ═══ Tab 4: Request Trace ═══ -->
+<div class="tab-panel" id="tab-trace">
+
+  <div class="page-title">Request Trace</div>
+  <div class="page-sub">Every request ctx intercepted: what it removed, what it kept, and why it chose that profile.</div>
+
+  <div id="trace-list"><div class="empty">Loading...</div></div>
+</div>
+
+<!-- ═══ Tab 5: Pipeline ═══ -->
+<div class="tab-panel" id="tab-pipeline">
+
+  <div class="page-title">ctx Pipeline</div>
+  <div class="page-sub">Every Claude Code request passes through these 7 gates in sequence. Here is what fired today.</div>
+
+  <div id="gate-sessions-fallback-note" class="card" style="display:none;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--t2);border-color:var(--border)"></div>
+
+  <!-- Gate cards -->
+  <div id="gate-flow-wrap"><div class="empty">Loading...</div></div>
+
+  <!-- Gate legend -->
+  <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:0;margin-bottom:32px;font-size:10px;color:var(--t4);text-align:center" id="gate-legend"></div>
+
+  <div class="divider"></div>
+
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:16px">
+    <div>
+      <div class="section-head">Activity feed</div>
+      <div class="section-sub" style="margin-bottom:0">Requests with at least one gate event, newest first.</div>
+    </div>
+    <button onclick="loadPipeline()" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--t3);font-size:11px;padding:4px 10px;cursor:pointer">↻ Refresh</button>
+  </div>
+
+  <div class="card" style="padding:20px 24px">
+    <div id="gate-feed-wrap"><div class="empty">Loading...</div></div>
+  </div>
+</div>
+
+<!-- ═══ Tab 6: Settings ═══ -->
+<div class="tab-panel" id="tab-settings">
+  <div class="page-title">Settings</div>
+  <div class="page-sub">Preferences, privacy, and transparency. All changes write to <code>~/.ctx/config.toml</code> on this machine.</div>
+  <p style="margin:0 0 20px"><button type="button" class="modal-btn secondary" onclick="showOnboardingWizardFromSettings()">Open setup guide</button></p>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-head">General</div>
+    <label style="font-size:12px;color:var(--t3)">Monthly budget (USD)</label>
+    <input type="number" id="set-budget" min="0" step="10" style="width:100%;max-width:280px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+    <label style="font-size:12px;color:var(--t3)">Actual Anthropic spend (optional)</label>
+    <input type="number" id="set-actual" min="0" step="1" style="width:100%;max-width:280px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+    <div style="font-size:13px;color:var(--t2)">Dashboard port <strong id="set-dash-port">—</strong> · Proxy port <strong id="set-proxy-port">—</strong></div>
+    <div style="margin-top:12px"><button type="button" class="modal-btn primary" onclick="saveSettingsGeneral()">Save general</button></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-head">Privacy</div>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="set-store-prompt"> Store prompt-derived text in SQLite
+    </label>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:16px;cursor:pointer">
+      <input type="checkbox" id="set-embed"> Compute embeddings for pattern alerts
+    </label>
+    <div style="display:flex;flex-wrap:wrap;gap:10px">
+      <button type="button" class="modal-btn secondary" onclick="saveSettingsPrivacy()">Save privacy toggles</button>
+      <button type="button" class="modal-btn secondary" onclick="purgePrompts()" style="border-color:#b45309;color:#fdba74">Purge stored prompts</button>
+      <button type="button" class="modal-btn secondary" onclick="exportDb()" style="border-color:var(--primary)">Export ctx.db</button>
+      <button type="button" class="modal-btn secondary" onclick="deleteAllData()" style="border-color:#991b1b;color:#fca5a5">Delete all indexed data</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-head">Filtering</div>
+    <label style="font-size:12px;color:var(--t3)">Active profile</label>
+    <select id="set-profile" style="width:100%;max-width:320px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></select>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="set-auto-prof"> Auto-select profile from working directory
+    </label>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="set-inject"> Inject system prefix from ~/.ctx/system_prefix.md
+    </label>
+    <label style="font-size:12px;color:var(--t3)">System prefix (saved to file)</label>
+    <textarea id="set-prefix" rows="10" style="width:100%;margin-top:6px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
+    <div style="margin-top:12px"><button type="button" class="modal-btn primary" onclick="saveSettingsFiltering()">Save filtering</button></div>
+  </div>
+
+  <div class="card">
+    <div class="section-head">Your data</div>
+    <div id="set-data-body" style="font-size:13px;color:var(--t2);line-height:1.7">Loading…</div>
+  </div>
+</div>
+</div><!-- main-wrap -->
+
+<!-- Budget modal -->
+<div class="modal-backdrop" id="budget-modal">
+  <div class="modal">
+    <div class="modal-title">Monthly budget</div>
+    <label>Budget cap (USD)</label>
+    <input type="number" id="budget-input" placeholder="e.g. 800" min="1" step="10">
+    <label style="margin-top:12px">Actual spend from Anthropic billing (optional)</label>
+    <input type="number" id="actual-spend-input" placeholder="e.g. 661" min="0" step="1">
+    <div class="modal-actions">
+      <button class="modal-btn secondary" onclick="closeBudgetModal()">Cancel</button>
+      <button class="modal-btn primary" onclick="saveBudget()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- New profile modal -->
+<div class="modal-backdrop" id="new-profile-modal">
+  <div class="modal">
+    <div class="modal-title">Create profile</div>
+    <label>Name</label>
+    <input type="text" id="new-profile-name" placeholder="e.g. writing">
+    <label>MCP servers to include</label>
+    <div class="server-checklist" id="server-checklist"></div>
+    <div class="modal-actions">
+      <button class="modal-btn secondary" onclick="closeNewProfileModal()">Cancel</button>
+      <button class="modal-btn primary" onclick="createProfile()">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Utilities ────────────────────────────────────────────
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtCost(n) {
+  if (n >= 100) return '$' + n.toFixed(0);
+  if (n >= 10)  return '$' + n.toFixed(2);
+  if (n >= 1)   return '$' + n.toFixed(2);
+  if (n >= 0.01) return '$' + n.toFixed(3);
+  if (n > 0)     return '$' + n.toFixed(4);
+  return '$0.00';
+}
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' · ' +
+         d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+}
+
+function animateNum(el, end, prefix='', suffix='', decimals=0, duration=1100) {
+  const start = parseFloat(el.textContent.replace(/[^0-9.]/g, '')) || 0;
+  if (Math.abs(end - start) < 0.005) { el.textContent = prefix + end.toFixed(decimals) + suffix; return; }
+  const t0 = performance.now();
+  function tick(now) {
+    const p = Math.min((now - t0) / duration, 1);
+    const v = start + (end - start) * (1 - Math.pow(1 - p, 3));
+    el.textContent = prefix + v.toFixed(decimals) + suffix;
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+function scoreColor(s) {
+  if (s >= 80) return '#22c55e';
+  if (s >= 60) return '#84cc16';
+  if (s >= 40) return '#f59e0b';
+  if (s >= 20) return '#f97316';
+  return '#ef4444';
+}
+function scoreLabel(s) {
+  if (s >= 80) return 'Expert';
+  if (s >= 60) return 'Efficient';
+  if (s >= 40) return 'Developing';
+  if (s >= 20) return 'Getting started';
+  return 'Needs focus';
+}
+function scoreDesc(s) {
+  if (s >= 80) return 'Your prompt patterns are highly efficient. Context resets are rare and sessions stay focused.';
+  if (s >= 60) return 'Good efficiency overall. A few patterns are costing you. See the breakdown below.';
+  if (s >= 40) return 'Room to improve. Context resets and long sessions are the main cost drivers right now.';
+  if (s >= 20) return 'Several patterns are significantly inflating your costs. The insights below show where.';
+  return 'High-cost patterns detected across most sessions. Addressing these could halve your spend.';
+}
+
+const PROFILE_LABELS = { carrier:'Carrier work', data:'Data analysis', design:'Design', minimal:'Minimal', all:'All tools', '':'All tools' };
+
+// ─── Settings + onboarding wizard ─────────────────────────
+async function wizPrepareFromServer() {
+  try {
+    const s = await fetch('/api/settings').then(r => r.json());
+    const homeEl = document.getElementById('wiz-ctx-home');
+    if (homeEl) homeEl.textContent = s.ctx_home || '~/.ctx';
+    const sp = document.getElementById('wiz-store-prompt');
+    if (sp) sp.checked = !!s.store_prompt_text;
+    const em = document.getElementById('wiz-embed');
+    if (em) em.checked = !!s.embeddings_enabled;
+    const wb = document.getElementById('wiz-budget');
+    if (wb) wb.value = s.monthly_budget_usd != null ? s.monthly_budget_usd : '';
+    const wa = document.getElementById('wiz-actual');
+    if (wa) wa.value = s.monthly_actual_spend_usd != null ? s.monthly_actual_spend_usd : '';
+    const inj = document.getElementById('wiz-inject');
+    if (inj) inj.checked = !!s.inject_enabled;
+    const ta = document.getElementById('wiz-prefix');
+    if (ta) ta.value = s.system_prefix_preview || '';
+    const profs = await fetch('/api/profiles').then(r => r.json());
+    const sel = document.getElementById('wiz-profile');
+    if (sel) sel.innerHTML = (profs || []).map(p =>
+      `<option value="${esc(p.slug)}"${p.active ? ' selected' : ''}>${esc(p.display || p.slug)}</option>`
+    ).join('');
+  } catch (e) { console.warn(e); }
+}
+function wizShowStep(n) {
+  for (let i = 1; i <= 5; i++) {
+    const e = document.getElementById('wiz-step-' + i);
+    if (e) e.style.display = i === n ? 'block' : 'none';
+  }
+}
+function wizNext(n) { wizShowStep(n); }
+function dismissOnboardingWizard() {
+  localStorage.setItem('ctx-onboarding-done', '1');
+  const w = document.getElementById('onboarding-wrap');
+  if (w) w.style.display = 'none';
+}
+function showOnboardingWizardFromSettings() {
+  localStorage.removeItem('ctx-onboarding-done');
+  const w = document.getElementById('onboarding-wrap');
+  if (!w) return;
+  w.style.display = 'block';
+  wizPrepareFromServer();
+  wizShowStep(1);
+  const navSavings = [...document.querySelectorAll('.nav-item')].find(x => (x.textContent || '').includes('Savings'));
+  if (navSavings) { showTab('savings', navSavings); }
+  w.scrollIntoView({ behavior: 'smooth' });
+}
+async function finishOnboardingWizard() {
+  const body = {
+    auto_profile_enabled: true,
+    inject_enabled: document.getElementById('wiz-inject').checked,
+    store_prompt_text: document.getElementById('wiz-store-prompt').checked,
+    embeddings_enabled: document.getElementById('wiz-embed').checked,
+    system_prefix: document.getElementById('wiz-prefix').value
+  };
+  const slug = (document.getElementById('wiz-profile') || {}).value;
+  if (slug) body.active_profile = slug;
+  const bRaw = document.getElementById('wiz-budget').value;
+  if (bRaw !== '' && !isNaN(parseFloat(bRaw))) body.monthly_budget_usd = parseFloat(bRaw);
+  const aRaw = document.getElementById('wiz-actual').value;
+  if (aRaw !== '' && !isNaN(parseFloat(aRaw))) body.monthly_actual_spend_usd = parseFloat(aRaw);
+  try {
+    await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch (e) { console.warn(e); }
+  localStorage.setItem('ctx-onboarding-done', '1');
+  const w = document.getElementById('onboarding-wrap');
+  if (w) w.style.display = 'none';
+}
+
+function fmtBytes(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' GB';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + ' MB';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+async function loadSettingsTab() {
+  const box = document.getElementById('set-data-body');
+  if (box) box.textContent = 'Loading…';
+  try {
+    const s = await fetch('/api/settings').then(r => r.json());
+    document.getElementById('set-budget').value = s.monthly_budget_usd != null ? s.monthly_budget_usd : '';
+    document.getElementById('set-actual').value = s.monthly_actual_spend_usd != null ? s.monthly_actual_spend_usd : '';
+    document.getElementById('set-dash-port').textContent = s.dashboard_port != null ? String(s.dashboard_port) : '8789 (default)';
+    document.getElementById('set-proxy-port').textContent = s.proxy_port != null ? String(s.proxy_port) : '8788 (default)';
+    document.getElementById('set-store-prompt').checked = !!s.store_prompt_text;
+    document.getElementById('set-embed').checked = !!s.embeddings_enabled;
+    document.getElementById('set-auto-prof').checked = !!s.auto_profile_enabled;
+    document.getElementById('set-inject').checked = !!s.inject_enabled;
+    document.getElementById('set-prefix').value = s.system_prefix_preview || '';
+    const profs = await fetch('/api/profiles').then(r => r.json());
+    const sel = document.getElementById('set-profile');
+    sel.innerHTML = (profs || []).map(p =>
+      `<option value="${esc(p.slug)}"${p.active ? ' selected' : ''}>${esc(p.display || p.slug)}</option>`
+    ).join('');
+    const rc = s.row_counts || {};
+    const files = (s.files_under_ctx || []).map(f => `<li><code>${esc(f.name)}</code> — ${fmtBytes(f.size_bytes)}</li>`).join('');
+    box.innerHTML = `
+      <p><strong>ctx home:</strong> <code>${esc(s.ctx_home)}</code></p>
+      <p><strong>Database:</strong> ${fmtBytes(s.db_size_bytes || 0)} · <strong>analytics.jsonl:</strong> ${fmtBytes(s.analytics_size_bytes || 0)}</p>
+      <p><strong>Last ingest:</strong> ${esc(s.last_ingest_at || 'never')}</p>
+      <p><strong>Rows:</strong> sessions ${rc.sessions || 0}, turns ${rc.turns || 0}, tools ${rc.tool_invocations || 0}, embeddings ${rc.session_embeddings || 0}, requests ${rc.requests || 0}</p>
+      <p><strong>Prompt text stored:</strong> ${s.store_prompt_text ? 'yes' : 'no'}</p>
+      <p><strong>Reads:</strong> <code>~/.claude/projects/**/*.jsonl</code> (Claude Code logs)</p>
+      <p><strong>Files under ctx home:</strong></p><ul style="margin:6px 0;padding-left:20px">${files || '<li>(empty)</li>'}</ul>
+      <p><strong>Network:</strong> no telemetry from ctx. Chart.js loads from a CDN for charts only.</p>`;
+  } catch (e) {
+    if (box) box.textContent = 'Could not load settings: ' + e;
+  }
+}
+async function saveSettingsGeneral() {
+  const body = {};
+  const b = document.getElementById('set-budget').value;
+  if (b !== '' && !isNaN(parseFloat(b))) body.monthly_budget_usd = parseFloat(b);
+  const a = document.getElementById('set-actual').value;
+  if (a !== '' && !isNaN(parseFloat(a))) body.monthly_actual_spend_usd = parseFloat(a);
+  await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await loadSettingsTab();
+  alert('Saved.');
+}
+async function saveSettingsPrivacy() {
+  const body = {
+    store_prompt_text: document.getElementById('set-store-prompt').checked,
+    embeddings_enabled: document.getElementById('set-embed').checked
+  };
+  await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await loadSettingsTab();
+  alert('Privacy settings saved. Run ctx ingest again to refresh rows if you turned prompt storage off.');
+}
+async function saveSettingsFiltering() {
+  const body = {
+    active_profile: document.getElementById('set-profile').value,
+    auto_profile_enabled: document.getElementById('set-auto-prof').checked,
+    inject_enabled: document.getElementById('set-inject').checked,
+    system_prefix: document.getElementById('set-prefix').value
+  };
+  const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { const t = await r.text(); alert('Save failed: ' + t); return; }
+  await loadSettingsTab();
+  alert('Filtering saved.');
+}
+async function purgePrompts() {
+  if (!confirm('Clear stored prompt text and embeddings from SQLite?')) return;
+  await fetch('/api/settings/purge-prompts', { method: 'POST' });
+  await loadSettingsTab();
+  alert('Purged.');
+}
+async function deleteAllData() {
+  if (!confirm('Delete ALL indexed sessions, turns, embeddings, and requests from ctx.db, and wipe analytics.jsonl?')) return;
+  await fetch('/api/settings/delete-data', { method: 'POST' });
+  await loadSettingsTab();
+  alert('Deleted.');
+}
+function exportDb() {
+  window.open('/api/settings/export', '_blank');
+}
+
+// ─── Tab navigation ───────────────────────────────────────
+function showTab(id, el) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  el.classList.add('active');
+  if (id === 'promptstats' && !window._psLoaded) { window._psLoaded = true; loadPromptStats(); startPsPolling(); }
+  if (id === 'profiles') loadProfiles();
+  if (id === 'trace' && !window._traceLoaded) { window._traceLoaded = true; loadTrace(); }
+  if (id === 'pipeline') loadPipeline();
+  if (id === 'settings') loadSettingsTab();
+}
+
+let _psInterval = null;
+function startPsPolling() {
+  if (_psInterval) return;
+  _psInterval = setInterval(refreshPromptStats, 30_000);
+}
+async function refreshPromptStats() {
+  const btn = document.getElementById('ps-refresh-btn');
+  if (btn) { btn.textContent = '↻ Refreshing…'; btn.disabled = true; }
+  await loadPromptStats();
+  if (btn) { btn.textContent = '↻ Refresh'; btn.disabled = false; }
+}
+
+function renderProjectsPanel(rows, sessionsFallback) {
+  const el = document.getElementById('projects-body');
+  if (!el) return;
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:12px 0">No per-folder rows yet. Send Claude Code traffic through ctx so working directories populate.</div>';
+    return;
+  }
+  const spendHdr = sessionsFallback ? 'Spend (indexed)' : '$ @ cache read';
+  const tokHdr = sessionsFallback ? 'Cache read toks' : 'Tokens saved';
+  el.innerHTML = '<table class="proj-table"><thead><tr><th>Folder</th><th>Req</th><th>' + tokHdr + '</th><th>' + spendHdr + '</th></tr></thead><tbody>' +
+    rows.map(r => `<tr><td class="path">${esc(r.working_directory)}</td><td>${r.requests}</td><td>${(r.tokens_saved || 0).toLocaleString()}</td><td>${fmtCost(r.cost_saved)}</td></tr>`).join('') +
+    '</tbody></table>';
+}
+
+function renderToolUsagePanel(rows) {
+  const el = document.getElementById('tool-usage-body');
+  if (!el) return;
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:12px 0">No MCP tool traffic rows yet. Non-streaming responses record tool_use counts when available.</div>';
+    return;
+  }
+  el.innerHTML = '<table class="proj-table"><thead><tr><th>Server</th><th>Tools sent</th><th>Tools used</th><th>Use ratio</th></tr></thead><tbody>' +
+    rows.map(r => {
+      let ratio = '—';
+      if (r.tools_sent > 0) ratio = ((r.tools_invoked / r.tools_sent) * 100).toFixed(0) + '%';
+      else if (r.tools_invoked > 0) ratio = '100%';
+      return `<tr><td>${esc(r.server)}</td><td>${r.tools_sent}</td><td>${r.tools_invoked}</td><td>${ratio}</td></tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+// ─── Tab 1: Savings ───────────────────────────────────────
+async function loadSavings() {
+  const now = new Date();
+  const monthStr = now.toISOString().slice(0, 7);
+  const monthLabel = now.toLocaleDateString('en-US', {month: 'long', year: 'numeric'});
+
+  const [stats, timeline, sessions, spendRaw, projectsRows, toolHeat] = await Promise.all([
+    fetch('/api/stats').then(r => r.json()),
+    fetch('/api/timeline').then(r => r.json()),
+    fetch('/api/sessions').then(r => r.json()),
+    fetch(`/api/spend/sessions?month=${monthStr}`).then(r => r.json()).catch(() => []),
+    fetch('/api/projects').then(r => r.json()).catch(() => []),
+    fetch('/api/tool-usage').then(r => r.json()).catch(() => []),
+  ]);
+  const spendSessions = Array.isArray(spendRaw) ? spendRaw : [];
+
+  // Proxy status
+  const dot = document.getElementById('status-dot');
+  const txt = document.getElementById('status-text');
+  if (stats.sessions_fallback) {
+    dot.className = 'status-dot on';
+    txt.textContent = 'Session index (no request log yet)';
+  } else {
+    dot.className = 'status-dot ' + (stats.proxy_listening ? 'on' : 'off');
+    txt.textContent = stats.proxy_listening ? 'Proxy active' : 'Proxy offline';
+  }
+
+  // Core derived metrics
+  const oldest = sessions.length ? sessions[sessions.length - 1] : null;
+  const days = oldest ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.started_at)) / 86400000)) : 0;
+  const avgDurMins = sessions.length ? Math.round(sessions.reduce((s,x) => s + x.duration_mins, 0) / sessions.length) : 0;
+  const removedPerReq = stats.request_count > 0 ? Math.round(stats.total_tools_removed / stats.request_count) : 0;
+  const keptPerReq = stats.request_count > 0 ? Math.round((stats.total_tools_kept || 0) / stats.request_count) : 0;
+  const totalPerReq = removedPerReq + keptPerReq;
+  const annualRate = days >= 7 ? Math.round(stats.cost_saved / days * 365) : 0;
+  const monthSaved = timeline.filter(p => p.date.startsWith(monthStr)).reduce((s, p) => s + p.cost, 0);
+  const perSession = stats.session_count > 0 ? stats.cost_saved / stats.session_count : 0;
+
+  // ── Narrative card ───────────────────────────────────────
+  document.getElementById('narrative-eyebrow').textContent = `ctx usage summary · ${monthLabel}`;
+
+  let narrative = '';
+  if (days > 0 && stats.session_count > 0) {
+    const n = stats.session_count;
+    const cost = fmtCost(stats.cost_saved);
+
+    let lead = '';
+    if (days === 1)       lead = `Not bad for day one.`;
+    else if (days < 4)    lead = `${days} days in.`;
+    else if (days < 14)   lead = `About a week in.`;
+    else if (days < 45)   lead = `${Math.round(days/7)} weeks in.`;
+    else                  lead = `${Math.round(days/30)} month${days >= 60 ? 's' : ''} running.`;
+
+    let sessLine = '';
+    if (n === 1 && avgDurMins > 0) {
+      sessLine = `One session, ${avgDurMins} minutes.`;
+    } else if (days === 1) {
+      sessLine = `${n} sessions` + (avgDurMins > 0 ? `, ${avgDurMins} minutes on average` : '') + `.`;
+    } else {
+      sessLine = `You've run <strong>${n} sessions</strong>` + (avgDurMins > 0 ? `, averaging ${avgDurMins} minutes each` : '') + `.`;
+    }
+
+    let toolLine = '';
+    if (totalPerReq > 0 && removedPerReq > 0) {
+      const pct = Math.round(removedPerReq / totalPerReq * 100);
+      toolLine = `Each request started with <strong>${totalPerReq} tools</strong>. ` +
+        `Your <strong>${esc(stats.active_profile)}</strong> profile kept ${keptPerReq} and stripped ${removedPerReq} (${pct}% reduction).`;
+    } else if (removedPerReq > 0) {
+      toolLine = `ctx stripped ${removedPerReq} tool schemas per request using the <strong>${esc(stats.active_profile)}</strong> profile.`;
+    }
+
+    let costLine = '';
+    if (stats.cost_saved > 0) {
+      costLine = `That saved <strong>${cost}</strong> in context tokens`;
+      if (annualRate > 0) {
+        costLine += `, on pace for <strong>$${annualRate.toLocaleString()}</strong> by year end`;
+      }
+      costLine += `.`;
+    }
+
+    narrative = [lead, sessLine, toolLine, costLine].filter(Boolean).join(' ');
+  } else if (stats.session_count > 0) {
+    const spendTotal = spendSessions.reduce((s, x) => s + (x.total_usd || 0), 0);
+    narrative = `Tracking <strong>${stats.session_count} sessions</strong> this month (<strong>${fmtCost(spendTotal)}</strong> total spend). `;
+    if (stats.sessions_fallback) {
+      narrative += `Per-request filter rows are not in ctx.db yet. Sessions come from <code>ctx ingest</code> on Claude JSONL. Start the dashboard when using Claude Code so <code>filter.js</code> dual-writes into SQLite.`;
+    }
+    if (stats.monthly_burn_projection_usd > 0) {
+      narrative += ` Month-end projection: <strong>${fmtCost(stats.monthly_burn_projection_usd)}</strong>.`;
+    }
+  } else {
+    narrative = `ctx is installed and running. Your summary shows up here after the first session.`;
+  }
+  document.getElementById('narrative-body').innerHTML = narrative;
+
+  // Stat pills
+  const pills = [];
+  const spendSum = spendSessions.reduce((s, x) => s + (x.total_usd || 0), 0);
+  if (stats.session_count > 0)  pills.push(`<span>${stats.session_count}</span> sessions this month`);
+  if (monthSaved > 0)           pills.push(`<span>${fmtCost(monthSaved)}</span> saved this month`);
+  else if (spendSum > 0)        pills.push(`<span>${fmtCost(spendSum)}</span> total spend`);
+  if (perSession > 0)           pills.push(`<span>${fmtCost(perSession)}</span> per session avg`);
+  if (annualRate > 0)           pills.push(`<span>$${annualRate}</span> projected this year`);
+  else if (stats.monthly_burn_projection_usd > 0)
+    pills.push(`<span>${fmtCost(stats.monthly_burn_projection_usd)}</span> month-end projection`);
+  document.getElementById('narrative-pills').innerHTML = pills.map(p => `<div class="narrative-pill">${p}</div>`).join('');
+
+  const onboardEl = document.getElementById('onboarding-wrap');
+  const wizDone = localStorage.getItem('ctx-onboarding-done');
+  if (onboardEl) {
+    const showWiz = !wizDone && stats.request_count === 0 && spendSum < 0.01;
+    onboardEl.style.display = showWiz ? 'block' : 'none';
+    if (showWiz) { wizPrepareFromServer(); wizShowStep(1); }
+  }
+  const econCard = document.getElementById('savings-econ-card');
+  const econBody = document.getElementById('savings-econ-body');
+  if (econCard && econBody) {
+    const worst = stats.cost_saved_worst_case != null ? stats.cost_saved_worst_case : 0;
+    if (stats.total_tokens_saved > 0 || stats.request_count > 0) {
+      econCard.style.display = 'block';
+      const keptTotal = stats.total_tools_kept || 0;
+      const allTotal = keptTotal + stats.total_tools_removed;
+      const pctStrip = allTotal > 0 ? Math.round(stats.total_tools_removed / allTotal * 100) : 0;
+      let econText = '';
+      if (allTotal > 0) {
+        econText += 'Your <strong>' + esc(stats.active_profile) + '</strong> profile kept ' + keptTotal + ' of ' + allTotal + ' total tool slots (' + pctStrip + '% stripped). ';
+      }
+      econText += 'Savings use <strong>$0.30 / MTok</strong> (cache read rate). At full Sonnet input pricing the same volume would cost <strong>' + fmtCost(worst) + '</strong>. ';
+      econText += 'The first request per session pays full input price; subsequent requests benefit from prompt caching. Your real saving sits between these two.';
+      econBody.innerHTML = econText;
+    } else {
+      econCard.style.display = 'none';
+    }
+  }
+
+  // ── Persona card ─────────────────────────────────────────
+  const persona = computePersona(spendSessions);
+  if (persona) {
+    document.getElementById('persona-icon').textContent = persona.icon;
+    document.getElementById('persona-name').textContent = persona.name;
+    document.getElementById('persona-desc').textContent = persona.desc;
+    document.getElementById('persona-traits').innerHTML = persona.traits.map(t =>
+      `<div class="persona-trait"><span class="persona-trait-label">${t.label}</span><span class="persona-trait-val">${t.val}</span></div>`
+    ).join('');
+  } else {
+    document.getElementById('persona-icon').textContent = '📊';
+    document.getElementById('persona-name').textContent = 'Building your profile';
+    document.getElementById('persona-desc').textContent = 'Your prompt persona is calculated from session turn patterns. It will appear after a few sessions of data.';
+    document.getElementById('persona-traits').innerHTML = '';
+  }
+
+  // ── Insights ─────────────────────────────────────────────
+  const { lead, strengths, action } = buildInsights(stats, sessions, spendSessions);
+  document.getElementById('insights-list').innerHTML = `
+    <p style="color:var(--t1);font-size:14px;line-height:1.75;margin:0 0 ${strengths.length ? 18 : 0}px">${lead}</p>
+    ${strengths.length ? `
+      <div style="margin-bottom:${action ? 16 : 0}px">
+        <div style="font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:9px">Working in your favor</div>
+        <ul style="margin:0;padding-left:16px;color:var(--t2);font-size:13px;line-height:2">
+          ${strengths.map(s => `<li>${s}</li>`).join('')}
+        </ul>
+      </div>` : ''}
+    ${action ? `
+      <div style="font-size:13px;color:var(--t2);border-top:1px solid var(--border);padding-top:13px;line-height:1.65">
+        <span style="font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:5px">Try this</span>
+        ${action}
+      </div>` : ''}
+  `;
+
+  renderProjectsPanel(Array.isArray(projectsRows) ? projectsRows : [], !!stats.sessions_fallback);
+  renderToolUsagePanel(Array.isArray(toolHeat) ? toolHeat : []);
+
+  // ── Cumulative savings chart ──────────────────────────────
+  let running = 0;
+  const cumul = timeline.map(p => { running += p.cost; return { date: p.date, total: +running.toFixed(4) }; });
+  // Prepend a zero anchor point so single-day data has a visible line
+  if (cumul.length) {
+    const firstDate = new Date(cumul[0].date);
+    firstDate.setDate(firstDate.getDate() - 1);
+    cumul.unshift({ date: firstDate.toISOString().slice(0, 10), total: 0 });
+  }
+  const singlePoint = cumul.length === 2; // anchor + one real point
+  if (cumul.length && typeof Chart !== 'undefined') {
+    const chartEl = document.getElementById('timeline-chart').getContext('2d');
+    if (window._timelineChart) { window._timelineChart.destroy(); window._timelineChart = null; }
+    const grad = chartEl.createLinearGradient(0, 0, 0, 220);
+    grad.addColorStop(0, 'rgba(147,192,67,.22)');
+    grad.addColorStop(1, 'rgba(147,192,67,.0)');
+    window._timelineChart = new Chart(chartEl, {
+      type: 'line',
+      data: {
+        labels: cumul.map(p => { const d = new Date(p.date); return d.toLocaleDateString('en-US', {month:'short', day:'numeric'}); }),
+        datasets: [{ label: stats.sessions_fallback ? 'Cumulative spend' : 'Total saved', data: cumul.map(p => p.total),
+          borderColor: '#93c043', backgroundColor: grad,
+          borderWidth: 2.5, pointRadius: singlePoint ? [0, 5] : 0, pointHoverRadius: 5,
+          pointBackgroundColor: '#b0d46a', fill: true, tension: 0.45 }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: { duration: 1000 },
+        plugins: { legend: { display: false },
+          tooltip: { backgroundColor: '#1f2e33', borderColor: '#2e4048', borderWidth: 1, padding: 12,
+            callbacks: { label: c => '  ' + (stats.sessions_fallback ? 'Spend: ' : 'Total saved: ') + fmtCost(c.parsed.y) } } },
+        scales: {
+          x: { grid: { color: '#2e4048', lineWidth: .5 }, ticks: { color: '#4d7060', font: {size: 11} } },
+          y: { grid: { color: '#1f2a30', lineWidth: .5 }, ticks: { color: '#4d7060', font: {size: 11}, callback: v => '$' + v.toFixed(2) }, beginAtZero: true }
+        }
+      }
+    });
+  }
+
+  // ── Compact sessions ──────────────────────────────────────
+  const sessEl = document.getElementById('sessions-compact');
+  if (!sessions.length) {
+    sessEl.innerHTML = `<div class="empty">No sessions yet.</div>`;
+  } else {
+    sessEl.innerHTML = sessions.slice(0, 8).map(s => {
+    const dur = s.duration_mins < 60 ? `${s.duration_mins}m` : `${Math.floor(s.duration_mins/60)}h ${s.duration_mins % 60}m`;
+    return `<div class="sv-session">
+      <div>
+        <div class="sv-session-date">${fmtDate(s.started_at)}</div>
+        <div class="sv-session-meta">${dur} &middot; ${s.requests} requests</div>
+      </div>
+      <div class="sv-session-cost">${fmtCost(s.cost)}</div>
+    </div>`;
+  }).join('');
+  }
+
+  loadProfileAnalytics().catch(() => {});
+}
+
+function computePersona(sp) {
+  if (!sp || !sp.length) return null;
+  const totalTurns = sp.reduce((s,x) => s + (x.turn_count||0), 0);
+  if (totalTurns === 0) return null;
+  const avgTurns = totalTurns / sp.length;
+  const corrRate  = sp.reduce((s,x) => s + (x.correction_turns||0), 0) / totalTurns;
+  const compactN  = sp.filter(s => s.hit_compact).length;
+  const compactRate = compactN / sp.length;
+
+  if (compactRate > 0.35) return {
+    icon: '🤿', name: 'The Deep Diver',
+    desc: 'You work through large, complex problems end-to-end. Sessions regularly push the limits of working memory.',
+    traits: [{label:'Avg session length', val:`${Math.round(avgTurns)} turns`}, {label:'Context resets', val:compactN}, {label:'Approach', val:'Thorough'}]
+  };
+  if (avgTurns > 28 && corrRate < 0.12) return {
+    icon: '🏗', name: 'The Architect',
+    desc: 'Long, focused sessions with clear direction. You think through complex problems systematically before asking.',
+    traits: [{label:'Avg session length', val:`${Math.round(avgTurns)} turns`}, {label:'Correction rate', val:`${Math.round(corrRate*100)}%`}, {label:'Approach', val:'Systematic'}]
+  };
+  if (corrRate > 0.22) return {
+    icon: '🔄', name: 'The Refiner',
+    desc: 'You iterate toward precision. High correction rate signals you know exactly what you want and push until you get it.',
+    traits: [{label:'Correction rate', val:`${Math.round(corrRate*100)}%`}, {label:'Avg session length', val:`${Math.round(avgTurns)} turns`}, {label:'Approach', val:'Iterative'}]
+  };
+  if (avgTurns < 12 && corrRate < 0.1) return {
+    icon: '⚡', name: 'The Sprinter',
+    desc: 'Short, decisive sessions with clear intent. You get in, get the answer, get out.',
+    traits: [{label:'Avg session length', val:`${Math.round(avgTurns)} turns`}, {label:'Correction rate', val:`${Math.round(corrRate*100)}%`}, {label:'Approach', val:'Decisive'}]
+  };
+  return {
+    icon: '🔨', name: 'The Builder',
+    desc: 'Steady, productive sessions. A balanced mix of exploration and execution.',
+    traits: [{label:'Avg session length', val:`${Math.round(avgTurns)} turns`}, {label:'Correction rate', val:`${Math.round(corrRate*100)}%`}, {label:'Approach', val:'Balanced'}]
+  };
+}
+
+function buildInsights(stats, sessions, sp) {
+  const avgDur = sessions.length
+    ? Math.round(sessions.reduce((s,x) => s + x.duration_mins, 0) / sessions.length)
+    : 0;
+  const toolsPerReq = stats.request_count > 0
+    ? Math.round(stats.total_tools_removed / stats.request_count)
+    : 0;
+
+  let compactN = 0, corrRate = 0, avgTurns = 0, cacheHitRate = 0;
+  if (sp && sp.length) {
+    compactN = sp.filter(s => s.hit_compact).length;
+    const totalTurns = sp.reduce((s,x) => s + (x.turn_count||0), 0);
+    const totalCorr  = sp.reduce((s,x) => s + (x.correction_turns||0), 0);
+    corrRate  = totalTurns > 0 ? totalCorr / totalTurns : 0;
+    avgTurns  = sp.length > 0 ? totalTurns / sp.length : 0;
+    const totalRead = sp.reduce((s,x) => s + (x.cache_read_tokens||0), 0);
+    const totalAll  = totalRead + sp.reduce((s,x) => s + (x.cache_creation_tokens||0) + (x.input_tokens||0), 0);
+    cacheHitRate = totalAll > 0 ? totalRead / totalAll : 0;
+  }
+
+  // Classify signals
+  const problems = [];
+  if (avgDur >= 45) problems.push('session_length');
+  if (compactN > 0) problems.push('context_reset');
+  if (corrRate > 0.15) problems.push('correction_rate');
+
+  // Lead paragraph — synthesizes the biggest cost drivers into one narrative sentence
+  let lead = '';
+  if (problems.length === 0) {
+    lead = `Your sessions are running efficiently this month. Focused length, low friction, strong cache utilization. The score breakdown shows where there is still room to go.`;
+  } else if (problems.includes('session_length') && problems.includes('context_reset')) {
+    lead = `Sessions averaging <strong>${avgDur} min</strong> and <strong>${compactN} context reset${compactN>1?'s':''}</strong> are your biggest cost drivers this month. These two compound: long sessions are more likely to hit the context limit, and each reset forces Claude to rebuild working state from scratch, paying the re-read cost twice.`;
+  } else if (problems.includes('session_length')) {
+    lead = `Sessions averaging <strong>${avgDur} min</strong> are the main cost driver this month. Claude re-reads the full conversation context on every turn, so each turn in a long session costs more than the one before. Breaking work into shorter, focused sessions is the fastest lever.`;
+  } else if (problems.includes('context_reset')) {
+    lead = `<strong>${compactN} session${compactN>1?'s':''}</strong> hit the context limit this month and had to reset mid-way. Each reset forces Claude to rebuild its working state from a summary, paying extra tokens to re-establish context before the actual task continues.`;
+  } else if (problems.includes('correction_rate')) {
+    lead = `A <strong>${Math.round(corrRate*100)}% correction rate</strong> means roughly 1 in ${Math.round(1/corrRate)} messages is redirecting Claude rather than advancing the task. That is billable context with no output to show for it, and it pushes sessions longer, compounding cost.`;
+  }
+
+  // Strength bullets
+  const strengths = [];
+  if (corrRate < 0.1 && sp && sp.length)
+    strengths.push(`<strong>${Math.round(corrRate*100)}% correction rate.</strong> Your prompts are landing first time with minimal wasted context.`);
+  if (cacheHitRate > 0.8)
+    strengths.push(`<strong>${Math.round(cacheHitRate*100)}% cache hit rate.</strong> Context warms up fast, keeping per-turn cost low.`);
+  if (toolsPerReq > 0) {
+    const pName = PROFILE_LABELS[stats.active_profile] || stats.active_profile || 'Current';
+    strengths.push(`ctx is filtering <strong>${toolsPerReq} tool schemas per request.</strong> Tokens Claude never sees before your prompt.`);
+  }
+  if (!problems.includes('session_length') && avgDur > 0)
+    strengths.push(`Sessions averaging <strong>${avgDur} min.</strong> Under the threshold where context costs start compounding.`);
+  if (!problems.includes('context_reset') && sp && sp.length)
+    strengths.push(`No context resets this month. Sessions stayed within working memory.`);
+
+  // Concrete action
+  let action = '';
+  if (problems.includes('session_length') && problems.includes('context_reset')) {
+    action = 'When you start a new task, open a new session instead of continuing the current one. It\'s consistently cheaper than extending a session past the context limit.';
+  } else if (problems.includes('session_length')) {
+    action = 'One task per session. When a task feels complete or you\'re switching contexts, start fresh. A clean context window is cheaper per turn than a full one.';
+  } else if (problems.includes('context_reset')) {
+    action = 'Before a long session, break it into sub-tasks and plan the sequence. Staying within one context window avoids the rebuild overhead.';
+  } else if (problems.includes('correction_rate')) {
+    action = 'Add a one-line output format to your opening prompt. "Respond as a numbered list" or "output a unified diff." It typically halves back-and-forth rounds.';
+  }
+
+  return { lead, strengths, action };
+}
+
+// ─── Efficiency score ──────────────────────────────────────
+function calcScore(sessions) {
+  if (!sessions.length) return { score: 50, avgTurns: 0, compactN: 0, opusN: 0, corrRate: 0, cacheHitRate: 0 };
+  let score = 100;
+  const totalTurns = sessions.reduce((s,x) => s + x.turn_count, 0);
+  const totalCorrections = sessions.reduce((s,x) => s + x.correction_turns, 0);
+  const avgTurns = totalTurns / sessions.length;
+  const compactN = sessions.filter(s => s.hit_compact).length;
+  const opusN = sessions.filter(s => s.models_used.includes('opus')).length;
+  const corrRate = totalTurns > 0 ? totalCorrections / totalTurns : 0;
+
+  const totalCacheRead = sessions.reduce((s,x) => s + (x.cache_read_tokens || 0), 0);
+  const totalCacheCreate = sessions.reduce((s,x) => s + (x.cache_creation_tokens || 0), 0);
+  const totalInput = sessions.reduce((s,x) => s + (x.input_tokens || 0), 0);
+  const totalAllInput = totalCacheRead + totalCacheCreate + totalInput;
+  const cacheHitRate = totalAllInput > 0 ? totalCacheRead / totalAllInput : 0;
+
+  // Context resets are costly
+  score -= Math.min(30, compactN * 5);
+  // Long sessions — thresholds calibrated to user's own median session length
+  const lst = _userProfile.long_session_threshold || 26;
+  if (avgTurns > lst * 1.6) score -= 22;
+  else if (avgTurns > lst * 1.0) score -= 14;
+  else if (avgTurns > lst * 0.7) score -= 6;
+  // Opus overuse
+  score -= Math.min(22, opusN * 8);
+  // Correction rate
+  if (corrRate > 0.25) score -= 14;
+  else if (corrRate > 0.15) score -= 8;
+  else if (corrRate > 0.08) score -= 4;
+  // Cache efficiency bonus (up to +5 for >90% hit rate)
+  if (cacheHitRate >= 0.90) score = Math.min(100, score + 5);
+
+  return { score: Math.max(5, Math.min(100, Math.round(score))), avgTurns, compactN, opusN, corrRate, cacheHitRate };
+}
+
+function renderScore(sessions) {
+  const { score, avgTurns, compactN, opusN, corrRate, cacheHitRate } = calcScore(sessions);
+  const color = scoreColor(score);
+
+  // Sidebar gauge
+  const sbGauge = document.getElementById('sb-gauge-ring');
+  const circumference = 125.66;
+  sbGauge.style.stroke = color;
+  sbGauge.style.strokeDashoffset = circumference - (score / 100 * circumference);
+  document.getElementById('sb-gauge-val').textContent = score;
+  document.getElementById('sb-score-val').style.color = color;
+  animateNum(document.getElementById('sb-score-val'), score, '', '', 0, 900);
+  document.getElementById('sb-score-text').textContent = scoreLabel(score);
+  document.getElementById('sb-score-card').style.display = 'block';
+
+  // Main ring
+  const ring = document.getElementById('score-ring');
+  const circumM = 213.63;
+  ring.style.stroke = color;
+  setTimeout(() => { ring.style.strokeDashoffset = circumM - (score / 100 * circumM); }, 100);
+  const bigEl = document.getElementById('score-big');
+  bigEl.style.color = color;
+  animateNum(bigEl, score, '', '', 0, 1000);
+  document.getElementById('score-label').textContent = scoreLabel(score);
+  // Narrative score description using actual numbers
+  let desc = '';
+  if (score >= 80) {
+    desc = `You're in the top tier. Cache hits at ${Math.round(cacheHitRate*100)}%, correction rate near zero, sessions staying focused. Not much to change here.`;
+  } else if (score >= 60) {
+    desc = `Solid efficiency. ${compactN > 0 ? `${compactN} context reset${compactN>1?'s':''} and ` : ''}sessions averaging ${Math.round(avgTurns)} turns are the main cost drivers. A few habit tweaks would push this above 80.`;
+  } else if (score >= 40) {
+    desc = `${compactN > 0 ? `Context resets (${compactN} this month) and ` : ''}sessions averaging ${Math.round(avgTurns)} turns are eating into your budget. The breakdown shows exactly where.`;
+  } else {
+    desc = `${opusN > 0 ? `Opus in ${opusN} sessions, ` : ''}${compactN > 0 ? `${compactN} context resets, ` : ''}${Math.round(avgTurns)} turns on average. Several patterns compounding cost. Start with whichever metric is red below.`;
+  }
+  document.getElementById('score-desc').textContent = desc;
+
+  // Breakdown — narrative rows
+  const _lst = _userProfile.long_session_threshold || 26;
+  const compactPct = Math.max(0, 100 - compactN * 17);
+  const turnPct    = Math.max(0, 100 - Math.min(100, (avgTurns / (_lst * 2)) * 100));
+  const opusPct    = Math.max(0, 100 - opusN * 22);
+  const corrPct    = Math.max(0, 100 - corrRate * 200);
+  const cachePct   = Math.round(cacheHitRate * 100);
+
+  function metricRow(label, pct, what, why) {
+    const barColor = pct > 70 ? '#22c55e' : pct > 40 ? '#f59e0b' : '#ef4444';
+    const badge = pct > 70 ? 'good' : pct > 40 ? 'warn' : 'bad';
+    const badgeColors = { good: '#22c55e22', warn: '#f59e0b22', bad: '#ef444422' };
+    const badgeText   = { good: '#22c55e',   warn: '#f59e0b',   bad: '#ef4444' };
+    const safeWhy = why.replace(/"/g, '&quot;');
+    return `
+    <div style="padding:7px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px" title="${safeWhy}">
+      <div style="font-size:12px;font-weight:600;color:var(--t1);width:112px;flex-shrink:0">${label}</div>
+      <div style="flex:1;background:var(--surface2);border-radius:4px;height:4px;overflow:hidden">
+        <div style="height:100%;border-radius:4px;width:${pct}%;background:${barColor};transition:width .6s .2s"></div>
+      </div>
+      <div style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:${badgeColors[badge]};color:${badgeText[badge]};white-space:nowrap;flex-shrink:0">${what}</div>
+    </div>`;
+  }
+
+  const compactWhat = compactN === 0 ? 'No resets' : `${compactN} reset${compactN > 1 ? 's' : ''}`;
+  const compactWhy = compactN === 0
+    ? 'None of your sessions ran out of working memory this month. Focused, single-task sessions tend to stay within limits.'
+    : `${compactN} session${compactN > 1 ? 's' : ''} hit the context limit and reset mid-way. Each reset costs extra as Claude rebuilds context from scratch. Splitting long work across multiple sessions helps.`;
+
+  const lst = _userProfile.long_session_threshold || 26;
+  const turnWhat = avgTurns < lst * 0.6 ? 'Short and focused' : avgTurns < lst ? `~${Math.round(avgTurns)} turns avg` : `${Math.round(avgTurns)} turns avg`;
+  const turnWhy = avgTurns < lst * 0.6
+    ? 'Your sessions are short and focused. This is the most cost-efficient pattern. Claude stays sharp and context stays cheap.'
+    : avgTurns < lst
+    ? `Averaging ${Math.round(avgTurns)} turns per session, within your normal range. Context cost compounds steadily past turn ${Math.round(lst)}.`
+    : `Your sessions average ${Math.round(avgTurns)} turns, above your typical ${_userProfile.median_session_turns}-turn median. Past your norm, context overhead compounds on every turn.`;
+
+  const opusWhat = opusN === 0 ? 'Sonnet only' : `Opus in ${opusN} session${opusN > 1 ? 's' : ''}`;
+  const opusWhy = opusN === 0
+    ? 'All sessions ran on Sonnet, which is 5x cheaper than Opus and handles the vast majority of engineering and writing tasks at the same quality.'
+    : `${opusN} session${opusN > 1 ? 's' : ''} used Opus, which costs $15/MTok vs $3/MTok for Sonnet. Opus is worth it for genuinely complex reasoning, but most tasks don't need it.`;
+
+  const ct = _userProfile.correction_threshold || 40;
+  const corrWhat = corrRate === 0 ? 'None detected' : `${(corrRate * 100).toFixed(0)}% of turns`;
+  const corrWhy = !_userProfile.calibrated
+    ? 'Still learning your writing patterns. Correction detection calibrates to your message length baseline after 5+ sessions.'
+    : corrRate < 0.05
+    ? `Almost no short follow-up turns detected (calibrated to your typical ${ct}-char message baseline). Your prompts are landing first time.`
+    : corrRate < 0.15
+    ? `${(corrRate * 100).toFixed(0)}% of turns were short follow-ups after long Claude responses, likely corrections or redirects. Adding explicit output format to your opening prompt typically cuts this in half.`
+    : `${(corrRate * 100).toFixed(0)}% of turns were short redirects. Claude needed course-correcting frequently. "Goal / Context / Output format" in the first message is the single highest-leverage prompt habit.`;
+
+  const cacheWhat = `${cachePct}% cache hits`;
+  const cacheWhy = cachePct >= 90
+    ? `${cachePct}% of your input tokens are cache reads at $0.30/MTok. You're getting the full benefit of Anthropic's prompt cache. Long, focused sessions build a warm cache that makes each follow-up turn much cheaper.`
+    : cachePct >= 70
+    ? `${cachePct}% cache hit rate. Your context is being reused well. Cache reads cost 10x less than fresh input. The higher this number, the better.`
+    : `${cachePct}% cache hit rate. Frequently starting new sessions or changing system prompts prevents the cache from warming up, costing more per turn.`;
+
+  document.getElementById('score-breakdown').innerHTML =
+    metricRow('Context resets', compactPct, compactWhat, compactWhy) +
+    metricRow('Session length', Math.round(turnPct), turnWhat, turnWhy) +
+    metricRow('Model choice', Math.round(opusPct), opusWhat, opusWhy) +
+    metricRow('Correction rate', Math.round(corrPct), corrWhat, corrWhy) +
+    metricRow('Cache efficiency', Math.min(100, cachePct), cacheWhat, cacheWhy).replace('border-bottom:1px solid var(--border)', 'border-bottom:none');
+}
+
+// ─── Tab 2: Prompt Stats ──────────────────────────────────
+let _monthlyData = [], _budgetUsd = null, _actualUsd = null, _allSessions = [];
+
+async function loadPromptStats() {
+  const [monthly, tips, allSess, dashStats] = await Promise.all([
+    fetch('/api/spend/monthly').then(r => r.json()),
+    fetch('/api/spend/tips').then(r => r.json()),
+    fetch('/api/spend/sessions').then(r => r.json()),
+    fetch('/api/stats').then(r => r.json()).catch(() => ({})),
+  ]);
+  _monthlyData = monthly;
+  _allSessions = allSess;
+
+  if (monthly.length) {
+    if (monthly[0].budget_usd != null) _budgetUsd = monthly[0].budget_usd;
+    if (monthly[0].actual_spend_usd != null) _actualUsd = monthly[0].actual_spend_usd;
+  }
+
+  renderBudget(monthly[0] || null, dashStats);
+  renderScore(allSess);
+  renderInsights(tips);
+
+  const tabsEl = document.getElementById('month-tabs');
+  if (monthly.length) {
+    tabsEl.innerHTML = monthly.map((m, i) =>
+      `<button class="month-tab ${i===0?'active':''}" onclick="selectMonth('${m.month}',this)">${m.month}</button>`
+    ).join('');
+    loadSpendSessions(monthly[0].month);
+  } else {
+    document.getElementById('spend-sessions-table').innerHTML = `<div class="empty">No Claude conversations found.</div>`;
+  }
+  await loadIntelligencePanels();
+}
+
+async function loadIntelligencePanels() {
+  try {
+    const [alerts, health, patterns] = await Promise.all([
+      fetch('/api/quality-alerts').then(r => r.json()).catch(() => []),
+      fetch('/api/project-health').then(r => r.json()).catch(() => []),
+      fetch('/api/pattern-alerts').then(r => r.json()).catch(() => []),
+    ]);
+    const qw = document.getElementById('intel-quality-wrap');
+    const qb = document.getElementById('intel-quality-body');
+    if (alerts.length) {
+      qw.style.display = 'block';
+      qb.innerHTML = alerts.map(a =>
+        `<div class="insight-card" style="margin-bottom:12px"><div class="insight-title">Pattern shift after a profile change</div><div class="insight-detail">${esc(a.recommendation)}</div></div>`
+      ).join('');
+    } else {
+      qw.style.display = 'none';
+    }
+    const hw = document.getElementById('intel-health-wrap');
+    const hb = document.getElementById('intel-health-body');
+    if (health.length) {
+      hw.style.display = 'block';
+      hb.innerHTML = '<table class="proj-table"><thead><tr><th>Folder</th><th>Week</th><th>Spend</th><th>Correction rate</th></tr></thead><tbody>' +
+        health.slice(0, 48).map(h =>
+          `<tr><td class="path">${esc(h.working_directory)}</td><td>${esc(h.week)}</td><td>${fmtCost(h.spend_usd)}</td><td>${(h.correction_rate * 100).toFixed(0)}%</td></tr>`
+        ).join('') + '</tbody></table>';
+    } else {
+      hw.style.display = 'none';
+    }
+    const pw = document.getElementById('intel-patterns-wrap');
+    const pb = document.getElementById('intel-patterns-body');
+    if (pw && pb) {
+      pw.style.display = 'block';
+      if (Array.isArray(patterns) && patterns.length) {
+        pb.innerHTML = patterns.map(p =>
+          `<div class="insight-card" style="margin-bottom:12px"><div class="insight-title">${esc(p.title || '')}</div><div class="insight-detail">${esc(p.detail || '')}</div></div>`
+        ).join('');
+      } else {
+        pb.innerHTML = '<p class="section-sub" style="margin:0">No recurring cost patterns detected this month.</p>';
+      }
+    }
+    const cw = document.getElementById('intel-clusters-wrap');
+    const cb = document.getElementById('intel-clusters-body');
+    const clusters = await fetch('/api/prompt-clusters').then(r => r.json()).catch(() => []);
+    if (clusters.length) {
+      cw.style.display = 'block';
+      cb.innerHTML = '<ul style="padding-left:18px;color:var(--t2);line-height:1.6">' +
+        clusters.map(c => `<li>${esc(typeof c === 'string' ? c : JSON.stringify(c))}</li>`).join('') + '</ul>';
+    } else {
+      cw.style.display = 'block';
+      cb.innerHTML = '<p class="section-sub" style="margin:0">No clusters indexed yet. Run <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">ctx ingest</code> so sessions land in SQLite; grouping UI fills in as the index grows.</p>';
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+async function regeneratePersonalProfile() {
+  const r = await fetch('/api/profiles/auto', { method: 'POST' }).then(x => x.json()).catch(() => ({}));
+  alert(r.ok ? 'Personal profile updated from your tool history.' : ('Could not regenerate: ' + (r.error || 'unknown')));
+  loadProfiles();
+}
+
+function renderBudget(spend, dashStats) {
+  dashStats = dashStats || {};
+  const label = document.getElementById('budget-month-label');
+  const spentEl = document.getElementById('budget-spent');
+  const ofEl = document.getElementById('budget-of');
+  const ctxEl = document.getElementById('budget-ctx');
+  const ctxTxt = document.getElementById('budget-ctx-text');
+  const metaEl = document.getElementById('budget-meta');
+  const trackEl = document.getElementById('budget-bar-track');
+  const fillEl = document.getElementById('budget-bar-fill');
+
+  const now = new Date();
+  const monthStr = spend ? spend.month : `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  label.textContent = monthStr;
+
+  if (!spend) {
+    spentEl.textContent = '—';
+    ofEl.textContent = 'no data yet';
+    trackEl.style.display = 'none';
+    const th0 = dashStats.session_budget_threshold_usd;
+    const projA = dashStats.monthly_burn_projection_usd;
+    if (th0 != null || projA != null) {
+      const bits = [];
+      if (th0 != null) bits.push(`Session budget guard near <strong>${fmtCost(th0)}</strong> estimated session spend.`);
+      if (projA != null) bits.push(`Analytics month-end pace: <strong>${fmtCost(projA)}</strong>.`);
+      metaEl.innerHTML = `<span style="color:var(--t4)">${bits.join(' ')}</span>`;
+    } else {
+      metaEl.innerHTML = '';
+    }
+    return;
+  }
+
+  // If Anthropic billing snapshot exists, add session delta since the snapshot
+  // was taken. The baseline is stored server-side so it survives page reloads.
+  const sessionTotal = spend.total_usd;
+  const baseline = spend.actual_spend_baseline_usd;
+  const delta = (spend.actual_spend_usd != null && baseline != null)
+    ? Math.max(0, sessionTotal - baseline) : 0;
+  const liveSpend = (spend.actual_spend_usd != null) ? spend.actual_spend_usd + delta : sessionTotal;
+
+  const spendSource = (spend.actual_spend_usd != null)
+    ? `Anthropic billing ${fmtCost(spend.actual_spend_usd)} + ${fmtCost(delta)} new (updates every 30s)`
+    : 'from sessions (updates every 30s)';
+
+  animateNum(spentEl, liveSpend, '$', '', 2);
+
+  if (_budgetUsd) {
+    const pct = Math.min(100, (liveSpend / _budgetUsd) * 100);
+    const fillColor = pct < 70 ? '#22c55e' : pct < 90 ? '#f59e0b' : '#ef4444';
+    ofEl.textContent = `of ${fmtCost(_budgetUsd)} budget`;
+    trackEl.style.display = 'block';
+    fillEl.style.background = fillColor;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      fillEl.style.width = pct + '%';
+    }));
+
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+    const day = now.getDate();
+    const daysLeft = daysInMonth - day;
+    const burnRate = liveSpend / day;
+    const projected = burnRate * daysInMonth;
+    const onTrack = projected <= _budgetUsd;
+
+    metaEl.innerHTML = `
+      <span>${pct.toFixed(0)}% used (${spendSource})</span>
+      <span>${onTrack ? '✓' : '⚠'} ${daysLeft}d left. Projected ${fmtCost(projected)} (${onTrack ? 'on track' : 'over budget'})</span>`;
+    const th = dashStats.session_budget_threshold_usd;
+    const projA = dashStats.monthly_burn_projection_usd;
+    if (th != null || projA != null) {
+      const bits = [];
+      if (th != null) bits.push(`Session budget guard near <strong>${fmtCost(th)}</strong> estimated session spend (blended rate, before cache discounts).`);
+      if (projA != null) bits.push(`Analytics-based month-end pace: <strong>${fmtCost(projA)}</strong> (from filtered-request cost in the current month).`);
+      metaEl.innerHTML += `<div style="width:100%;margin-top:8px;font-size:11px;color:var(--t4);line-height:1.5">${bits.join(' ')}</div>`;
+    }
+  } else {
+    ofEl.textContent = `across ${spend.sessions} sessions this month (${spendSource})`;
+    let extra = '<span style="color:var(--t4)">Set a budget to see burn rate and projections.</span>';
+    const th0 = dashStats.session_budget_threshold_usd;
+    const projA = dashStats.monthly_burn_projection_usd;
+    if (th0 != null || projA != null) {
+      const bits = [];
+      if (th0 != null) bits.push(`Session budget guard near <strong>${fmtCost(th0)}</strong> estimated session spend.`);
+      if (projA != null) bits.push(`Analytics month-end pace: <strong>${fmtCost(projA)}</strong>.`);
+      extra = `<span style="color:var(--t4)">${bits.join(' ')}</span>`;
+    }
+    metaEl.innerHTML = extra;
+    trackEl.style.display = 'none';
+  }
+
+  if (spend.ctx_saved_usd > 0.01) {
+    ctxEl.style.display = 'flex';
+    ctxTxt.textContent = `ctx saved ${fmtCost(spend.ctx_saved_usd)} this month. Without it you'd have spent ${fmtCost(liveSpend + spend.ctx_saved_usd)}`;
+  }
+}
+
+function renderInsights(tips) {
+  const el = document.getElementById('insights-grid');
+  if (!tips.length) {
+    el.innerHTML = `<div style="font-size:13px;color:var(--t3);padding:16px 0">Not enough session data yet. Keep using Claude Code and revisit after a few more sessions.</div>`;
+    return;
+  }
+  el.innerHTML = tips.map((t, i) => `
+    <div class="insight-card ${t.kind}">
+      <div class="insight-number">0${i+1}</div>
+      <div class="insight-title">${t.title}</div>
+      <div class="insight-detail">${t.detail}</div>
+      <div class="insight-saving">
+        <span>💰</span> Potential saving: ${fmtCost(t.value * .3)}–${fmtCost(t.value * .6)}/mo
+      </div>
+    </div>
+  `).join('');
+}
+
+let _selectedMonth = '';
+let _openTraceSession = null;
+let _selectedTurnIdx = {};
+
+function selectMonth(month, el) {
+  document.querySelectorAll('.month-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  _selectedMonth = month;
+  loadSpendSessions(month);
+}
+
+function flagColor(f) {
+  const map = { correction:'#ef4444', clarification:'#f59e0b', long_dump:'#fb923c', pre_compact:'#a78bfa', opus:'#6366f1' };
+  return map[f] || '#4a5a7a';
+}
+
+function renderTrace(s, si) {
+  if (!s.top_turns || !s.top_turns.length) return `<div class="td-empty">No expensive turns flagged.</div>`;
+
+  const maxTurnCost = Math.max(...s.top_turns.map(t => t.cost_usd));
+
+  return `<div class="trace-viewer">
+    <div class="trace-list">
+      ${s.top_turns.map((t, i) => `
+        <div class="trace-list-item ${i===0?'active':''}" id="tli-${si}-${i}" onclick="selectTurn(${si},${i})">
+          <div class="tl-num">Turn ${t.turn_index + 1} ${t.flags.map(f => `<span style="font-size:9px;padding:1px 5px;border-radius:10px;background:${flagColor(f)}22;color:${flagColor(f)}">${f}</span>`).join(' ')}</div>
+          <div class="tl-cost">${fmtCost(t.cost_usd)}</div>
+          <div class="tl-bar"><div class="tl-bar-fill" style="width:${(t.cost_usd/maxTurnCost*100).toFixed(0)}%"></div></div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="turn-detail" id="td-${si}">
+      ${renderTurnDetail(s.top_turns[0])}
+    </div>
+  </div>`;
+}
+
+function renderTurnDetail(t) {
+  if (!t) return '<div class="td-empty">Select a turn.</div>';
+  return `
+    <div class="td-flags">${t.flags.map(f => `<span class="chip flag-${f}">${f.replace(/_/g,' ')}</span>`).join('')}</div>
+    <div class="td-prompt">${esc(t.human_text)}${t.human_text.length >= 1000 ? '\n…' : ''}</div>
+    ${t.tip ? `<div class="td-tip">${esc(t.tip)}</div>` : ''}
+  `;
+}
+
+function selectTurn(si, ti) {
+  const session = window._lastSessions ? window._lastSessions[si] : null;
+  // Update active state in list
+  document.querySelectorAll(`[id^="tli-${si}-"]`).forEach(el => el.classList.remove('active'));
+  const item = document.getElementById(`tli-${si}-${ti}`);
+  if (item) item.classList.add('active');
+  // Update detail panel
+  const detailEl = document.getElementById(`td-${si}`);
+  if (!detailEl) return;
+  // Re-fetch session data from DOM (stored in closure via renderTrace)
+  // We need the turn data - find it from the expand panel
+  const rows = document.querySelectorAll('.expand-panel');
+  // Parse from the trace list items
+  // Actually, we need to store session data globally
+  if (window._spendSessions && window._spendSessions[si]) {
+    const turn = window._spendSessions[si].top_turns[ti];
+    if (turn) detailEl.innerHTML = renderTurnDetail(turn);
+  }
+}
+
+// Store sessions for selectTurn
+async function loadSpendSessions(month) {
+  const el = document.getElementById('spend-sessions-table');
+  el.innerHTML = `<div class="empty">Loading...</div>`;
+  const url = month ? `/api/spend/sessions?month=${month}` : '/api/spend/sessions';
+  const sessions = await fetch(url).then(r => r.json());
+  window._spendSessions = sessions;
+  if (!sessions.length) { el.innerHTML = `<div class="empty">No sessions for ${month}.</div>`; return; }
+
+  const maxCost = Math.max(...sessions.map(s => s.total_usd));
+  el.innerHTML = `<table class="tbl tbl-clickable" id="spend-tbl">
+    <thead><tr>
+      <th>Date</th><th>Project</th><th>Turns</th><th>Model</th><th>Cost</th>
+    </tr></thead>
+    <tbody>
+    ${sessions.map((s, i) => `
+      <tr onclick="toggleTrace(${i})" style="transition:background .1s">
+        <td style="color:var(--t2)">${fmtDate(s.started_at)}</td>
+        <td style="color:var(--t1);font-weight:600">${esc(s.project)}</td>
+        <td>${s.turn_count}${s.hit_compact?`<span title="Hit context limit" style="color:var(--purple);margin-left:4px">⚠</span>`:''}
+        </td>
+        <td>${s.models_used.map(m=>`<span class="chip chip-${m==='opus'?'blue':m==='haiku'?'amber':'green'}" style="font-size:10px">${m}</span>`).join(' ')}</td>
+        <td style="color:var(--green);font-weight:700;font-size:14px">${fmtCost(s.total_usd)}</td>
+      </tr>
+      <tr class="expand-panel" id="exp-${i}">
+        <td colspan="5" style="padding:0;background:var(--bg);border-top:2px solid var(--border)">
+          <div style="padding:16px 18px">${renderTrace(s,i)}</div>
+        </td>
+      </tr>
+    `).join('')}
+    </tbody>
+  </table>`;
+}
+
+function toggleTrace(i) {
+  const panel = document.getElementById(`exp-${i}`);
+  if (!panel) return;
+  const isOpen = panel.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.expand-panel.open').forEach(p => p.classList.remove('open'));
+  if (!isOpen) panel.classList.add('open');
+}
+
+// ─── Budget modal ─────────────────────────────────────────
+function openBudgetModal() {
+  if (_budgetUsd) document.getElementById('budget-input').value = _budgetUsd;
+  if (_actualUsd) document.getElementById('actual-spend-input').value = _actualUsd;
+  document.getElementById('budget-modal').classList.add('open');
+}
+function closeBudgetModal() { document.getElementById('budget-modal').classList.remove('open'); }
+async function saveBudget() {
+  const budgetVal = parseFloat(document.getElementById('budget-input').value);
+  const actualVal = parseFloat(document.getElementById('actual-spend-input').value);
+  if (!budgetVal || budgetVal <= 0) return;
+  const body = { budget_usd: budgetVal };
+  if (!isNaN(actualVal) && actualVal > 0) body.actual_usd = actualVal;
+  const resp = await fetch('/api/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data = await resp.json();
+  _budgetUsd = data.monthly_budget_usd;
+  _actualUsd = data.monthly_actual_spend_usd ?? null;
+  closeBudgetModal();
+  renderBudget(_monthlyData[0] || null);
+}
+
+// ─── Tab 3: Profiles ─────────────────────────────────────
+let _allServers = [];
+
+async function loadProfiles() {
+  const profiles = await fetch('/api/profiles').then(r => r.json());
+  const grid = document.getElementById('profiles-grid');
+
+  _allServers = [...new Set(profiles.flatMap(p => [...p.servers_included, ...p.servers_excluded]))].sort();
+
+  grid.innerHTML = profiles.map(p => {
+    const savePct = (p.savings_pct * 100).toFixed(0);
+    const meterPct = (1 - p.savings_pct) * 100;
+    return `<div class="profile-card ${p.active?'is-active':''}">
+      ${p.active ? `<div class="profile-active-pip">Active</div>` : ''}
+      <div class="profile-name">${p.display}</div>
+      <div class="profile-desc">${p.description}</div>
+      <div class="profile-meter">
+        <div class="profile-meter-label">
+          <span>${p.tool_count} tools</span>
+          <span style="color:var(--green)">${savePct}% saved vs all</span>
+        </div>
+        <div class="profile-meter-track">
+          <div class="profile-meter-fill" style="width:${meterPct}%"></div>
+        </div>
+      </div>
+      <div class="server-wrap">
+        ${p.servers_included.slice(0,6).map(s=>`<span class="server-tag in">${s}</span>`).join('')}
+        ${p.servers_included.length > 6 ? `<span class="server-tag out">+${p.servers_included.length-6}</span>` : ''}
+        ${p.servers_excluded.slice(0,3).map(s=>`<span class="server-tag out">${s}</span>`).join('')}
+        ${p.servers_excluded.length > 3 ? `<span class="server-tag out">+${p.servers_excluded.length-3} hidden</span>` : ''}
+      </div>
+      <button class="profile-switch-btn" ${p.active?'disabled':''} onclick="switchProfile('${p.slug}')">
+        ${p.active ? 'Currently active' : 'Switch to this profile'}
+      </button>
+    </div>`;
+  }).join('');
+}
+
+async function switchProfile(slug) {
+  await fetch('/api/profiles/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slug})});
+  loadProfiles();
+}
+
+function openNewProfileModal() {
+  document.getElementById('server-checklist').innerHTML = _allServers.map(s => `
+    <label class="server-check-item"><input type="checkbox" value="${s}"> ${s}</label>
+  `).join('');
+  document.getElementById('new-profile-modal').classList.add('open');
+}
+function closeNewProfileModal() { document.getElementById('new-profile-modal').classList.remove('open'); }
+async function createProfile() {
+  const name = document.getElementById('new-profile-name').value.trim();
+  if (!name) return;
+  const checked = [...document.querySelectorAll('#server-checklist input:checked')].map(i => i.value);
+  if (!checked.length) { alert('Select at least one server.'); return; }
+  await fetch('/api/profiles/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,servers:checked.map(s=>'mcp__claude_ai_'+s.replace(/ /g,'_')+'__')})});
+  closeNewProfileModal();
+  loadProfiles();
+}
+
+// ─── Tab 4: Request Trace ────────────────────────────────
+async function loadTrace() {
+  const requests = await fetch('/api/requests?limit=100').then(r => r.json());
+  const el = document.getElementById('trace-list');
+
+  if (!requests.length) {
+    el.innerHTML = `<div class="card" style="padding:20px;margin-bottom:16px;border-color:rgba(147,192,67,.25)">
+      <div class="section-head" style="margin-bottom:8px">No filter events</div>
+      <div class="section-sub" style="margin-bottom:0">The trace lists rows where MCP tools were stripped. With only session ingest data, run Claude Code with <code>filter.js</code> and keep this dashboard open so POST <code>/api/ingest-request</code> fills the <code>requests</code> table. Legacy lines in <code>analytics.jsonl</code> import on dashboard start.</div>
+    </div>`;
+    return;
+  }
+
+  // Today's summary banner
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayReqs = requests.filter(r => r.ts.slice(0, 10) === todayStr);
+  const todayTokens = todayReqs.reduce((s, r) => s + r.tokens_saved, 0);
+  const todayCost = todayReqs.reduce((s, r) => s + r.cost_saved, 0);
+  const autoCount = todayReqs.filter(r => r.auto_selected).length;
+  const autoLine = autoCount > 0
+    ? ` Profile auto-switched ${autoCount} time${autoCount!==1?'s':''} based on your working directory.`
+    : '';
+
+  const banner = todayReqs.length ? `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;gap:32px;align-items:center">
+      <div>
+        <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.05em">Today</div>
+        <div style="font-size:22px;font-weight:700;color:var(--green)">-$${todayCost.toFixed(3)}</div>
+        <div style="font-size:11px;color:var(--t3)">${todayReqs.length} requests &middot; ${fmtK(todayTokens)} tokens stripped${autoLine}</div>
+      </div>
+      <div style="flex:1;text-align:right;font-size:11px;color:var(--t4)">Click any row to see exactly what ctx did on that request.</div>
+    </div>` : '';
+
+  el.innerHTML = banner + requests.map((req, i) => traceRow(req, i)).join('');
+}
+
+function fmtTs(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffH = diffMs / 3600000;
+  if (diffH < 1) return `${Math.round(diffMs/60000)}m ago`;
+  if (diffH < 24) return `${Math.round(diffH)}h ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+    ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+function fmtK(n) { return n >= 1000 ? (n/1000).toFixed(1)+'K' : String(n); }
+
+function traceFlowNode(id, name, fired, desc, accent) {
+  const cls = fired ? 'trace-flow-node fired' : 'trace-flow-node dimmed';
+  const style = fired && accent ? `--node-accent:${accent}` : '';
+  return `<div class="${cls}" style="${style}">
+    <div class="trace-flow-node-name">${esc(name)}</div>
+    <div class="trace-flow-node-desc">${desc}</div>
+  </div>`;
+}
+
+function serverDisplayName(s) {
+  return s.replace(/^mcp__claude_ai_/, '').replace(/__$/, '').replace(/_/g, ' ');
+}
+
+function traceRow(req, i) {
+  const ts = fmtTs(req.ts);
+  const profileLabel = req.profile || 'all';
+  const autoChip = req.auto_selected
+    ? `<span class="trace-auto-chip">auto: ${req.auto_trigger || 'matched'}</span>`
+    : '';
+
+  const totalTools = req.tools_removed + (req.tools_sent_count || 0);
+  const keptTools = req.tools_sent_count || 0;
+  const pctCut = totalTools > 0 ? Math.round(req.tools_removed / totalTools * 100) : 0;
+
+  // ── Left panel: Your interaction ──
+  let ctxLines = [];
+  ctxLines.push(`Applied <strong>${esc(profileLabel)}</strong> profile.`);
+  if (req.kept_servers.length) {
+    ctxLines.push(`Kept ${req.kept_servers.length} server${req.kept_servers.length !== 1 ? 's' : ''} (${keptTools} tools), stripped ${req.removed_servers.length} server${req.removed_servers.length !== 1 ? 's' : ''} (${req.tools_removed} tools).`);
+  } else {
+    ctxLines.push(`Stripped <strong>${req.tools_removed}</strong> tools, saving <strong>${fmtK(req.tokens_saved)}</strong> tokens.`);
+  }
+  if (req.inject_fired) ctxLines.push('Prepended <strong>system_prefix.md</strong>.');
+  if (req.coach_kind) ctxLines.push(`Coaching: <strong>${esc(req.coach_kind)}</strong>.`);
+  if (req.budget_fired) ctxLines.push('Session cost alert fired.');
+  if (req.behavior_kind) ctxLines.push(`Behavior guard: <strong>${esc(req.behavior_kind)}</strong>.`);
+  if (req.compress_chars_saved > 0) ctxLines.push(`Compressed <strong>${fmtK(req.compress_chars_saved)}</strong> chars of bash output.`);
+
+  let responseHtml = '';
+  if (req.mcp_tools_invoked && req.mcp_tools_invoked.length) {
+    const names = req.mcp_tools_invoked.map(n => serverDisplayName(n));
+    const unique = [...new Set(names)];
+    responseHtml = `Claude used <strong>${unique.length}</strong> MCP tool${unique.length !== 1 ? 's' : ''}: ${unique.map(n => esc(n)).join(', ')}`;
+  } else {
+    responseHtml = 'Claude responded (streaming; tool use not captured)';
+  }
+
+  const barTotal = Math.max(totalTools, 1);
+  const removedPct = (req.tools_removed / barTotal * 100).toFixed(1);
+  const keptPct = (keptTools / barTotal * 100).toFixed(1);
+
+  const storyPanel = `<div class="trace-story">
+    <div class="trace-story-eyebrow">Your interaction</div>
+    <div class="trace-story-context">
+      ${req.working_directory ? `<code>${esc(req.working_directory)}</code><br>` : ''}
+      ${ts}
+    </div>
+    <div class="trace-ctx-band">
+      <div class="trace-ctx-band-title">What ctx did</div>
+      <p>${ctxLines.join(' ')}</p>
+    </div>
+    <div class="trace-response">${responseHtml}</div>
+    <div class="trace-token-impact">
+      <div class="trace-token-impact-title">Token impact</div>
+      <div class="trace-token-bar">
+        <div class="trace-token-bar-removed" style="width:${removedPct}%"></div>
+        <div class="trace-token-bar-kept" style="width:${keptPct}%"></div>
+      </div>
+      <div class="trace-token-label">
+        <strong>${totalTools}</strong> tools &rarr; <strong>${keptTools}</strong> tools (${pctCut}% cut)<br>
+        <strong>${fmtK(req.tokens_saved)}</strong> tokens stripped, saving <strong>${fmtCost(req.cost_saved)}</strong>
+      </div>
+    </div>
+  </div>`;
+
+  // ── Right panel: ctx pipeline ──
+  const ga = GATE_META;
+  const flowNodes = [
+    { id: 'in', name: 'Request in', fired: true, desc: `${totalTools} tools from ${req.removed_servers.length + req.kept_servers.length} servers`, accent: null, anchor: true },
+    { id: 'auto', name: 'Auto-Profile', fired: req.auto_selected, desc: req.auto_selected ? `Matched ${esc(req.auto_trigger || 'cwd')} &rarr; ${esc(profileLabel)}` : 'No switch', accent: ga.auto?.accent },
+    { id: 'filter', name: 'Profile Filter', fired: req.tools_removed > 0, desc: req.tools_removed > 0 ? `-${req.tools_removed} tools from ${req.removed_servers.length} servers, kept ${keptTools}` : 'No tools stripped', accent: ga.filter?.accent },
+    { id: 'inject', name: 'Inject', fired: req.inject_fired, desc: req.inject_fired ? 'system_prefix.md prepended' : 'Not active', accent: ga.inject?.accent },
+    { id: 'coach', name: 'Coaching', fired: !!req.coach_kind, desc: req.coach_kind ? esc(req.coach_kind) : '--', accent: ga.coach?.accent },
+    { id: 'behavior', name: 'Behavior Guard', fired: !!req.behavior_kind, desc: req.behavior_kind ? esc(req.behavior_kind) : '--', accent: ga.behavior?.accent },
+    { id: 'budget', name: 'Budget Guard', fired: req.budget_fired, desc: req.budget_fired ? 'Cost alert fired' : '--', accent: ga.budget?.accent },
+    { id: 'compress', name: 'Bash Compress', fired: req.compress_chars_saved > 0, desc: req.compress_chars_saved > 0 ? `${fmtK(req.compress_chars_saved)} chars compressed` : '--', accent: ga.compress?.accent },
+    { id: 'out', name: 'Sent to API', fired: true, desc: `${keptTools} tools, ~${fmtK(req.tokens_saved)} tokens saved`, accent: null, anchor: true },
+  ];
+
+  const flowHtml = flowNodes.map(n => {
+    const cls = n.anchor ? 'trace-flow-node anchor fired' : (n.fired ? 'trace-flow-node fired' : 'trace-flow-node dimmed');
+    const style = n.fired && n.accent ? `--node-accent:${n.accent}` : '';
+    return `<div class="${cls}" style="${style}">
+      <div class="trace-flow-node-name">${n.name}</div>
+      <div class="trace-flow-node-desc">${n.desc}</div>
+    </div>`;
+  }).join('');
+
+  const flowPanel = `<div class="trace-flow-panel">
+    <div class="trace-flow-eyebrow">ctx pipeline</div>
+    ${flowHtml}
+  </div>`;
+
+  return `<div class="trace-row" id="trace-${i}" onclick="toggleTraceReq(${i})">
+    <div class="trace-summary">
+      <div class="trace-ts">${ts}</div>
+      <div class="trace-profile-chip">${profileLabel}</div>
+      ${autoChip}
+      <div class="trace-stat">-<strong>${req.tools_removed}</strong> of ${totalTools} tools &middot; <strong>${fmtK(req.tokens_saved)}</strong> tok &middot; ${pctCut}% cut</div>
+      <div class="trace-cost">${fmtCost(req.cost_saved)}</div>
+      <div class="trace-chevron">▼</div>
+    </div>
+    <div class="trace-detail">
+      <div class="trace-panels">
+        ${storyPanel}
+        ${flowPanel}
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleTraceReq(i) {
+  document.getElementById('trace-'+i).classList.toggle('expanded');
+}
+
+// ─── Tab 5: Pipeline ─────────────────────────────────────
+const GATE_META = {
+  filter:   { accent: '#93c043', desc: 'Strips MCP tool schemas not matching the active profile. Biggest token saver.' },
+  auto:     { accent: '#60a5fa', desc: 'Reads the working directory from the system prompt and switches profile automatically.' },
+  inject:   { accent: '#fbbf24', desc: 'Prepends a custom system_prefix.md to every request when enabled.' },
+  coach:    { accent: '#f87171', desc: 'Detects correction cascades and re-asks, injects a context hint to break the loop.' },
+  behavior: { accent: '#c4b5fd', desc: 'Compares current session patterns against your history and warns early if a costly pattern is repeating.' },
+  budget:   { accent: '#fb923c', desc: 'Estimates session cost and fires an AskUserQuestion hint when it crosses the threshold from ~/.ctx/config.toml (monthly_budget_usd pacing).' },
+  compress: { accent: '#22d3ee', desc: 'Compresses verbose bash tool output before it hits Claude\'s context window.' },
+};
+
+async function loadPipeline() {
+  const data = await fetch('/api/gates').then(r => r.json()).catch(() => ({ gates: [], activity: [], sessions_fallback_note: null }));
+  const noteEl = document.getElementById('gate-sessions-fallback-note');
+  if (noteEl) {
+    if (data.sessions_fallback_note) {
+      noteEl.style.display = 'block';
+      noteEl.textContent = data.sessions_fallback_note;
+    } else {
+      noteEl.style.display = 'none';
+      noteEl.textContent = '';
+    }
+  }
+  renderGateFlow(data.gates);
+  renderGateFeed(data.activity);
+}
+
+function renderGateFlow(gates) {
+  const flowEl  = document.getElementById('gate-flow-wrap');
+  const legendEl = document.getElementById('gate-legend');
+  if (!gates.length) { flowEl.innerHTML = `<div class="empty">Gate definitions load after the first dashboard refresh. If this stays empty, reload the page.</div>`; return; }
+
+  const cards = gates.map(g => {
+    const meta  = GATE_META[g.id] || { accent: '#4a5a7a' };
+    const fired = g.today_count > 0;
+    const dotClass    = !g.enabled ? 'off' : fired ? 'on' : 'idle';
+    const statusText  = !g.enabled ? 'Off' : fired ? 'Active' : 'Idle';
+    const statusColor = !g.enabled ? 'var(--t4)' : fired ? 'var(--green)' : 'var(--amber)';
+    const cardClass   = ['gate-card', !g.enabled ? 'disabled' : '', fired ? 'fired' : ''].filter(Boolean).join(' ');
+
+    return `<div class="${cardClass}">
+      <div class="gate-top-bar" style="background:linear-gradient(90deg,${meta.accent},transparent)"></div>
+      <div class="gate-name">${esc(g.name)}</div>
+      <div class="gate-status-row">
+        <div class="gate-dot ${dotClass}"></div>
+        <div class="gate-status-text" style="color:${statusColor}">${statusText}</div>
+      </div>
+      <div class="gate-count">${g.today_count}</div>
+      <div class="gate-count-sub">req today</div>
+      <div class="gate-detail">${esc(g.detail)}</div>
+      ${g.today_tokens > 0 ? `<div class="gate-tokens">-${fmtK(g.today_tokens)} tok</div>` : ''}
+    </div>`;
+  }).join('');
+
+  flowEl.innerHTML = `<div class="gate-flow">${cards}</div>`;
+
+  // Render descriptions below each card in the same grid
+  if (legendEl) {
+    legendEl.innerHTML = gates.map(g => {
+      const meta = GATE_META[g.id] || {};
+      return `<div style="padding:8px 14px 0;font-size:10px;color:var(--t4);line-height:1.5">${esc(meta.desc || '')}</div>`;
+    }).join('');
+  }
+}
+
+function renderGateFeed(activity) {
+  const el = document.getElementById('gate-feed-wrap');
+  if (!activity.length) {
+    el.innerHTML = `<div class="empty">No gate events yet. Use Claude Code with ctx active (<code>filter.js</code> or the proxy). Events append to analytics as requests flow.</div>`;
+    return;
+  }
+
+  el.innerHTML = activity.map(a => {
+    const chips = a.gates.map(g => {
+      const cls = `gf-chip gf-chip-${g.id}`;
+      return `<span class="${cls}">${esc(g.label)}</span>`;
+    }).join('');
+    return `<div class="gf-row">
+      <div class="gf-ts">${fmtTs(a.ts)}</div>
+      <div class="gf-chips">${chips}</div>
+    </div>`;
+  }).join('');
+}
+
+// ─── Profile analytics ────────────────────────────────────
+async function loadProfileAnalytics() {
+  const [stats, profiles] = await Promise.all([
+    fetch('/api/profiles/analytics').then(r => r.json()),
+    fetch('/api/profiles').then(r => r.json()),
+  ]);
+
+  const el = document.getElementById('profile-analytics-body');
+  if (!stats.length) {
+    el.innerHTML = `<div class="empty">No requests recorded yet. Start the proxy and use Claude Code to see your profile breakdown here.</div>`;
+    return;
+  }
+
+  const totalReqs = stats.reduce((s, p) => s + p.requests, 0);
+  const totalTokens = stats.reduce((s, p) => s + p.tokens_saved, 0);
+  const totalCost = stats.reduce((s, p) => s + p.cost_saved, 0);
+  const autoTotal = stats.reduce((s, p) => s + p.auto_selected_count, 0);
+
+  const top = stats[0];
+  const topPct = Math.round(top.pct_of_total);
+
+  // Narrative prose
+  let narrative = `<p>ctx has filtered <strong>${fmtK(totalTokens)} tokens</strong> of tool schema across <strong>${totalReqs} requests</strong>. That's <strong>$${totalCost.toFixed(2)}</strong> back in your pocket.</p>`;
+
+  if (top) {
+    narrative += `<p>You run on <strong>${top.display || top.slug}</strong> ${topPct}% of the time.`;
+    if (stats.length > 1) {
+      const others = stats.slice(1).map(s => `<strong>${s.display || s.slug}</strong> for ${s.requests} request${s.requests!==1?'s':''}`).join(', ');
+      narrative += ` When your work shifted, ctx noticed and switched: ${others}.`;
+    }
+    narrative += `</p>`;
+  }
+
+  if (autoTotal > 0) {
+    narrative += `<p>Auto-select picked your profile <strong>${autoTotal} time${autoTotal!==1?'s':''}</strong>. ctx read the system prompt, spotted a keyword, and switched without you having to do anything.</p>`;
+  } else {
+    narrative += `<p>Auto-select hasn't fired yet. Once ctx spots keywords like "carrier," "data," or "design" in the system prompt, it will switch profiles on its own. You'll see it here when it does.</p>`;
+  }
+
+  // Bar chart rows
+  const maxReqs = Math.max(...stats.map(s => s.requests), 1);
+  const bars = stats.map(s => {
+    const pct = Math.round((s.requests / maxReqs) * 100);
+    return `<div class="pa-bar-row">
+      <div class="pa-bar-label">${s.display || s.slug}</div>
+      <div class="pa-bar-track"><div class="pa-bar-fill" style="width:${pct}%"></div></div>
+      <div class="pa-bar-meta">${s.requests} req &middot; $${s.cost_saved.toFixed(2)} saved${s.auto_selected_count > 0 ? ' &middot; <span style="color:var(--blue)">'+s.auto_selected_count+' auto</span>' : ''}</div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="pa-narrative">${narrative}</div>
+    <div class="card" style="padding:20px 24px">
+      <div class="section-head" style="margin-bottom:12px">Requests by profile</div>
+      ${bars}
+    </div>`;
+}
+
+// ─── Theme toggle ─────────────────────────────────────────
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const isDark = theme === 'dark';
+  document.getElementById('theme-icon').textContent  = isDark ? '☀️' : '🌙';
+  document.getElementById('theme-label').textContent = isDark ? 'Light mode' : 'Dark mode';
+}
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('ctx-theme', next);
+  applyTheme(next);
+}
+(function() {
+  const saved = localStorage.getItem('ctx-theme') || 'dark';
+  applyTheme(saved);
+})();
+
+// ─── Boot ─────────────────────────────────────────────────
+let _userProfile = { long_session_threshold: 26, correction_threshold: 40, calibrated: false, median_session_turns: 15 };
+fetch('/api/user-profile').then(r => r.json()).then(p => { _userProfile = p; }).catch(() => {});
+loadSavings().catch(e => { console.error('loadSavings failed:', e); document.getElementById('narrative-body').textContent = 'Dashboard loaded. Some panels may be unavailable.'; });
+setInterval(() => loadSavings().catch(console.error), 30_000);
+</script>
+</body>
+</html>
