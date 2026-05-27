@@ -227,19 +227,34 @@ pub fn run(
     // fall back to the history-based path in that case.
     let generated = crate::profiles::generate_from_config().is_ok();
     if generated {
-        // Switch to the first useful category profile that was written.
-        let preferred = ["data", "design", "work", "finance", "files", "infra", "shippo", "comms", "other"];
-        let custom_path = crate::config::ctx_dir().join("profiles.toml");
-        if let Ok(content) = std::fs::read_to_string(&custom_path) {
-            if let Ok(profiles) = toml::from_str::<std::collections::HashMap<String, crate::profiles::Profile>>(&content) {
-                for slug in &preferred {
-                    if profiles.contains_key(*slug) {
-                        let _ = crate::profiles::switch(slug, true);
-                        println!("  {} Active profile: {}  (switch any time with `ctx use <profile>`)", "✓".green(), slug);
-                        break;
+        // Only switch away from "all" when the DB has real request history, meaning the
+        // generated profiles are based on what the user actually uses rather than the
+        // full SERVER_COUNTS fallback list. For fresh installs, stay on "all" and let
+        // the first real session inform the choice.
+        let has_history = crate::db::open_db()
+            .and_then(|c| crate::db::request_count(&c))
+            .unwrap_or(0) > 0;
+
+        if has_history {
+            let preferred = ["data", "design", "work", "finance", "files", "infra", "shippo", "comms", "other"];
+            let custom_path = crate::config::ctx_dir().join("profiles.toml");
+            if let Ok(content) = std::fs::read_to_string(&custom_path) {
+                if let Ok(profiles) = toml::from_str::<std::collections::HashMap<String, crate::profiles::Profile>>(&content) {
+                    for slug in &preferred {
+                        if profiles.contains_key(*slug) {
+                            let _ = crate::profiles::switch(slug, true);
+                            println!("  {} Active profile: {}  (switch any time with `ctx use <profile>`)", "✓".green(), slug);
+                            break;
+                        }
                     }
                 }
             }
+        } else {
+            // No history yet: profiles were written but stay on "all" until the user
+            // has run a real session. ctx profile list shows what's available.
+            let _ = crate::profiles::switch("all", false);
+            println!("  {} Profiles generated. Staying on 'all' for now — run `ctx profile list` after", "✓".green());
+            println!("      your first session, then `ctx use <profile>` to activate the right one.");
         }
     } else {
         // Fallback: history-based personal profile, or carrier as last resort.
