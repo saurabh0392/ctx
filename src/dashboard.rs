@@ -316,6 +316,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         // User profile (calibration)
         .route("/api/user-profile", get(api_user_profile))
         .route("/api/similar-sessions", get(api_similar_sessions))
+        .route("/api/profile-suggest", post(api_profile_suggest))
         .route("/api/pattern-alerts", get(api_pattern_alerts))
         .route("/api/quality-alerts", get(api_quality_alerts))
         .route("/api/profiles/auto", post(api_profiles_auto))
@@ -1383,6 +1384,75 @@ async fn api_similar_sessions(Query(q): Query<SimilarSessionsQuery>) -> Json<Vec
         }
     }
     Json(out)
+}
+
+// ---------------------------------------------------------------------------
+// Profile suggestion via session similarity
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ProfileSuggestBody {
+    dir: String,
+    text: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct ProfileSuggestion {
+    profile: String,
+    confidence: f32,
+    based_on: usize,
+}
+
+/// Embed the caller's working directory + message snippet, find the top-5 similar past sessions,
+/// aggregate which profile they used (weighted by token savings), and persist the result to
+/// ~/.ctx/profile-suggestion.json for filter.js to read on the next request.
+async fn api_profile_suggest(Json(body): Json<ProfileSuggestBody>) -> Json<ProfileSuggestion> {
+    let fallback = ProfileSuggestion { profile: String::new(), confidence: 0.0, based_on: 0 };
+    let Ok(conn) = crate::db::open_db() else { return Json(fallback) };
+    let _ = crate::db::ensure_schema(&conn);
+
+    let query_text = format!("[dir: {}] {}", body.dir.trim(), body.text.trim());
+    let Ok(embedding) = crate::embedder::embed_text(&query_text) else { return Json(fallback) };
+
+    let sims = crate::embedder::similar_sessions_by_query(&conn, &embedding, 5, None)
+        .unwrap_or_default();
+    if sims.is_empty() { return Json(fallback); }
+
+    // Aggregate: for each similar session, weight its profile vote by similarity * tokens_saved.
+    // Skip sessions on "all" — they give no filtering signal.
+    let mut scores: std::collections::HashMap<String, (f32, usize)> = std::collections::HashMap::new();
+    let mut total_weight = 0f32;
+    for (sid, sim) in &sims {
+        if let Ok((profile, tokens_saved)) = conn.query_row(
+            "SELECT COALESCE(profile,''), tokens_saved FROM sessions WHERE id = ?1",
+            rusqlite::params![sid],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        ) {
+            if profile.is_empty() || profile == "all" { continue; }
+            let w = sim * (tokens_saved.max(0) as f32 + 1.0); // +1 so zero-saving sessions still vote
+            let entry = scores.entry(profile).or_insert((0.0, 0));
+            entry.0 += w;
+            entry.1 += 1;
+            total_weight += w;
+        }
+    }
+
+    let Some((best_profile, (best_score, based_on))) = scores
+        .into_iter()
+        .max_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap_or(std::cmp::Ordering::Equal))
+    else { return Json(fallback) };
+
+    // Require at least 2 agreeing sessions to avoid single-session noise.
+    if based_on < 2 { return Json(fallback); }
+
+    let confidence = if total_weight > 0.0 { (best_score / total_weight).min(1.0) } else { 0.0 };
+    let suggestion = ProfileSuggestion { profile: best_profile, confidence, based_on };
+
+    // Persist for filter.js
+    let p = crate::config::ctx_dir().join("profile-suggestion.json");
+    let _ = std::fs::write(&p, serde_json::to_string(&suggestion).unwrap_or_default());
+
+    Json(suggestion)
 }
 
 async fn api_pattern_alerts() -> Json<Vec<crate::conversations::PatternAlert>> {

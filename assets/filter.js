@@ -170,7 +170,52 @@ if (global.__CTX_FILTER_PATCHED__) {
         return { slug: activeSlug, auto: false, trigger: null };
       }
     }
+    // Tier 3: embedding-based suggestion from similar past sessions.
+    // Written by /api/profile-suggest after the previous request — one request stale
+    // by design so it never blocks the hot path.
+    const suggestion = loadProfileSuggestion();
+    if (
+      suggestion &&
+      typeof suggestion.profile === 'string' &&
+      suggestion.profile &&
+      suggestion.based_on >= 2 &&
+      suggestion.confidence >= 0.4 &&
+      cfg.profiles && cfg.profiles[suggestion.profile]
+    ) {
+      const slug = suggestion.profile;
+      if (slug !== activeSlug) {
+        return { slug: slug, auto: true, trigger: 'similar sessions' };
+      }
+    }
+
     return { slug: activeSlug, auto: false, trigger: null };
+  }
+
+
+  function loadProfileSuggestion() {
+    try {
+      const p = path.join(ctxDir(), 'profile-suggestion.json');
+      return JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch (_e) { return null; }
+  }
+
+  function postProfileSuggest(port, dir, text) {
+    if (!dir && !text) return;
+    const body = JSON.stringify({ dir: dir || '', text: (text || '').slice(0, 200) });
+    const opts = {
+      hostname: '127.0.0.1',
+      port: port,
+      path: '/api/profile-suggest',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body, 'utf8'),
+      },
+    };
+    const req = http.request(opts);
+    req.on('error', function () { /* dashboard not running — ignore */ });
+    req.write(body);
+    req.end();
   }
 
   function filtersTool(toolName, keep) {
@@ -656,8 +701,30 @@ if (global.__CTX_FILTER_PATCHED__) {
       tools_sent_by_server: trace.tools_sent_by_server,
     };
 
+    // Extract first user message text for the profile-suggest call — kept out of rec
+    // so it is never written to analytics.jsonl.
+    let _suggestText = '';
+    try {
+      const msgs = o.messages;
+      if (Array.isArray(msgs)) {
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          if (m && m.role === 'user') {
+            if (typeof m.content === 'string') { _suggestText = m.content; break; }
+            if (Array.isArray(m.content)) {
+              for (let j = 0; j < m.content.length; j++) {
+                const c = m.content[j];
+                if (c && c.type === 'text' && typeof c.text === 'string') { _suggestText = c.text; break; }
+              }
+            }
+            if (_suggestText) break;
+          }
+        }
+      }
+    } catch (_e) {}
+
     const out = Buffer.from(JSON.stringify(o), 'utf8');
-    return { buf: out, rec: rec, stream: stream };
+    return { buf: out, rec: rec, stream: stream, suggestText: _suggestText };
   }
 
   function normalizeOptions(options) {
@@ -815,6 +882,14 @@ if (global.__CTX_FILTER_PATCHED__) {
             tokens_saved: pr.rec.tokens_saved,
             auto_selected: pr.rec.auto_selected,
           });
+          // Fire-and-forget: ask the dashboard to compute a profile suggestion for the next request.
+          (function () {
+            const pe = process.env.CTX_DASHBOARD_PORT;
+            const _cfg = loadCfg();
+            const _port = pe != null && pe !== '' ? Number(pe)
+              : typeof _cfg.dashboard_port === 'number' ? _cfg.dashboard_port : 8789;
+            postProfileSuggest(_port, pr.rec.working_directory || '', pr.suggestText || '');
+          }());
         }
 
         _write(body);
