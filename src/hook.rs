@@ -198,6 +198,7 @@ pub fn user_prompt_submit() -> Result<()> {
                     tools_kept,
                     tools_removed,
                     tokens_saved,
+                    false,
                 );
             }
             let out = json!({
@@ -225,6 +226,23 @@ pub fn user_prompt_submit() -> Result<()> {
             extra.push_str(sig.suggestion.trim());
             extra.push_str("\n\n");
             coach_kind = Some(coach_kind_for_signal(&sig).to_string());
+        }
+    }
+
+    let model_hint = input
+        .get("model")
+        .and_then(|x| x.as_str())
+        .or_else(|| input.pointer("/transcript/model").and_then(|x| x.as_str()));
+    let max_adaptive = crate::adaptive::max_chars_for_hook_input(model_hint);
+    let mut adaptive_fired = false;
+    if cfg.adaptive_prefix_enabled {
+        if let Some(ad) = crate::adaptive::load_adaptive_prefix() {
+            let trimmed = crate::adaptive::truncate_to_char_budget(ad.trim(), max_adaptive);
+            if !trimmed.is_empty() {
+                extra.push_str(&trimmed);
+                extra.push_str("\n\n");
+                adaptive_fired = true;
+            }
         }
     }
 
@@ -257,6 +275,7 @@ pub fn user_prompt_submit() -> Result<()> {
             tools_kept,
             tools_removed,
             tokens_saved,
+            adaptive_fired,
         );
     }
 

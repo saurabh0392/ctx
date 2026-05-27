@@ -35,6 +35,40 @@ fn session_after_ctx(started_at: &str, ctx_since: Option<&str>) -> bool {
     started_at >= since
 }
 
+/// `?since=all` disables the install watermark filter for this request.
+#[derive(Deserialize, Default, Clone)]
+struct SinceQuery {
+    since: Option<String>,
+}
+
+fn use_ctx_watermark(q: &SinceQuery) -> bool {
+    q.since.as_deref() != Some("all")
+}
+
+fn watermark_ts(conn: &rusqlite::Connection, q: &SinceQuery) -> Option<String> {
+    if !use_ctx_watermark(q) {
+        return None;
+    }
+    crate::db::get_ctx_active_since(conn)
+}
+
+fn record_ts_after_watermark(ts: &str, wm: Option<&str>) -> bool {
+    match wm {
+        None => true,
+        Some(s) => ts >= s,
+    }
+}
+
+fn fmt_tok(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 fn open_ctx_db() -> Option<rusqlite::Connection> {
     let c = crate::db::open_db().ok()?;
     crate::db::ensure_schema(&c).ok()?;
@@ -70,41 +104,79 @@ fn timeline_from_sessions(conn: &rusqlite::Connection, cutoff_iso: &str, ctx_sin
     rows.filter_map(|x| x.ok()).collect()
 }
 
-fn savings_sessions_from_db(conn: &rusqlite::Connection) -> Vec<crate::analytics::Session> {
-    let ctx_since = crate::db::get_ctx_active_since(conn)
-        .unwrap_or_default();
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT started_at, COALESCE(duration_mins, 0), COALESCE(turn_count, 0),
+fn map_savings_session_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<crate::analytics::Session> {
+    Ok(crate::analytics::Session {
+        started_at: r.get(0)?,
+        duration_mins: r.get::<_, i64>(1)?,
+        requests: r.get::<_, i64>(2)? as usize,
+        tools_removed: r.get::<_, i64>(3)? as usize,
+        tokens_saved: r.get::<_, i64>(4)? as usize,
+        cost: r.get(5)?,
+        profile: r.get(6)?,
+        working_directory: r.get(7)?,
+    })
+}
+
+fn savings_sessions_from_db(conn: &rusqlite::Connection, watermark: Option<&str>) -> Vec<crate::analytics::Session> {
+    let mut out = Vec::new();
+    if let Some(since) = watermark {
+        let batch: Vec<crate::analytics::Session> = {
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT started_at, COALESCE(duration_mins, 0), COALESCE(turn_count, 0),
                 COALESCE(tools_removed, 0), COALESCE(cache_read_tokens, 0), COALESCE(total_usd, 0.0),
                 COALESCE(profile, ''), COALESCE(NULLIF(TRIM(working_directory), ''), project)
          FROM sessions
          WHERE started_at >= ?1
          ORDER BY started_at DESC
          LIMIT 20",
-    ) else {
-        return vec![];
-    };
-    let rows = stmt.query_map(params![ctx_since], |r| {
-        Ok(crate::analytics::Session {
-            started_at: r.get(0)?,
-            duration_mins: r.get::<_, i64>(1)?,
-            requests: r.get::<_, i64>(2)? as usize,
-            tools_removed: r.get::<_, i64>(3)? as usize,
-            tokens_saved: r.get::<_, i64>(4)? as usize,
-            cost: r.get(5)?,
-            profile: r.get(6)?,
-            working_directory: r.get(7)?,
-        })
-    });
-    let Ok(rows) = rows else { return vec![] };
-    rows.filter_map(|x| x.ok()).collect()
+            ) else {
+                return vec![];
+            };
+            let x = match stmt.query_map(params![since], map_savings_session_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
+    } else {
+        let batch: Vec<crate::analytics::Session> = {
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT started_at, COALESCE(duration_mins, 0), COALESCE(turn_count, 0),
+                COALESCE(tools_removed, 0), COALESCE(cache_read_tokens, 0), COALESCE(total_usd, 0.0),
+                COALESCE(profile, ''), COALESCE(NULLIF(TRIM(working_directory), ''), project)
+         FROM sessions
+         ORDER BY started_at DESC
+         LIMIT 20",
+            ) else {
+                return vec![];
+            };
+            let x = match stmt.query_map([], map_savings_session_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
+    }
+    out
 }
 
-fn projects_from_sessions(conn: &rusqlite::Connection) -> Vec<ProjectRow> {
-    let ctx_since = crate::db::get_ctx_active_since(conn)
-        .unwrap_or_default();
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT COALESCE(NULLIF(TRIM(working_directory), ''), '(unknown)') AS wd,
+fn map_project_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRow> {
+    Ok(ProjectRow {
+        working_directory: r.get(0)?,
+        requests: r.get::<_, i64>(1)? as usize,
+        tokens_saved: r.get::<_, i64>(2)? as usize,
+        cost_saved: r.get(3)?,
+    })
+}
+
+fn projects_from_sessions(conn: &rusqlite::Connection, watermark: Option<&str>) -> Vec<ProjectRow> {
+    let mut out = Vec::new();
+    if let Some(since) = watermark {
+        let batch: Vec<ProjectRow> = {
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT COALESCE(NULLIF(TRIM(working_directory), ''), '(unknown)') AS wd,
                 CAST(COALESCE(SUM(turn_count), 0) AS INTEGER) AS turns,
                 CAST(COALESCE(SUM(cache_read_tokens), 0) AS INTEGER) AS toks,
                 COALESCE(SUM(total_usd), 0.0) AS spend
@@ -113,70 +185,209 @@ fn projects_from_sessions(conn: &rusqlite::Connection) -> Vec<ProjectRow> {
          GROUP BY wd
          ORDER BY spend DESC
          LIMIT 40",
-    ) else {
-        return vec![];
-    };
-    let rows = stmt.query_map(params![ctx_since], |r| {
-        Ok(ProjectRow {
-            working_directory: r.get(0)?,
-            requests: r.get::<_, i64>(1)? as usize,
-            tokens_saved: r.get::<_, i64>(2)? as usize,
-            cost_saved: r.get(3)?,
-        })
-    });
-    let Ok(rows) = rows else { return vec![] };
-    rows.filter_map(|x| x.ok()).collect()
+            ) else {
+                return vec![];
+            };
+            let x = match stmt.query_map(params![since], map_project_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
+    } else {
+        let batch: Vec<ProjectRow> = {
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT COALESCE(NULLIF(TRIM(working_directory), ''), '(unknown)') AS wd,
+                CAST(COALESCE(SUM(turn_count), 0) AS INTEGER) AS turns,
+                CAST(COALESCE(SUM(cache_read_tokens), 0) AS INTEGER) AS toks,
+                COALESCE(SUM(total_usd), 0.0) AS spend
+         FROM sessions
+         GROUP BY wd
+         ORDER BY spend DESC
+         LIMIT 40",
+            ) else {
+                return vec![];
+            };
+            let x = match stmt.query_map([], map_project_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
+    }
+    out
 }
 
-fn tool_usage_from_invocations(conn: &rusqlite::Connection) -> Vec<ServerHeat> {
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT server_prefix, CAST(COUNT(*) AS INTEGER) AS n
+fn map_server_heat_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ServerHeat> {
+    let server: String = r.get(0)?;
+    let n: i64 = r.get(1)?;
+    Ok(ServerHeat {
+        server,
+        tools_sent: 0,
+        tools_invoked: n as usize,
+    })
+}
+
+fn tool_usage_from_invocations(conn: &rusqlite::Connection, watermark: Option<&str>) -> Vec<ServerHeat> {
+    let mut out = Vec::new();
+    if let Some(since) = watermark {
+        let batch: Vec<ServerHeat> = {
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT server_prefix, CAST(COUNT(*) AS INTEGER) AS n
+         FROM tool_invocations
+         WHERE ts >= ?1
+         GROUP BY server_prefix
+         ORDER BY n DESC
+         LIMIT 40",
+            ) else {
+                return vec![];
+            };
+            let x = match stmt.query_map(params![since], map_server_heat_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
+    } else {
+        let batch: Vec<ServerHeat> = {
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT server_prefix, CAST(COUNT(*) AS INTEGER) AS n
          FROM tool_invocations
          GROUP BY server_prefix
          ORDER BY n DESC
          LIMIT 40",
-    ) else {
-        return vec![];
-    };
-    let rows = stmt.query_map([], |r| {
-        let server: String = r.get(0)?;
-        let n: i64 = r.get(1)?;
-        Ok(ServerHeat {
-            server,
-            tools_sent: 0,
-            tools_invoked: n as usize,
-        })
-    });
-    let Ok(rows) = rows else { return vec![] };
-    rows.filter_map(|x| x.ok()).collect()
+            ) else {
+                return vec![];
+            };
+            let x = match stmt.query_map([], map_server_heat_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
+    }
+    out
+}
+
+fn gate_activity_from_hook_trace(h: &crate::db::HookTraceRow) -> Option<GateActivity> {
+    let mut events: Vec<GateEvent> = Vec::new();
+    if h.tools_removed > 0 {
+        events.push(GateEvent {
+            id: "filter".into(),
+            label: format!("-{} tools -{}", h.tools_removed, fmt_tok(h.tokens_saved)),
+        });
+    }
+    if h.auto_selected {
+        let trig = h.auto_trigger.as_deref().unwrap_or("matched");
+        events.push(GateEvent {
+            id: "auto".into(),
+            label: format!("switched to {} ({})", h.profile, trig),
+        });
+    }
+    if h.inject_fired {
+        events.push(GateEvent {
+            id: "inject".into(),
+            label: "prefix applied".into(),
+        });
+    }
+    if h.adaptive_fired {
+        events.push(GateEvent {
+            id: "adaptive".into(),
+            label: "adaptive prefix".into(),
+        });
+    }
+    if let Some(ref k) = h.coach_kind {
+        events.push(GateEvent {
+            id: "coach".into(),
+            label: k.clone(),
+        });
+    }
+    if h.budget_fired {
+        events.push(GateEvent {
+            id: "budget".into(),
+            label: "budget hint".into(),
+        });
+    }
+    if events.is_empty() {
+        return None;
+    }
+    Some(GateActivity {
+        ts: h.ts.clone(),
+        gates: events,
+        session_id: h.session_id.clone(),
+        working_directory: if h.working_directory.is_empty() {
+            None
+        } else {
+            Some(h.working_directory.clone())
+        },
+        profile: if h.profile.is_empty() {
+            None
+        } else {
+            Some(h.profile.clone())
+        },
+        auto_trigger: h.auto_trigger.clone(),
+    })
 }
 
 fn gates_when_no_requests(
     conn: &rusqlite::Connection,
     today: &str,
     config: &crate::config::Config,
+    wm: Option<&str>,
 ) -> GatesResponse {
     let inject_on = config.inject_enabled && crate::config::system_prefix_path().exists();
+    let adaptive_on = config.adaptive_prefix_enabled;
     let auto_on = config.auto_profile_enabled;
     let budget_threshold = crate::budget_guard::session_threshold_usd();
-    let ctx_since = crate::db::get_ctx_active_since(conn)
-        .unwrap_or_default();
 
-    let (sess_today, corr_sum, compact_sum, turn_sum): (i64, i64, i64, i64) = conn
-        .query_row(
+    let (sess_today, corr_sum, compact_sum, turn_sum): (i64, i64, i64, i64) = if let Some(since) = wm {
+        conn.query_row(
             "SELECT COUNT(*), COALESCE(SUM(correction_turns),0), COALESCE(SUM(hit_compact),0), COALESCE(SUM(turn_count),0)
              FROM sessions WHERE substr(started_at, 1, 10) = ?1 AND started_at >= ?2",
-            params![today, ctx_since],
+            params![today, since],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .unwrap_or((0, 0, 0, 0));
+        .unwrap_or((0, 0, 0, 0))
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(correction_turns),0), COALESCE(SUM(hit_compact),0), COALESCE(SUM(turn_count),0)
+             FROM sessions WHERE substr(started_at, 1, 10) = ?1",
+            params![today],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0))
+    };
+
+    let adaptive_today: i64 = if let Some(since) = wm {
+        conn.query_row(
+            "SELECT COUNT(*) FROM hook_traces WHERE substr(ts,1,10)=?1 AND adaptive_fired=1 AND ts >= ?2",
+            params![today, since],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM hook_traces WHERE substr(ts,1,10)=?1 AND adaptive_fired=1",
+            params![today],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    };
 
     let corr_n = corr_sum.max(0) as usize;
     let compact_n = compact_sum.max(0) as usize;
 
-    let sessions_note = format!(
-        "No per-request filter events in ctx.db. Post-ctx session data: {sess_today} sessions today, {turn_sum} turns, {corr_n} correction turns, {compact_n} context compacts (from ingest, filtered to after ctx activation)."
-    );
+    let sessions_note = if wm.is_some() {
+        format!(
+            "No per-request filter events in ctx.db. Post-ctx session data: {sess_today} sessions today, {turn_sum} turns, {corr_n} correction turns, {compact_n} context compacts (from ingest, filtered to after ctx activation)."
+        )
+    } else {
+        "No per-request filter events in ctx.db. Showing all historical sessions (watermark off).".into()
+    };
 
     let gates = vec![
         GateStat {
@@ -199,8 +410,21 @@ fn gates_when_no_requests(
             id: "inject".into(),
             name: "Inject".into(),
             enabled: inject_on,
-            detail: if inject_on { "system_prefix.md" } else { "no prefix file" }.into(),
+            detail: if inject_on {
+                "system_prefix.md"
+            } else {
+                "no prefix file"
+            }
+            .into(),
             today_count: 0,
+            today_tokens: 0,
+        },
+        GateStat {
+            id: "adaptive".into(),
+            name: "Adaptive prefix".into(),
+            enabled: adaptive_on,
+            detail: "Learned from ctx.db session index".into(),
+            today_count: adaptive_today as usize,
             today_tokens: 0,
         },
         GateStat {
@@ -246,7 +470,49 @@ fn gates_when_no_requests(
     ];
 
     let mut activity: Vec<GateActivity> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
+    fn map_sess_gate_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, i64, i64)> {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    }
+    if let Some(since) = wm {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT started_at, correction_turns, hit_compact
+         FROM sessions
+         WHERE (correction_turns > 0 OR hit_compact > 0)
+           AND started_at >= datetime('now', '-14 days')
+           AND started_at >= ?1
+         ORDER BY started_at DESC
+         LIMIT 25",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![since], map_sess_gate_row) {
+                for row in rows.flatten() {
+                    let (ts, corr, hit) = row;
+                    let mut gates_e: Vec<GateEvent> = Vec::new();
+                    if corr > 0 {
+                        gates_e.push(GateEvent {
+                            id: "coach".into(),
+                            label: format!("{corr} correction turns"),
+                        });
+                    }
+                    if hit > 0 {
+                        gates_e.push(GateEvent {
+                            id: "compress".into(),
+                            label: "context compact".into(),
+                        });
+                    }
+                    if !gates_e.is_empty() {
+                        activity.push(GateActivity {
+                            ts,
+                            gates: gates_e,
+                            session_id: None,
+                            working_directory: None,
+                            profile: None,
+                            auto_trigger: None,
+                        });
+                    }
+                }
+            }
+        }
+    } else if let Ok(mut stmt) = conn.prepare(
         "SELECT started_at, correction_turns, hit_compact
          FROM sessions
          WHERE (correction_turns > 0 OR hit_compact > 0)
@@ -254,13 +520,7 @@ fn gates_when_no_requests(
          ORDER BY started_at DESC
          LIMIT 25",
     ) {
-        if let Ok(rows) = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        }) {
+        if let Ok(rows) = stmt.query_map([], map_sess_gate_row) {
             for row in rows.flatten() {
                 let (ts, corr, hit) = row;
                 let mut gates_e: Vec<GateEvent> = Vec::new();
@@ -280,11 +540,26 @@ fn gates_when_no_requests(
                     activity.push(GateActivity {
                         ts,
                         gates: gates_e,
+                        session_id: None,
+                        working_directory: None,
+                        profile: None,
+                        auto_trigger: None,
                     });
                 }
             }
         }
     }
+
+    if let Ok(rows) = crate::db::load_hook_traces(conn, 50, 0, wm) {
+        for h in rows {
+            if let Some(a) = gate_activity_from_hook_trace(&h) {
+                activity.push(a);
+            }
+        }
+    }
+
+    activity.sort_by(|a, b| b.ts.cmp(&a.ts));
+    activity.truncate(45);
 
     GatesResponse {
         gates,
@@ -327,6 +602,11 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/spend/tips", get(api_spend_tips))
         .route("/api/budget", post(api_set_budget))
         .route("/api/settings", get(api_settings_get).post(api_settings_post))
+        .route(
+            "/api/settings/refresh-adaptive-prefix",
+            post(api_settings_refresh_adaptive_prefix),
+        )
+        .route("/api/settings/reset-watermark", post(api_settings_reset_watermark))
         .route("/api/settings/purge-prompts", post(api_settings_purge_prompts))
         .route("/api/settings/delete-data", post(api_settings_delete_data))
         .route("/api/settings/export", get(api_settings_export))
@@ -466,27 +746,51 @@ struct Stats {
     /// Sum of `total_usd` for sessions in the current calendar month.
     #[serde(default)]
     current_month_session_spend_usd: f64,
+    /// Install watermark from `meta.ctx_active_since` when present.
+    #[serde(default)]
+    ctx_active_since: Option<String>,
+    /// True when `?since=all` was not passed and the DB has a watermark (default view hides pre-install rows).
+    #[serde(default)]
+    dashboard_watermark_filtering: bool,
 }
 
-async fn api_stats() -> Json<Stats> {
+async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
     let records = load_records();
     let config = crate::config::Config::load();
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let wm_ref = wm.as_deref();
 
-    let filter_recs: Vec<_> = records.iter().filter(|r| r.tools_removed > 0).collect();
+    let filter_recs: Vec<_> = records
+        .iter()
+        .filter(|r| r.tools_removed > 0)
+        .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
+        .collect();
     let total_tokens: usize = filter_recs.iter().map(|r| r.tokens_saved).sum();
     let total_tools: usize = filter_recs.iter().map(|r| r.tools_removed).sum();
     let total_kept: usize = filter_recs.iter().map(|r| r.tools_sent_count).sum();
     let all_tokens = total_tokens;
-    let sessions = group_into_sessions(&records);
+    let rec_filtered: Vec<_> = records
+        .iter()
+        .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
+        .cloned()
+        .collect();
+    let sessions = group_into_sessions(&rec_filtered);
 
-    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
+    let spend_ctx = if use_ctx_watermark(&q) {
+        wm.clone()
+            .or_else(|| conn.as_ref().and_then(|c| crate::db::get_ctx_active_since(c)))
+    } else {
+        None
+    };
 
     let spend_sessions = crate::conversations::all_sessions();
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
-    let month_spend: f64 = spend_sessions.iter()
+    let month_spend: f64 = spend_sessions
+        .iter()
         .filter(|s| s.started_at.starts_with(&current_month))
-        .filter(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()))
+        .filter(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()))
         .map(|s| s.total_usd)
         .sum();
     let day = now.day().max(1) as f64;
@@ -505,9 +809,10 @@ async fn api_stats() -> Json<Stats> {
     };
 
     let effective_session_count = if sessions.is_empty() {
-        spend_sessions.iter()
+        spend_sessions
+            .iter()
             .filter(|s| s.started_at.starts_with(&current_month))
-            .filter(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()))
+            .filter(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()))
             .count()
     } else {
         sessions.len()
@@ -515,22 +820,31 @@ async fn api_stats() -> Json<Stats> {
 
     let sessions_fallback = records.is_empty();
 
+    let ctx_active_since = conn.as_ref().and_then(|c| crate::db::get_ctx_active_since(c));
+    let dashboard_watermark_filtering =
+        use_ctx_watermark(&q) && ctx_active_since.is_some();
+
     Json(Stats {
         total_tokens_saved: all_tokens,
         total_tools_removed: total_tools,
         total_tools_kept: total_kept,
         cost_saved: (all_tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
-        cost_saved_worst_case: (total_tokens as f64 / 1_000_000.0) * crate::analytics::WORST_CASE_INPUT_RATE_PER_MTOK,
+        cost_saved_worst_case: (total_tokens as f64 / 1_000_000.0)
+            * crate::analytics::WORST_CASE_INPUT_RATE_PER_MTOK,
         session_count: effective_session_count,
         request_count: filter_recs.len(),
         active_profile: config.active_profile.unwrap_or_else(|| "all".into()),
-        proxy_listening: std::net::TcpStream::connect(
-            format!("127.0.0.1:{}", config.proxy_port.unwrap_or(8788))
-        ).is_ok(),
+        proxy_listening: std::net::TcpStream::connect(format!(
+            "127.0.0.1:{}",
+            config.proxy_port.unwrap_or(8788)
+        ))
+        .is_ok(),
         session_budget_threshold_usd: crate::budget_guard::session_threshold_usd(),
         monthly_burn_projection_usd: projection,
         sessions_fallback,
         current_month_session_spend_usd: month_spend,
+        ctx_active_since,
+        dashboard_watermark_filtering,
     })
 }
 
@@ -542,38 +856,51 @@ struct TimelinePoint {
     requests: usize,
 }
 
-async fn api_timeline() -> Json<Vec<TimelinePoint>> {
+async fn api_timeline(Query(q): Query<SinceQuery>) -> Json<Vec<TimelinePoint>> {
     let records = load_records();
     let now = Utc::now();
     let cutoff = now - Duration::days(30);
     let cutoff_iso = cutoff.to_rfc3339();
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let wm_ref = wm.as_deref();
 
     if !records.is_empty() {
         let mut by_day: HashMap<String, (usize, usize)> = HashMap::new();
         for rec in records.iter().filter(|r| r.tools_removed > 0) {
+            if !record_ts_after_watermark(&rec.ts, wm_ref) {
+                continue;
+            }
             let Ok(ts) = rec.ts.parse::<DateTime<Utc>>() else { continue };
-            if ts < cutoff { continue; }
+            if ts < cutoff {
+                continue;
+            }
             let day = format!("{}-{:02}-{:02}", ts.year(), ts.month(), ts.day());
             let e = by_day.entry(day).or_default();
             e.0 += rec.tokens_saved;
             e.1 += 1;
         }
 
-        let mut points: Vec<TimelinePoint> = by_day.into_iter().map(|(date, (tokens, requests))| {
-            TimelinePoint {
+        let mut points: Vec<TimelinePoint> = by_day
+            .into_iter()
+            .map(|(date, (tokens, requests))| TimelinePoint {
                 date,
                 tokens,
                 cost: (tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
                 requests,
-            }
-        }).collect();
+            })
+            .collect();
         points.sort_by(|a, b| a.date.cmp(&b.date));
         return Json(points);
     }
 
-    if let Some(conn) = open_ctx_db() {
-        let ctx_since = crate::db::get_ctx_active_since(&conn);
-        let points = timeline_from_sessions(&conn, &cutoff_iso, ctx_since.as_deref());
+    if let Some(ref c) = conn {
+        let ctx_line = if use_ctx_watermark(&q) {
+            wm_ref
+        } else {
+            None
+        };
+        let points = timeline_from_sessions(c, &cutoff_iso, ctx_line);
         if !points.is_empty() {
             return Json(points);
         }
@@ -582,15 +909,23 @@ async fn api_timeline() -> Json<Vec<TimelinePoint>> {
     Json(vec![])
 }
 
-async fn api_sessions() -> Json<Vec<crate::analytics::Session>> {
+async fn api_sessions(Query(q): Query<SinceQuery>) -> Json<Vec<crate::analytics::Session>> {
     let records = load_records();
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let wm_ref = wm.as_deref();
     if !records.is_empty() {
-        let mut sessions = group_into_sessions(&records);
+        let rec_filtered: Vec<_> = records
+            .iter()
+            .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
+            .cloned()
+            .collect();
+        let mut sessions = group_into_sessions(&rec_filtered);
         sessions.truncate(20);
         return Json(sessions);
     }
-    if let Some(conn) = open_ctx_db() {
-        let rows = savings_sessions_from_db(&conn);
+    if let Some(ref c) = conn {
+        let rows = savings_sessions_from_db(c, wm_ref);
         if !rows.is_empty() {
             return Json(rows);
         }
@@ -605,13 +940,21 @@ async fn api_sessions() -> Json<Vec<crate::analytics::Session>> {
 #[derive(Deserialize, Default)]
 struct SpendSessionsQuery {
     month: Option<String>,
+    since: Option<String>,
 }
 
-async fn api_spend_monthly() -> Json<Vec<crate::conversations::MonthlySpend>> {
+async fn api_spend_monthly(Query(q): Query<SinceQuery>) -> Json<Vec<crate::conversations::MonthlySpend>> {
     let all = crate::conversations::all_sessions();
-    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
-    let sessions: Vec<_> = all.into_iter()
-        .filter(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()))
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let spend_ctx = if use_ctx_watermark(&q) {
+        wm.or_else(|| conn.as_ref().and_then(|c| crate::db::get_ctx_active_since(c)))
+    } else {
+        None
+    };
+    let sessions: Vec<_> = all
+        .into_iter()
+        .filter(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()))
         .collect();
     let config = crate::config::Config::load();
     let mut months = crate::conversations::monthly_spend(&sessions);
@@ -634,9 +977,18 @@ async fn api_spend_monthly() -> Json<Vec<crate::conversations::MonthlySpend>> {
 async fn api_spend_sessions(
     Query(q): Query<SpendSessionsQuery>,
 ) -> Json<Vec<crate::conversations::SessionCost>> {
-    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
+    let since_q = SinceQuery {
+        since: q.since.clone(),
+    };
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &since_q));
+    let spend_ctx = if use_ctx_watermark(&since_q) {
+        wm.or_else(|| conn.as_ref().and_then(|c| crate::db::get_ctx_active_since(c)))
+    } else {
+        None
+    };
     let mut sessions = crate::conversations::all_sessions();
-    sessions.retain(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()));
+    sessions.retain(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()));
 
     if let Some(month) = &q.month {
         sessions.retain(|s| s.started_at.starts_with(month.as_str()));
@@ -647,10 +999,16 @@ async fn api_spend_sessions(
     Json(sessions)
 }
 
-async fn api_spend_tips() -> Json<Vec<crate::conversations::AdvisorTip>> {
-    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
+async fn api_spend_tips(Query(q): Query<SinceQuery>) -> Json<Vec<crate::conversations::AdvisorTip>> {
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let spend_ctx = if use_ctx_watermark(&q) {
+        wm.or_else(|| conn.as_ref().and_then(|c| crate::db::get_ctx_active_since(c)))
+    } else {
+        None
+    };
     let mut sessions = crate::conversations::all_sessions();
-    sessions.retain(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()));
+    sessions.retain(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()));
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
     sessions.retain(|s| s.started_at.starts_with(&current_month));
@@ -719,6 +1077,11 @@ struct SettingsGetResponse {
     auto_profile_enabled: bool,
     inject_enabled: bool,
     coaching_enabled: bool,
+    adaptive_prefix_enabled: bool,
+    adaptive_prefix_max_chars: Option<usize>,
+    adaptive_prefix_char_budget: usize,
+    adaptive_prefix_preview: String,
+    adaptive_prefix_char_count: usize,
     monthly_budget_usd: Option<f64>,
     monthly_actual_spend_usd: Option<f64>,
     monthly_actual_spend_baseline_usd: Option<f64>,
@@ -726,6 +1089,7 @@ struct SettingsGetResponse {
     embeddings_enabled: bool,
     system_prefix_preview: String,
     ctx_home: String,
+    ctx_active_since: Option<String>,
     db_size_bytes: u64,
     row_counts: SettingsRowCounts,
     last_ingest_at: Option<String>,
@@ -775,6 +1139,12 @@ async fn api_settings_get() -> impl IntoResponse {
         .chars()
         .take(4000)
         .collect();
+    let adaptive_path = crate::config::adaptive_prefix_path();
+    let adaptive_full = std::fs::read_to_string(&adaptive_path).unwrap_or_default();
+    let adaptive_prefix_char_count = adaptive_full.chars().count();
+    let adaptive_prefix_preview = adaptive_full.chars().take(4000).collect::<String>();
+    let adaptive_prefix_char_budget = crate::adaptive::rebuild_max_chars_for_db(&conn);
+    let ctx_active_since = crate::db::get_ctx_active_since(&conn);
     let row_counts = SettingsRowCounts {
         sessions: count_table(&conn, "sessions"),
         turns: count_table(&conn, "turns"),
@@ -791,6 +1161,11 @@ async fn api_settings_get() -> impl IntoResponse {
         auto_profile_enabled: cfg.auto_profile_enabled,
         inject_enabled: cfg.inject_enabled,
         coaching_enabled: cfg.coaching_enabled,
+        adaptive_prefix_enabled: cfg.adaptive_prefix_enabled,
+        adaptive_prefix_max_chars: cfg.adaptive_prefix_max_chars,
+        adaptive_prefix_char_budget,
+        adaptive_prefix_preview,
+        adaptive_prefix_char_count,
         monthly_budget_usd: cfg.monthly_budget_usd,
         monthly_actual_spend_usd: cfg.monthly_actual_spend_usd,
         monthly_actual_spend_baseline_usd: cfg.monthly_actual_spend_baseline_usd,
@@ -798,6 +1173,7 @@ async fn api_settings_get() -> impl IntoResponse {
         embeddings_enabled: cfg.embeddings_enabled(),
         system_prefix_preview,
         ctx_home: crate::config::ctx_dir().to_string_lossy().into_owned(),
+        ctx_active_since,
         db_size_bytes,
         row_counts,
         last_ingest_at,
@@ -812,6 +1188,9 @@ struct SettingsPostBody {
     auto_profile_enabled: Option<bool>,
     inject_enabled: Option<bool>,
     coaching_enabled: Option<bool>,
+    adaptive_prefix_enabled: Option<bool>,
+    /// Omit or use `0` to clear override and use model-based budget.
+    adaptive_prefix_max_chars: Option<usize>,
     monthly_budget_usd: Option<f64>,
     monthly_actual_spend_usd: Option<f64>,
     store_prompt_text: Option<bool>,
@@ -829,6 +1208,12 @@ async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoRespo
     }
     if let Some(v) = body.coaching_enabled {
         cfg.coaching_enabled = v;
+    }
+    if let Some(v) = body.adaptive_prefix_enabled {
+        cfg.adaptive_prefix_enabled = v;
+    }
+    if let Some(v) = body.adaptive_prefix_max_chars {
+        cfg.adaptive_prefix_max_chars = if v == 0 { None } else { Some(v) };
     }
     if let Some(v) = body.monthly_budget_usd {
         cfg.monthly_budget_usd = Some(v);
@@ -874,6 +1259,26 @@ async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoRespo
     }
     let _ = crate::filter_hook::sync_filter_config_from_active_config();
     Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+async fn api_settings_refresh_adaptive_prefix() -> impl IntoResponse {
+    match crate::adaptive::regenerate_adaptive_prefix_file() {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn api_settings_reset_watermark() -> impl IntoResponse {
+    let res: Result<(), anyhow::Error> = (|| {
+        let conn = crate::db::open_db()?;
+        crate::db::ensure_schema(&conn)?;
+        crate::db::reset_ctx_active_since(&conn)?;
+        Ok(())
+    })();
+    match res {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn api_settings_purge_prompts() -> impl IntoResponse {
@@ -1051,9 +1456,16 @@ struct ProfileStat {
     pct_of_total: f64,
 }
 
-async fn api_profiles_analytics() -> Json<Vec<ProfileStat>> {
+async fn api_profiles_analytics(Query(q): Query<SinceQuery>) -> Json<Vec<ProfileStat>> {
     let records = load_records();
-    let filter_recs: Vec<_> = records.iter().filter(|r| r.tools_removed > 0).collect();
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let wm_ref = wm.as_deref();
+    let filter_recs: Vec<_> = records
+        .iter()
+        .filter(|r| r.tools_removed > 0)
+        .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
+        .collect();
     let total = filter_recs.len();
 
     let mut by_profile: HashMap<String, (usize, usize, usize)> = HashMap::new(); // (requests, tokens, auto_count)
@@ -1085,6 +1497,7 @@ async fn api_profiles_analytics() -> Json<Vec<ProfileStat>> {
 struct RequestsQuery {
     limit: Option<usize>,
     offset: Option<usize>,
+    since: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1114,12 +1527,19 @@ struct RequestTrace {
 
 async fn api_requests(Query(q): Query<RequestsQuery>) -> Json<Vec<RequestTrace>> {
     let records = load_records();
+    let since_q = SinceQuery {
+        since: q.since.clone(),
+    };
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &since_q));
+    let wm_ref = wm.as_deref();
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
 
     let traces: Vec<RequestTrace> = records
         .into_iter()
         .filter(|r| r.tools_removed > 0)
+        .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
         .rev()
         .skip(offset)
         .take(limit)
@@ -1159,15 +1579,22 @@ async fn api_requests(Query(q): Query<RequestsQuery>) -> Json<Vec<RequestTrace>>
 struct HookEventsQuery {
     limit: Option<usize>,
     offset: Option<usize>,
+    since: Option<String>,
 }
 
 async fn api_hook_events(Query(q): Query<HookEventsQuery>) -> Json<Vec<crate::db::HookEventRow>> {
     let limit = q.limit.unwrap_or(100).min(500);
     let offset = q.offset.unwrap_or(0);
+    let since_q = SinceQuery {
+        since: q.since.clone(),
+    };
     let Some(conn) = open_ctx_db() else {
         return Json(vec![]);
     };
-    Json(crate::db::load_hook_events(&conn, limit, offset).unwrap_or_default())
+    let wm = watermark_ts(&conn, &since_q);
+    Json(
+        crate::db::load_hook_events(&conn, limit, offset, wm.as_deref()).unwrap_or_default(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1178,15 +1605,20 @@ async fn api_hook_events(Query(q): Query<HookEventsQuery>) -> Json<Vec<crate::db
 struct HookTracesQuery {
     limit: Option<usize>,
     offset: Option<usize>,
+    since: Option<String>,
 }
 
 async fn api_hook_traces(Query(q): Query<HookTracesQuery>) -> Json<Vec<crate::db::HookTraceRow>> {
     let limit = q.limit.unwrap_or(100).min(500);
     let offset = q.offset.unwrap_or(0);
+    let since_q = SinceQuery {
+        since: q.since.clone(),
+    };
     let Some(conn) = open_ctx_db() else {
         return Json(vec![]);
     };
-    Json(crate::db::load_hook_traces(&conn, limit, offset).unwrap_or_default())
+    let wm = watermark_ts(&conn, &since_q);
+    Json(crate::db::load_hook_traces(&conn, limit, offset, wm.as_deref()).unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,11 +1633,18 @@ struct ProjectRow {
     cost_saved: f64,
 }
 
-async fn api_projects() -> Json<Vec<ProjectRow>> {
+async fn api_projects(Query(q): Query<SinceQuery>) -> Json<Vec<ProjectRow>> {
     let records = load_records();
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let wm_ref = wm.as_deref();
     if !records.is_empty() {
         let mut m: HashMap<String, (usize, usize)> = HashMap::new();
-        for r in records.iter().filter(|r| r.tools_removed > 0) {
+        for r in records
+            .iter()
+            .filter(|r| r.tools_removed > 0)
+            .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
+        {
             let wd = if r.working_directory.is_empty() {
                 "(unknown)".to_string()
             } else {
@@ -1228,8 +1667,8 @@ async fn api_projects() -> Json<Vec<ProjectRow>> {
         rows.truncate(40);
         return Json(rows);
     }
-    if let Some(conn) = open_ctx_db() {
-        let mut rows = projects_from_sessions(&conn);
+    if let Some(ref c) = conn {
+        let mut rows = projects_from_sessions(c, wm_ref);
         if !rows.is_empty() {
             rows.sort_by(|a, b| b.cost_saved.partial_cmp(&a.cost_saved).unwrap_or(std::cmp::Ordering::Equal));
             rows.truncate(40);
@@ -1250,12 +1689,18 @@ struct ServerHeat {
     tools_invoked: usize,
 }
 
-async fn api_tool_usage() -> Json<Vec<ServerHeat>> {
+async fn api_tool_usage(Query(q): Query<SinceQuery>) -> Json<Vec<ServerHeat>> {
     let records = load_records();
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let wm_ref = wm.as_deref();
     if !records.is_empty() {
         let mut sent: HashMap<String, usize> = HashMap::new();
         let mut inv: HashMap<String, usize> = HashMap::new();
-        for r in &records {
+        for r in records
+            .iter()
+            .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
+        {
             for (srv, n) in &r.tools_sent_by_server {
                 *sent.entry(srv.clone()).or_default() += n;
             }
@@ -1278,8 +1723,8 @@ async fn api_tool_usage() -> Json<Vec<ServerHeat>> {
         rows.truncate(40);
         return Json(rows);
     }
-    if let Some(conn) = open_ctx_db() {
-        let rows = tool_usage_from_invocations(&conn);
+    if let Some(ref c) = conn {
+        let rows = tool_usage_from_invocations(c, wm_ref);
         if !rows.is_empty() {
             return Json(rows);
         }
@@ -1311,6 +1756,14 @@ struct GateEvent {
 struct GateActivity {
     ts: String,
     gates: Vec<GateEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    working_directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_trigger: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1321,19 +1774,31 @@ struct GatesResponse {
     sessions_fallback_note: Option<String>,
 }
 
-async fn api_gates() -> Json<GatesResponse> {
+async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
     let records = load_records();
     let config = crate::config::Config::load();
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let conn = open_ctx_db();
+    let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
+    let wm_ref = wm.as_deref();
 
     if records.is_empty() {
-        if let Some(conn) = open_ctx_db() {
-            return Json(gates_when_no_requests(&conn, &today, &config));
+        if let Some(ref c) = conn {
+            return Json(gates_when_no_requests(c, &today, &config, wm_ref));
         }
+        return Json(GatesResponse {
+            gates: vec![],
+            activity: vec![],
+            sessions_fallback_note: None,
+        });
     }
 
-    let today_recs: Vec<_> = records.iter().filter(|r| r.ts.starts_with(&today)).collect();
+    let today_recs: Vec<_> = records
+        .iter()
+        .filter(|r| r.ts.starts_with(&today))
+        .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
+        .collect();
 
     let filter_count = today_recs.iter().filter(|r| r.tools_removed > 0).count();
     let filter_tokens: usize = today_recs.iter().map(|r| r.tokens_saved).sum();
@@ -1345,81 +1810,196 @@ async fn api_gates() -> Json<GatesResponse> {
     let compress_count = today_recs.iter().filter(|r| r.compress_chars_saved > 0).count();
     let compress_chars: usize = today_recs.iter().map(|r| r.compress_chars_saved).sum();
 
+    let adaptive_today = conn
+        .as_ref()
+        .map(|c| {
+            if let Some(s) = wm_ref {
+                c.query_row(
+                    "SELECT COUNT(*) FROM hook_traces WHERE substr(ts,1,10)=?1 AND adaptive_fired=1 AND ts >= ?2",
+                    params![today, s],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0) as usize
+            } else {
+                c.query_row(
+                    "SELECT COUNT(*) FROM hook_traces WHERE substr(ts,1,10)=?1 AND adaptive_fired=1",
+                    params![today],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0) as usize
+            }
+        })
+        .unwrap_or(0);
+
     let active_profile = config.active_profile.as_deref().unwrap_or("all").to_string();
     let inject_on = config.inject_enabled && crate::config::system_prefix_path().exists();
+    let adaptive_on = config.adaptive_prefix_enabled;
     let auto_on = config.auto_profile_enabled;
 
     let budget_threshold = crate::budget_guard::session_threshold_usd();
 
     let gates = vec![
         GateStat {
-            id: "filter".into(), name: "Profile Filter".into(), enabled: true,
+            id: "filter".into(),
+            name: "Profile Filter".into(),
+            enabled: true,
             detail: format!("{active_profile} profile"),
-            today_count: filter_count, today_tokens: filter_tokens,
+            today_count: filter_count,
+            today_tokens: filter_tokens,
         },
         GateStat {
-            id: "auto".into(), name: "Auto-Profile".into(), enabled: auto_on,
-            detail: if auto_count > 0 { format!("switched {auto_count}x today") } else { "watching cwd".into() },
-            today_count: auto_count, today_tokens: 0,
+            id: "auto".into(),
+            name: "Auto-Profile".into(),
+            enabled: auto_on,
+            detail: if auto_count > 0 {
+                format!("switched {auto_count}x today")
+            } else {
+                "watching cwd".into()
+            },
+            today_count: auto_count,
+            today_tokens: 0,
         },
         GateStat {
-            id: "inject".into(), name: "Inject".into(), enabled: inject_on,
-            detail: if inject_on { "system_prefix.md" } else { "no prefix file" }.into(),
-            today_count: inject_count, today_tokens: 0,
+            id: "inject".into(),
+            name: "Inject".into(),
+            enabled: inject_on,
+            detail: if inject_on {
+                "system_prefix.md"
+            } else {
+                "no prefix file"
+            }
+            .into(),
+            today_count: inject_count,
+            today_tokens: 0,
         },
         GateStat {
-            id: "coach".into(), name: "Coaching".into(), enabled: true,
-            detail: if coach_count > 0 { format!("{coach_count} signals today") } else { "no signals".to_string() }.into(),
-            today_count: coach_count, today_tokens: 0,
+            id: "adaptive".into(),
+            name: "Adaptive prefix".into(),
+            enabled: adaptive_on,
+            detail: "Learned from ctx.db session index".into(),
+            today_count: adaptive_today,
+            today_tokens: 0,
         },
         GateStat {
-            id: "behavior".into(), name: "Behavior Guard".into(), enabled: true,
-            detail: if behavior_count > 0 { format!("{behavior_count} hints fired") } else { "monitoring history".to_string() }.into(),
-            today_count: behavior_count, today_tokens: 0,
+            id: "coach".into(),
+            name: "Coaching".into(),
+            enabled: true,
+            detail: if coach_count > 0 {
+                format!("{coach_count} signals today")
+            } else {
+                "no signals".to_string()
+            }
+            .into(),
+            today_count: coach_count,
+            today_tokens: 0,
         },
         GateStat {
-            id: "budget".into(), name: "Budget Guard".into(), enabled: true,
+            id: "behavior".into(),
+            name: "Behavior Guard".into(),
+            enabled: true,
+            detail: if behavior_count > 0 {
+                format!("{behavior_count} hints fired")
+            } else {
+                "monitoring history".to_string()
+            }
+            .into(),
+            today_count: behavior_count,
+            today_tokens: 0,
+        },
+        GateStat {
+            id: "budget".into(),
+            name: "Budget Guard".into(),
+            enabled: true,
             detail: if budget_count > 0 {
                 "threshold crossed".into()
             } else {
                 format!("~${budget_threshold:.0} session threshold (from monthly budget)")
             },
-            today_count: budget_count, today_tokens: 0,
+            today_count: budget_count,
+            today_tokens: 0,
         },
         GateStat {
-            id: "compress".into(), name: "Bash Compress".into(), enabled: true,
-            detail: if compress_chars > 0 { fmt_tok(compress_chars / 4) + " tok saved" } else { "hook ready".into() },
-            today_count: compress_count, today_tokens: compress_chars / 4,
+            id: "compress".into(),
+            name: "Bash Compress".into(),
+            enabled: true,
+            detail: if compress_chars > 0 {
+                fmt_tok(compress_chars / 4) + " tok saved"
+            } else {
+                "hook ready".into()
+            },
+            today_count: compress_count,
+            today_tokens: compress_chars / 4,
         },
     ];
 
-    let activity: Vec<GateActivity> = records.iter().rev()
+    let activity: Vec<GateActivity> = records
+        .iter()
+        .rev()
+        .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
         .filter_map(|r| {
             let mut events: Vec<GateEvent> = Vec::new();
             if r.tools_removed > 0 {
-                events.push(GateEvent { id: "filter".into(), label: format!("-{} tools  -{}", r.tools_removed, fmt_tok(r.tokens_saved)) });
+                events.push(GateEvent {
+                    id: "filter".into(),
+                    label: format!("-{} tools  -{}", r.tools_removed, fmt_tok(r.tokens_saved)),
+                });
             }
             if r.auto_selected {
                 let trig = r.auto_trigger.as_deref().unwrap_or("matched");
-                events.push(GateEvent { id: "auto".into(), label: format!("switched to {}  ({})", r.profile, trig) });
+                events.push(GateEvent {
+                    id: "auto".into(),
+                    label: format!("switched to {}  ({})", r.profile, trig),
+                });
             }
             if r.inject_fired {
-                events.push(GateEvent { id: "inject".into(), label: "prefix applied".into() });
+                events.push(GateEvent {
+                    id: "inject".into(),
+                    label: "prefix applied".into(),
+                });
             }
             if let Some(kind) = &r.coach_kind {
-                events.push(GateEvent { id: "coach".into(), label: kind.clone() });
+                events.push(GateEvent {
+                    id: "coach".into(),
+                    label: kind.clone(),
+                });
             }
             if let Some(kind) = &r.behavior_kind {
-                events.push(GateEvent { id: "behavior".into(), label: kind.clone() });
+                events.push(GateEvent {
+                    id: "behavior".into(),
+                    label: kind.clone(),
+                });
             }
             if r.budget_fired {
-                events.push(GateEvent { id: "budget".into(), label: "cost alert fired".into() });
+                events.push(GateEvent {
+                    id: "budget".into(),
+                    label: "cost alert fired".into(),
+                });
             }
             if r.compress_chars_saved > 0 {
-                events.push(GateEvent { id: "compress".into(), label: format!("-{} chars compressed", r.compress_chars_saved) });
+                events.push(GateEvent {
+                    id: "compress".into(),
+                    label: format!("-{} chars compressed", r.compress_chars_saved),
+                });
             }
-            if events.is_empty() { return None; }
-            Some(GateActivity { ts: r.ts.clone(), gates: events })
+            if events.is_empty() {
+                return None;
+            }
+            Some(GateActivity {
+                ts: r.ts.clone(),
+                gates: events,
+                session_id: None,
+                working_directory: if r.working_directory.is_empty() {
+                    None
+                } else {
+                    Some(r.working_directory.clone())
+                },
+                profile: if r.profile.is_empty() {
+                    None
+                } else {
+                    Some(r.profile.clone())
+                },
+                auto_trigger: r.auto_trigger.clone(),
+            })
         })
         .take(40)
         .collect();
@@ -1592,14 +2172,49 @@ struct ProjectHealthRow {
     correction_rate: f64,
 }
 
-async fn api_project_health() -> Json<Vec<ProjectHealthRow>> {
+async fn api_project_health(Query(q): Query<SinceQuery>) -> Json<Vec<ProjectHealthRow>> {
     let mut out = Vec::new();
     let Ok(conn) = crate::db::open_db() else {
         return Json(out);
     };
     let _ = crate::db::ensure_schema(&conn);
-    let sql = r#"
-        SELECT working_directory,
+    let wm = watermark_ts(&conn, &q);
+
+    fn map_health_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectHealthRow> {
+        Ok(ProjectHealthRow {
+            working_directory: r.get(0)?,
+            week: r.get(1)?,
+            spend_usd: r.get(2)?,
+            correction_rate: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+        })
+    }
+
+    if let Some(since) = wm.as_deref() {
+        let batch: Vec<ProjectHealthRow> = {
+            let Ok(mut stmt) = conn.prepare(
+                r#"SELECT working_directory,
+               strftime('%Y-W%W', started_at) AS wk,
+               SUM(total_usd) AS spend,
+               AVG(CAST(correction_turns AS REAL) / MAX(turn_count, 1)) AS corr
+        FROM sessions
+        WHERE started_at != '' AND started_at >= ?1
+        GROUP BY working_directory, wk
+        ORDER BY wk DESC
+        LIMIT 120"#,
+            ) else {
+                return Json(out);
+            };
+            let x = match stmt.query_map(params![since], map_health_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
+    } else {
+        let batch: Vec<ProjectHealthRow> = {
+            let Ok(mut stmt) = conn.prepare(
+                r#"SELECT working_directory,
                strftime('%Y-W%W', started_at) AS wk,
                SUM(total_usd) AS spend,
                AVG(CAST(correction_turns AS REAL) / MAX(turn_count, 1)) AS corr
@@ -1607,32 +2222,21 @@ async fn api_project_health() -> Json<Vec<ProjectHealthRow>> {
         WHERE started_at != ''
         GROUP BY working_directory, wk
         ORDER BY wk DESC
-        LIMIT 120
-    "#;
-    if let Ok(mut stmt) = conn.prepare(sql) {
-        let rows = stmt.query_map([], |r| {
-            Ok(ProjectHealthRow {
-                working_directory: r.get(0)?,
-                week: r.get(1)?,
-                spend_usd: r.get(2)?,
-                correction_rate: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-            })
-        });
-        if let Ok(rows) = rows {
-            for row in rows.flatten() {
-                out.push(row);
-            }
-        }
+        LIMIT 120"#,
+            ) else {
+                return Json(out);
+            };
+            let x = match stmt.query_map([], map_health_row) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            x
+        };
+        out.extend(batch);
     }
     Json(out)
 }
 
 async fn api_prompt_clusters() -> Json<Vec<serde_json::Value>> {
     Json(vec![])
-}
-
-fn fmt_tok(n: usize) -> String {
-    if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1_000_000.0) }
-    else if n >= 1_000 { format!("{:.1}K", n as f64 / 1_000.0) }
-    else { n.to_string() }
 }

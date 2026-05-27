@@ -596,6 +596,30 @@ body {
 .gf-chip-behavior { background: rgba(196,181,253,.12); color: var(--purple); }
 .gf-chip-budget   { background: rgba(251,146,60,.12);  color: var(--orange); }
 .gf-chip-compress { background: rgba(34,211,238,.12);  color: var(--cyan); }
+.gf-chip-adaptive { background: rgba(167,139,250,.14); color: #c4b5fd; }
+
+.gf-row { border-bottom: 1px solid var(--border); padding: 10px 0; cursor: pointer; }
+.gf-row:last-child { border-bottom: none; }
+.gf-row-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.gf-count-badge { font-size: 11px; font-weight: 700; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 2px 8px; color: var(--t2); }
+.gf-detail { display: none; margin-top: 10px; padding: 10px 12px; background: var(--surface2); border-radius: 8px; font-size: 12px; color: var(--t2); line-height: 1.55; }
+.gf-row.expanded .gf-detail { display: block; }
+#gate-feed-summary { font-size: 13px; color: var(--t2); margin-bottom: 14px; line-height: 1.55; }
+
+.ctx-range-bar {
+  margin-left: var(--sidebar);
+  padding: 14px 48px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--t3);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.ctx-range-bar label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.ctx-range-bar input { accent-color: var(--primary); }
 </style>
 </head>
 <body>
@@ -659,8 +683,14 @@ body {
   </div>
 </aside>
 
-<!-- ═══ Tab 1: Savings ═══ -->
+<!-- ═══ Dashboard main ═══ -->
 <div class="main-wrap">
+<div class="ctx-range-bar" id="ctx-range-bar">
+  <span style="font-weight:700;color:var(--t2);text-transform:uppercase;font-size:10px;letter-spacing:.06em">Data</span>
+  <label><input type="radio" name="ctx-data-range" id="ctx-range-wm" value="wm"> Since ctx tracked</label>
+  <label><input type="radio" name="ctx-data-range" id="ctx-range-all" value="all"> All time</label>
+  <span id="ctx-range-meta" style="color:var(--t4);max-width:640px;line-height:1.45"></span>
+</div>
 <div class="tab-panel active" id="tab-savings">
 
   <!-- Narrative summary -->
@@ -669,6 +699,7 @@ body {
     <div class="narrative-body" id="narrative-body">Loading your usage summary...</div>
     <div class="narrative-pills" id="narrative-pills"></div>
   </div>
+  <div class="section-sub" style="margin-bottom:20px">The Data bar above applies to dashboard metrics: Since ctx tracked hides sessions started before install unless you pick All time.</div>
 
   <div id="onboarding-wrap" class="card" style="display:none;margin-bottom:24px;border-color:rgba(147,192,67,.28)">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
@@ -806,6 +837,7 @@ body {
     <button onclick="refreshPromptStats()" id="ps-refresh-btn" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--t3);font-size:11px;padding:4px 10px;cursor:pointer">↻ Refresh</button>
   </div>
   <div class="page-sub">How your spend tracks against your budget, and what's driving your costs.</div>
+  <div class="section-sub" style="margin-top:-28px;margin-bottom:16px">Charts and session lists follow the Data bar: post-install by default, or All time when selected.</div>
 
   <!-- Budget hero -->
   <div class="budget-hero" id="budget-hero">
@@ -903,6 +935,7 @@ body {
 
   <div class="page-title">MCP Profiles</div>
   <div class="page-sub">Control which tools Claude sees. A tighter profile means lower cost per turn and a more focused Claude.</div>
+  <div class="section-sub" style="margin-top:-28px;margin-bottom:16px">Profile analytics respect the Data bar: counts reflect sessions started after ctx install unless you choose All time.</div>
   <button class="new-profile-btn" onclick="openNewProfileModal()">+ New profile</button>
   <button type="button" class="new-profile-btn" style="margin-left:8px;background:var(--surface3)" onclick="regeneratePersonalProfile()">Regenerate personal</button>
   <div class="profiles-grid" id="profiles-grid"><div class="empty">Loading...</div></div>
@@ -913,6 +946,7 @@ body {
 
   <div class="page-title">Request Trace</div>
   <div class="page-sub">Every request ctx intercepted: what it removed, what it kept, and why it chose that profile.</div>
+  <div class="section-sub" style="margin-top:-28px;margin-bottom:16px">The Data bar filters rows by session start time. The Adaptive column shows when the adaptive system prefix was injected for that request.</div>
   <div class="trace-desktop-notice">
     <strong style="color:var(--t1)">Claude Desktop limitation.</strong>
     Request tracing records traffic from Claude Code (CLI or IDE) via hooks and the filter proxy. Standalone Desktop chat does not fire ctx hooks, so those requests do not appear here. Use Claude Code for per-request traces, or run <code>ctx ingest</code> for session-level Desktop data.
@@ -925,7 +959,8 @@ body {
 <div class="tab-panel" id="tab-pipeline">
 
   <div class="page-title">ctx Pipeline</div>
-  <div class="page-sub">Every Claude Code request passes through these 7 gates in sequence. Here is what fired today.</div>
+  <div class="page-sub">Every Claude Code request passes through these gates in sequence. Here is what fired today.</div>
+  <div class="section-sub" style="margin-top:-28px;margin-bottom:24px">Use the Data bar at the top to switch between post-install counts and all indexed history. Rows below group identical chip stacks.</div>
 
   <div id="gate-sessions-fallback-note" class="card" style="display:none;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--t2);border-color:var(--border)"></div>
 
@@ -933,9 +968,11 @@ body {
   <div id="gate-flow-wrap"><div class="empty">Loading...</div></div>
 
   <!-- Gate legend -->
-  <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:0;margin-bottom:32px;font-size:10px;color:var(--t4);text-align:center" id="gate-legend"></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:4px 8px;margin-bottom:32px;font-size:10px;color:var(--t4);text-align:center" id="gate-legend"></div>
 
   <div class="divider"></div>
+
+  <p id="gate-feed-summary" style="margin:0 0 8px"></p>
 
   <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:16px">
     <div>
@@ -954,6 +991,7 @@ body {
 <div class="tab-panel" id="tab-settings">
   <div class="page-title">Settings</div>
   <div class="page-sub">Preferences, privacy, and transparency. All changes write to <code>~/.ctx/config.toml</code> on this machine.</div>
+  <div class="section-sub" style="margin-top:-28px;margin-bottom:16px">Adaptive prefix and Reset watermark live below. The dashboard Data bar uses the same watermark for filtered views.</div>
   <p style="margin:0 0 20px"><button type="button" class="modal-btn secondary" onclick="showOnboardingWizardFromSettings()">Open setup guide</button></p>
 
   <div class="card" style="margin-bottom:20px">
@@ -995,9 +1033,27 @@ body {
     <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
       <input type="checkbox" id="set-coaching"> Coaching (detect correction patterns and nudge Claude from session JSONL)
     </label>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="set-adaptive"> Adaptive prefix (append ~/.ctx/adaptive_prefix.md after static prefix)
+    </label>
+    <label style="font-size:12px;color:var(--t3)">Adaptive max chars (optional override, 0 = model default)</label>
+    <input type="number" id="set-adaptive-max" min="0" max="8000" step="50" placeholder="0 = auto" style="width:100%;max-width:200px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
+    <label style="font-size:12px;color:var(--t3)">Adaptive prefix preview (~/.ctx/adaptive_prefix.md)</label>
+    <div id="set-adaptive-meta" style="font-size:12px;color:var(--t2);margin:6px 0 4px">—</div>
+    <textarea id="set-adaptive-preview" readonly rows="8" style="width:100%;margin-top:4px;font-family:ui-monospace,monospace;font-size:11px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">
+      <button type="button" class="modal-btn secondary" onclick="regenerateAdaptivePrefix()">Regenerate adaptive prefix</button>
+    </div>
     <label style="font-size:12px;color:var(--t3)">System prefix (saved to file)</label>
     <textarea id="set-prefix" rows="10" style="width:100%;margin-top:6px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
     <div style="margin-top:12px"><button type="button" class="modal-btn primary" onclick="saveSettingsFiltering()">Save filtering</button></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-head">Install watermark</div>
+    <div class="section-sub">ctx stamps the first proxy or hook event so the dashboard defaults to data from after you turned ctx on. Reset to include older indexed sessions until the next event re-stamps.</div>
+    <p style="font-size:12px;color:var(--t2);margin:0 0 10px">Current stamp: <code id="set-ctx-since-display">—</code></p>
+    <button type="button" class="modal-btn secondary" onclick="resetDashboardWatermark()" style="border-color:#b45309;color:#fdba74">Reset watermark</button>
   </div>
 
   <div class="card">
@@ -1090,6 +1146,68 @@ function scoreDesc(s) {
 }
 
 const PROFILE_LABELS = { carrier:'Carrier work', data:'Data analysis', design:'Design', minimal:'Minimal', all:'All tools', '':'All tools' };
+
+(function initCtxSinceFromUrl() {
+  const v = new URLSearchParams(window.location.search).get('since');
+  if (v === 'all') localStorage.setItem('ctx-dashboard-since', 'all');
+})();
+
+function appendSince(url) {
+  if (localStorage.getItem('ctx-dashboard-since') !== 'all') return url;
+  return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'since=all';
+}
+
+function syncCtxRangeRadios() {
+  const all = localStorage.getItem('ctx-dashboard-since') === 'all';
+  const ra = document.getElementById('ctx-range-all');
+  const rw = document.getElementById('ctx-range-wm');
+  if (ra && rw) { ra.checked = all; rw.checked = !all; }
+}
+
+function onCtxRangeChange() {
+  const all = document.getElementById('ctx-range-all').checked;
+  if (all) localStorage.setItem('ctx-dashboard-since', 'all');
+  else localStorage.removeItem('ctx-dashboard-since');
+  const url = new URL(window.location.href);
+  if (all) url.searchParams.set('since', 'all');
+  else url.searchParams.delete('since');
+  const q = url.searchParams.toString();
+  history.replaceState({}, '', url.pathname + (q ? '?' + q : '') + url.hash);
+  applyDashboardSinceReload();
+}
+
+function applyDashboardSinceReload() {
+  syncCtxRangeRadios();
+  loadSavings().catch(console.error);
+  if (window._psLoaded) loadPromptStats().catch(console.error);
+  if (window._traceLoaded) loadTrace().catch(console.error);
+  loadPipeline().catch(console.error);
+  const st = document.getElementById('tab-settings');
+  if (st && st.classList.contains('active')) loadSettingsTab();
+}
+
+function updateCtxRangeMetaFromStats(stats) {
+  const el = document.getElementById('ctx-range-meta');
+  if (!el || !stats) return;
+  const all = localStorage.getItem('ctx-dashboard-since') === 'all';
+  if (all) {
+    el.textContent = 'Showing every indexed row, including sessions from before ctx was active when SQLite already had them.';
+    return;
+  }
+  const ts = stats.ctx_active_since;
+  if (stats.dashboard_watermark_filtering && ts) {
+    el.textContent = 'Counts include sessions and requests on or after ' + ts + '. Pick All time to include earlier indexed rows.';
+  } else if (ts) {
+    el.textContent = 'Watermark recorded at ' + ts + '. It reapplies after reset when the next hook or filtered request runs.';
+  } else {
+    el.textContent = 'No install stamp yet. After the first hook or filtered request, charts default to data from after ctx was active.';
+  }
+}
+
+document.getElementById('ctx-range-bar')?.addEventListener('change', (e) => {
+  if (e.target && e.target.name === 'ctx-data-range') onCtxRangeChange();
+});
+syncCtxRangeRadios();
 
 // ─── Settings + onboarding wizard ─────────────────────────
 async function wizPrepareFromServer() {
@@ -1186,6 +1304,20 @@ async function loadSettingsTab() {
     document.getElementById('set-inject').checked = !!s.inject_enabled;
     const setCoach = document.getElementById('set-coaching');
     if (setCoach) setCoach.checked = s.coaching_enabled !== false;
+    const setAdapt = document.getElementById('set-adaptive');
+    if (setAdapt) setAdapt.checked = s.adaptive_prefix_enabled !== false;
+    const setAdaptMax = document.getElementById('set-adaptive-max');
+    if (setAdaptMax) setAdaptMax.value = s.adaptive_prefix_max_chars != null ? String(s.adaptive_prefix_max_chars) : '';
+    const adaptPrev = document.getElementById('set-adaptive-preview');
+    if (adaptPrev) adaptPrev.value = s.adaptive_prefix_preview || '';
+    const adaptMeta = document.getElementById('set-adaptive-meta');
+    if (adaptMeta) {
+      const c = typeof s.adaptive_prefix_char_count === 'number' ? s.adaptive_prefix_char_count : 0;
+      const b = typeof s.adaptive_prefix_char_budget === 'number' ? s.adaptive_prefix_char_budget : 2000;
+      adaptMeta.textContent = 'Adaptive prefix: ' + c.toLocaleString() + ' / ' + b.toLocaleString() + ' chars';
+    }
+    const sinceDisp = document.getElementById('set-ctx-since-display');
+    if (sinceDisp) sinceDisp.textContent = s.ctx_active_since || '(none)';
     document.getElementById('set-prefix').value = s.system_prefix_preview || '';
     const profs = await fetch('/api/profiles').then(r => r.json());
     const sel = document.getElementById('set-profile');
@@ -1232,6 +1364,8 @@ async function saveSettingsFiltering() {
     auto_profile_enabled: document.getElementById('set-auto-prof').checked,
     inject_enabled: document.getElementById('set-inject').checked,
     coaching_enabled: document.getElementById('set-coaching').checked,
+    adaptive_prefix_enabled: document.getElementById('set-adaptive').checked,
+    adaptive_prefix_max_chars: parseInt(document.getElementById('set-adaptive-max').value, 10) || 0,
     system_prefix: document.getElementById('set-prefix').value
   };
   const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1253,6 +1387,22 @@ async function deleteAllData() {
 }
 function exportDb() {
   window.open('/api/settings/export', '_blank');
+}
+
+async function regenerateAdaptivePrefix() {
+  const r = await fetch('/api/settings/refresh-adaptive-prefix', { method: 'POST' }).catch(() => null);
+  if (!r || !r.ok) { alert('Regenerate failed'); return; }
+  await loadSettingsTab();
+  alert('Adaptive prefix file updated from SQLite.');
+}
+
+async function resetDashboardWatermark() {
+  if (!confirm('Clear the install watermark? Charts will include all indexed rows until the next hook or filtered request stamps again.')) return;
+  const r = await fetch('/api/settings/reset-watermark', { method: 'POST' }).catch(() => null);
+  if (!r || !r.ok) { alert('Reset failed'); return; }
+  await loadSettingsTab();
+  applyDashboardSinceReload();
+  alert('Watermark cleared.');
 }
 
 // ─── Tab navigation ───────────────────────────────────────
@@ -1317,14 +1467,15 @@ async function loadSavings() {
   const monthLabel = now.toLocaleDateString('en-US', {month: 'long', year: 'numeric'});
 
   const [stats, timeline, sessions, spendRaw, projectsRows, toolHeat] = await Promise.all([
-    fetch('/api/stats').then(r => r.json()),
-    fetch('/api/timeline').then(r => r.json()),
-    fetch('/api/sessions').then(r => r.json()),
-    fetch(`/api/spend/sessions?month=${monthStr}`).then(r => r.json()).catch(() => []),
-    fetch('/api/projects').then(r => r.json()).catch(() => []),
-    fetch('/api/tool-usage').then(r => r.json()).catch(() => []),
+    fetch(appendSince('/api/stats')).then(r => r.json()),
+    fetch(appendSince('/api/timeline')).then(r => r.json()),
+    fetch(appendSince('/api/sessions')).then(r => r.json()),
+    fetch(appendSince(`/api/spend/sessions?month=${monthStr}`)).then(r => r.json()).catch(() => []),
+    fetch(appendSince('/api/projects')).then(r => r.json()).catch(() => []),
+    fetch(appendSince('/api/tool-usage')).then(r => r.json()).catch(() => []),
   ]);
   const spendSessions = Array.isArray(spendRaw) ? spendRaw : [];
+  updateCtxRangeMetaFromStats(stats);
 
   // Proxy status
   const dot = document.getElementById('status-dot');
@@ -1791,10 +1942,10 @@ let _monthlyData = [], _budgetUsd = null, _actualUsd = null, _allSessions = [];
 
 async function loadPromptStats() {
   const [monthly, tips, allSess, dashStats] = await Promise.all([
-    fetch('/api/spend/monthly').then(r => r.json()),
-    fetch('/api/spend/tips').then(r => r.json()),
-    fetch('/api/spend/sessions').then(r => r.json()),
-    fetch('/api/stats').then(r => r.json()).catch(() => ({})),
+    fetch(appendSince('/api/spend/monthly')).then(r => r.json()),
+    fetch(appendSince('/api/spend/tips')).then(r => r.json()),
+    fetch(appendSince('/api/spend/sessions')).then(r => r.json()),
+    fetch(appendSince('/api/stats')).then(r => r.json()).catch(() => ({})),
   ]);
   _monthlyData = monthly;
   _allSessions = allSess;
@@ -1824,7 +1975,7 @@ async function loadIntelligencePanels() {
   try {
     const [alerts, health, patterns] = await Promise.all([
       fetch('/api/quality-alerts').then(r => r.json()).catch(() => []),
-      fetch('/api/project-health').then(r => r.json()).catch(() => []),
+      fetch(appendSince('/api/project-health')).then(r => r.json()).catch(() => []),
       fetch('/api/pattern-alerts').then(r => r.json()).catch(() => []),
     ]);
     const qw = document.getElementById('intel-quality-wrap');
@@ -2065,7 +2216,9 @@ function selectTurn(si, ti) {
 async function loadSpendSessions(month) {
   const el = document.getElementById('spend-sessions-table');
   el.innerHTML = `<div class="empty">Loading...</div>`;
-  const url = month ? `/api/spend/sessions?month=${month}` : '/api/spend/sessions';
+  const url = month
+    ? appendSince(`/api/spend/sessions?month=${encodeURIComponent(month)}`)
+    : appendSince('/api/spend/sessions');
   const sessions = await fetch(url).then(r => r.json());
   window._spendSessions = sessions;
   if (!sessions.length) { el.innerHTML = `<div class="empty">No sessions for ${month}.</div>`; return; }
@@ -2188,8 +2341,8 @@ async function createProfile() {
 // ─── Tab 4: Request Trace ────────────────────────────────
 async function loadTrace() {
   const [requests, hookTraces] = await Promise.all([
-    fetch('/api/requests?limit=100').then(r => r.json()),
-    fetch('/api/hook-traces?limit=100').then(r => r.json()).catch(() => []),
+    fetch(appendSince('/api/requests?limit=100')).then(r => r.json()),
+    fetch(appendSince('/api/hook-traces?limit=100')).then(r => r.json()).catch(() => []),
   ]);
   const el = document.getElementById('trace-list');
 
@@ -2271,6 +2424,7 @@ function hookTraceRow(ht, i) {
     ctxLines.push(`Kept ${toolsKept} tools, stripped ${toolsRemoved} tools (${pctCut}% cut).`);
   }
   if (ht.inject_fired) ctxLines.push('Prepended <strong>system_prefix.md</strong>.');
+  if (ht.adaptive_fired) ctxLines.push('Appended <strong>adaptive_prefix.md</strong> (behavioral profile).');
   if (ht.coach_kind) ctxLines.push(`Coaching: <strong>${esc(ht.coach_kind)}</strong>.`);
   if (ht.budget_fired) ctxLines.push('Session cost alert fired.');
 
@@ -2322,6 +2476,7 @@ function hookTraceRow(ht, i) {
     { id: 'auto', name: 'Auto-Profile', fired: ht.auto_selected, desc: ht.auto_selected ? `Matched ${esc(ht.auto_trigger || 'cwd')} &rarr; ${esc(profileLabel)}` : 'No switch', accent: ga.auto?.accent },
     { id: 'allow', name: 'Profile Filter', fired: toolsRemoved > 0, desc: toolsRemoved > 0 ? `-${toolsRemoved} tools, kept ${toolsKept}` : 'No tools stripped', accent: ga.filter?.accent },
     { id: 'inject', name: 'Inject', fired: ht.inject_fired, desc: ht.inject_fired ? 'system_prefix.md prepended' : 'Not active', accent: ga.inject?.accent },
+    { id: 'adaptive', name: 'Adaptive', fired: !!ht.adaptive_fired, desc: ht.adaptive_fired ? 'adaptive_prefix.md appended' : 'Not active', accent: ga.adaptive?.accent },
     { id: 'coach', name: 'Coaching', fired: !!ht.coach_kind, desc: ht.coach_kind ? esc(ht.coach_kind) : '--', accent: ga.coach?.accent },
     { id: 'budget', name: 'Budget Guard', fired: ht.budget_fired, desc: ht.budget_fired ? 'Cost alert fired' : '--', accent: ga.budget?.accent },
     { id: 'out', name: 'Sent to API', fired: true, desc: `${toolsKept} tools, ~${fmtK(tokensSaved)} tokens saved`, anchor: true },
@@ -2508,6 +2663,7 @@ const GATE_META = {
   filter:   { accent: '#93c043', desc: 'Strips MCP tool schemas not matching the active profile. Biggest token saver.' },
   auto:     { accent: '#60a5fa', desc: 'Reads the working directory from the system prompt and switches profile automatically.' },
   inject:   { accent: '#fbbf24', desc: 'Prepends a custom system_prefix.md to every request when enabled.' },
+  adaptive: { accent: '#a78bfa', desc: 'Appends adaptive_prefix.md built from your indexed session history when enabled.' },
   coach:    { accent: '#f87171', desc: 'Detects correction cascades and re-asks, injects a context hint to break the loop.' },
   behavior: { accent: '#c4b5fd', desc: 'Compares current session patterns against your history and warns early if a costly pattern is repeating.' },
   budget:   { accent: '#fb923c', desc: 'Estimates session cost and fires an AskUserQuestion hint when it crosses the threshold from ~/.ctx/config.toml (monthly_budget_usd pacing).' },
@@ -2515,7 +2671,7 @@ const GATE_META = {
 };
 
 async function loadPipeline() {
-  const data = await fetch('/api/gates').then(r => r.json()).catch(() => ({ gates: [], activity: [], sessions_fallback_note: null }));
+  const data = await fetch(appendSince('/api/gates')).then(r => r.json()).catch(() => ({ gates: [], activity: [], sessions_fallback_note: null }));
   const noteEl = document.getElementById('gate-sessions-fallback-note');
   if (noteEl) {
     if (data.sessions_fallback_note) {
@@ -2526,8 +2682,30 @@ async function loadPipeline() {
       noteEl.textContent = '';
     }
   }
+  renderGateFeedSummary(data);
   renderGateFlow(data.gates);
   renderGateFeed(data.activity);
+}
+
+function renderGateFeedSummary(data) {
+  const el = document.getElementById('gate-feed-summary');
+  if (!el) return;
+  const act = data.activity || [];
+  if (!act.length) {
+    el.textContent = 'No pipeline activity yet. Start a Claude Code session. Each prompt flows through ctx and appears here.';
+    return;
+  }
+  let filt = 0, inj = 0, adp = 0, coach = 0, auto = 0;
+  for (const a of act) {
+    for (const g of a.gates) {
+      if (g.id === 'filter') filt++;
+      if (g.id === 'inject') inj++;
+      if (g.id === 'adaptive') adp++;
+      if (g.id === 'coach') coach++;
+      if (g.id === 'auto') auto++;
+    }
+  }
+  el.textContent = 'Feed: ' + act.length + ' events — profile strip ' + filt + ', static prefix ' + inj + ', adaptive ' + adp + ', coaching ' + coach + ', auto-profile ' + auto + '. Click a row for folder and session. Stacks with identical chips show a count badge.';
 }
 
 function renderGateFlow(gates) {
@@ -2574,23 +2752,59 @@ function renderGateFeed(activity) {
     el.innerHTML = `<div class="empty">No gate events yet. Use Claude Code with ctx active (<code>filter.js</code> or the proxy). Events append to analytics as requests flow.</div>`;
     return;
   }
-
-  el.innerHTML = activity.map(a => {
-    const chips = a.gates.map(g => {
-      const cls = `gf-chip gf-chip-${g.id}`;
-      return `<span class="${cls}">${esc(g.label)}</span>`;
+  function chipKey(a) {
+    return a.gates.map(g => g.id).slice().sort().join('|');
+  }
+  const groups = [];
+  for (const a of activity) {
+    const k = chipKey(a);
+    const prev = groups[groups.length - 1];
+    if (prev && prev.key === k) {
+      prev.count++;
+      prev.members.push(a);
+    } else {
+      groups.push({ key: k, count: 1, head: a, members: [a] });
+    }
+  }
+  el.innerHTML = groups.map((g, gi) => {
+    const a = g.head;
+    const chips = a.gates.map(x => {
+      const cls = `gf-chip gf-chip-${x.id}`;
+      return `<span class="${cls}">${esc(x.label)}</span>`;
     }).join('');
-    return `<div class="gf-row">
-      <div class="gf-ts">${fmtTs(a.ts)}</div>
-      <div class="gf-chips">${chips}</div>
+    const badge = g.count > 1 ? `<span class="gf-count-badge">×${g.count}</span>` : '';
+    const meta = [
+      a.session_id ? '<div><strong>Session</strong> ' + esc(a.session_id) + '</div>' : '',
+      a.working_directory ? '<div><strong>Folder</strong> <code>' + esc(a.working_directory) + '</code></div>' : '',
+      a.profile ? '<div><strong>Profile</strong> ' + esc(a.profile) + '</div>' : '',
+      a.auto_trigger ? '<div><strong>Auto trigger</strong> ' + esc(a.auto_trigger) + '</div>' : '',
+    ].filter(Boolean).join('');
+    const times = g.members.map(m => '<div style="font-size:11px;color:var(--t4)">' + esc(m.ts) + '</div>').join('');
+    const stackTimes = g.count > 1
+      ? '<div style="margin-top:8px;font-weight:600;color:var(--t3)">Timestamps in this stack</div>' + times
+      : '';
+    return `<div class="gf-row" id="gf-row-${gi}" onclick="toggleGfRow(${gi})">
+      <div class="gf-row-head">
+        <div class="gf-ts">${fmtTs(a.ts)}</div>
+        ${badge}
+        <div class="gf-chips">${chips}</div>
+      </div>
+      <div class="gf-detail" id="gf-det-${gi}">
+        ${meta}
+        ${stackTimes}
+      </div>
     </div>`;
   }).join('');
+}
+function toggleGfRow(i) {
+  const row = document.getElementById('gf-row-' + i);
+  if (row) row.classList.toggle('expanded');
 }
 
 // ─── Profile analytics ────────────────────────────────────
 async function loadProfileAnalytics() {
   const [stats, profiles] = await Promise.all([
-    fetch('/api/profiles/analytics').then(r => r.json()),
+    fetch(appendSince('/api/profiles/analytics')).then(r => r.json()),
     fetch('/api/profiles').then(r => r.json()),
   ]);
 

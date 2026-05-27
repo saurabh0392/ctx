@@ -1011,6 +1011,10 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
 
     let _ = crate::db::enrich_hook_traces(&conn);
 
+    if crate::config::Config::load().adaptive_prefix_enabled {
+        let _ = crate::adaptive::refresh_adaptive_prefix();
+    }
+
     let ts = chrono::Utc::now().to_rfc3339();
     let _ = conn.execute(
         "INSERT OR REPLACE INTO meta (k, v) VALUES ('last_ingest_at', ?1)",

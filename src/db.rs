@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 pub fn open_db() -> Result<Connection> {
     let path = crate::config::db_path();
@@ -23,6 +23,24 @@ pub fn open_db() -> Result<Connection> {
 
 pub fn db_exists() -> bool {
     crate::config::db_path().exists()
+}
+
+fn migrate_hook_traces_adaptive_fired(conn: &Connection) {
+    let table_exists: bool = conn
+        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
+        .is_ok();
+    if !table_exists {
+        return;
+    }
+    let has: bool = conn
+        .prepare("SELECT adaptive_fired FROM hook_traces LIMIT 0")
+        .is_ok();
+    if !has {
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN adaptive_fired INTEGER DEFAULT 0",
+            [],
+        );
+    }
 }
 
 fn migrate_hook_traces_savings_columns(conn: &Connection) {
@@ -45,6 +63,7 @@ fn migrate_hook_traces_savings_columns(conn: &Connection) {
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
+    migrate_hook_traces_adaptive_fired(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -186,6 +205,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             tools_kept INTEGER DEFAULT 0,
             tools_removed INTEGER DEFAULT 0,
             tokens_saved INTEGER DEFAULT 0,
+            adaptive_fired INTEGER DEFAULT 0,
             -- enriched by ingest (NULL until matched)
             input_tokens INTEGER,
             output_tokens INTEGER,
@@ -224,22 +244,34 @@ pub struct HookEventRow {
     pub payload: String,
 }
 
-pub fn load_hook_events(conn: &Connection, limit: usize, offset: usize) -> Result<Vec<HookEventRow>> {
+pub fn load_hook_events(
+    conn: &Connection,
+    limit: usize,
+    offset: usize,
+    ts_since: Option<&str>,
+) -> Result<Vec<HookEventRow>> {
     ensure_schema(conn)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, ts, hook_type, payload FROM hook_events ORDER BY id DESC LIMIT ?1 OFFSET ?2",
-    )?;
-    let rows = stmt.query_map(params![limit as i64, offset as i64], |r| {
+    fn map_ev(r: &rusqlite::Row<'_>) -> rusqlite::Result<HookEventRow> {
         Ok(HookEventRow {
             id: r.get(0)?,
             ts: r.get(1)?,
             hook_type: r.get(2)?,
             payload: r.get(3)?,
         })
-    })?;
+    }
     let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
+    if let Some(s) = ts_since {
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, hook_type, payload FROM hook_events WHERE ts >= ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt.query_map(params![s, limit as i64, offset as i64], map_ev)?;
+        out.extend(rows.filter_map(|x| x.ok()));
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, hook_type, payload FROM hook_events ORDER BY id DESC LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], map_ev)?;
+        out.extend(rows.filter_map(|x| x.ok()));
     }
     Ok(out)
 }
@@ -261,6 +293,7 @@ pub fn insert_hook_trace(
     tools_kept: usize,
     tools_removed: usize,
     tokens_saved: usize,
+    adaptive_fired: bool,
 ) -> Result<i64> {
     ensure_schema(conn)?;
     let ts = chrono::Utc::now().to_rfc3339();
@@ -268,8 +301,8 @@ pub fn insert_hook_trace(
         r#"INSERT INTO hook_traces (
             ts, session_id, working_directory, profile,
             auto_selected, auto_trigger, inject_fired, coach_kind, budget_fired,
-            tools_kept, tools_removed, tokens_saved
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+            tools_kept, tools_removed, tokens_saved, adaptive_fired
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
         params![
             ts,
             session_id,
@@ -283,6 +316,7 @@ pub fn insert_hook_trace(
             tools_kept as i64,
             tools_removed as i64,
             tokens_saved as i64,
+            adaptive_fired as i64,
         ],
     )?;
     stamp_ctx_active_since(conn);
@@ -311,11 +345,17 @@ pub struct HookTraceRow {
     pub cost_usd: Option<f64>,
     pub model: Option<String>,
     pub enriched: bool,
+    pub adaptive_fired: bool,
 }
 
-pub fn load_hook_traces(conn: &Connection, limit: usize, offset: usize) -> Result<Vec<HookTraceRow>> {
+pub fn load_hook_traces(
+    conn: &Connection,
+    limit: usize,
+    offset: usize,
+    ts_since: Option<&str>,
+) -> Result<Vec<HookTraceRow>> {
     ensure_schema(conn)?;
-    let sql = r#"SELECT
+    let base = r#"SELECT
         id, ts, session_id,
         COALESCE(working_directory, '') AS working_directory,
         COALESCE(profile, '') AS profile,
@@ -329,10 +369,10 @@ pub fn load_hook_traces(conn: &Connection, limit: usize, offset: usize) -> Resul
         COALESCE(tokens_saved, 0) AS tokens_saved,
         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
         cost_usd, model,
-        COALESCE(enriched, 0) AS enriched
-    FROM hook_traces ORDER BY id DESC LIMIT ?1 OFFSET ?2"#;
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![limit as i64, offset as i64], |r| {
+        COALESCE(enriched, 0) AS enriched,
+        COALESCE(adaptive_fired, 0) AS adaptive_fired
+    FROM hook_traces"#;
+    let map_row = |r: &rusqlite::Row<'_>| {
         Ok(HookTraceRow {
             id: r.get(0)?,
             ts: r.get(1)?,
@@ -354,11 +394,24 @@ pub fn load_hook_traces(conn: &Connection, limit: usize, offset: usize) -> Resul
             cost_usd: r.get(17)?,
             model: r.get(18)?,
             enriched: r.get::<_, i64>(19)? != 0,
+            adaptive_fired: r.get::<_, i64>(20)? != 0,
         })
-    })?;
+    };
     let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
+    if let Some(s) = ts_since {
+        let sql = format!("{base} WHERE ts >= ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![s, limit as i64, offset as i64], map_row)?;
+        for row in rows {
+            out.push(row?);
+        }
+    } else {
+        let sql = format!("{base} ORDER BY id DESC LIMIT ?1 OFFSET ?2");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], map_row)?;
+        for row in rows {
+            out.push(row?);
+        }
     }
     Ok(out)
 }
@@ -447,6 +500,12 @@ pub fn get_ctx_active_since(conn: &Connection) -> Option<String> {
         .optional()
         .ok()
         .flatten()
+}
+
+/// Clear the install watermark so the dashboard shows all historical rows again until the next hook or request stamps it.
+pub fn reset_ctx_active_since(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM meta WHERE k = 'ctx_active_since'", [])?;
+    Ok(())
 }
 
 pub fn insert_request(conn: &Connection, rec: &Record) -> Result<i64> {

@@ -45,6 +45,11 @@ pub fn system_prefix_path() -> PathBuf {
     ctx_dir().join("system_prefix.md")
 }
 
+/// Machine-generated behavioral prefix (refreshed on ingest).
+pub fn adaptive_prefix_path() -> PathBuf {
+    ctx_dir().join("adaptive_prefix.md")
+}
+
 pub fn write_json_atomic(path: &std::path::Path, value: &serde_json::Value) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(value)?)?;
@@ -300,6 +305,12 @@ pub struct Config {
     /// When true, `UserPromptSubmit` reads session JSONL and injects coaching via `additionalContext`.
     #[serde(default = "default_true")]
     pub coaching_enabled: bool,
+    /// When true, append `adaptive_prefix.md` (from session index) after the static system prefix.
+    #[serde(default = "default_true")]
+    pub adaptive_prefix_enabled: bool,
+    /// Override max character budget for the adaptive block (default: model-based, max 2000).
+    #[serde(default)]
+    pub adaptive_prefix_max_chars: Option<usize>,
     /// Monthly spend limit in USD -- set to your actual Anthropic billing cap.
     #[serde(default)]
     pub monthly_budget_usd: Option<f64>,
@@ -344,6 +355,7 @@ impl Config {
                 auto_profile_enabled: true,
                 inject_enabled: true,
                 coaching_enabled: true,
+                adaptive_prefix_enabled: true,
                 ..Default::default()
             };
         }
@@ -354,6 +366,7 @@ impl Config {
                 auto_profile_enabled: true,
                 inject_enabled: true,
                 coaching_enabled: true,
+                adaptive_prefix_enabled: true,
                 ..Default::default()
             })
     }

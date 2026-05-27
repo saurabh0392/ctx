@@ -1,6 +1,7 @@
 //! ctx library surface for integration tests and the `ctx` binary.
 
 pub mod analytics;
+pub mod adaptive;
 pub mod ca;
 pub mod behavior_guard;
 pub mod budget_guard;
