@@ -242,12 +242,15 @@ pub fn run(
     // fall back to the history-based path in that case.
     let generated = crate::profiles::generate_from_config().is_ok();
     if generated {
-        // Only switch away from "all" when the DB has real request history, meaning the
-        // generated profiles are based on what the user actually uses rather than the
-        // full SERVER_COUNTS fallback list. For fresh installs, stay on "all" and let
-        // the first real session inform the choice.
+        // Switch away from "all" when the DB has filter-level request history OR
+        // ingested session data. After a teardown + reinstall the requests table is
+        // empty but sessions from JSONL ingest prove prior Claude Code usage.
         let has_history = crate::db::open_db()
-            .and_then(|c| crate::db::request_count(&c))
+            .and_then(|c| {
+                let reqs = crate::db::request_count(&c).unwrap_or(0);
+                let sess = crate::db::session_count(&c).unwrap_or(0);
+                Ok(reqs + sess)
+            })
             .unwrap_or(0) > 0;
 
         if has_history {

@@ -232,6 +232,12 @@ pub fn request_count(conn: &Connection) -> Result<i64> {
     Ok(n)
 }
 
+pub fn session_count(conn: &Connection) -> Result<i64> {
+    ensure_schema(conn)?;
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
+    Ok(n)
+}
+
 pub fn maybe_backfill_requests_from_jsonl(conn: &Connection) -> Result<()> {
     ensure_schema(conn)?;
     let done: Option<String> = conn
