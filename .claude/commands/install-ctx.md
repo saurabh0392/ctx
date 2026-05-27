@@ -10,18 +10,19 @@ If missing, stop and tell the user to install Rust first: https://rustup.rs
 
 ## Get the source
 
-Determine whether ctx is already installed, partially present, or completely new:
+Run these shell commands to check the user's system (not the current workspace):
 
-1. Check if the ctx binary exists: `which ctx`
-2. Check if the source directory exists: `ls ~/Documents/ctx/Cargo.toml`
-3. Check if it's a git repo with the right remote: `cd ~/Documents/ctx && git remote get-url origin`
+```bash
+which ctx 2>/dev/null && echo "BINARY_EXISTS" || echo "NO_BINARY"
+ls ~/Documents/ctx/Cargo.toml 2>/dev/null && echo "SOURCE_EXISTS" || echo "NO_SOURCE"
+cd ~/Documents/ctx 2>/dev/null && git remote get-url origin 2>/dev/null || echo "NOT_A_REPO"
+```
 
-Then act accordingly:
+Then act based on what the commands return:
 
-- **Binary exists + source exists + correct remote**: `cd ~/Documents/ctx && git pull origin main`
-- **Source dir exists but not a git repo** (or wrong remote): leave it alone, build from what's there
-- **Source dir does not exist**: `git clone https://github.com/goshippo/ctx.git ~/Documents/ctx`
-- **Binary exists but no source dir**: the binary is stale, clone fresh
+- **SOURCE_EXISTS + remote contains `goshippo/ctx`**: `cd ~/Documents/ctx && git pull origin main`
+- **SOURCE_EXISTS + NOT_A_REPO or different remote**: build from what's there, do not touch git
+- **NO_SOURCE**: `git clone https://github.com/goshippo/ctx.git ~/Documents/ctx`
 
 ## Build and install
 

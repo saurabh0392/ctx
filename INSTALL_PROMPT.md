@@ -13,11 +13,12 @@ Steps:
 
 1. Check that Rust is installed (`rustc --version`). If missing, tell me to install it from rustup.rs and stop.
 
-2. Get the source:
-   - Check if ~/Documents/ctx/Cargo.toml exists AND it's a git repo with origin pointing to goshippo/ctx.
-   - If yes: cd ~/Documents/ctx && git pull origin main
-   - If the directory exists but is not a git repo or has a different remote: build from what's there, don't touch git.
-   - If the directory doesn't exist: git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
+2. Get the source (check these paths on the filesystem, not the current workspace):
+   - Run: ls ~/Documents/ctx/Cargo.toml (does the source exist?)
+   - Run: cd ~/Documents/ctx && git remote get-url origin (is it the right repo?)
+   - If source exists and remote contains goshippo/ctx: git pull origin main
+   - If source exists but not a git repo or different remote: skip git, build from what's there
+   - If ~/Documents/ctx does not exist at all: git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
 
 3. Build: cd ~/Documents/ctx && cargo install --path .
 
