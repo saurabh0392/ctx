@@ -1,6 +1,13 @@
 # ctx
 
-Rust CLI plus a Node `filter.js` hook for Claude Code and related clients. It strips MCP tool definitions you do not need, records one JSONL line per request when the hook runs, prepends optional coaching text, and ships a local dashboard.
+ctx strips the MCP tool definitions Claude Code doesn't need for the current task, tracks what each session actually costs, and serves a local dashboard. Install with a one-liner — no Rust required.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+ctx setup
+```
+
+After setup, run `ctx profile generate` once to build profiles tailored to your MCP stack, then `ctx use <profile>` to activate one.
 
 ## Compatibility
 
@@ -12,7 +19,8 @@ Rust CLI plus a Node `filter.js` hook for Claude Code and related clients. It st
 | MCP tools (`ctx_spend`, `ctx_sessions`, …) | Yes | Yes | Yes (after MCP config + app restart) |
 | Dashboard | Yes | Yes | Yes |
 | Session ingest + analytics (`ctx ingest`) | Yes | Yes | Yes (Desktop `audit.jsonl` under local-agent sessions) |
-| Periodic auto-ingest | Yes on macOS and Linux via background services | No (run `ctx ingest` or cron) | Yes on macOS and Linux when periodic ingest is installed |
+| Real-time ingest (per turn) | Yes — dashboard updates after every API request via `POST /api/trigger-ingest` | Yes | No (run `ctx ingest` manually) |
+| Periodic background ingest | Yes on macOS and Linux via background services | No (run `ctx ingest` or cron) | Yes on macOS and Linux when periodic ingest is installed |
 | Reload | Command Palette → Reload Window | New shell session | Quit Desktop fully, reopen |
 
 “Claude Code in an IDE” includes Cursor, VS Code, Windsurf, or any editor where Claude Code runs in an integrated terminal. `ctx setup` picks Windsurf or Cursor MCP paths when those environments are detected.
@@ -44,9 +52,16 @@ Detection order in code: Windsurf markers, then Cursor, then VS Code integrated 
 
 Quick paths:
 
-- **Claude Code in an IDE:** Install Rust, `cargo install --path .` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)), run `ctx setup` (`--yes` in CI), then reload the editor window.
-- **Claude Code in a terminal only:** Same build and `ctx setup`, then open a **new** shell so `NODE_OPTIONS` applies. Run `ctx ingest` yourself on schedules where periodic ingest is not installed (see table).
-- **Claude Desktop:** Install from a normal OS terminal, run `ctx setup`, quit Desktop fully and reopen for MCP, then run `ctx ingest` (or wait for the timer) so local-agent `audit.jsonl` feeds the dashboard.
+- **Claude Code in an IDE (recommended):** Run the one-liner below in a terminal, then reload the IDE window.
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+  ctx setup
+  ctx profile generate   # build profiles from your actual MCP stack
+  ctx use <profile>
+  ```
+- **Claude Code in a terminal only:** Same install, then open a **new** shell so `NODE_OPTIONS` applies.
+- **Claude Desktop:** Same install from an OS terminal, run `ctx setup`, then quit Desktop fully and reopen. Per-request filtering and tracing are not available on Desktop (see table), but MCP tools and the dashboard work.
+- **Build from source:** Install Rust from [rustup.rs](https://rustup.rs), then `cargo install --path .` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)).
 
 ### What happens during `ctx setup`
 
@@ -77,14 +92,24 @@ Contributor-level diagrams, module tables, and pipeline detail: [ARCHITECTURE.md
 
 ---
 
-## Build
+## Install
+
+**One-liner (no Rust required):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+```
+
+Downloads the pre-built binary for your platform (macOS arm64/x86_64 or Linux x86_64) from the [latest GitHub release](https://github.com/goshippo/ctx/releases/latest) and installs it to `/usr/local/bin`. Set `CTX_INSTALL_DIR` to override the destination.
+
+**Build from source (requires Rust):**
 
 ```bash
 cargo build --release
 # binary: target/release/ctx
 ```
 
-First-time machine setup:
+After installing the binary, run setup once:
 
 ```bash
 ctx setup
@@ -106,10 +131,24 @@ Keep feature work aligned with the default path so dashboards stay populated for
 
 Profiles live in the Rust side (`profiles` module) and export into `filter-config.json` for the hook. Each profile lists MCP server prefixes to **keep**; everything else is removed from the outbound tools array.
 
+Generate profiles from your actual MCP stack (no usage history required):
+
+```bash
+ctx profile generate
+```
+
+This inspects your configured MCP servers, groups them by category (data, design, comms, work, files, finance, infra), and writes named profiles to `~/.ctx/profiles.toml`. Each profile is named after its primary category and includes communication tools alongside it so common workflows stay intact. Run it once after `ctx setup`, then re-run whenever you add or remove MCP servers.
+
 Switch the active profile:
 
 ```bash
-ctx profile switch data
+ctx use <profile>
+```
+
+List available profiles and their per-request token cost estimates:
+
+```bash
+ctx profile list
 ```
 
 Tighter profiles remove more tool schemas, which saves more tokens on each request.
@@ -136,9 +175,19 @@ Index Claude Code JSONL plus Desktop session logs into the DB:
 ctx ingest
 ```
 
+When running Claude Code in an IDE or terminal, the dashboard updates automatically after every turn. `filter.js` fires a `POST /api/trigger-ingest` to the dashboard server from inside the Node process, so spend and savings figures reflect the most recent request without any manual refresh. Desktop sessions require a manual `ctx ingest` run (or the periodic background service where installed).
+
 ## Configuration
 
 `~/.ctx/config.toml` holds `active_profile`, `monthly_budget_usd`, feature toggles, and proxy port. The session budget guard derives its alert threshold from `monthly_budget_usd` (see `budget_guard::session_threshold_usd`).
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `active_profile` | `all` | Currently active MCP filter profile |
+| `monthly_budget_usd` | (none) | Triggers budget alerts when projected spend approaches this limit |
+| `session_gap_minutes` | `30` | Idle minutes between turns before a new session boundary in analytics |
+| `proxy_port` | `8788` | Local MITM proxy listen port |
+| `dashboard_port` | `8789` | Dashboard HTTP listen port |
 
 ## Repository layout (short)
 
@@ -150,6 +199,8 @@ ctx ingest
 | `src/host.rs` | IDE vs terminal detection for setup output and MCP paths |
 | `assets/filter.js` | In-process request rewriting + JSONL append |
 | `src/dashboard.html` | Embedded dashboard UI |
+| [`scripts/install.sh`](scripts/install.sh) | One-liner binary installer (no Rust required) |
+| [`.github/workflows/release.yml`](.github/workflows/release.yml) | CI release pipeline: builds macOS + Linux binaries, publishes GitHub release |
 
 ## Tests
 

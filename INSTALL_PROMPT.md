@@ -9,26 +9,27 @@ Paste this into Claude Code or Cursor chat. Claude will install ctx for you.
 **Prompt:**
 
 ```
-Install ctx, a local cost-optimization tool for Claude Code. It strips unused MCP tool schemas from API requests, tracks spend, and serves a dashboard. All data stays on this machine. The repo is https://github.com/goshippo/ctx.
-
-Important: before every shell command, source the Rust/Cargo environment so the tools are on PATH:
-  source "$HOME/.cargo/env" 2>/dev/null || true
+Install ctx, a local cost-optimization tool for Claude Code. It strips unused MCP tool schemas from API requests, tracks spend, and serves a dashboard that updates in real time after every turn. All data stays on this machine. The repo is https://github.com/goshippo/ctx.
 
 Steps:
 
-1. Check that Rust is installed. Run: source "$HOME/.cargo/env" 2>/dev/null; rustc --version
-   If missing, tell me to install it from rustup.rs and stop.
+1. Install the ctx binary (no Rust required):
+   Run: curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+   This downloads a pre-built binary for your platform (macOS arm64/x86_64 or Linux x86_64) to /usr/local/bin.
+   If the download fails (air-gapped machine, unsupported platform), fall back to building from source:
+     a. Check that Rust is installed: rustc --version (install from rustup.rs if missing, then stop and ask me)
+     b. Clone or pull: git clone https://github.com/goshippo/ctx.git ~/Documents/ctx (or cd ~/Documents/ctx && git pull)
+     c. Build: source "$HOME/.cargo/env" && cd ~/Documents/ctx && cargo install --locked --path .
 
-2. Get the source (check these paths on the filesystem, not the current workspace):
-   - Run: ls ~/Documents/ctx/Cargo.toml (does the source exist?)
-   - Run: cd ~/Documents/ctx && git remote get-url origin (is it the right repo?)
-   - If source exists and remote contains goshippo/ctx: git pull origin main
-   - If source exists but not a git repo or different remote: skip git, build from what's there
-   - If ~/Documents/ctx does not exist at all: git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
+2. Run setup: ctx setup --yes
 
-3. Build: source "$HOME/.cargo/env" && cd ~/Documents/ctx && cargo install --locked --path .
+3. Generate profiles from your MCP stack: ctx profile generate
+   This creates named profiles (by category: data, design, comms, etc.) in ~/.ctx/profiles.toml.
+   Then activate one: ctx use <profile>  (or leave on 'all' for now)
 
-4. Run setup: source "$HOME/.cargo/env" && ctx setup --yes
+4. Verify:
+   - ctx status should print the active profile
+   (The install script prints the full verification steps; this step just confirms ctx is on PATH)
 
 5. Install the GitHub MCP server so I can work with PRs, issues, and repos from chat (no Docker; uses the official pre-built binary).
    - Detect OS and CPU: uname -s and uname -m. Map to one of: Darwin_arm64, Darwin_x86_64, Linux_arm64, Linux_x86_64 (arm64 and aarch64 count as arm64; amd64 counts as x86_64).
@@ -66,7 +67,8 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 ## What ctx does after install
 
 - **Saves tokens**: strips MCP tool definitions your sessions don't use (~40% reduction with auto-generated personal profile)
-- **Tracks spend**: dashboard at http://127.0.0.1:8789 with savings, spend charts, efficiency scoring
+- **Tracks spend**: dashboard at http://127.0.0.1:8789 with savings, spend charts, and efficiency scoring; updates automatically after every turn via in-process hook, no manual refresh
+- **Profile generator**: `ctx profile generate` inspects your MCP stack and creates named profiles by category (data, design, comms, work, files, infra) with no usage history required
 - **LLM-accessible**: registered as an MCP server so you can ask about your ctx data in any chat
 - **Privacy**: all data under ~/.ctx/, zero telemetry, no network calls beyond your normal Anthropic API traffic
 
@@ -86,29 +88,29 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 
 ## Claude Desktop
 
-Claude Desktop's bash tool runs in a cloud sandbox, not on your local machine. It cannot install software or run `ctx setup` for you. Use the one-liner below from a normal OS terminal (Terminal.app, Windows Terminal, etc.) instead.
+Claude Desktop's bash tool runs in a cloud sandbox, not on your local machine. It cannot install software or run `ctx setup` for you. Use a normal OS terminal (Terminal.app, Windows Terminal, etc.) instead.
 
-**Prerequisite:** Rust must be installed. If `rustc --version` fails, install from https://rustup.rs first.
-
-**One-liner install:**
+**Quickest path (no Rust required):**
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+ctx setup --yes
+ctx profile generate
+```
+
+Then quit Desktop fully and reopen so it picks up the new MCP config.
+
+**Full guided install via the desktop helper script** (also handles the GitHub MCP server interactively):
+
+```bash
+# If you already have the repo cloned:
 bash ~/Documents/ctx/scripts/install-desktop.sh
-```
 
-Non-interactive (accept all GitHub MCP prompts):
-
-```bash
-bash ~/Documents/ctx/scripts/install-desktop.sh --yes
-```
-
-If you do not have the repo cloned yet:
-
-```bash
+# First time — clone then run:
 git clone https://github.com/goshippo/ctx.git ~/Documents/ctx && bash ~/Documents/ctx/scripts/install-desktop.sh
 ```
 
-The script clones/pulls the repo, builds ctx, runs `ctx setup --yes`, verifies the dashboard, runs initial ingest, then interactively offers the GitHub MCP server (pre-built binary into ~/.local/bin, optional gh token, optional merges into Desktop and Cursor configs). Pass `--yes` to accept all prompts without asking. Afterward, quit + reopen Desktop.
+The helper script runs `ctx setup --yes`, verifies the dashboard, runs initial ingest, then interactively offers to install the GitHub MCP server (pre-built binary, no Docker). Pass `--yes` to accept all prompts without asking. Note: the helper script still builds ctx from source using Rust. For the pre-built binary, use the `curl | sh` path above.
 
 **What you get:** MCP tools in Desktop, the local dashboard, and session ingest/analytics.
 
