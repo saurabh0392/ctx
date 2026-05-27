@@ -64,6 +64,7 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     --repo "$REPO" \
     --pattern "ctx-${TARGET}.tar.gz" \
     --dir "$TMP"
+  tar -xzf "$TMP/ctx-${TARGET}.tar.gz" -C "$TMP"
 else
   # Curl path — works when GITHUB_TOKEN is set or if the repo ever becomes public.
   if [ -z "${GITHUB_TOKEN:-}" ]; then
