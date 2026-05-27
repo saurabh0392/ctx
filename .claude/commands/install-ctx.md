@@ -8,21 +8,29 @@ rustc --version
 ```
 If missing, stop and tell the user to install Rust first: https://rustup.rs
 
-## Clone and install
+## Get the source
 
-If `~/Documents/ctx` does not exist, clone it. If it already exists, pull latest.
+Determine whether ctx is already installed, partially present, or completely new:
+
+1. Check if the ctx binary exists: `which ctx`
+2. Check if the source directory exists: `ls ~/Documents/ctx/Cargo.toml`
+3. Check if it's a git repo with the right remote: `cd ~/Documents/ctx && git remote get-url origin`
+
+Then act accordingly:
+
+- **Binary exists + source exists + correct remote**: `cd ~/Documents/ctx && git pull origin main`
+- **Source dir exists but not a git repo** (or wrong remote): leave it alone, build from what's there
+- **Source dir does not exist**: `git clone https://github.com/goshippo/ctx.git ~/Documents/ctx`
+- **Binary exists but no source dir**: the binary is stale, clone fresh
+
+## Build and install
 
 ```bash
-if [ -d ~/Documents/ctx ]; then
-  cd ~/Documents/ctx && git pull
-else
-  git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
-fi
 cd ~/Documents/ctx
 cargo install --path .
 ```
 
-Verify the binary:
+Verify:
 ```bash
 ctx --version
 ```
@@ -45,23 +53,37 @@ This does 6 things:
 
 Run these checks:
 ```bash
-# Proxy is up
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8788/
-# Dashboard is up
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8789/
-# Settings API responds
-curl -s http://127.0.0.1:8789/api/settings | head -c 100
-# MCP server works
+```
+Should return 200.
+
+```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ctx mcp 2>/dev/null | head -c 100
 ```
+Should return JSON with "protocolVersion".
 
-## Post-install
+```bash
+ctx status
+```
 
-Tell the user:
-- Restart Cursor/Claude Code to pick up NODE_OPTIONS and MCP server changes
-- Open http://127.0.0.1:8789 for the dashboard
-- The ctx MCP server is now available in chat. Ask "what's my ctx status?" or "show me cost tips" to use it.
-- Run `ctx use carrier` to switch profiles, or `ctx profile list` to see options
+## What the user needs to do next
+
+Explain this clearly to the user:
+
+> ctx is now installed and running. Three things changed that take effect after you restart Cursor:
+>
+> 1. **Tool filtering**: ctx added `NODE_OPTIONS` to `~/.claude/settings.json`. When Claude Code starts a new process, it loads `~/.ctx/filter.js` which strips unused MCP tool schemas before each API request. This reduces token usage by ~40%. It does not affect your prompts or responses.
+>
+> 2. **MCP server**: ctx registered itself as an MCP server. After restart, you can ask "what's my ctx spend?" or "show me cost tips" in any chat and Claude will call ctx directly.
+>
+> 3. **Dashboard**: Already running at http://127.0.0.1:8789. No restart needed for this.
+>
+> **Action required**: Close and reopen Cursor. This is needed so the new NODE_OPTIONS and MCP server registration are picked up by Claude Code's process.
+
+Also mention:
+- `ctx use carrier` or `ctx profile list` to switch MCP filter profiles
+- `ctx setup --uninstall` reverses everything
+- All data stays under ~/.ctx/. No telemetry.
 
 ## If something fails
 
