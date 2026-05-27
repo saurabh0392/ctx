@@ -315,8 +315,22 @@ pub fn run(
 
     let dashboard_url = format!("http://127.0.0.1:{DASHBOARD_PORT}");
     println!();
-    println!("{} Setup complete. Opening {}", "✓".green().bold(), dashboard_url);
-    let _ = open::that(&dashboard_url);
+    print!("{} Setup complete. Waiting for dashboard...", "✓".green().bold());
+    let _ = stdout().flush();
+    let mut dashboard_ready = false;
+    for _ in 0..20 {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{DASHBOARD_PORT}")).is_ok() {
+            dashboard_ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    if dashboard_ready {
+        println!(" Opening {}", dashboard_url);
+        let _ = open::that(&dashboard_url);
+    } else {
+        println!(" Dashboard not ready yet. Open {} manually.", dashboard_url);
+    }
 
     if is_cursor_ide() && stdin().is_terminal() {
         let _ = maybe_offer_cursor_rule();
