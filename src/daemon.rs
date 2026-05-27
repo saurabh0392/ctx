@@ -8,6 +8,15 @@ pub const DASHBOARD_LABEL: &str = "com.ctx.dashboard";
 pub const INGEST_LABEL: &str = "com.ctx.ingest";
 
 fn ctx_binary() -> String {
+    // Use the path of the currently-running binary so plist entries stay correct
+    // regardless of whether ctx was installed via cargo, the install.sh script
+    // (which defaults to ~/.local/bin), or a custom CTX_INSTALL_DIR.
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.exists() {
+            return exe.to_string_lossy().into_owned();
+        }
+    }
+    // Fallback: cargo install location
     dirs::home_dir()
         .map(|h| h.join(".cargo").join("bin").join("ctx"))
         .and_then(|p| p.to_str().map(|s| s.to_string()))
