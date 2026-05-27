@@ -104,20 +104,24 @@ fi
 if [ -w "$INSTALL_DIR" ]; then
   install -m 755 "$TMP/ctx" "$INSTALL_DIR/ctx"
 elif [ "${CTX_INSTALL_DIR:-}" = "" ]; then
-  # Default dir not writable and no override set: fall back to ~/.local/bin (no sudo)
   INSTALL_DIR="$HOME/.local/bin"
   mkdir -p "$INSTALL_DIR"
   install -m 755 "$TMP/ctx" "$INSTALL_DIR/ctx"
   echo "  (installed to $INSTALL_DIR — add it to PATH if not already there)"
-  # Emit a PATH hint when ~/.local/bin isn't on PATH yet
   case ":${PATH}:" in
     *":$INSTALL_DIR:"*) ;;
     *) echo "  Add to your shell profile:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
   esac
 else
-  # Explicit CTX_INSTALL_DIR set but not writable — sudo is intentional
   echo "Installing to ${INSTALL_DIR} (requires sudo)..."
   sudo install -m 755 "$TMP/ctx" "$INSTALL_DIR/ctx"
+fi
+
+# --------------------------------------------------------------------------
+# macOS: ad-hoc codesign so launchd does not SIGKILL the binary
+# --------------------------------------------------------------------------
+if [ "$OS" = "Darwin" ]; then
+  codesign -s - --force "$INSTALL_DIR/ctx" 2>/dev/null || true
 fi
 
 # --------------------------------------------------------------------------
@@ -133,7 +137,8 @@ else
   echo "✓ ${CTX_VER} installed to ${INSTALL_DIR}/ctx"
   echo ""
   echo "Next steps:"
-  echo "  ctx setup"
-  echo "  ctx profile generate   # build profiles from your MCP stack"
-  echo "  ctx use <profile>"
+  echo "  ctx setup                # writes allowedMcpServers + hooks to ~/.claude/settings.json"
+  echo "  ctx profile generate     # build profiles from your MCP stack"
+  echo "  ctx use <profile>        # activate a profile (writes to settings.json)"
+  echo "  Reload Window in IDE     # Cmd+Shift+P > Reload Window"
 fi

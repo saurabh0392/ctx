@@ -1,4 +1,6 @@
-//! Writes `~/.ctx/filter.js` and `~/.ctx/filter-config.json` for NODE_OPTIONS in-process filtering.
+//! Writes `~/.ctx/filter.js` and `~/.ctx/filter-config.json` for legacy NODE_OPTIONS setups.
+//! **Deprecated:** Claude Code ships a Bun binary where `NODE_OPTIONS --require` is ignored.
+//! Prefer native `allowedMcpServers` + hooks (see `claude_settings` and `ctx setup` / `ctx proxy install`).
 
 use anyhow::{Context, Result};
 use serde::Serialize;

@@ -547,22 +547,26 @@ fn is_ctx_forward_proxy_url(url: &str, port: u16) -> bool {
 
 pub fn install(port: u16, upstream: &str) -> Result<()> {
     if !is_proxy_listening(port) {
-        anyhow::bail!(
-            "ctx proxy is not listening on port {port}.\n\
-             Start it first, then re-run install:\n\
-             \n  ctx proxy start --port {port}\n\
-             \nOr use `ctx setup` which handles the ordering automatically."
+        eprintln!(
+            "{} ctx proxy is not listening on :{port} (optional for native allowlist installs)",
+            "!".yellow()
         );
     }
 
     crate::filter_hook::write_filter_js()?;
     crate::filter_hook::sync_filter_config_from_active_config()?;
-    let filter_abs = crate::filter_hook::filter_js_abs_path_string()?;
 
     let settings_path = crate::config::claude_settings_path();
-    let content = std::fs::read_to_string(&settings_path)
-        .context("Failed to read ~/.claude/settings.json")?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)
+            .context("Failed to read ~/.claude/settings.json")?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        if let Some(parent) = settings_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        serde_json::json!({})
+    };
 
     let mut env = env_object(&settings);
     let proxy_http = proxy_url_for_port(port);
@@ -573,26 +577,6 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
         .map(|s| s.to_string());
 
     let ca_path_opt = ca::canonical_ca_cert_path_string().ok();
-
-    let curr_node = env.get("NODE_OPTIONS").and_then(|v| v.as_str()).unwrap_or("");
-    let merged = crate::filter_hook::merge_node_options_require(Some(curr_node), &filter_abs);
-    let has_forward = is_ctx_forward_proxy_url(
-        env.get("HTTPS_PROXY").and_then(|v| v.as_str()).unwrap_or(""),
-        port,
-    ) || is_ctx_forward_proxy_url(
-        env.get("CLAUDE_CODE_HTTPS_PROXY").and_then(|v| v.as_str()).unwrap_or(""),
-        port,
-    );
-    let extra_ours = ca_path_opt
-        .as_deref()
-        .zip(env.get("NODE_EXTRA_CA_CERTS").and_then(|v| v.as_str()))
-        .map(|(a, b)| a == b)
-        .unwrap_or(false);
-
-    if merged == curr_node && !has_forward && !extra_ours {
-        println!("Already installed (NODE_OPTIONS in-process filter)");
-        return Ok(());
-    }
 
     let mut original_base = prev_anthropic
         .clone()
@@ -631,36 +615,44 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
         }
     }
 
-    env.insert(
-        "NODE_OPTIONS".to_string(),
-        serde_json::Value::String(merged),
-    );
+    if let Some(curr) = env.get("NODE_OPTIONS").and_then(|v| v.as_str()) {
+        match crate::filter_hook::strip_ctx_require_from_node_options(Some(curr)) {
+            Some(st) if !st.trim().is_empty() => {
+                env.insert("NODE_OPTIONS".to_string(), serde_json::Value::String(st));
+            }
+            _ => {
+                env.remove("NODE_OPTIONS");
+            }
+        }
+    }
 
     set_env_object(&mut settings, env);
+
+    let cfg_snapshot = Config::load();
+    let active = cfg_snapshot.active_profile.as_deref().unwrap_or("all");
+    let dash = cfg_snapshot.dashboard_port.unwrap_or(8789);
+    crate::claude_settings::apply_native_ctx_to_settings_doc(&mut settings, active, dash)?;
+
     crate::config::write_json_atomic(&settings_path, &settings)?;
 
     let mut config = Config::load();
     config.proxy_port = Some(port);
     config.proxy_upstream = Some(upstream.to_string());
     config.original_base_url = Some(original_base);
-    config.proxy_install_mode = Some("node_inject".to_string());
+    config.proxy_install_mode = Some("native_hooks".to_string());
     config.save()?;
 
     let host = crate::host::detect_primary_host();
     println!(
-        "{} Claude Code wired for in-process tool filtering",
+        "{} Claude Code wired: allowedMcpServers + hooks (ctx v2 native path)",
         "✓".green().bold()
     );
-    println!("  NODE_OPTIONS includes --require {}", filter_abs);
-    println!("  API traffic uses first-party TLS to Anthropic (no HTTPS_PROXY)");
-    println!(
-        "  ctx proxy on {} still serves dashboard, analytics, and inject when used",
-        proxy_http
-    );
+    println!("  Removed ctx filter.js preload from NODE_OPTIONS when present");
+    println!("  Dashboard hook ingest: http://127.0.0.1:{dash}/api/hook/event");
+    println!("  ctx proxy (optional): {proxy_http} -> {upstream}");
     println!("\nNext steps:");
     println!("  1. {}", host.reload_instruction());
-    println!("     (re-reads NODE_OPTIONS and MCP config without quitting)");
-    println!("  2. Run {} if you change focus profile", "`ctx use carrier`".bold());
+    println!("  2. Run {} after changing profiles", "`ctx use <profile>`".bold());
 
     Ok(())
 }
@@ -726,8 +718,11 @@ pub fn uninstall() -> Result<()> {
     }
 
     set_env_object(&mut settings, env);
-    if crate::config::strip_ctx_managed_hooks_from_settings(&mut settings) {
-        println!("{} Removed ctx hook entries from settings.json", "✓".green());
+    let leg = crate::config::strip_ctx_managed_hooks_from_settings(&mut settings);
+    let nat = crate::claude_settings::strip_ctx_native_hooks_from_settings(&mut settings);
+    let mcp = crate::claude_settings::strip_allowed_mcp_servers(&mut settings);
+    if leg || nat || mcp {
+        println!("{} Removed ctx hooks / allowedMcpServers from settings.json", "✓".green());
     }
     crate::config::write_json_atomic(&settings_path, &settings)?;
 
@@ -782,6 +777,46 @@ pub fn status() -> Result<()> {
             println!("  ANTHROPIC_BASE_URL={anthropic}");
             println!("  NODE_EXTRA_CA_CERTS={node_extra}");
             println!("  NODE_OPTIONS={node_opts}");
+            let mcp_allow = match settings.get("allowedMcpServers") {
+                Some(serde_json::Value::Array(a)) if a.is_empty() => {
+                    "allowedMcpServers=[] (explicit empty)".to_string()
+                }
+                Some(serde_json::Value::Array(a)) => {
+                    format!("allowedMcpServers={} entries", a.len())
+                }
+                None => "allowedMcpServers unset (all MCP servers)".to_string(),
+                _ => "allowedMcpServers present (unexpected shape)".to_string(),
+            };
+            println!("  {mcp_allow}");
+            let ups_ctx = settings
+                .pointer("/hooks/UserPromptSubmit")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|e| crate::claude_settings::entry_is_ctx_user_prompt_hook(e))
+                        .count()
+                })
+                .unwrap_or(0);
+            let async_ctx = [
+                "PostToolUse",
+                "SessionStart",
+                "SessionEnd",
+                "Stop",
+            ]
+            .iter()
+            .filter(|k| {
+                settings
+                    .pointer(&format!("/hooks/{k}"))
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|arr| {
+                        arr.iter()
+                            .any(|e| crate::claude_settings::entry_is_ctx_hook_http_endpoint(e))
+                    })
+            })
+            .count();
+            println!(
+                "  ctx v2 hooks: UserPromptSubmit (ctx)={ups_ctx}, async HTTP to dashboard keys={async_ctx}"
+            );
         }
     }
 

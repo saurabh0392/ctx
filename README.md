@@ -14,34 +14,36 @@ After setup, run `ctx profile generate` once to build profiles tailored to your 
 
 | Feature | Claude Code in an IDE | Terminal CLI | Claude Desktop |
 | --- | --- | --- | --- |
-| In-process tool filtering (`NODE_OPTIONS` + `filter.js`) | Yes | Yes | No (Desktop does not load shell `NODE_OPTIONS`) |
-| Per-request tracing (dashboard Request Trace tab) | Yes | Yes | No |
-| Optional HTTPS MITM proxy (`ctx proxy`) with the same stripping logic | Yes | Yes | No |
+| Native MCP allowlist (`allowedMcpServers` in `~/.claude/settings.json`) | Yes | Yes | No (Desktop uses its own config) |
+| Claude Code hooks (`UserPromptSubmit`, `PostToolUse`, …) | Yes | Yes | No |
+| Legacy in-process filter (`NODE_OPTIONS` + `filter.js`) | Deprecated (ignored by Bun-based `claude` binary) | Deprecated | No |
+| Per-request tracing (dashboard Request Trace tab) | Yes (when legacy filter ran) | Yes | No |
+| Optional HTTPS MITM proxy (`ctx proxy`) | Yes | Yes | No |
 | MCP tools (`ctx_spend`, `ctx_sessions`, …) | Yes | Yes | Yes (after MCP config + app restart) |
 | Dashboard | Yes | Yes | Yes |
 | Session ingest + analytics (`ctx ingest`) | Yes | Yes | Yes (Desktop `audit.jsonl` under local-agent sessions) |
-| Real-time ingest (per turn) | Yes — dashboard updates after every API request via `POST /api/trigger-ingest` | Yes | No (run `ctx ingest` manually) |
+| Real-time ingest (per turn) | Yes — `filter.js` or hooks hit `POST /api/trigger-ingest` / hook events | Yes | No (run `ctx ingest` manually) |
 | Periodic background ingest | Yes on macOS and Linux via background services | No (run `ctx ingest` or cron) | Yes on macOS and Linux when periodic ingest is installed |
 | Reload | Command Palette → Reload Window | New shell session | Quit Desktop fully, reopen |
 
 “Claude Code in an IDE” includes Cursor, VS Code, Windsurf, or any editor where Claude Code runs in an integrated terminal. `ctx setup` picks Windsurf or Cursor MCP paths when those environments are detected.
 
-### Claude Desktop: no API interception
+### Claude Desktop: no Claude Code hooks path
 
-Desktop is an Electron app. It does not read `NODE_OPTIONS` from `~/.claude/settings.json` the way the Claude Code CLI does. It also does not expose a user setting to point `ANTHROPIC_BASE_URL` at a local reverse proxy, so you cannot route its HTTPS API traffic through `ctx proxy` the way you wire Claude Code. Per-request tracing, tool stripping, and dashboard savings from `filter.js` apply in **Claude Code** (CLI or IDE), not in standalone Desktop chat. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
+Desktop is an Electron app. It does not load `~/.claude/settings.json` the way the Claude Code CLI does for MCP allowlists and hooks. Per-request tracing from the legacy Node filter applies in **Claude Code** (CLI or IDE), not in standalone Desktop chat. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
 
 ## Install journey
 
-`ctx setup` is the single entry point after you build or install the `ctx` binary. It detects your environment ([`host.rs`](src/host.rs)), writes files under `CTX_HOME` (default `~/.ctx`), starts background services where supported, merges MCP config, and wires `NODE_OPTIONS` plus `filter.js` into `~/.claude/settings.json` when the host adapter reports `supports_node_options`.
+`ctx setup` is the single entry point after you build or install the `ctx` binary. It detects your environment ([`host.rs`](src/host.rs)), writes files under `CTX_HOME` (default `~/.ctx`), starts background services where supported, merges MCP config, and merges **`allowedMcpServers` plus Claude Code `hooks`** into `~/.claude/settings.json` when Claude Code settings apply. Legacy `NODE_OPTIONS --require filter.js` is stripped when present; the shipped `claude` binary is Bun-based and does not honor Node preload.
 
 ```mermaid
 flowchart TD
   Start["ctx setup"] --> Detect["Detect host host.rs"]
   Detect --> IsIDE{IDE detected?}
-  IsIDE -->|Cursor VS Code Windsurf| IDE_Path["Write NODE_OPTIONS and filter.js\nMerge MCP into settings.json and IDE mcp.json\nInstall proxy dashboard and ingest services"]
+  IsIDE -->|Cursor VS Code Windsurf| IDE_Path["allowedMcpServers + hooks in settings.json\nMerge MCP into settings.json and IDE mcp.json\nInstall proxy dashboard and ingest services"]
   IsIDE -->|No| IsCLI{Claude Code CLI present?}
-  IsCLI -->|Yes| CLI_Path["Write NODE_OPTIONS and filter.js\nMerge MCP into settings.json\nInstall proxy dashboard and ingest when host requests it"]
-  IsCLI -->|No| Desktop_Path["Skip NODE_OPTIONS\nMerge MCP into desktop config\nInstall dashboard and ingest services"]
+  IsCLI -->|Yes| CLI_Path["allowedMcpServers + hooks in settings.json\nMerge MCP into settings.json\nInstall proxy dashboard and ingest when host requests it"]
+  IsCLI -->|No| Desktop_Path["Skip Claude Code hooks path\nMerge MCP into desktop config\nInstall dashboard and ingest services"]
   IDE_Path --> Done["Reload IDE window"]
   CLI_Path --> Done2["Open new terminal session"]
   Desktop_Path --> Done3["Quit and reopen Desktop"]
@@ -61,8 +63,8 @@ Quick paths:
   ctx profile generate   # build profiles from your actual MCP stack
   ctx use <profile>
   ```
-- **Claude Code in a terminal only:** Same install, then open a **new** shell so `NODE_OPTIONS` applies.
-- **Claude Desktop:** Same install from an OS terminal, run `ctx setup`, then quit Desktop fully and reopen. Per-request filtering and tracing are not available on Desktop (see table), but MCP tools and the dashboard work.
+- **Claude Code in a terminal only:** Same install, then reload Claude Code so `~/.claude/settings.json` hooks and allowlist apply.
+- **Claude Desktop:** Same install from an OS terminal, run `ctx setup`, then quit Desktop fully and reopen. Native Claude Code filtering is not available on Desktop (see table), but MCP tools and the dashboard work.
 - **Build from source:** `gh repo clone goshippo/ctx ~/Documents/ctx` then `source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)).
 
 ### What happens during `ctx setup`
@@ -73,7 +75,7 @@ Quick paths:
 4. Open or create `ctx.db`, run an initial ingest when Claude Code project JSONL exists, pick a default profile, sync `filter-config.json`.
 5. Install and start the dashboard (default port `8789`).
 6. When `needs_periodic_ingest` is true, install a periodic `ctx ingest` job (macOS and Linux user services).
-7. Unless `--no-install`, run `proxy::install` to merge `NODE_OPTIONS` into `~/.claude/settings.json` when `supports_node_options` is true (not Desktop-only).
+7. Unless `--no-install`, run `proxy::install` to merge **`allowedMcpServers`**, **hooks** (`ctx hook user-prompt-submit`, async `POST /api/hook/event`), and strip legacy `NODE_OPTIONS` filter preload when `supports_node_options` is true (not Desktop-only).
 8. Register `ctx mcp` in Claude settings, IDE-specific MCP JSON when applicable, and Desktop config when present.
 9. Open the dashboard URL in a browser when ready.
 
@@ -89,7 +91,7 @@ Contributor-level diagrams, module tables, and pipeline detail: [ARCHITECTURE.md
 
 ## Teardown
 
-- `ctx setup --uninstall` removes background services where supported, strips ctx from MCP JSON files (Claude settings, Cursor, Windsurf, Desktop), and runs `ctx proxy uninstall` for `NODE_OPTIONS` cleanup.
+- `ctx setup --uninstall` removes background services where supported, strips ctx from MCP JSON files (Claude settings, Cursor, Windsurf, Desktop), removes ctx native hooks and `allowedMcpServers` keys written by ctx, and runs `ctx proxy uninstall` for env cleanup.
 - Reload the IDE window or restart Desktop so removed env and MCP entries apply.
 
 ---
@@ -123,21 +125,24 @@ After installing the binary, run setup once:
 ctx setup
 ```
 
-`setup` writes assets under `CTX_HOME` (default `~/.ctx`): `filter.js`, `filter-config.json`, optional CA material for the proxy, merges Node `NODE_OPTIONS` into `~/.claude/settings.json` where configured, and installs background services on macOS (launchd) and Linux (systemd user units). On other OS targets it starts `ctx proxy` / `ctx dashboard` as detached processes and prints how to schedule ingest yourself.
+`setup` writes assets under `CTX_HOME` (default `~/.ctx`): `filter.js`, `filter-config.json` (legacy), optional CA material for the proxy, merges **`allowedMcpServers` and hooks** into `~/.claude/settings.json` where configured, and installs background services on macOS (launchd) and Linux (systemd user units). On other OS targets it starts `ctx proxy` / `ctx dashboard` as detached processes and prints how to schedule ingest yourself.
 
-## Two interception paths
+## Filtering paths
 
-1. **Default (`NODE_OPTIONS` + `filter.js`)**  
-   Runs inside the Claude Code Node process. Tool filtering, analytics JSONL, auto-profile selection, inject / coach / behavior hints, and session budget prep all execute here. No TLS proxy required.
+1. **Default (v2 — native Claude Code)**  
+   `allowedMcpServers` in `~/.claude/settings.json` plus hooks. MCP servers outside the allowlist never attach tool schemas to the API request. `ctx hook user-prompt-submit` handles auto-profile, budget hard-stop, and `additionalContext` injection from `~/.ctx/system_prefix.md`. Async hooks POST telemetry to `http://127.0.0.1:8789/api/hook/event`.
 
-2. **HTTPS proxy**  
-   Optional MITM path for the Anthropic API host. Same gates exist in Rust for parity tests and for teams who route traffic through the proxy. Start or stop it with the CLI commands listed in `ctx --help`.
+2. **Legacy (`NODE_OPTIONS` + `filter.js`)**  
+   Deprecated: the `claude` CLI is a Bun binary and ignores Node preload. Files remain under `CTX_HOME` for experiments only.
 
-Keep feature work aligned with the default path so dashboards stay populated for everyone who uses Claude Code with Node hooks.
+3. **HTTPS proxy**  
+   Optional MITM path for the Anthropic API host. Same gate logic exists in Rust (`proxy::run_gates`) for parity tests and for teams who route traffic through the proxy.
+
+Keep feature work aligned with the native path so dashboards stay populated for everyone who uses Claude Code with hooks.
 
 ## Profiles
 
-Profiles live in the Rust side (`profiles` module) and export into `filter-config.json` for the hook. Each profile lists MCP server prefixes to **keep**; everything else is removed from the outbound tools array.
+Profiles live in the Rust side (`profiles` module), sync to **`allowedMcpServers`** in `~/.claude/settings.json`, and still export `filter-config.json` for legacy setups. Each profile lists MCP server prefixes (or display names) to **keep**; other servers are blocked by Claude Code before tool schemas enter the request.
 
 Generate profiles from your actual MCP stack (no usage history required):
 
@@ -183,7 +188,7 @@ Index Claude Code JSONL plus Desktop session logs into the DB:
 ctx ingest
 ```
 
-When running Claude Code in an IDE or terminal, the dashboard updates automatically after every turn. `filter.js` fires a `POST /api/trigger-ingest` to the dashboard server from inside the Node process, so spend and savings figures reflect the most recent request without any manual refresh. Desktop sessions require a manual `ctx ingest` run (or the periodic background service where installed).
+When running Claude Code in an IDE or terminal, the dashboard ingests hook payloads (`POST /api/hook/event`) and legacy paths still hit `POST /api/trigger-ingest` when `filter.js` runs under Node. Desktop sessions require a manual `ctx ingest` run (or the periodic background service where installed).
 
 ## Configuration
 

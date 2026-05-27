@@ -77,6 +77,28 @@ pub(crate) fn check_with_threshold(body: &[u8], threshold: f64) -> Option<String
     ))
 }
 
+/// Conservative USD estimate for submitted prompt only (Sonnet-class rate).
+pub fn estimated_usd_from_prompt_only(prompt: &str) -> f64 {
+    let v = serde_json::json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": prompt}]
+    });
+    estimate_cost(&v)
+}
+
+/// When the prompt alone clears the session gate, return a user-facing block reason.
+pub fn hard_block_reason_for_prompt(prompt: &str) -> Option<String> {
+    let th = session_threshold_usd();
+    let est = estimated_usd_from_prompt_only(prompt);
+    if est < th {
+        return None;
+    }
+    Some(format!(
+        "Estimated input cost for this prompt (~${:.0}) meets the session gate (~${:.0}). Start a new session or raise monthly_budget_usd in ~/.ctx/config.toml.",
+        est, th
+    ))
+}
+
 fn estimate_cost(body: &Value) -> f64 {
     let messages = match body.get("messages").and_then(|m| m.as_array()) {
         Some(m) => m,
@@ -145,6 +167,26 @@ mod tests {
     fn no_warning_below_threshold() {
         let body = make_body(&[("user", "hi"), ("assistant", "hello")]);
         assert!(check(&body).is_none());
+    }
+
+    #[test]
+    fn hard_block_on_massive_prompt() {
+        let _g = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("CTX_HOME").ok();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let _ = crate::config::ensure_dir();
+        let mut cfg = Config::load();
+        cfg.monthly_budget_usd = Some(100.0);
+        cfg.save().unwrap();
+        let big = "z".repeat(12_000_000);
+        assert!(hard_block_reason_for_prompt(&big).is_some());
+        match prev {
+            Some(v) => std::env::set_var("CTX_HOME", v),
+            None => std::env::remove_var("CTX_HOME"),
+        }
     }
 
     #[test]

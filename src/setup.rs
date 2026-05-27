@@ -86,7 +86,7 @@ fn setup_preview_lines(port: u16, upstream: &str, periodic_ingest: bool) -> Vec<
             crate::config::ctx_dir().display()
         ),
         crate::daemon::background_services_summary(port, upstream, DASHBOARD_PORT, periodic_ingest),
-        "Merge NODE_OPTIONS into ~/.claude/settings.json (unless --no-install)".to_string(),
+        "Merge allowedMcpServers + hooks into ~/.claude/settings.json (unless --no-install)".to_string(),
         "Index ~/.claude/projects/**/*.jsonl and Claude Desktop session logs into ~/.ctx/ctx.db when present"
             .to_string(),
         "Choose default MCP profile (personal from history, or carrier)".to_string(),
@@ -180,19 +180,17 @@ pub fn run(
     println!("{} {}", "->".cyan(), crate::daemon::step1_banner());
     crate::daemon::install_proxy(port, upstream)?;
 
-    // Step 2: start proxy
-    // For IDE and terminal users, filter.js (NODE_OPTIONS) handles all request
-    // interception in-process — the proxy is optional. Treat startup failure as
-    // a warning so setup can continue to write settings.json and the dashboard.
+    // Step 2: start proxy (optional analytics / legacy MITM). MCP filtering uses native settings.
     println!("{} {}", "->".cyan(), crate::daemon::step2_banner());
-    let proxy_is_optional = host.supports_node_options();
+    let proxy_is_optional = true;
     if let Err(e) = crate::daemon::bootstrap_proxy(port, upstream)
         .and_then(|_| wait_for_proxy(port))
     {
         if proxy_is_optional {
             println!(
-                "  {} Proxy did not start ({}). Continuing — filter.js covers all filtering for Claude Code.",
-                "!".yellow(), e
+                "  {} Proxy did not start ({}). Continuing — MCP allowlist + hooks do not require the proxy.",
+                "!".yellow(),
+                e
             );
             println!("  Run `ctx proxy start` manually or check ~/.ctx/proxy.stderr.log to debug.");
         } else {
@@ -335,12 +333,12 @@ pub fn run(
         println!("Run:");
         println!("  ctx proxy install");
         println!("Then reload the window: Cmd+Shift+P (macOS) or Ctrl+Shift+P (Windows/Linux), type Reload Window, Enter.");
-        println!("This picks up NODE_OPTIONS and MCP server config without quitting.");
+        println!("This picks up ~/.claude/settings.json (allowedMcpServers, hooks) and MCP config without quitting.");
     } else if host.ide_kind() == Some(crate::host::IdeKind::Cursor) {
-        println!("{} Wiring Claude Code settings (NODE_OPTIONS in-process filter)...", "->".cyan());
+        println!("{} Wiring Claude Code (allowedMcpServers + hooks)...", "->".cyan());
         crate::proxy::install(port, upstream)?;
         println!();
-        println!("  Cursor mode:  filter.js runs inside Claude Code CLI only.");
+        println!("  Cursor:       native MCP allowlist + hooks (works with the Cursor extension).");
         println!("                Sessions are indexed via periodic `ctx ingest` (Claude Code + Desktop).");
         println!("  Dashboard:    http://127.0.0.1:{DASHBOARD_PORT}");
         println!("  Autorun:      {}", autorun_summary(periodic_ingest));
@@ -348,10 +346,10 @@ pub fn run(
         println!();
         println!("Dashboard: open http://127.0.0.1:{DASHBOARD_PORT} to see spend, insights, and session similarity.");
     } else if host.ide_kind().is_some() {
-        println!("{} Wiring Claude Code settings (NODE_OPTIONS in-process filter)...", "->".cyan());
+        println!("{} Wiring Claude Code (allowedMcpServers + hooks)...", "->".cyan());
         crate::proxy::install(port, upstream)?;
         println!();
-        println!("  IDE mode:     filter.js runs when Claude Code starts Node.");
+        println!("  IDE mode:     native MCP allowlist + hooks in ~/.claude/settings.json.");
         println!("                Sessions are indexed via periodic `ctx ingest` when enabled.");
         println!("  Dashboard:    http://127.0.0.1:{DASHBOARD_PORT}");
         println!("  Autorun:      {}", autorun_summary(periodic_ingest));
@@ -365,15 +363,16 @@ pub fn run(
         println!("  Dashboard:  http://127.0.0.1:{DASHBOARD_PORT}");
         println!("  Autorun:    {}", autorun_summary(periodic_ingest));
         println!();
-        println!("  Tool filtering (NODE_OPTIONS / filter.js) is not supported for Claude Desktop alone.");
-        println!("  Request tracing, savings tracking from filter.js, and per-request analytics need Claude Code (CLI or IDE).");
+        println!("  Tool filtering via legacy NODE_OPTIONS + filter.js is not available for Claude Desktop alone.");
+        println!("  Claude Code (CLI or IDE) uses allowedMcpServers + hooks for MCP savings.");
         println!("  Desktop still gets MCP tools and session data via `ctx ingest` when local-agent logs exist.");
         println!("  Install the Claude Code CLI for full token savings and Request Trace coverage.");
     } else {
-        println!("{} Wiring Claude Code settings (NODE_OPTIONS in-process filter)...", "->".cyan());
+        println!("{} Wiring Claude Code (allowedMcpServers + hooks)...", "->".cyan());
         crate::proxy::install(port, upstream)?;
         println!();
-        println!("  Filter:    NODE_OPTIONS loads ~/.ctx/filter.js (strips MCP tools before TLS)");
+        println!("  Filter:    allowedMcpServers + hooks (see ~/.claude/settings.json)");
+        println!("  Legacy:    ~/.ctx/filter.js kept for older NODE_OPTIONS experiments only");
         println!("  CA:        {} (proxy process only)", crate::ca::ca_cert_path().display());
         println!("  Dashboard: http://127.0.0.1:{DASHBOARD_PORT}");
         println!("  Autorun:      {}", autorun_summary(periodic_ingest));
@@ -388,10 +387,10 @@ pub fn run(
         println!();
         println!("Next: {}", host.reload_instruction());
         if host.supports_node_options() {
-            println!("This re-reads NODE_OPTIONS and MCP server config without quitting.");
+            println!("This re-reads ~/.claude/settings.json without quitting.");
             if host.ide_kind().is_none() {
-                println!("If you only use Claude Code in a plain terminal, start a new session once so NODE_OPTIONS applies.");
-                println!("Then run {} to activate filtering.", "`ctx use carrier`".bold());
+                println!("Reload the Claude Code window once after install so hooks apply.");
+                println!("Then run {} to pick a profile.", "`ctx use carrier`".bold());
             }
             if crate::config::claude_desktop_installed() {
                 println!(
@@ -452,7 +451,7 @@ pub fn uninstall() -> Result<()> {
         "✓".green(),
         crate::host::uninstall_reload_hint()
     );
-    println!("Apply the reload so removed NODE_OPTIONS and MCP server config take effect.");
+    println!("Apply the reload so removed hooks, allowedMcpServers, and MCP server config take effect.");
     Ok(())
 }
 
@@ -463,10 +462,13 @@ fn strip_claude_settings_hooks_if_present() -> Result<()> {
     }
     let text = std::fs::read_to_string(&path)?;
     let mut doc: serde_json::Value = serde_json::from_str(&text)?;
-    if crate::config::strip_ctx_managed_hooks_from_settings(&mut doc) {
+    let legacy = crate::config::strip_ctx_managed_hooks_from_settings(&mut doc);
+    let native = crate::claude_settings::strip_ctx_native_hooks_from_settings(&mut doc);
+    let node = crate::claude_settings::strip_ctx_filter_from_node_options_in_settings(&mut doc);
+    if legacy || native || node {
         crate::config::write_json_atomic(&path, &doc)?;
         println!(
-            "{} Removed ctx hook entries from {}",
+            "{} Removed ctx hook / NODE_OPTIONS filter entries from {}",
             "✓".green(),
             path.display()
         );

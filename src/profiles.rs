@@ -322,6 +322,27 @@ pub fn get(slug: &str) -> Result<Profile> {
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found. Run `ctx profile list`.", slug))
 }
 
+/// Server display names for Claude Code `allowedMcpServers`. Empty means allow all MCP servers.
+pub fn allowed_server_names_for_profile(p: &Profile) -> Vec<String> {
+    if p.keep.is_empty() {
+        return Vec::new();
+    }
+    let mut names: Vec<String> = p
+        .keep
+        .iter()
+        .map(|k| {
+            if k.starts_with("mcp__") {
+                mcp_prefix_to_server_display(k)
+            } else {
+                k.clone()
+            }
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn effective_keep_prefixes(slug: &str) -> Result<HashSet<String>> {
     let p = get(slug)?;
     Ok(if p.keep.is_empty() {
@@ -334,7 +355,7 @@ fn effective_keep_prefixes(slug: &str) -> Result<HashSet<String>> {
     })
 }
 
-pub fn switch(slug: &str, force: bool) -> Result<()> {
+pub fn apply_profile(slug: &str, force: bool, quiet: bool) -> Result<()> {
     let mut config = Config::load();
     let from_slug = config.active_profile.clone().unwrap_or_else(|| "all".into());
     let profile = get(slug)?;
@@ -371,26 +392,39 @@ pub fn switch(slug: &str, force: bool) -> Result<()> {
 
     crate::filter_hook::write_filter_config_for_slug(slug)?;
 
+    let dash = Config::load().dashboard_port.unwrap_or(8789);
+    crate::claude_settings::write_native_ctx_to_user_settings(slug, dash)?;
+
     let _ = crate::behavior_guard::write_behavior_hints_file();
 
-    let pct = (profile.savings_pct() * 100.0) as u32;
-    println!(
-        "{} Profile: {} ({})",
-        "✓".green().bold(),
-        profile.display.bold(),
-        profile.description
-    );
-    println!(
-        "  ~{} tools  |  ~{} tokens/turn  |  saving ~{} tokens ({pct}%) vs unfiltered",
-        profile.tool_count(),
-        fmt_k(profile.token_cost()),
-        fmt_k(profile.savings_vs_all()),
-    );
-    println!(
-        "{} filter-config.json updated (picked up on the next API request)",
-        "i".dimmed()
-    );
+    if !quiet {
+        let pct = (profile.savings_pct() * 100.0) as u32;
+        println!(
+            "{} Profile: {} ({})",
+            "✓".green().bold(),
+            profile.display.bold(),
+            profile.description
+        );
+        println!(
+            "  ~{} tools  |  ~{} tokens/turn  |  saving ~{} tokens ({pct}%) vs unfiltered",
+            profile.tool_count(),
+            fmt_k(profile.token_cost()),
+            fmt_k(profile.savings_vs_all()),
+        );
+        println!(
+            "{} ~/.claude/settings.json updated (allowedMcpServers + native hooks)",
+            "i".dimmed()
+        );
+        println!(
+            "{} filter-config.json still written for legacy NODE_OPTIONS setups only",
+            "i".dimmed()
+        );
+    }
     Ok(())
+}
+
+pub fn switch(slug: &str, force: bool) -> Result<()> {
+    apply_profile(slug, force, false)
 }
 
 /// Build `personal` profile from MCP tool_use history (last 30 days in DB, or empty).
@@ -550,8 +584,8 @@ pub fn show(slug: &str) -> Result<()> {
     if p.keep.is_empty() {
         println!("Keep:     all servers (no filtering)");
     } else {
-        println!("Keep:");
-        for k in &p.keep {
+        println!("MCP servers (allowedMcpServers):");
+        for k in allowed_server_names_for_profile(&p) {
             println!("  {k}");
         }
     }
@@ -645,7 +679,7 @@ const SERVER_CATEGORY_MAP: &[(&str, &str)] = &[
 
 /// Convert a server prefix back to its display name.
 /// `mcp__claude_ai_Data_Shippo__` -> `Data Shippo`
-fn prefix_to_display(prefix: &str) -> String {
+pub fn mcp_prefix_to_server_display(prefix: &str) -> String {
     prefix
         .strip_prefix("mcp__claude_ai_")
         .and_then(|s| s.strip_suffix("__"))
@@ -751,7 +785,7 @@ pub fn generate_from_config() -> Result<()> {
     let mut by_category: HashMap<String, Vec<String>> = HashMap::new();
     let mut uncategorized: Vec<String> = Vec::new();
     for prefix in &prefixes {
-        let display = prefix_to_display(prefix);
+        let display = mcp_prefix_to_server_display(prefix);
         if let Some(cat) = cat_map.get(display.as_str()) {
             by_category.entry(cat.to_string()).or_default().push(prefix.clone());
         } else {
@@ -774,11 +808,11 @@ pub fn generate_from_config() -> Result<()> {
     all_cats.sort();
     for cat in &all_cats {
         let servers = &by_category[*cat];
-        let names: Vec<String> = servers.iter().map(|p| prefix_to_display(p)).collect();
+        let names: Vec<String> = servers.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
         println!("  {:<10}  {}", cat, names.join(", "));
     }
     if !uncategorized.is_empty() {
-        let names: Vec<String> = uncategorized.iter().map(|p| prefix_to_display(p)).collect();
+        let names: Vec<String> = uncategorized.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
         println!("  {:<10}  {}", "other", names.join(", "));
     }
 
@@ -816,8 +850,8 @@ pub fn generate_from_config() -> Result<()> {
             .sum();
         let savings_pct = (1.0 - tool_count as f32 / TOTAL_TOOLS as f32) * 100.0;
 
-        let cat_names: Vec<String> = cat_servers.iter().map(|p| prefix_to_display(p)).collect();
-        let comms_names: Vec<String> = comms_servers.iter().map(|p| prefix_to_display(p)).collect();
+        let cat_names: Vec<String> = cat_servers.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
+        let comms_names: Vec<String> = comms_servers.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
         let description = if comms_names.is_empty() {
             cat_names.join(", ")
         } else {
@@ -839,7 +873,7 @@ pub fn generate_from_config() -> Result<()> {
 
     // Comms-only profile
     if !comms_servers.is_empty() {
-        let names: Vec<String> = comms_servers.iter().map(|p| prefix_to_display(p)).collect();
+        let names: Vec<String> = comms_servers.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
         existing.insert(
             "comms".to_string(),
             Profile {
@@ -861,7 +895,7 @@ pub fn generate_from_config() -> Result<()> {
             }
         }
         keep.sort();
-        let names: Vec<String> = uncategorized.iter().map(|p| prefix_to_display(p)).collect();
+        let names: Vec<String> = uncategorized.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
         existing.insert(
             "other".to_string(),
             Profile {
@@ -998,6 +1032,19 @@ mod tests {
         let system = "Primary working directory: /Users/alice/Documents/some-random-project";
         let result = auto_select(system, "all");
         assert!(result.is_none());
+
+        std::env::remove_var("CTX_HOME");
+    }
+
+    #[test]
+    fn allowed_server_names_maps_mcp_prefixes_to_display_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+
+        let p = get("data").unwrap();
+        let names = allowed_server_names_for_profile(&p);
+        assert!(names.iter().any(|n| n == "Data Shippo"));
+        assert!(names.iter().any(|n| n == "Slack"));
 
         std::env::remove_var("CTX_HOME");
     }

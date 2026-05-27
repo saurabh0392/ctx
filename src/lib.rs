@@ -4,6 +4,7 @@ pub mod analytics;
 pub mod ca;
 pub mod behavior_guard;
 pub mod budget_guard;
+pub mod claude_settings;
 pub mod cli;
 pub mod coach;
 pub mod config;
@@ -15,6 +16,7 @@ pub mod embedder;
 pub mod filter;
 pub mod filter_hook;
 pub mod host;
+pub mod hook;
 pub mod inject;
 pub mod profiles;
 pub mod proxy;
@@ -35,7 +37,7 @@ pub fn ensure_tls_crypto_provider() {
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Commands, InjectCommand, ProfileCommand, ProxyCommand};
+use cli::{Cli, Commands, HookCommand, InjectCommand, ProfileCommand, ProxyCommand};
 
 pub async fn run() -> Result<()> {
     ensure_tls_crypto_provider();
@@ -91,6 +93,9 @@ pub async fn run() -> Result<()> {
             }
         }
         Commands::Dashboard { port, no_open } => dashboard::serve(port, no_open).await?,
+        Commands::Hook { command } => match command {
+            HookCommand::UserPromptSubmit => hook::user_prompt_submit()?,
+        },
         Commands::Mcp => mcp::serve_stdio()?,
     }
 

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ctx", version, about = "Context Killer - MCP filter proxy for Claude Code")]
+#[command(name = "ctx", version, about = "Context Killer — MCP savings and analytics for Claude Code")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -73,6 +73,11 @@ pub enum Commands {
     },
     /// Scan Claude Code JSONL into ~/.ctx/ctx.db (sessions, turns, tool invocations)
     Ingest,
+    /// Claude Code hook entrypoints (stdin JSON → stdout; used from ~/.claude/settings.json)
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
     /// Run as an MCP server over stdio (JSON-RPC). Exposes ctx data to LLM clients.
     Mcp,
 }
@@ -101,6 +106,12 @@ pub enum ProfileCommand {
 }
 
 #[derive(Subcommand)]
+pub enum HookCommand {
+    /// Blocking hook: auto-profile, budget gate, system prefix injection
+    UserPromptSubmit,
+}
+
+#[derive(Subcommand)]
 pub enum ProxyCommand {
     /// Start the filtering proxy in the foreground
     Start {
@@ -109,7 +120,7 @@ pub enum ProxyCommand {
         #[arg(long, default_value = "https://api.anthropic.com")]
         upstream: String,
     },
-    /// Install: update ~/.claude/settings.json to route through ctx proxy
+    /// Install: update ~/.claude/settings.json (allowedMcpServers + hooks; no NODE_OPTIONS filter)
     Install {
         #[arg(long, default_value = "8788")]
         port: u16,

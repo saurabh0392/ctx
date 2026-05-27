@@ -290,6 +290,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         // Tab 1: savings
         .route("/api/stats", get(api_stats))
         .route("/api/ingest-request", post(api_ingest_request))
+        .route("/api/hook/event", post(api_hook_event))
         .route("/api/trigger-ingest", post(api_trigger_ingest))
         .route("/api/timeline", get(api_timeline))
         .route("/api/sessions", get(api_sessions))
@@ -338,6 +339,21 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
 
 async fn serve_html() -> axum::response::Html<&'static str> {
     axum::response::Html(HTML)
+}
+
+/// Claude Code async HTTP hooks (PostToolUse, SessionStart, SessionEnd, Stop).
+async fn api_hook_event(Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let hook_type = payload
+        .get("hook_event_name")
+        .or_else(|| payload.get("hookEventName"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("unknown");
+    let payload_s = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        let _ = crate::db::insert_hook_event(&conn, hook_type, &payload_s);
+    }
+    StatusCode::OK
 }
 
 async fn api_ingest_request(Json(rec): Json<crate::analytics::Record>) -> impl IntoResponse {

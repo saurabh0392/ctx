@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 pub fn open_db() -> Result<Connection> {
     let path = crate::config::db_path();
@@ -141,10 +141,30 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_profile_changes_ts ON profile_changes(ts);
+
+        CREATE TABLE IF NOT EXISTS hook_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            hook_type TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_hook_events_ts ON hook_events(ts);
+        CREATE INDEX IF NOT EXISTS idx_hook_events_type ON hook_events(hook_type);
         "#,
     )?;
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+pub fn insert_hook_event(conn: &Connection, hook_type: &str, payload_json: &str) -> Result<()> {
+    ensure_schema(conn)?;
+    let ts = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO hook_events (ts, hook_type, payload) VALUES (?1, ?2, ?3)",
+        params![ts, hook_type, payload_json],
+    )?;
     Ok(())
 }
 

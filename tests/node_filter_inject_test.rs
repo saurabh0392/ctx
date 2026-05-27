@@ -1,13 +1,18 @@
 //! Verifies NODE_OPTIONS `--require` filter strips MCP tools (no real Anthropic calls).
+//! Legacy path: kept for regression; native Claude Code uses `allowedMcpServers` instead.
 
 use ctx::filter_hook;
 use serde_json::Value;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const ACCEPT_DEADLINE: Duration = Duration::from_secs(45);
+const NODE_WAIT: Duration = Duration::from_secs(45);
+const BODY_WAIT: Duration = Duration::from_secs(5);
 
 #[test]
 fn node_require_filter_strips_mcp_tools() {
@@ -47,12 +52,37 @@ fn node_require_filter_strips_mcp_tools() {
 
     let server = thread::spawn(move || {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         tx_port.send(listener.local_addr().unwrap().port()).unwrap();
-        let mut stream = listener.accept().unwrap().0;
+        let deadline = Instant::now() + ACCEPT_DEADLINE;
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((s, _)) => break s,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if Instant::now() > deadline {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => return,
+            }
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let mut buf = Vec::new();
         let mut scratch = [0u8; 2048];
+        let read_deadline = Instant::now() + ACCEPT_DEADLINE;
         loop {
-            let n = stream.read(&mut scratch).unwrap();
+            if Instant::now() > read_deadline {
+                return;
+            }
+            let n = match stream.read(&mut scratch) {
+                Ok(n) => n,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(_) => return,
+            };
             if n == 0 {
                 break;
             }
@@ -69,7 +99,7 @@ fn node_require_filter_strips_mcp_tools() {
                 let start = pos + 4;
                 if let Some(len) = cl {
                     if buf.len() >= start + len {
-                        tx_body.send(buf[start..start + len].to_vec()).unwrap();
+                        let _ = tx_body.send(buf[start..start + len].to_vec());
                         let _ = stream.write_all(
                             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
                         );
@@ -114,18 +144,33 @@ req.end(body);
 "#
     );
 
-    let out = Command::new("node")
-        .env("CTX_HOME", tmp.path())
-        .env("CTX_FILTER_HOST", "127.0.0.1")
-        .env("CTX_FILTER_PORT", port.to_string())
-        .env(
-            "NODE_OPTIONS",
-            format!("--require {}", abs.display()),
-        )
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .expect("spawn node");
+    let (tx_node, rx_node) = mpsc::channel::<std::io::Result<std::process::Output>>();
+    let abs_clone = abs.clone();
+    let tmp_path = tmp.path().to_path_buf();
+    let script_clone = script.clone();
+    thread::spawn(move || {
+        let r = Command::new("node")
+            .env("CTX_HOME", &tmp_path)
+            .env("CTX_FILTER_HOST", "127.0.0.1")
+            .env("CTX_FILTER_PORT", port.to_string())
+            .env(
+                "NODE_OPTIONS",
+                format!("--require {}", abs_clone.display()),
+            )
+            .arg("-e")
+            .arg(&script_clone)
+            .output();
+        let _ = tx_node.send(r);
+    });
+
+    let out = match rx_node.recv_timeout(NODE_WAIT) {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => panic!("node spawn/output error: {e}"),
+        Err(_) => panic!(
+            "node subprocess did not finish within {:?} (filter.js may not be intercepting)",
+            NODE_WAIT
+        ),
+    };
 
     assert!(
         out.status.success(),
@@ -133,7 +178,9 @@ req.end(body);
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let body = rx_body.recv_timeout(Duration::from_secs(3)).unwrap();
+    let body = rx_body
+        .recv_timeout(BODY_WAIT)
+        .expect("mock server did not receive full HTTP body in time");
     let v: Value = serde_json::from_slice(&body).unwrap();
     let tools = v["tools"].as_array().expect("tools");
     assert_eq!(tools.len(), 1);

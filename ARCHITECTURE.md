@@ -12,8 +12,9 @@ flowchart LR
     Desktop["Claude Desktop"]
   end
   subgraph interception [Interception layer]
-    FilterJS["filter.js via NODE_OPTIONS"]
+    Native["allowedMcpServers + hooks in settings.json"]
     Proxy["ctx proxy :8788"]
+    Legacy["filter.js legacy NODE_OPTIONS"]
   end
   subgraph data [Data layer CTX_HOME]
     JSONL["analytics.jsonl"]
@@ -28,23 +29,23 @@ flowchart LR
     MCP["ctx mcp stdio"]
   end
 
-  CC_IDE --> FilterJS
-  CC_CLI --> FilterJS
-  FilterJS --> JSONL
-  FilterJS -->|"POST /api/ingest-request"| Dashboard
+  CC_IDE --> Native
+  CC_CLI --> Native
+  Native -->|"POST /api/hook/event"| Dashboard
+  Legacy -.->|"deprecated"| JSONL
   Proxy --> JSONL
-  Desktop -.->|"no interception"| Ingest
+  Desktop -.->|"no Claude Code hooks path"| Ingest
   JSONL --> Dashboard
   DB --> Dashboard
   Ingest --> DB
   MCP --> DB
 ```
 
-**Default path:** Claude Code loads `filter.js` through `NODE_OPTIONS=--require …` in `~/.claude/settings.json`. The hook patches Node `http` / `https`, rewrites `/v1/messages` bodies, appends to `analytics.jsonl`, and POSTs rows to the dashboard.
+**Default path (v2):** Claude Code reads `allowedMcpServers` and `hooks` from `~/.claude/settings.json`. MCP allowlisting happens inside Claude Code before requests. `ctx hook user-prompt-submit` handles auto-profile, budget gate, and prefix injection; async hooks POST to the dashboard `POST /api/hook/event`. `filter.js` + `NODE_OPTIONS` remain only as a deprecated experiment.
 
-**Optional path:** `ctx proxy` terminates TLS for `api.anthropic.com` and runs the same gate logic in Rust (`proxy::run_gates`) for parity with `filter.js`.
+**Optional path:** `ctx proxy` terminates TLS for `api.anthropic.com` and runs gate logic in Rust (`proxy::run_gates`) for parity tests and MITM workflows.
 
-**Desktop:** No `NODE_OPTIONS` in the main app process. MCP (`ctx mcp`) and `ctx ingest` still read and write shared data under `CTX_HOME`.
+**Desktop:** No Claude Code settings path for hooks. MCP (`ctx mcp`) and `ctx ingest` still read and write shared data under `CTX_HOME`.
 
 ---
 
@@ -54,7 +55,7 @@ flowchart LR
 | --- | --- | --- |
 | CLI | `main.rs`, `lib.rs`, `cli.rs` | Tokio entry, `run()` dispatch, clap subcommands |
 | Setup and host | `setup.rs`, `host.rs`, `daemon.rs` | One-shot install, IDE vs terminal vs Desktop detection, launchd / systemd / fallback processes |
-| Interception | `filter.rs`, `filter_hook.rs`, `proxy.rs`, `ca.rs` | Rust tool strip parity, deploy `filter.js` + `filter-config.json`, HTTPS MITM, local CA |
+| Interception | `filter.rs`, `filter_hook.rs`, `claude_settings.rs`, `hook.rs`, `proxy.rs`, `ca.rs` | Rust strip parity, legacy `filter.js` deploy, **native settings merge**, **hook command**, HTTPS MITM, local CA |
 | Pipeline gates | `profiles.rs`, `inject.rs`, `coach.rs`, `behavior_guard.rs`, `budget_guard.rs`, `quality_guard.rs` | Profiles, system prefix, coach signals, behavior hints, budget warnings, profile-switch safety |
 | Analytics and storage | `analytics.rs`, `db.rs`, `conversations.rs`, `embedder.rs` | JSONL records, SQLite schema, JSONL + Desktop ingest, embeddings |
 | User-facing | `dashboard.rs`, `dashboard.html`, `mcp.rs` | Local Axum UI + REST, stdio MCP tools |
@@ -68,7 +69,9 @@ Supporting: `test_lock.rs` (tests).
 
 ## Request pipeline (gates)
 
-Single outbound `/v1/messages` body passes through the same ordered stages in `filter.js` and in `proxy::run_gates`:
+**Native v2:** Auto-profile, inject, and budget hard-stop run in `ctx hook user-prompt-submit`. MCP allowlisting is enforced by Claude Code through `allowedMcpServers` before the outbound API request includes tool schemas. Async hooks send telemetry to the dashboard.
+
+**Legacy `filter.js` and `proxy::run_gates`:** A single outbound `/v1/messages` body passes through the same ordered stages in `filter.js` and in `proxy::run_gates`:
 
 ```mermaid
 flowchart TD
@@ -95,7 +98,7 @@ Implementation detail: `proxy.rs` wraps the inner pipeline in `catch_unwind` and
 | `filter-config.json` | Active profile, keep-lists, toggles, dashboard port (synced from Rust) |
 | `profiles.toml` | Custom profile definitions |
 | `analytics.jsonl` | Append-only per-request analytics |
-| `ctx.db` | SQLite WAL DB for sessions, turns, tool invocations, requests, embeddings |
+| `ctx.db` | SQLite WAL DB for sessions, turns, tool invocations, requests, embeddings, **`hook_events`** |
 | `system_prefix.md` | Optional text injected into the system message |
 | `behavior-hints.json` | Hint file for the behavior guard |
 | `ca-cert.pem`, `ca-key.pem` | Local CA for MITM proxy |
