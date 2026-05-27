@@ -11,11 +11,24 @@ use rusqlite::{Connection, OptionalExtension};
 
 pub const EMBED_DIM: usize = 384;
 
-pub fn compose_embed_text(first_message: &str, working_directory: &str, profile: &str) -> String {
+/// Compose the text that gets embedded for a session.
+/// Including the invoked server names makes similarity reflect actual work domain
+/// rather than just the phrasing of the first message.
+pub fn compose_embed_text(
+    first_message: &str,
+    working_directory: &str,
+    profile: &str,
+    invoked_servers: &[String],
+) -> String {
     let fm = first_message.trim();
     let wd = working_directory.trim();
     let pr = profile.trim();
-    format!("[profile: {pr}] [dir: {wd}] {fm}")
+    if invoked_servers.is_empty() {
+        format!("[profile: {pr}] [dir: {wd}] {fm}")
+    } else {
+        let tools = invoked_servers.join(", ");
+        format!("[profile: {pr}] [dir: {wd}] [tools: {tools}] {fm}")
+    }
 }
 
 fn normalize_vec(mut v: Vec<f32>) -> Vec<f32> {
@@ -347,7 +360,7 @@ mod tests {
 
     #[test]
     fn compose_embed_text_includes_parts() {
-        let t = compose_embed_text("do the thing", "/proj/foo", "minimal");
+        let t = compose_embed_text("do the thing", "/proj/foo", "minimal", &[]);
         assert!(t.contains("minimal"));
         assert!(t.contains("/proj/foo"));
         assert!(t.contains("do the thing"));

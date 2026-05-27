@@ -715,6 +715,21 @@ fn collect_observed_prefixes() -> Vec<String> {
     result
 }
 
+fn default_path_patterns(cat: &str) -> Vec<String> {
+    let patterns: &[&str] = match cat {
+        "data"    => &["databricks", "dbt", "analytics", "warehouse", "notebook", "jupyter", "sql"],
+        "design"  => &["figma", "design", "ui", "ux", "sketch"],
+        "work"    => &["jira", "linear", "confluence", "notion", "asana", "trello"],
+        "comms"   => &["slack", "gmail", "email", "mail"],
+        "finance" => &["netsuite", "ramp", "stripe", "billing", "finance"],
+        "files"   => &["gdrive", "drive", "dropbox", "sharepoint"],
+        "infra"   => &["terraform", "kubernetes", "k8s", "docker", "aws", "cloudflare", "devops"],
+        "shippo"  => &["shippo", "carrier", "label", "tracking", "cip", "ccap", "cif"],
+        _         => &[],
+    };
+    patterns.iter().map(|s| s.to_string()).collect()
+}
+
 /// Generate profiles from the user's actual observed (or configured) MCP servers.
 ///
 /// Each non-comms category that has at least one discovered server gets a profile.
@@ -815,7 +830,7 @@ pub fn generate_from_config() -> Result<()> {
                 display: capitalize(cat),
                 description,
                 keep,
-                path_patterns: vec![],
+                path_patterns: default_path_patterns(cat),
                 triggers: vec![],
             },
         );

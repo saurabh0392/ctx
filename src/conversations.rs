@@ -815,12 +815,28 @@ fn ingest_one_jsonl_session(
     };
     let external_key = fpath.to_string_lossy().to_string();
     let models_json = serde_json::to_string(&parsed.session.models_used)?;
+    let tool_uses = tool_uses_from_jsonl_file(fpath);
+    // Collect distinct server display names for embedding (deduplicated, sorted for stability)
+    let mut seen_servers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (_, server_prefix, _) in &tool_uses {
+        // Convert prefix back to a short display form: strip mcp__claude_ai_ prefix and trailing __
+        let display = server_prefix
+            .strip_prefix("mcp__claude_ai_")
+            .unwrap_or(server_prefix)
+            .trim_end_matches("__")
+            .replace('_', " ");
+        if !display.is_empty() {
+            seen_servers.insert(display);
+        }
+    }
     let (first_msg, embed_text, top_json) = if store_prompt_text {
         let top_json = serde_json::to_string(&parsed.session.top_turns)?;
+        let invoked_servers: Vec<String> = seen_servers.iter().cloned().collect();
         let embed_text = crate::embedder::compose_embed_text(
             &parsed.session.first_user_message,
             &parsed.session.project,
             "",
+            &invoked_servers,
         );
         (
             parsed.session.first_user_message.clone(),
@@ -875,8 +891,8 @@ fn ingest_one_jsonl_session(
             Some(parsed.session.started_at.as_str()),
         )?;
     }
-    for (tool_name, server_prefix, ts) in tool_uses_from_jsonl_file(fpath) {
-        crate::db::insert_tool_invocation(&*tx, sid, None, &tool_name, &server_prefix, &ts)?;
+    for (tool_name, server_prefix, ts) in &tool_uses {
+        crate::db::insert_tool_invocation(&*tx, sid, None, tool_name, server_prefix, ts)?;
     }
     Ok(true)
 }

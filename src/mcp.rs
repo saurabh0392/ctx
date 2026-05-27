@@ -72,6 +72,11 @@ const TOOL_DEFS: &[(&str, &str, &str)] = &[
         "List all MCP filter profiles with token estimates. Shows which is active.",
         "{}",
     ),
+    (
+        "ctx_waste",
+        "Lists MCP servers that were loaded on every request but never actually invoked in the last 30 days. These are pure token waste — add them to a profile's strip list.",
+        r#"{"type":"object","properties":{},"required":[]}"#,
+    ),
 ];
 
 fn build_tools_list() -> Value {
@@ -99,6 +104,7 @@ fn handle_tool_call(name: &str, args: &Value) -> Result<Value, String> {
         "ctx_patterns" => tool_patterns(),
         "ctx_settings" => tool_settings(),
         "ctx_profiles" => tool_profiles(),
+        "ctx_waste" => tool_waste(),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -250,6 +256,28 @@ fn tool_settings() -> Result<Value, String> {
 fn tool_profiles() -> Result<Value, String> {
     let profiles = crate::profiles::list_profiles_json();
     Ok(profiles)
+}
+
+fn tool_waste() -> Result<Value, String> {
+    let conn = match crate::db::open_db() {
+        Ok(c) => c,
+        Err(e) => return Ok(serde_json::json!({"error": format!("db: {e}")})),
+    };
+    let unused = crate::db::zero_usage_servers(&conn, 30).unwrap_or_default();
+    if unused.is_empty() {
+        return Ok(serde_json::json!({
+            "content": [{"type": "text", "text": "No waste detected — every loaded MCP server was invoked at least once in the last 30 days."}]
+        }));
+    }
+    let list = unused.join("\n  - ");
+    Ok(serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": format!(
+                "Servers loaded but never invoked (last 30 days):\n  - {list}\n\nAdd these to a profile's strip list with:\n  ctx profile add <name> --keep <servers-you-want-to-keep>"
+            )
+        }]
+    }))
 }
 
 fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {

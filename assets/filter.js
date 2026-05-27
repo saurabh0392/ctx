@@ -15,7 +15,12 @@ if (global.__CTX_FILTER_PATCHED__) {
   const http = require('http');
   const https = require('https');
 
-  const PRIORITY = ['carrier', 'data', 'design', 'minimal'];
+  // Priority order from most-specific to broadest. Slugs not in this list
+  // (custom user profiles) are appended dynamically at the end.
+  const CATEGORY_PRIORITY = [
+    'carrier', 'minimal', 'shippo', 'infra', 'finance', 'files',
+    'work', 'design', 'data', 'comms', 'personal', 'other'
+  ];
 
   const CORRECTION_PHRASES = [
     'no,', 'no that', 'no -', 'nope', "that's wrong", 'thats wrong',
@@ -137,6 +142,11 @@ if (global.__CTX_FILTER_PATCHED__) {
 
   function autoSelect(cfg, systemText, activeSlug) {
     if (!cfg.auto_profile_enabled) return { slug: activeSlug, auto: false, trigger: null };
+    const _allSlugs = Object.keys(cfg.profiles || {});
+    const PRIORITY = [
+      ...CATEGORY_PRIORITY.filter(s => _allSlugs.includes(s)),
+      ..._allSlugs.filter(s => !CATEGORY_PRIORITY.includes(s)),
+    ];
     const cwd = extractWorkingDirectory(systemText);
     if (cwd) {
       for (let i = 0; i < PRIORITY.length; i++) {

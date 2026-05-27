@@ -124,6 +124,7 @@ fn similar_history_hint(messages: &[Value]) -> Option<String> {
         &text.chars().take(1500).collect::<String>(),
         "",
         "",
+        &[],
     ))
     .ok()?;
     let sims = crate::embedder::similar_sessions_by_query(&conn, &emb, 5, None).ok()?;

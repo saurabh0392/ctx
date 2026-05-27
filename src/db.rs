@@ -129,6 +129,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_tool_inv_server ON tool_invocations(server_prefix);
         CREATE INDEX IF NOT EXISTS idx_tool_inv_ts ON tool_invocations(ts);
+        CREATE INDEX IF NOT EXISTS idx_tool_inv_session_server ON tool_invocations(session_id, server_prefix);
 
         CREATE TABLE IF NOT EXISTS profile_changes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -503,4 +504,58 @@ pub fn delete_all_indexed_data(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM requests", [])?;
     conn.execute("DELETE FROM profile_changes", [])?;
     Ok(())
+}
+
+/// Returns display names of MCP servers that were loaded (present in kept_servers) in the
+/// last `lookback_days` days of requests but never actually invoked in that same window.
+/// These are pure token waste candidates the user should add to a profile's strip list.
+///
+/// kept_servers stores JSON arrays of display names like ["Databricks", "Slack"].
+/// tool_invocations.server_prefix stores prefixes like "mcp__claude_ai_Data_Shippo__".
+/// We convert kept display names to prefix form for comparison.
+pub fn zero_usage_servers(conn: &Connection, lookback_days: u32) -> Result<Vec<String>> {
+    let cutoff = format!("now, '-{lookback_days} days'");
+    // Collect all kept display names from recent requests
+    let mut stmt = conn.prepare(&format!(
+        "SELECT kept_servers FROM requests WHERE ts > datetime({cutoff}) AND kept_servers IS NOT NULL"
+    ))?;
+    let rows: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+
+    let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for json in &rows {
+        if let Ok(names) = serde_json::from_str::<Vec<String>>(json) {
+            for n in names {
+                kept.insert(n);
+            }
+        }
+    }
+
+    if kept.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Collect all invoked server_prefixes from the same window
+    let mut stmt2 = conn.prepare(&format!(
+        "SELECT DISTINCT server_prefix FROM tool_invocations WHERE ts > datetime({cutoff})"
+    ))?;
+    let invoked: std::collections::HashSet<String> = stmt2
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<std::collections::HashSet<_>, _>>()?;
+
+    // A kept display name is "unused" when no invoked prefix starts with the
+    // canonical mcp__claude_ai_<name>__ form (spaces -> underscores).
+    let mut unused: Vec<String> = kept
+        .into_iter()
+        .filter(|name| {
+            let prefix = format!(
+                "mcp__claude_ai_{}__",
+                name.replace(' ', "_").replace('-', "_")
+            );
+            !invoked.iter().any(|p| p.starts_with(&prefix) || prefix.starts_with(p.as_str()))
+        })
+        .collect();
+    unused.sort();
+    Ok(unused)
 }
