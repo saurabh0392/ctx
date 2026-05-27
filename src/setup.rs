@@ -209,8 +209,10 @@ pub fn run(
         }
     }
 
-    // Step 4: default focus profile (personal from history when possible)
-    println!("{} Step 4/5: Setting default focus profile...", "->".cyan());
+    // Step 4: generate MCP profiles, then set a sensible default
+    println!("{} Step 4/5: Generating MCP profiles and setting default...", "->".cyan());
+
+    // Seed the DB first so generate_from_config sees the user's actual server history.
     let _ = crate::db::open_db().and_then(|c| {
         crate::db::ensure_schema(&c)?;
         crate::db::maybe_backfill_requests_from_jsonl(&c)?;
@@ -218,13 +220,38 @@ pub fn run(
     });
     if claude_projects_has_jsonl() {
         let _ = crate::conversations::ingest_claude_jsonl();
-        if crate::profiles::auto_generate(false).is_ok() {
-            let _ = crate::profiles::switch("personal", true);
+    }
+
+    // Try to derive profiles from the user's actual MCP stack (no history required).
+    // generate_from_config bails when no servers are discoverable, so we can safely
+    // fall back to the history-based path in that case.
+    let generated = crate::profiles::generate_from_config().is_ok();
+    if generated {
+        // Switch to the first useful category profile that was written.
+        let preferred = ["data", "design", "work", "finance", "files", "infra", "shippo", "comms", "other"];
+        let custom_path = crate::config::ctx_dir().join("profiles.toml");
+        if let Ok(content) = std::fs::read_to_string(&custom_path) {
+            if let Ok(profiles) = toml::from_str::<std::collections::HashMap<String, crate::profiles::Profile>>(&content) {
+                for slug in &preferred {
+                    if profiles.contains_key(*slug) {
+                        let _ = crate::profiles::switch(slug, true);
+                        println!("  {} Active profile: {}  (switch any time with `ctx use <profile>`)", "✓".green(), slug);
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        // Fallback: history-based personal profile, or carrier as last resort.
+        if claude_projects_has_jsonl() {
+            if crate::profiles::auto_generate(false).is_ok() {
+                let _ = crate::profiles::switch("personal", true);
+            } else {
+                let _ = crate::profiles::switch("carrier", false);
+            }
         } else {
             let _ = crate::profiles::switch("carrier", false);
         }
-    } else {
-        let _ = crate::profiles::switch("carrier", false);
     }
     crate::filter_hook::sync_filter_config_from_active_config()?;
     let _ = crate::behavior_guard::write_behavior_hints_file();
