@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 pub fn open_db() -> Result<Connection> {
     let path = crate::config::db_path();
@@ -25,7 +25,27 @@ pub fn db_exists() -> bool {
     crate::config::db_path().exists()
 }
 
+fn migrate_hook_traces_savings_columns(conn: &Connection) {
+    let table_exists: bool = conn
+        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
+        .is_ok();
+    if !table_exists {
+        return;
+    }
+    let has_tools_kept: bool = conn
+        .prepare("SELECT tools_kept FROM hook_traces LIMIT 0")
+        .is_ok();
+    if !has_tools_kept {
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN tools_kept INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN tools_removed INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN tokens_saved INTEGER DEFAULT 0", []);
+    }
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
+    // Run column migrations unconditionally (idempotent ALTER TABLE checks)
+    migrate_hook_traces_savings_columns(conn);
+
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap_or(0);
@@ -151,6 +171,33 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_hook_events_ts ON hook_events(ts);
         CREATE INDEX IF NOT EXISTS idx_hook_events_type ON hook_events(hook_type);
+
+        CREATE TABLE IF NOT EXISTS hook_traces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            working_directory TEXT,
+            profile TEXT,
+            auto_selected INTEGER DEFAULT 0,
+            auto_trigger TEXT,
+            inject_fired INTEGER DEFAULT 0,
+            coach_kind TEXT,
+            budget_fired INTEGER DEFAULT 0,
+            tools_kept INTEGER DEFAULT 0,
+            tools_removed INTEGER DEFAULT 0,
+            tokens_saved INTEGER DEFAULT 0,
+            -- enriched by ingest (NULL until matched)
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_read_tokens INTEGER,
+            cache_creation_tokens INTEGER,
+            cost_usd REAL,
+            model TEXT,
+            enriched INTEGER DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_hook_traces_ts ON hook_traces(ts);
+        CREATE INDEX IF NOT EXISTS idx_hook_traces_session ON hook_traces(session_id);
         "#,
     )?;
 
@@ -165,7 +212,241 @@ pub fn insert_hook_event(conn: &Connection, hook_type: &str, payload_json: &str)
         "INSERT INTO hook_events (ts, hook_type, payload) VALUES (?1, ?2, ?3)",
         params![ts, hook_type, payload_json],
     )?;
+    stamp_ctx_active_since(conn);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct HookEventRow {
+    pub id: i64,
+    pub ts: String,
+    pub hook_type: String,
+    pub payload: String,
+}
+
+pub fn load_hook_events(conn: &Connection, limit: usize, offset: usize) -> Result<Vec<HookEventRow>> {
+    ensure_schema(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, ts, hook_type, payload FROM hook_events ORDER BY id DESC LIMIT ?1 OFFSET ?2",
+    )?;
+    let rows = stmt.query_map(params![limit as i64, offset as i64], |r| {
+        Ok(HookEventRow {
+            id: r.get(0)?,
+            ts: r.get(1)?,
+            hook_type: r.get(2)?,
+            payload: r.get(3)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Hook traces — lightweight rows from UserPromptSubmit, enriched by ingest
+// ---------------------------------------------------------------------------
+
+pub fn insert_hook_trace(
+    conn: &Connection,
+    session_id: Option<&str>,
+    working_directory: &str,
+    profile: &str,
+    auto_selected: bool,
+    auto_trigger: Option<&str>,
+    inject_fired: bool,
+    coach_kind: Option<&str>,
+    budget_fired: bool,
+    tools_kept: usize,
+    tools_removed: usize,
+    tokens_saved: usize,
+) -> Result<i64> {
+    ensure_schema(conn)?;
+    let ts = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        r#"INSERT INTO hook_traces (
+            ts, session_id, working_directory, profile,
+            auto_selected, auto_trigger, inject_fired, coach_kind, budget_fired,
+            tools_kept, tools_removed, tokens_saved
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+        params![
+            ts,
+            session_id,
+            working_directory,
+            profile,
+            auto_selected as i64,
+            auto_trigger,
+            inject_fired as i64,
+            coach_kind,
+            budget_fired as i64,
+            tools_kept as i64,
+            tools_removed as i64,
+            tokens_saved as i64,
+        ],
+    )?;
+    stamp_ctx_active_since(conn);
+    Ok(conn.last_insert_rowid())
+}
+
+#[derive(serde::Serialize)]
+pub struct HookTraceRow {
+    pub id: i64,
+    pub ts: String,
+    pub session_id: Option<String>,
+    pub working_directory: String,
+    pub profile: String,
+    pub auto_selected: bool,
+    pub auto_trigger: Option<String>,
+    pub inject_fired: bool,
+    pub coach_kind: Option<String>,
+    pub budget_fired: bool,
+    pub tools_kept: usize,
+    pub tools_removed: usize,
+    pub tokens_saved: usize,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_creation_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub model: Option<String>,
+    pub enriched: bool,
+}
+
+pub fn load_hook_traces(conn: &Connection, limit: usize, offset: usize) -> Result<Vec<HookTraceRow>> {
+    ensure_schema(conn)?;
+    let sql = r#"SELECT
+        id, ts, session_id,
+        COALESCE(working_directory, '') AS working_directory,
+        COALESCE(profile, '') AS profile,
+        COALESCE(auto_selected, 0) AS auto_selected,
+        auto_trigger,
+        COALESCE(inject_fired, 0) AS inject_fired,
+        coach_kind,
+        COALESCE(budget_fired, 0) AS budget_fired,
+        COALESCE(tools_kept, 0) AS tools_kept,
+        COALESCE(tools_removed, 0) AS tools_removed,
+        COALESCE(tokens_saved, 0) AS tokens_saved,
+        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+        cost_usd, model,
+        COALESCE(enriched, 0) AS enriched
+    FROM hook_traces ORDER BY id DESC LIMIT ?1 OFFSET ?2"#;
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![limit as i64, offset as i64], |r| {
+        Ok(HookTraceRow {
+            id: r.get(0)?,
+            ts: r.get(1)?,
+            session_id: r.get(2)?,
+            working_directory: r.get(3)?,
+            profile: r.get(4)?,
+            auto_selected: r.get::<_, i64>(5)? != 0,
+            auto_trigger: r.get(6)?,
+            inject_fired: r.get::<_, i64>(7)? != 0,
+            coach_kind: r.get(8)?,
+            budget_fired: r.get::<_, i64>(9)? != 0,
+            tools_kept: r.get::<_, i64>(10)? as usize,
+            tools_removed: r.get::<_, i64>(11)? as usize,
+            tokens_saved: r.get::<_, i64>(12)? as usize,
+            input_tokens: r.get(13)?,
+            output_tokens: r.get(14)?,
+            cache_read_tokens: r.get(15)?,
+            cache_creation_tokens: r.get(16)?,
+            cost_usd: r.get(17)?,
+            model: r.get(18)?,
+            enriched: r.get::<_, i64>(19)? != 0,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Match unenriched hook_trace rows to the nearest JSONL turn by session + timestamp.
+/// Called during ingest after sessions/turns are populated.
+pub fn enrich_hook_traces(conn: &Connection) -> Result<usize> {
+    ensure_schema(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, ts, session_id FROM hook_traces WHERE enriched = 0",
+    )?;
+    let pending: Vec<(i64, String, Option<String>)> = stmt.query_map([], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })?.filter_map(|x| x.ok()).collect();
+
+    let mut count = 0usize;
+    for (trace_id, trace_ts, session_id) in &pending {
+        // Try to find the turn closest in time to this hook trace.
+        // Join through sessions table using external_key LIKE %session_id%
+        // or fall back to pure timestamp proximity across all turns.
+        let matched: Option<(i64, i64, i64, i64, f64, String)> = if let Some(sid) = session_id {
+            conn.query_row(
+                r#"SELECT t.input_tokens, t.output_tokens, t.cache_read_tokens,
+                          t.cache_creation_tokens, t.cost_usd, t.model
+                   FROM turns t
+                   JOIN sessions s ON t.session_id = s.id
+                   WHERE s.external_key LIKE '%' || ?1 || '%'
+                     AND t.ts IS NOT NULL
+                   ORDER BY ABS(julianday(t.ts) - julianday(?2))
+                   LIMIT 1"#,
+                params![sid, trace_ts],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            ).optional()?
+        } else {
+            None
+        };
+
+        // Fall back to timestamp-only match if session_id didn't resolve
+        let matched = matched.or_else(|| {
+            conn.query_row(
+                r#"SELECT input_tokens, output_tokens, cache_read_tokens,
+                          cache_creation_tokens, cost_usd, model
+                   FROM turns
+                   WHERE ts IS NOT NULL
+                   ORDER BY ABS(julianday(ts) - julianday(?1))
+                   LIMIT 1"#,
+                params![trace_ts],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            ).optional().ok().flatten()
+        });
+
+        if let Some((inp, outp, cr, cc, cost, model)) = matched {
+            conn.execute(
+                r#"UPDATE hook_traces SET
+                    input_tokens = ?1, output_tokens = ?2, cache_read_tokens = ?3,
+                    cache_creation_tokens = ?4, cost_usd = ?5, model = ?6, enriched = 1
+                   WHERE id = ?7"#,
+                params![inp, outp, cr, cc, cost, model, trace_id],
+            )?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Record when ctx first became active. Called on first request insert or hook event.
+/// Writes only once; subsequent calls are no-ops.
+pub fn stamp_ctx_active_since(conn: &Connection) {
+    let existing: Option<String> = conn
+        .query_row("SELECT v FROM meta WHERE k = 'ctx_active_since'", [], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten();
+    if existing.is_some() {
+        return;
+    }
+    let ts = chrono::Utc::now().to_rfc3339();
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO meta (k, v) VALUES ('ctx_active_since', ?1)",
+        params![ts],
+    );
+}
+
+pub fn get_ctx_active_since(conn: &Connection) -> Option<String> {
+    conn.query_row("SELECT v FROM meta WHERE k = 'ctx_active_since'", [], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten()
 }
 
 pub fn insert_request(conn: &Connection, rec: &Record) -> Result<i64> {
@@ -201,6 +482,7 @@ pub fn insert_request(conn: &Connection, rec: &Record) -> Result<i64> {
             by_srv,
         ],
     )?;
+    stamp_ctx_active_since(conn);
     Ok(conn.last_insert_rowid())
 }
 

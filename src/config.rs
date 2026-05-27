@@ -297,6 +297,9 @@ pub struct Config {
     pub auto_profile_enabled: bool,
     #[serde(default = "default_true")]
     pub inject_enabled: bool,
+    /// When true, `UserPromptSubmit` reads session JSONL and injects coaching via `additionalContext`.
+    #[serde(default = "default_true")]
+    pub coaching_enabled: bool,
     /// Monthly spend limit in USD -- set to your actual Anthropic billing cap.
     #[serde(default)]
     pub monthly_budget_usd: Option<f64>,
@@ -340,6 +343,7 @@ impl Config {
             return Self {
                 auto_profile_enabled: true,
                 inject_enabled: true,
+                coaching_enabled: true,
                 ..Default::default()
             };
         }
@@ -349,6 +353,7 @@ impl Config {
             .unwrap_or_else(|| Self {
                 auto_profile_enabled: true,
                 inject_enabled: true,
+                coaching_enabled: true,
                 ..Default::default()
             })
     }

@@ -58,6 +58,25 @@ pub fn detect_from_body(body: &[u8]) -> Option<CoachSignal> {
     detect(messages)
 }
 
+/// User turn texts in chronological order (for example from session JSONL plus the in-flight prompt).
+pub fn detect_from_user_texts(user_texts: &[String]) -> Option<CoachSignal> {
+    detect_correction_cascade(user_texts).or_else(|| detect_reask(user_texts))
+}
+
+/// Five or more correction-heavy user turns in the last six (same phrase detection as the cascade).
+/// Used to block the hook with a visible `reason` so the user starts a fresh session.
+pub fn severe_correction_fatigue_reason(user_texts: &[String]) -> Option<String> {
+    let window: Vec<&String> = user_texts.iter().rev().take(6).collect();
+    let n = window.iter().filter(|t| has_correction_phrase(t)).count();
+    if n >= 5 {
+        Some(format!(
+            "ctx: {n} turns in your last 6 user messages look like corrections or rejections. Start a fresh session or narrow the request scope before continuing."
+        ))
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Correction cascade: 2+ correction phrases in the last 6 user turns
 // ---------------------------------------------------------------------------
@@ -190,6 +209,40 @@ mod tests {
     }
 
     // --- correction cascade ---
+
+    #[test]
+    fn detect_from_user_texts_matches_cascade() {
+        let texts = vec![
+            "Refactor the auth module".to_string(),
+            "No that's wrong, I meant the handler".to_string(),
+            "Actually, still not right — I said auth, not session".to_string(),
+        ];
+        assert!(detect_from_user_texts(&texts).is_some());
+    }
+
+    #[test]
+    fn severe_fatigue_fires_at_five_correction_turns_in_window() {
+        let texts = vec![
+            "please add a test".to_string(),
+            "no that's wrong".to_string(),
+            "actually, still wrong".to_string(),
+            "wait, not what I asked".to_string(),
+            "incorrect approach".to_string(),
+            "you misunderstood the requirement".to_string(),
+        ];
+        assert!(severe_correction_fatigue_reason(&texts).is_some());
+    }
+
+    #[test]
+    fn severe_fatigue_absent_below_five() {
+        let texts = vec![
+            "no that's wrong".to_string(),
+            "actually wrong".to_string(),
+            "wait no".to_string(),
+            "looks good".to_string(),
+        ];
+        assert!(severe_correction_fatigue_reason(&texts).is_none());
+    }
 
     #[test]
     fn correction_cascade_fires_at_two() {

@@ -17,7 +17,7 @@ After setup, run `ctx profile generate` once to build profiles tailored to your 
 | Native MCP allowlist (`allowedMcpServers` in `~/.claude/settings.json`) | Yes | Yes | No (Desktop uses its own config) |
 | Claude Code hooks (`UserPromptSubmit`, `PostToolUse`, …) | Yes | Yes | No |
 | Legacy in-process filter (`NODE_OPTIONS` + `filter.js`) | Deprecated (ignored by Bun-based `claude` binary) | Deprecated | No |
-| Per-request tracing (dashboard Request Trace tab) | Yes (when legacy filter ran) | Yes | No |
+| Per-request tracing (dashboard Request Trace tab) | Yes (native hooks, no proxy needed) | Yes | No |
 | Optional HTTPS MITM proxy (`ctx proxy`) | Yes | Yes | No |
 | MCP tools (`ctx_spend`, `ctx_sessions`, …) | Yes | Yes | Yes (after MCP config + app restart) |
 | Dashboard | Yes | Yes | Yes |
@@ -30,7 +30,7 @@ After setup, run `ctx profile generate` once to build profiles tailored to your 
 
 ### Claude Desktop: no Claude Code hooks path
 
-Desktop is an Electron app. It does not load `~/.claude/settings.json` the way the Claude Code CLI does for MCP allowlists and hooks. Per-request tracing from the legacy Node filter applies in **Claude Code** (CLI or IDE), not in standalone Desktop chat. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
+Desktop is an Electron app. It does not load `~/.claude/settings.json` the way the Claude Code CLI does for MCP allowlists and hooks. Per-request tracing in the dashboard applies in **Claude Code** (CLI or IDE) via native hooks and SQLite, not in standalone Desktop chat. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
 
 ## Install journey
 
@@ -130,7 +130,7 @@ ctx setup
 ## Filtering paths
 
 1. **Default (v2 — native Claude Code)**  
-   `allowedMcpServers` in `~/.claude/settings.json` plus hooks. MCP servers outside the allowlist never attach tool schemas to the API request. `ctx hook user-prompt-submit` handles auto-profile, budget hard-stop, and `additionalContext` injection from `~/.ctx/system_prefix.md`. Async hooks POST telemetry to `http://127.0.0.1:8789/api/hook/event`.
+   `allowedMcpServers` in `~/.claude/settings.json` plus hooks. MCP servers outside the allowlist never attach tool schemas to the API request. `ctx hook user-prompt-submit` handles auto-profile, budget hard-stop, optional JSONL-based coaching (correction cascades and re-asks from `~/.claude/projects/**/*.jsonl`), and `additionalContext` injection from `~/.ctx/system_prefix.md`. Async hooks POST telemetry to `http://127.0.0.1:8789/api/hook/event`. The Request Trace tab shows full per-turn pipeline cards for hook rows (profile, inject, coach, savings) and enriches them with model, tokens, and cost after JSONL ingest on turn end.
 
 2. **Legacy (`NODE_OPTIONS` + `filter.js`)**  
    Deprecated: the `claude` CLI is a Bun binary and ignores Node preload. Files remain under `CTX_HOME` for experiments only.
@@ -179,6 +179,9 @@ Serves HTML on localhost, reads `~/.ctx/analytics.jsonl`, spend snapshots from l
 - MCP **tools sent** vs **tools used** (used counts need non-stream responses the hook parses)
 - Prompt stats, budgets, pipeline gate cards
 - SQLite-backed intelligence when `~/.ctx/ctx.db` has data: quality alerts, project health by week, similar sessions via 384-d embeddings
+- Hook trace rows: per `UserPromptSubmit`, profile-derived tool savings flags; after ingest, rows gain turn cost, model, and token totals from the session JSONL
+
+The dashboard server binds its HTTP port immediately on startup; Claude Code JSONL discovery and ingest run in the background so the UI stays responsive.
 
 Session similarity uses a fast hash embedding by default. Build with `cargo build --release --features onnx` to enable all-MiniLM-L6-v2 via ONNX Runtime for semantic matching. `ctx setup` downloads the ~30 MB model automatically when built with the `onnx` feature. Next `ctx ingest` re-embeds all sessions with the better model.
 
@@ -190,6 +193,12 @@ ctx ingest
 
 When running Claude Code in an IDE or terminal, the dashboard ingests hook payloads (`POST /api/hook/event`) and legacy paths still hit `POST /api/trigger-ingest` when `filter.js` runs under Node. Desktop sessions require a manual `ctx ingest` run (or the periodic background service where installed).
 
+## Coaching (hook mode)
+
+When `coaching_enabled` is true in `~/.ctx/config.toml` (default), `UserPromptSubmit` reads the tail of the session JSONL under `~/.claude/projects/` (matched by `session_id`), runs the same rule-based coach as the proxy path, and appends the suggestion to `hookSpecificOutput.additionalContext` so Claude sees it on the next model call. Severe correction fatigue (five or more correction-style turns in the last six user messages) returns `decision: "block"` with a `reason` so you start a fresh session instead of burning more context.
+
+`additionalContext` from hooks is honored by the Claude Code CLI and Cursor. The VS Code Claude Code extension has a known limitation where `additionalContext` is not applied ([anthropics/claude-code#49063](https://github.com/anthropics/claude-code/issues/49063)); use the CLI or Cursor for coaching there, or rely on the visible block path for severe cases.
+
 ## Configuration
 
 `~/.ctx/config.toml` holds `active_profile`, `monthly_budget_usd`, feature toggles, and proxy port. The session budget guard derives its alert threshold from `monthly_budget_usd` (see `budget_guard::session_threshold_usd`).
@@ -197,6 +206,8 @@ When running Claude Code in an IDE or terminal, the dashboard ingests hook paylo
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `active_profile` | `all` | Currently active MCP filter profile |
+| `inject_enabled` | `true` | When true, prepend `~/.ctx/system_prefix.md` via `additionalContext` on each prompt |
+| `coaching_enabled` | `true` | When true, scan session JSONL for correction cascades and re-asks; optional hard block on severe fatigue |
 | `monthly_budget_usd` | (none) | Triggers budget alerts when projected spend approaches this limit |
 | `session_gap_minutes` | `30` | Idle minutes between turns before a new session boundary in analytics |
 | `proxy_port` | `8788` | Local MITM proxy listen port |

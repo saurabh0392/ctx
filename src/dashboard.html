@@ -719,6 +719,9 @@ body {
       <label style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer">
         <input type="checkbox" id="wiz-inject" checked> Enable system prefix injection
       </label>
+      <label style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer">
+        <input type="checkbox" id="wiz-coaching" checked> Enable session JSONL coaching (correction cascades, re-asks)
+      </label>
       <textarea id="wiz-prefix" rows="8" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
       <div style="margin-top:16px;display:flex;gap:10px">
         <button type="button" class="modal-btn secondary" onclick="wizNext(3)">Back</button>
@@ -912,7 +915,7 @@ body {
   <div class="page-sub">Every request ctx intercepted: what it removed, what it kept, and why it chose that profile.</div>
   <div class="trace-desktop-notice">
     <strong style="color:var(--t1)">Claude Desktop limitation.</strong>
-    Request tracing only records traffic from Claude Code (CLI or IDE). Standalone Desktop chat does not load <code>filter.js</code> and does not route through <code>ctx proxy</code>, so those requests never appear here. Use Claude Code for per-request traces, or run <code>ctx ingest</code> for session-level Desktop data (local-agent logs when present).
+    Request tracing records traffic from Claude Code (CLI or IDE) via hooks and the filter proxy. Standalone Desktop chat does not fire ctx hooks, so those requests do not appear here. Use Claude Code for per-request traces, or run <code>ctx ingest</code> for session-level Desktop data.
   </div>
 
   <div id="trace-list"><div class="empty">Loading...</div></div>
@@ -988,6 +991,9 @@ body {
     </label>
     <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
       <input type="checkbox" id="set-inject"> Inject system prefix from ~/.ctx/system_prefix.md
+    </label>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="set-coaching"> Coaching (detect correction patterns and nudge Claude from session JSONL)
     </label>
     <label style="font-size:12px;color:var(--t3)">System prefix (saved to file)</label>
     <textarea id="set-prefix" rows="10" style="width:100%;margin-top:6px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
@@ -1101,6 +1107,8 @@ async function wizPrepareFromServer() {
     if (wa) wa.value = s.monthly_actual_spend_usd != null ? s.monthly_actual_spend_usd : '';
     const inj = document.getElementById('wiz-inject');
     if (inj) inj.checked = !!s.inject_enabled;
+    const coach = document.getElementById('wiz-coaching');
+    if (coach) coach.checked = s.coaching_enabled !== false;
     const ta = document.getElementById('wiz-prefix');
     if (ta) ta.value = s.system_prefix_preview || '';
     const profs = await fetch('/api/profiles').then(r => r.json());
@@ -1137,6 +1145,7 @@ async function finishOnboardingWizard() {
   const body = {
     auto_profile_enabled: true,
     inject_enabled: document.getElementById('wiz-inject').checked,
+    coaching_enabled: document.getElementById('wiz-coaching').checked,
     store_prompt_text: document.getElementById('wiz-store-prompt').checked,
     embeddings_enabled: document.getElementById('wiz-embed').checked,
     system_prefix: document.getElementById('wiz-prefix').value
@@ -1175,6 +1184,8 @@ async function loadSettingsTab() {
     document.getElementById('set-embed').checked = !!s.embeddings_enabled;
     document.getElementById('set-auto-prof').checked = !!s.auto_profile_enabled;
     document.getElementById('set-inject').checked = !!s.inject_enabled;
+    const setCoach = document.getElementById('set-coaching');
+    if (setCoach) setCoach.checked = s.coaching_enabled !== false;
     document.getElementById('set-prefix').value = s.system_prefix_preview || '';
     const profs = await fetch('/api/profiles').then(r => r.json());
     const sel = document.getElementById('set-profile');
@@ -1220,6 +1231,7 @@ async function saveSettingsFiltering() {
     active_profile: document.getElementById('set-profile').value,
     auto_profile_enabled: document.getElementById('set-auto-prof').checked,
     inject_enabled: document.getElementById('set-inject').checked,
+    coaching_enabled: document.getElementById('set-coaching').checked,
     system_prefix: document.getElementById('set-prefix').value
   };
   const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1319,7 +1331,7 @@ async function loadSavings() {
   const txt = document.getElementById('status-text');
   if (stats.sessions_fallback) {
     dot.className = 'status-dot on';
-    txt.textContent = 'Session index (no request log yet)';
+    txt.textContent = 'Session index (post-ctx sessions only)';
   } else {
     dot.className = 'status-dot ' + (stats.proxy_listening ? 'on' : 'off');
     txt.textContent = stats.proxy_listening ? 'Proxy active' : 'Proxy offline';
@@ -2175,38 +2187,182 @@ async function createProfile() {
 
 // ─── Tab 4: Request Trace ────────────────────────────────
 async function loadTrace() {
-  const requests = await fetch('/api/requests?limit=100').then(r => r.json());
+  const [requests, hookTraces] = await Promise.all([
+    fetch('/api/requests?limit=100').then(r => r.json()),
+    fetch('/api/hook-traces?limit=100').then(r => r.json()).catch(() => []),
+  ]);
   const el = document.getElementById('trace-list');
 
-  if (!requests.length) {
+  if (!requests.length && !hookTraces.length) {
     el.innerHTML = `<div class="card" style="padding:20px;margin-bottom:16px;border-color:rgba(147,192,67,.25)">
-      <div class="section-head" style="margin-bottom:8px">No filter events</div>
-      <div class="section-sub" style="margin-bottom:0">The trace lists rows where MCP tools were stripped. Run Claude Code with <code>filter.js</code> active and keep this dashboard open — each turn POSTs to <code>/api/ingest-request</code> which writes directly to ctx.db.</div>
+      <div class="section-head" style="margin-bottom:8px">No trace events</div>
+      <div class="section-sub" style="margin-bottom:0">No trace events recorded yet. Use Claude Code with ctx hooks enabled. Each turn records a trace row automatically.</div>
     </div>`;
     return;
   }
 
-  // Today's summary banner
   const todayStr = new Date().toISOString().slice(0, 10);
   const todayReqs = requests.filter(r => r.ts.slice(0, 10) === todayStr);
+  const todayHookTraces = hookTraces.filter(h => h.ts.slice(0, 10) === todayStr);
   const todayTokens = todayReqs.reduce((s, r) => s + r.tokens_saved, 0);
   const todayCost = todayReqs.reduce((s, r) => s + r.cost_saved, 0);
-  const autoCount = todayReqs.filter(r => r.auto_selected).length;
+  const totalToday = todayReqs.length + todayHookTraces.length;
+  const autoCount = todayReqs.filter(r => r.auto_selected).length + todayHookTraces.filter(h => h.auto_selected).length;
   const autoLine = autoCount > 0
-    ? ` Profile auto-switched ${autoCount} time${autoCount!==1?'s':''} based on your working directory.`
+    ? ` Profile auto-switched ${autoCount} time${autoCount!==1?'s':''}.`
     : '';
 
-  const banner = todayReqs.length ? `
+  let bannerParts = [];
+  if (todayReqs.length) bannerParts.push(`${todayReqs.length} proxy traces`);
+  if (todayHookTraces.length) bannerParts.push(`${todayHookTraces.length} hook traces`);
+  if (todayTokens > 0) bannerParts.push(`${fmtK(todayTokens)} tokens stripped`);
+
+  const banner = totalToday ? `
     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;gap:32px;align-items:center">
       <div>
         <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.05em">Today</div>
-        <div style="font-size:22px;font-weight:700;color:var(--green)">-$${todayCost.toFixed(3)}</div>
-        <div style="font-size:11px;color:var(--t3)">${todayReqs.length} requests &middot; ${fmtK(todayTokens)} tokens stripped${autoLine}</div>
+        ${todayCost > 0 ? `<div style="font-size:22px;font-weight:700;color:var(--green)">-$${todayCost.toFixed(3)}</div>` : `<div style="font-size:22px;font-weight:700;color:var(--t2)">${totalToday} turns</div>`}
+        <div style="font-size:11px;color:var(--t3)">${bannerParts.join(' &middot; ')}${autoLine}</div>
       </div>
-      <div style="flex:1;text-align:right;font-size:11px;color:var(--t4)">Click any row to see exactly what ctx did on that request.</div>
+      <div style="flex:1;text-align:right;font-size:11px;color:var(--t4)">Click any row to expand details.</div>
     </div>` : '';
 
-  el.innerHTML = banner + requests.map((req, i) => traceRow(req, i)).join('');
+  // Merge into unified timeline
+  const unified = [];
+  for (const req of requests) unified.push({ type: 'request', ts: req.ts, data: req });
+  for (const ht of hookTraces) unified.push({ type: 'hook_trace', ts: ht.ts, data: ht });
+  unified.sort((a, b) => b.ts.localeCompare(a.ts));
+
+  el.innerHTML = banner + unified.map((item, i) => {
+    if (item.type === 'request') return traceRow(item.data, i);
+    return hookTraceRow(item.data, i);
+  }).join('');
+}
+
+function hookTraceRow(ht, i) {
+  const ts = fmtTs(ht.ts);
+  const profileLabel = ht.profile || 'all';
+  const autoChip = ht.auto_selected
+    ? `<span class="trace-auto-chip">auto: ${ht.auto_trigger || 'matched'}</span>`
+    : '';
+
+  const enrichedBadge = ht.enriched
+    ? ''
+    : '<span style="font-size:9px;padding:1px 6px;border-radius:3px;background:#3a3a20;color:#c8b44a;margin-left:8px">awaiting ingest</span>';
+
+  const costUsd = ht.cost_usd || 0;
+  const inputTok = ht.input_tokens || 0;
+  const outputTok = ht.output_tokens || 0;
+  const cacheRead = ht.cache_read_tokens || 0;
+  const cacheCreate = ht.cache_creation_tokens || 0;
+  const model = ht.model || '';
+  const totalTok = inputTok + outputTok + cacheRead + cacheCreate;
+
+  const toolsKept = ht.tools_kept || 0;
+  const toolsRemoved = ht.tools_removed || 0;
+  const tokensSaved = ht.tokens_saved || 0;
+  const totalTools = toolsKept + toolsRemoved;
+  const pctCut = totalTools > 0 ? Math.round(toolsRemoved / totalTools * 100) : 0;
+  const savingsCost = (tokensSaved / 1_000_000) * 0.30;
+
+  let ctxLines = [];
+  ctxLines.push(`Applied <strong>${esc(profileLabel)}</strong> profile (via allowedMcpServers).`);
+  if (toolsRemoved > 0) {
+    ctxLines.push(`Kept ${toolsKept} tools, stripped ${toolsRemoved} tools (${pctCut}% cut).`);
+  }
+  if (ht.inject_fired) ctxLines.push('Prepended <strong>system_prefix.md</strong>.');
+  if (ht.coach_kind) ctxLines.push(`Coaching: <strong>${esc(ht.coach_kind)}</strong>.`);
+  if (ht.budget_fired) ctxLines.push('Session cost alert fired.');
+
+  const savingsBar = totalTools > 0 ? `<div class="trace-token-impact">
+      <div class="trace-token-impact-title">Token impact</div>
+      <div class="trace-token-bar">
+        <div class="trace-token-bar-removed" style="width:${(toolsRemoved / totalTools * 100).toFixed(1)}%"></div>
+        <div class="trace-token-bar-kept" style="width:${(toolsKept / totalTools * 100).toFixed(1)}%"></div>
+      </div>
+      <div class="trace-token-label">
+        <strong>${totalTools}</strong> tools &rarr; <strong>${toolsKept}</strong> tools (${pctCut}% cut)<br>
+        <strong>${fmtK(tokensSaved)}</strong> tokens stripped, saving <strong>${fmtCost(savingsCost)}</strong>/turn
+      </div>
+    </div>` : '';
+
+  let costLine = '';
+  if (ht.enriched) {
+    costLine = `<div class="trace-token-impact">
+      <div class="trace-token-impact-title">Turn cost</div>
+      <div class="trace-token-label">
+        ${model ? `<strong>${esc(model)}</strong> &middot; ` : ''}
+        <strong>${fmtK(inputTok)}</strong> input &middot;
+        <strong>${fmtK(outputTok)}</strong> output &middot;
+        <strong>${fmtK(cacheRead)}</strong> cache read
+        ${costUsd > 0 ? ` &middot; <strong>${fmtCost(costUsd)}</strong>` : ''}
+      </div>
+    </div>`;
+  } else {
+    costLine = `<div style="font-size:11px;color:var(--t4);margin-top:8px">Turn cost data will appear after the next ingest cycle.</div>`;
+  }
+
+  const storyPanel = `<div class="trace-story">
+    <div class="trace-story-eyebrow">Your interaction</div>
+    <div class="trace-story-context">
+      ${ht.working_directory ? `<code>${esc(ht.working_directory)}</code><br>` : ''}
+      ${ts}
+    </div>
+    <div class="trace-ctx-band">
+      <div class="trace-ctx-band-title">What ctx did</div>
+      <p>${ctxLines.join(' ')}</p>
+    </div>
+    ${savingsBar}
+    ${costLine}
+  </div>`;
+
+  const ga = GATE_META;
+  const flowNodes = [
+    { id: 'in', name: 'Request in', fired: true, desc: `${totalTools} tools from all servers`, anchor: true },
+    { id: 'auto', name: 'Auto-Profile', fired: ht.auto_selected, desc: ht.auto_selected ? `Matched ${esc(ht.auto_trigger || 'cwd')} &rarr; ${esc(profileLabel)}` : 'No switch', accent: ga.auto?.accent },
+    { id: 'allow', name: 'Profile Filter', fired: toolsRemoved > 0, desc: toolsRemoved > 0 ? `-${toolsRemoved} tools, kept ${toolsKept}` : 'No tools stripped', accent: ga.filter?.accent },
+    { id: 'inject', name: 'Inject', fired: ht.inject_fired, desc: ht.inject_fired ? 'system_prefix.md prepended' : 'Not active', accent: ga.inject?.accent },
+    { id: 'coach', name: 'Coaching', fired: !!ht.coach_kind, desc: ht.coach_kind ? esc(ht.coach_kind) : '--', accent: ga.coach?.accent },
+    { id: 'budget', name: 'Budget Guard', fired: ht.budget_fired, desc: ht.budget_fired ? 'Cost alert fired' : '--', accent: ga.budget?.accent },
+    { id: 'out', name: 'Sent to API', fired: true, desc: `${toolsKept} tools, ~${fmtK(tokensSaved)} tokens saved`, anchor: true },
+  ];
+
+  const flowHtml = flowNodes.map(n => {
+    const cls = n.anchor ? 'trace-flow-node anchor fired' : (n.fired ? 'trace-flow-node fired' : 'trace-flow-node dimmed');
+    const style = n.fired && n.accent ? `--node-accent:${n.accent}` : '';
+    return `<div class="${cls}" style="${style}">
+      <div class="trace-flow-node-name">${n.name}</div>
+      <div class="trace-flow-node-desc">${n.desc}</div>
+    </div>`;
+  }).join('');
+
+  const flowPanel = `<div class="trace-flow-panel">
+    <div class="trace-flow-eyebrow">ctx pipeline</div>
+    ${flowHtml}
+  </div>`;
+
+  const savingsSummary = toolsRemoved > 0
+    ? `-<strong>${toolsRemoved}</strong> of ${totalTools} tools &middot; <strong>${fmtK(tokensSaved)}</strong> tok &middot; ${pctCut}% cut`
+    : `${totalTools} tools (no filter)`;
+  const costSummary = ht.enriched ? fmtCost(costUsd) : '';
+
+  return `<div class="trace-row" id="trace-${i}" onclick="toggleTraceReq(${i})">
+    <div class="trace-summary">
+      <div class="trace-ts">${ts}</div>
+      <div class="trace-profile-chip">${profileLabel}</div>
+      ${autoChip}
+      ${enrichedBadge}
+      <div class="trace-stat">${savingsSummary}</div>
+      <div class="trace-cost">${costSummary}</div>
+      <div class="trace-chevron">▼</div>
+    </div>
+    <div class="trace-detail">
+      <div class="trace-panels">
+        ${storyPanel}
+        ${flowPanel}
+      </div>
+    </div>
+  </div>`;
 }
 
 function fmtTs(ts) {

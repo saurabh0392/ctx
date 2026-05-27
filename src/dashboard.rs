@@ -28,13 +28,24 @@ use crate::analytics::{group_into_sessions, load_records};
 
 const HTML: &str = include_str!("dashboard.html");
 
+/// Returns true when a session's `started_at` is at or after the ctx activation date.
+/// If no activation date is recorded, returns true (no filtering).
+fn session_after_ctx(started_at: &str, ctx_since: Option<&str>) -> bool {
+    let Some(since) = ctx_since else { return true };
+    started_at >= since
+}
+
 fn open_ctx_db() -> Option<rusqlite::Connection> {
     let c = crate::db::open_db().ok()?;
     crate::db::ensure_schema(&c).ok()?;
     Some(c)
 }
 
-fn timeline_from_sessions(conn: &rusqlite::Connection, cutoff_iso: &str) -> Vec<TimelinePoint> {
+fn timeline_from_sessions(conn: &rusqlite::Connection, cutoff_iso: &str, ctx_since: Option<&str>) -> Vec<TimelinePoint> {
+    let effective_cutoff = match ctx_since {
+        Some(s) if s > cutoff_iso => s,
+        _ => cutoff_iso,
+    };
     let Ok(mut stmt) = conn.prepare(
         "SELECT substr(started_at, 1, 10) AS d,
                 CAST(COALESCE(SUM(cache_read_tokens), 0) AS INTEGER) AS tok,
@@ -47,7 +58,7 @@ fn timeline_from_sessions(conn: &rusqlite::Connection, cutoff_iso: &str) -> Vec<
     ) else {
         return vec![];
     };
-    let rows = stmt.query_map(params![cutoff_iso], |r| {
+    let rows = stmt.query_map(params![effective_cutoff], |r| {
         Ok(TimelinePoint {
             date: r.get(0)?,
             tokens: r.get::<_, i64>(1)? as usize,
@@ -60,17 +71,20 @@ fn timeline_from_sessions(conn: &rusqlite::Connection, cutoff_iso: &str) -> Vec<
 }
 
 fn savings_sessions_from_db(conn: &rusqlite::Connection) -> Vec<crate::analytics::Session> {
+    let ctx_since = crate::db::get_ctx_active_since(conn)
+        .unwrap_or_default();
     let Ok(mut stmt) = conn.prepare(
         "SELECT started_at, COALESCE(duration_mins, 0), COALESCE(turn_count, 0),
                 COALESCE(tools_removed, 0), COALESCE(cache_read_tokens, 0), COALESCE(total_usd, 0.0),
                 COALESCE(profile, ''), COALESCE(NULLIF(TRIM(working_directory), ''), project)
          FROM sessions
+         WHERE started_at >= ?1
          ORDER BY started_at DESC
          LIMIT 20",
     ) else {
         return vec![];
     };
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params![ctx_since], |r| {
         Ok(crate::analytics::Session {
             started_at: r.get(0)?,
             duration_mins: r.get::<_, i64>(1)?,
@@ -87,19 +101,22 @@ fn savings_sessions_from_db(conn: &rusqlite::Connection) -> Vec<crate::analytics
 }
 
 fn projects_from_sessions(conn: &rusqlite::Connection) -> Vec<ProjectRow> {
+    let ctx_since = crate::db::get_ctx_active_since(conn)
+        .unwrap_or_default();
     let Ok(mut stmt) = conn.prepare(
         "SELECT COALESCE(NULLIF(TRIM(working_directory), ''), '(unknown)') AS wd,
                 CAST(COALESCE(SUM(turn_count), 0) AS INTEGER) AS turns,
                 CAST(COALESCE(SUM(cache_read_tokens), 0) AS INTEGER) AS toks,
                 COALESCE(SUM(total_usd), 0.0) AS spend
          FROM sessions
+         WHERE started_at >= ?1
          GROUP BY wd
          ORDER BY spend DESC
          LIMIT 40",
     ) else {
         return vec![];
     };
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params![ctx_since], |r| {
         Ok(ProjectRow {
             working_directory: r.get(0)?,
             requests: r.get::<_, i64>(1)? as usize,
@@ -142,12 +159,14 @@ fn gates_when_no_requests(
     let inject_on = config.inject_enabled && crate::config::system_prefix_path().exists();
     let auto_on = config.auto_profile_enabled;
     let budget_threshold = crate::budget_guard::session_threshold_usd();
+    let ctx_since = crate::db::get_ctx_active_since(conn)
+        .unwrap_or_default();
 
     let (sess_today, corr_sum, compact_sum, turn_sum): (i64, i64, i64, i64) = conn
         .query_row(
             "SELECT COUNT(*), COALESCE(SUM(correction_turns),0), COALESCE(SUM(hit_compact),0), COALESCE(SUM(turn_count),0)
-             FROM sessions WHERE substr(started_at, 1, 10) = ?1",
-            params![today],
+             FROM sessions WHERE substr(started_at, 1, 10) = ?1 AND started_at >= ?2",
+            params![today, ctx_since],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
@@ -156,7 +175,7 @@ fn gates_when_no_requests(
     let compact_n = compact_sum.max(0) as usize;
 
     let sessions_note = format!(
-        "No per-request filter events in ctx.db. Session index: {sess_today} sessions today, {turn_sum} turns, {corr_n} correction turns, {compact_n} context compacts (from ingest)."
+        "No per-request filter events in ctx.db. Post-ctx session data: {sess_today} sessions today, {turn_sum} turns, {corr_n} correction turns, {compact_n} context compacts (from ingest, filtered to after ctx activation)."
     );
 
     let gates = vec![
@@ -283,7 +302,14 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         crate::db::maybe_backfill_requests_from_jsonl(&c)?;
         Ok::<(), anyhow::Error>(())
     });
-    let _ = crate::conversations::ingest_claude_jsonl();
+
+    // Run JSONL ingest in background so the server binds immediately.
+    tokio::spawn(async {
+        let _ = tokio::task::spawn_blocking(|| {
+            let _ = crate::conversations::ingest_claude_jsonl();
+        })
+        .await;
+    });
 
     let app = Router::new()
         .route("/", get(serve_html))
@@ -311,6 +337,8 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/profiles/analytics", get(api_profiles_analytics))
         // Request trace
         .route("/api/requests", get(api_requests))
+        .route("/api/hook-events", get(api_hook_events))
+        .route("/api/hook-traces", get(api_hook_traces))
         // Projects + tool heatmap
         .route("/api/projects", get(api_projects))
         .route("/api/tool-usage", get(api_tool_usage))
@@ -342,6 +370,8 @@ async fn serve_html() -> axum::response::Html<&'static str> {
 }
 
 /// Claude Code async HTTP hooks (PostToolUse, SessionStart, SessionEnd, Stop).
+/// Stop and SessionEnd fire after the turn completes and JSONL is written,
+/// so they trigger ingest to enrich pending hook_trace rows.
 async fn api_hook_event(Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
     let hook_type = payload
         .get("hook_event_name")
@@ -353,6 +383,22 @@ async fn api_hook_event(Json(payload): Json<serde_json::Value>) -> impl IntoResp
         let _ = crate::db::ensure_schema(&conn);
         let _ = crate::db::insert_hook_event(&conn, hook_type, &payload_s);
     }
+
+    if matches!(hook_type, "Stop" | "SessionEnd") {
+        if ingest_running()
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            tokio::spawn(async move {
+                let _ = tokio::task::spawn_blocking(|| {
+                    let _ = crate::conversations::ingest_claude_jsonl();
+                })
+                .await;
+                ingest_running().store(false, Ordering::Release);
+            });
+        }
+    }
+
     StatusCode::OK
 }
 
@@ -433,11 +479,14 @@ async fn api_stats() -> Json<Stats> {
     let all_tokens = total_tokens;
     let sessions = group_into_sessions(&records);
 
+    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
+
     let spend_sessions = crate::conversations::all_sessions();
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
     let month_spend: f64 = spend_sessions.iter()
         .filter(|s| s.started_at.starts_with(&current_month))
+        .filter(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()))
         .map(|s| s.total_usd)
         .sum();
     let day = now.day().max(1) as f64;
@@ -458,6 +507,7 @@ async fn api_stats() -> Json<Stats> {
     let effective_session_count = if sessions.is_empty() {
         spend_sessions.iter()
             .filter(|s| s.started_at.starts_with(&current_month))
+            .filter(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()))
             .count()
     } else {
         sessions.len()
@@ -522,7 +572,8 @@ async fn api_timeline() -> Json<Vec<TimelinePoint>> {
     }
 
     if let Some(conn) = open_ctx_db() {
-        let points = timeline_from_sessions(&conn, &cutoff_iso);
+        let ctx_since = crate::db::get_ctx_active_since(&conn);
+        let points = timeline_from_sessions(&conn, &cutoff_iso, ctx_since.as_deref());
         if !points.is_empty() {
             return Json(points);
         }
@@ -557,7 +608,11 @@ struct SpendSessionsQuery {
 }
 
 async fn api_spend_monthly() -> Json<Vec<crate::conversations::MonthlySpend>> {
-    let sessions = crate::conversations::all_sessions();
+    let all = crate::conversations::all_sessions();
+    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
+    let sessions: Vec<_> = all.into_iter()
+        .filter(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()))
+        .collect();
     let config = crate::config::Config::load();
     let mut months = crate::conversations::monthly_spend(&sessions);
     let now = chrono::Utc::now();
@@ -579,7 +634,9 @@ async fn api_spend_monthly() -> Json<Vec<crate::conversations::MonthlySpend>> {
 async fn api_spend_sessions(
     Query(q): Query<SpendSessionsQuery>,
 ) -> Json<Vec<crate::conversations::SessionCost>> {
+    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
     let mut sessions = crate::conversations::all_sessions();
+    sessions.retain(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()));
 
     if let Some(month) = &q.month {
         sessions.retain(|s| s.started_at.starts_with(month.as_str()));
@@ -591,7 +648,9 @@ async fn api_spend_sessions(
 }
 
 async fn api_spend_tips() -> Json<Vec<crate::conversations::AdvisorTip>> {
+    let ctx_since = open_ctx_db().and_then(|c| crate::db::get_ctx_active_since(&c));
     let mut sessions = crate::conversations::all_sessions();
+    sessions.retain(|s| session_after_ctx(&s.started_at, ctx_since.as_deref()));
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
     sessions.retain(|s| s.started_at.starts_with(&current_month));
@@ -659,6 +718,7 @@ struct SettingsGetResponse {
     proxy_install_mode: Option<String>,
     auto_profile_enabled: bool,
     inject_enabled: bool,
+    coaching_enabled: bool,
     monthly_budget_usd: Option<f64>,
     monthly_actual_spend_usd: Option<f64>,
     monthly_actual_spend_baseline_usd: Option<f64>,
@@ -730,6 +790,7 @@ async fn api_settings_get() -> impl IntoResponse {
         proxy_install_mode: cfg.proxy_install_mode.clone(),
         auto_profile_enabled: cfg.auto_profile_enabled,
         inject_enabled: cfg.inject_enabled,
+        coaching_enabled: cfg.coaching_enabled,
         monthly_budget_usd: cfg.monthly_budget_usd,
         monthly_actual_spend_usd: cfg.monthly_actual_spend_usd,
         monthly_actual_spend_baseline_usd: cfg.monthly_actual_spend_baseline_usd,
@@ -750,6 +811,7 @@ struct SettingsPostBody {
     active_profile: Option<String>,
     auto_profile_enabled: Option<bool>,
     inject_enabled: Option<bool>,
+    coaching_enabled: Option<bool>,
     monthly_budget_usd: Option<f64>,
     monthly_actual_spend_usd: Option<f64>,
     store_prompt_text: Option<bool>,
@@ -764,6 +826,9 @@ async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoRespo
     }
     if let Some(v) = body.inject_enabled {
         cfg.inject_enabled = v;
+    }
+    if let Some(v) = body.coaching_enabled {
+        cfg.coaching_enabled = v;
     }
     if let Some(v) = body.monthly_budget_usd {
         cfg.monthly_budget_usd = Some(v);
@@ -1084,6 +1149,44 @@ async fn api_requests(Query(q): Query<RequestsQuery>) -> Json<Vec<RequestTrace>>
         .collect();
 
     Json(traces)
+}
+
+// ---------------------------------------------------------------------------
+// Hook events — companion to request trace for v2 hook architecture
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct HookEventsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn api_hook_events(Query(q): Query<HookEventsQuery>) -> Json<Vec<crate::db::HookEventRow>> {
+    let limit = q.limit.unwrap_or(100).min(500);
+    let offset = q.offset.unwrap_or(0);
+    let Some(conn) = open_ctx_db() else {
+        return Json(vec![]);
+    };
+    Json(crate::db::load_hook_events(&conn, limit, offset).unwrap_or_default())
+}
+
+// ---------------------------------------------------------------------------
+// Hook traces — hybrid rows from hooks, enriched by JSONL ingest
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct HookTracesQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn api_hook_traces(Query(q): Query<HookTracesQuery>) -> Json<Vec<crate::db::HookTraceRow>> {
+    let limit = q.limit.unwrap_or(100).min(500);
+    let offset = q.offset.unwrap_or(0);
+    let Some(conn) = open_ctx_db() else {
+        return Json(vec![]);
+    };
+    Json(crate::db::load_hook_traces(&conn, limit, offset).unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
