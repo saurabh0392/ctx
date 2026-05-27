@@ -28,7 +28,7 @@ After setup, run `ctx profile generate` once to build profiles tailored to your 
 
 ### Claude Desktop: no API interception
 
-Desktop is an Electron app. It does not read `NODE_OPTIONS` from `~/.claude/settings.json` the way the Claude Code CLI does. It also does not expose a user setting to point `ANTHROPIC_BASE_URL` at a local reverse proxy, so you cannot route its HTTPS API traffic through `ctx proxy` the way you wire Claude Code. Per-request tracing, tool stripping, and dashboard savings from `filter.js` are **Claude Code only**. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
+Desktop is an Electron app. It does not read `NODE_OPTIONS` from `~/.claude/settings.json` the way the Claude Code CLI does. It also does not expose a user setting to point `ANTHROPIC_BASE_URL` at a local reverse proxy, so you cannot route its HTTPS API traffic through `ctx proxy` the way you wire Claude Code. Per-request tracing, tool stripping, and dashboard savings from `filter.js` apply in **Claude Code** (CLI or IDE), not in standalone Desktop chat. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
 
 ## Install journey
 
