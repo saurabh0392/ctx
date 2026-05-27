@@ -58,8 +58,12 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 | ctx_settings | "What's ctx storing on my machine?" |
 | ctx_profiles | "What profiles are available?" |
 
-## Uninstall
+## Teardown
+
+For a clean removal, paste this into Claude Code:
 
 ```
-ctx setup --uninstall
+Completely remove ctx from this machine. Run `ctx setup --uninstall`, then delete ~/.ctx/, remove any leftover LaunchAgents at ~/Library/LaunchAgents/com.ctx.*, clean ctx from ~/.claude/settings.json mcpServers and NODE_OPTIONS, and from ~/.cursor/mcp.json. Verify nothing remains. Tell me to restart Cursor when done.
 ```
+
+Or use the slash command `/teardown-ctx` if the repo is in your workspace.
