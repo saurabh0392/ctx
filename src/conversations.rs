@@ -881,8 +881,23 @@ fn ingest_one_jsonl_session(
     Ok(true)
 }
 
+/// Returns true when `path`'s mtime is at or before `cutoff`, meaning the file has not been
+/// modified since the last ingest and can be skipped. When `cutoff` is None (first-ever ingest)
+/// or when the mtime cannot be read, returns false (process the file).
+fn file_unchanged_since(path: &std::path::Path, cutoff: Option<std::time::SystemTime>) -> bool {
+    let Some(cutoff) = cutoff else { return false };
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|mtime| mtime <= cutoff)
+        .unwrap_or(false)
+}
+
 /// Walk `~/.claude/projects/**/*.jsonl`, then Claude Desktop `audit.jsonl` logs, and upsert into SQLite.
 /// Returns number of main session files written (Claude Code project JSONL plus Desktop audits).
+///
+/// Skips files whose filesystem mtime is at or before the previous `last_ingest_at` timestamp
+/// stored in the meta table. This makes per-turn ingest calls cheap: on an active session only
+/// the current session file is newer than the last run, so the full scan stays O(1) in practice.
 pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     let conn = crate::db::open_db()?;
     crate::db::ensure_schema(&conn)?;
@@ -890,6 +905,17 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     let store_prompt_text = cfg.store_prompt_text_enabled();
     let embeddings_on = cfg.embeddings_enabled();
     let profile = UserProfile::compute();
+
+    // Read the previous ingest timestamp once and convert to SystemTime for mtime comparisons.
+    let last_ingest_cutoff: Option<std::time::SystemTime> = conn
+        .query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| {
+            std::time::SystemTime::UNIX_EPOCH
+                + std::time::Duration::from_secs(dt.timestamp().max(0) as u64)
+        });
+
     let tx = conn.unchecked_transaction()?;
     let mut count = 0usize;
     let home = dirs::home_dir().unwrap_or_default();
@@ -939,6 +965,9 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
                     if fname.contains("compact") {
                         continue;
                     }
+                    if file_unchanged_since(&fpath, last_ingest_cutoff) {
+                        continue;
+                    }
 
                     if ingest_one_jsonl_session(&tx, &fpath, &proj_display, &profile, store_prompt_text)? {
                         count += 1;
@@ -949,6 +978,9 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     }
 
     for audit_path in discover_desktop_sessions() {
+        if file_unchanged_since(&audit_path, last_ingest_cutoff) {
+            continue;
+        }
         let cwd = read_desktop_init_cwd(&audit_path);
         let project = cwd
             .as_deref()

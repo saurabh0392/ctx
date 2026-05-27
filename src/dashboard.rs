@@ -13,6 +13,16 @@ use rusqlite::params;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+
+/// Guards concurrent ingest runs triggered by per-turn requests.
+/// compare_exchange from false→true to acquire; store(false) to release.
+static INGEST_RUNNING: OnceLock<AtomicBool> = OnceLock::new();
+
+fn ingest_running() -> &'static AtomicBool {
+    INGEST_RUNNING.get_or_init(|| AtomicBool::new(false))
+}
 
 use crate::analytics::{group_into_sessions, load_records};
 
@@ -280,6 +290,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         // Tab 1: savings
         .route("/api/stats", get(api_stats))
         .route("/api/ingest-request", post(api_ingest_request))
+        .route("/api/trigger-ingest", post(api_trigger_ingest))
         .route("/api/timeline", get(api_timeline))
         .route("/api/sessions", get(api_sessions))
         .route("/api/gates", get(api_gates))
@@ -339,6 +350,32 @@ async fn api_ingest_request(Json(rec): Json<crate::analytics::Record>) -> impl I
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+/// POST /api/trigger-ingest
+///
+/// Called by filter.js after every turn. Spawns `ingest_claude_jsonl()` in a background
+/// blocking task so the dashboard reflects the just-completed turn immediately.
+///
+/// The AtomicBool gate ensures at most one ingest runs at a time — if a previous turn's
+/// ingest is still in progress this returns 202 and the in-flight run will pick up the
+/// new data (because `ingest_claude_jsonl` rescans modified files on each invocation).
+async fn api_trigger_ingest() -> impl IntoResponse {
+    if ingest_running()
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        // Already running — the in-flight ingest will cover the latest turn.
+        return StatusCode::ACCEPTED;
+    }
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(|| {
+            let _ = crate::conversations::ingest_claude_jsonl();
+        })
+        .await;
+        ingest_running().store(false, Ordering::Release);
+    });
+    StatusCode::ACCEPTED
 }
 
 // ---------------------------------------------------------------------------
