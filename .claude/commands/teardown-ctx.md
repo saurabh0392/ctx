@@ -86,6 +86,6 @@ python3 -c "import json; d=json.load(open('$HOME/.claude/settings.json')); asser
 > - NODE_OPTIONS hook removed from ~/.claude/settings.json
 > - ctx MCP server removed from settings.json and ~/.cursor/mcp.json
 >
-> **Restart Cursor** so Claude Code drops the old NODE_OPTIONS from its process.
+> **Reload the window**: `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux) → type `Reload Window` → Enter. This drops the old `NODE_OPTIONS` and MCP server state from the editor process without a full quit.
 >
 > To reinstall later: paste the install prompt or run `/install-ctx` in a fresh chat.

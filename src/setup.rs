@@ -283,9 +283,10 @@ pub fn run(
     if no_install {
         println!("{} Skipped writing ~/.claude/settings.json (--no-install)", "i".yellow());
         println!();
-        println!("Close Cursor/Claude Code, then run:");
+        println!("Run:");
         println!("  ctx proxy install");
-        println!("Then reopen Cursor.");
+        println!("Then reload the window: Cmd+Shift+P (macOS) or Ctrl+Shift+P (Windows/Linux), type Reload Window, Enter.");
+        println!("This picks up NODE_OPTIONS and MCP server config without quitting.");
     } else if cursor_detected {
         println!("{} Wiring Claude Code settings (NODE_OPTIONS in-process filter)...", "->".cyan());
         crate::proxy::install(port, upstream)?;
@@ -307,11 +308,20 @@ pub fn run(
         println!("  Autorun:   launchd agents {PLIST_LABEL}, {DASHBOARD_PLIST_LABEL}");
         println!("  Inject:    ~/.ctx/system_prefix.md");
         println!();
-        println!("Next: restart Claude Code, then run {} to activate filtering.", "`ctx use carrier`".bold());
         println!("Dashboard: open http://127.0.0.1:{DASHBOARD_PORT} to see savings and prompt stats.");
     }
 
     wire_mcp_server()?;
+
+    if !no_install {
+        println!();
+        println!("Next: Cmd+Shift+P (macOS) or Ctrl+Shift+P (Windows/Linux), type Reload Window, then Enter.");
+        println!("This re-reads NODE_OPTIONS and MCP server config without quitting.");
+        if !cursor_detected {
+            println!("If you only use Claude Code in a plain terminal, start a new session once so NODE_OPTIONS applies.");
+            println!("Then run {} to activate filtering.", "`ctx use carrier`".bold());
+        }
+    }
 
     let dashboard_url = format!("http://127.0.0.1:{DASHBOARD_PORT}");
     println!();
@@ -377,7 +387,10 @@ pub fn uninstall() -> Result<()> {
 
     unwire_mcp_server();
 
-    println!("{} ctx uninstalled. Restart Claude Code to apply.", "✓".green());
+    println!(
+        "{} ctx uninstalled. Reload the window (Cmd+Shift+P or Ctrl+Shift+P → Reload Window) so removed NODE_OPTIONS and MCP server config apply.",
+        "✓".green()
+    );
     Ok(())
 }
 

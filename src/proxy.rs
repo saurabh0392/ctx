@@ -664,7 +664,8 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
         proxy_http
     );
     println!("\nNext steps:");
-    println!("  1. Restart Claude Code");
+    println!("  1. Cmd+Shift+P (macOS) or Ctrl+Shift+P (Windows/Linux) → type Reload Window → Enter");
+    println!("     (re-reads NODE_OPTIONS and MCP config without quitting)");
     println!("  2. Run {} if you change focus profile", "`ctx use carrier`".bold());
 
     Ok(())
@@ -734,7 +735,7 @@ pub fn uninstall() -> Result<()> {
     cfg.save()?;
 
     println!("{} Uninstalled ctx proxy env from settings.json", "✓".green());
-    println!("Restart Claude Code to apply.");
+    println!("Reload the window (Cmd+Shift+P or Ctrl+Shift+P → Reload Window) to apply.");
     Ok(())
 }
 

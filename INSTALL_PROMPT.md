@@ -29,10 +29,10 @@ Steps:
    - ctx status should print profile info
 
 6. Explain to me what changed and what I need to do:
-   - NODE_OPTIONS was added to ~/.claude/settings.json. I need to restart Cursor so Claude Code picks up filter.js.
-   - ctx registered as an MCP server. After restart I can ask about spend, tips, patterns in chat.
+   - NODE_OPTIONS was added to ~/.claude/settings.json. I should use Command Palette → Reload Window (Cmd+Shift+P on macOS, Ctrl+Shift+P on Windows/Linux) so Claude Code picks up filter.js without quitting.
+   - ctx registered as an MCP server. After reload I can ask about spend, tips, patterns in chat.
    - Dashboard is at http://127.0.0.1:8789 and works immediately.
-   - Tell me to restart Cursor and explain why (new process needed for NODE_OPTIONS and MCP).
+   - Tell me to run Reload Window and explain why (re-reads NODE_OPTIONS and MCP server config).
 
 If any step fails, show the error and suggest a fix. Do not skip verification.
 ```
@@ -46,7 +46,7 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 - **LLM-accessible**: registered as an MCP server so you can ask about your ctx data in any chat
 - **Privacy**: all data under ~/.ctx/, zero telemetry, no network calls beyond your normal Anthropic API traffic
 
-## Available MCP tools (accessible from chat after restart)
+## Available MCP tools (accessible from chat after Reload Window)
 
 | Tool | What you can ask |
 |------|-----------------|
@@ -63,7 +63,7 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 For a clean removal, paste this into Claude Code:
 
 ```
-Completely remove ctx from this machine. Run `ctx setup --uninstall`, then delete ~/.ctx/, remove any leftover LaunchAgents at ~/Library/LaunchAgents/com.ctx.*, clean ctx from ~/.claude/settings.json mcpServers and NODE_OPTIONS, and from ~/.cursor/mcp.json. Verify nothing remains. Tell me to restart Cursor when done.
+Completely remove ctx from this machine. Run `ctx setup --uninstall`, then delete ~/.ctx/, remove any leftover LaunchAgents at ~/Library/LaunchAgents/com.ctx.*, clean ctx from ~/.claude/settings.json mcpServers and NODE_OPTIONS, and from ~/.cursor/mcp.json. Verify nothing remains. Tell me to use Command Palette → Reload Window when done.
 ```
 
 Or use the slash command `/teardown-ctx` if the repo is in your workspace.

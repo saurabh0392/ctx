@@ -71,15 +71,15 @@ ctx status
 
 Explain this clearly to the user:
 
-> ctx is now installed and running. Three things changed that take effect after you restart Cursor:
+> ctx is now installed and running. Three things changed; two need a window reload in Cursor:
 >
 > 1. **Tool filtering**: ctx added `NODE_OPTIONS` to `~/.claude/settings.json`. When Claude Code starts a new process, it loads `~/.ctx/filter.js` which strips unused MCP tool schemas before each API request. This reduces token usage by ~40%. It does not affect your prompts or responses.
 >
-> 2. **MCP server**: ctx registered itself as an MCP server. After restart, you can ask "what's my ctx spend?" or "show me cost tips" in any chat and Claude will call ctx directly.
+> 2. **MCP server**: ctx registered itself as an MCP server. After you reload the window, you can ask "what's my ctx spend?" or "show me cost tips" in any chat and Claude will call ctx directly.
 >
-> 3. **Dashboard**: Already running at http://127.0.0.1:8789. No restart needed for this.
+> 3. **Dashboard**: Already running at http://127.0.0.1:8789. No reload needed for this.
 >
-> **Action required**: Close and reopen Cursor. This is needed so the new NODE_OPTIONS and MCP server registration are picked up by Claude Code's process.
+> **Action required**: Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux), type `Reload Window`, and press Enter. This re-reads `NODE_OPTIONS` and MCP server config without quitting. If you only use Claude Code in a plain terminal, start a new session once instead.
 
 Also mention:
 - `ctx use carrier` or `ctx profile list` to switch MCP filter profiles
