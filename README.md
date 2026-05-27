@@ -1,9 +1,9 @@
 # ctx
 
-ctx strips the MCP tool definitions Claude Code doesn't need for the current task, tracks what each session actually costs, and serves a local dashboard. Install with a one-liner — no Rust required.
+ctx strips the MCP tool definitions Claude Code doesn't need for the current task, tracks what each session actually costs, and serves a local dashboard. Install with no Rust required — just `gh` authenticated to the goshippo org.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+gh repo clone goshippo/ctx /tmp/ctx-src && bash /tmp/ctx-src/scripts/install.sh
 ctx setup
 ```
 
@@ -52,16 +52,16 @@ Detection order in code: Windsurf markers, then Cursor, then VS Code integrated 
 
 Quick paths:
 
-- **Claude Code in an IDE (recommended):** Run the one-liner below in a terminal, then reload the IDE window.
+- **Claude Code in an IDE (recommended):** Run these in a terminal, then reload the IDE window.
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+  gh repo clone goshippo/ctx /tmp/ctx-src && bash /tmp/ctx-src/scripts/install.sh
   ctx setup
   ctx profile generate   # build profiles from your actual MCP stack
   ctx use <profile>
   ```
 - **Claude Code in a terminal only:** Same install, then open a **new** shell so `NODE_OPTIONS` applies.
 - **Claude Desktop:** Same install from an OS terminal, run `ctx setup`, then quit Desktop fully and reopen. Per-request filtering and tracing are not available on Desktop (see table), but MCP tools and the dashboard work.
-- **Build from source:** Install Rust from [rustup.rs](https://rustup.rs), then `cargo install --path .` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)).
+- **Build from source:** `gh repo clone goshippo/ctx ~/Documents/ctx` then `source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)).
 
 ### What happens during `ctx setup`
 
@@ -94,19 +94,25 @@ Contributor-level diagrams, module tables, and pipeline detail: [ARCHITECTURE.md
 
 ## Install
 
-**One-liner (no Rust required):**
+**Pre-built binary (no Rust required) — requires `gh` authenticated to the goshippo org:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+gh repo clone goshippo/ctx /tmp/ctx-src
+bash /tmp/ctx-src/scripts/install.sh
+ctx setup
+ctx profile generate
 ```
 
-Downloads the pre-built binary for your platform (macOS arm64/x86_64 or Linux x86_64) from the [latest GitHub release](https://github.com/goshippo/ctx/releases/latest) and installs it to `/usr/local/bin`. Set `CTX_INSTALL_DIR` to override the destination.
+`install.sh` detects your platform (macOS arm64/x86_64 or Linux x86_64), downloads the matching binary from the [latest release](https://github.com/goshippo/ctx/releases/latest) via `gh release download`, and installs it to `/usr/local/bin`. Set `CTX_INSTALL_DIR` to override the destination.
+
+No `gh` but have a PAT? `GITHUB_TOKEN=<pat> bash scripts/install.sh` works too.
 
 **Build from source (requires Rust):**
 
 ```bash
-cargo build --release
-# binary: target/release/ctx
+gh repo clone goshippo/ctx ~/Documents/ctx
+source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx
+ctx setup
 ```
 
 After installing the binary, run setup once:

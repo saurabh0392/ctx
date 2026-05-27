@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 # ctx installer — downloads the latest pre-built binary for your platform.
-# Usage:  curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+#
+# Primary path (internal/private repo): requires the GitHub CLI (`gh`) authenticated
+# to the goshippo org.
+#
+# Usage:
+#   gh repo clone goshippo/ctx /tmp/ctx-src && bash /tmp/ctx-src/scripts/install.sh
+#
+# Or with a token (CI / machines without gh):
+#   GITHUB_TOKEN=<pat> bash scripts/install.sh
+#
+# Or pipe directly if you have gh:
+#   gh api repos/goshippo/ctx/contents/scripts/install.sh --jq '.content' \
+#     | base64 -d | sh
 set -euo pipefail
 
 REPO="goshippo/ctx"
@@ -33,39 +45,61 @@ case "$ARCH" in
 esac
 
 TARGET="${ARCH_TAG}-${OS_TAG}"
-
-# --------------------------------------------------------------------------
-# Resolve latest release tag
-# --------------------------------------------------------------------------
-echo "Fetching latest ctx release..."
-LATEST_TAG="$(
-  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name"' \
-    | head -1 \
-    | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
-)"
-
-if [ -z "$LATEST_TAG" ]; then
-  echo "error: could not determine latest release (API rate limit or no releases yet)"
-  echo "       Check: https://github.com/${REPO}/releases"
-  exit 1
-fi
-
-echo "Latest: ${LATEST_TAG}"
-
-# --------------------------------------------------------------------------
-# Download and install
-# --------------------------------------------------------------------------
-URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/ctx-${TARGET}.tar.gz"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-echo "Downloading ctx-${TARGET}.tar.gz..."
-curl -fsSL --progress-bar "$URL" -o "$TMP/ctx.tar.gz"
+# --------------------------------------------------------------------------
+# Download — gh CLI first (works for internal repos), curl fallback
+# --------------------------------------------------------------------------
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  echo "Fetching latest ctx release via gh..."
+  LATEST_TAG="$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName')"
+  if [ -z "$LATEST_TAG" ]; then
+    echo "error: no releases found at ${REPO}"
+    exit 1
+  fi
+  echo "Latest: ${LATEST_TAG}"
+  echo "Downloading ctx-${TARGET}.tar.gz..."
+  gh release download "$LATEST_TAG" \
+    --repo "$REPO" \
+    --pattern "ctx-${TARGET}.tar.gz" \
+    --dir "$TMP"
+else
+  # Curl path — works when GITHUB_TOKEN is set or if the repo ever becomes public.
+  if [ -z "${GITHUB_TOKEN:-}" ]; then
+    echo "error: 'gh' CLI not found or not authenticated, and GITHUB_TOKEN is not set."
+    echo ""
+    echo "Install options:"
+    echo "  1. Authenticate gh:  gh auth login   then re-run this script"
+    echo "  2. Set a token:      GITHUB_TOKEN=<pat> bash scripts/install.sh"
+    echo "  3. Build from source (requires Rust):"
+    echo "     gh repo clone ${REPO} ~/Documents/ctx"
+    echo "     source \"\$HOME/.cargo/env\" && cargo install --locked --path ~/Documents/ctx"
+    exit 1
+  fi
+  echo "Fetching latest ctx release via curl (GITHUB_TOKEN)..."
+  LATEST_TAG="$(
+    curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      "https://api.github.com/repos/${REPO}/releases/latest" \
+      | grep '"tag_name"' \
+      | head -1 \
+      | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+  )"
+  if [ -z "$LATEST_TAG" ]; then
+    echo "error: could not determine latest release"
+    exit 1
+  fi
+  echo "Latest: ${LATEST_TAG}"
+  URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/ctx-${TARGET}.tar.gz"
+  echo "Downloading ctx-${TARGET}.tar.gz..."
+  curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    --progress-bar "$URL" -o "$TMP/ctx.tar.gz"
+  tar -xzf "$TMP/ctx.tar.gz" -C "$TMP"
+fi
 
-tar -xzf "$TMP/ctx.tar.gz" -C "$TMP"
-
-# Write to install dir, prompting for sudo if needed
+# --------------------------------------------------------------------------
+# Install
+# --------------------------------------------------------------------------
 if [ -w "$INSTALL_DIR" ]; then
   install -m 755 "$TMP/ctx" "$INSTALL_DIR/ctx"
 else
@@ -85,6 +119,8 @@ else
   echo ""
   echo "✓ ${CTX_VER} installed to ${INSTALL_DIR}/ctx"
   echo ""
-  echo "Next step:"
+  echo "Next steps:"
   echo "  ctx setup"
+  echo "  ctx profile generate   # build profiles from your MCP stack"
+  echo "  ctx use <profile>"
 fi

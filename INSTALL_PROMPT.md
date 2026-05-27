@@ -13,13 +13,14 @@ Install ctx, a local cost-optimization tool for Claude Code. It strips unused MC
 
 Steps:
 
-1. Install the ctx binary (no Rust required):
-   Run: curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
-   This downloads a pre-built binary for your platform (macOS arm64/x86_64 or Linux x86_64) to /usr/local/bin.
-   If the download fails (air-gapped machine, unsupported platform), fall back to building from source:
-     a. Check that Rust is installed: rustc --version (install from rustup.rs if missing, then stop and ask me)
-     b. Clone or pull: git clone https://github.com/goshippo/ctx.git ~/Documents/ctx (or cd ~/Documents/ctx && git pull)
-     c. Build: source "$HOME/.cargo/env" && cd ~/Documents/ctx && cargo install --locked --path .
+1. Install the ctx binary (no Rust required — needs gh authenticated to goshippo org):
+   Run: gh repo clone goshippo/ctx /tmp/ctx-src && bash /tmp/ctx-src/scripts/install.sh
+   This downloads the pre-built binary for your platform (macOS arm64/x86_64 or Linux x86_64) to /usr/local/bin.
+   If gh is not installed or not authenticated, fall back to building from source:
+     a. Check that Rust is installed: source "$HOME/.cargo/env" 2>/dev/null; rustc --version
+        If missing, tell me to install it from rustup.rs and stop.
+     b. Clone or pull: gh repo clone goshippo/ctx ~/Documents/ctx (or cd ~/Documents/ctx && git pull)
+     c. Build: source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx
 
 2. Run setup: ctx setup --yes
 
