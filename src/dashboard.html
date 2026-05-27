@@ -364,6 +364,12 @@ body {
 .pa-auto-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; background: var(--primary-glow); border: 1px solid var(--primary-border); border-radius: 20px; font-size: 11px; font-weight: 600; color: var(--primary); }
 
 /* ── Request Trace ───────────────────────────────────────── */
+.trace-desktop-notice {
+  font-size: 12px; color: var(--t2); line-height: 1.7;
+  background: rgba(251,146,60,.12); border: 1px solid rgba(251,146,60,.28);
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 20px;
+}
+.trace-desktop-notice code { font-size: 11px; }
 .trace-row { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; overflow: hidden; cursor: pointer; transition: border-color .15s; }
 .trace-row:hover { border-color: var(--border2); }
 .trace-row.expanded { border-color: var(--primary-border); }
@@ -904,6 +910,10 @@ body {
 
   <div class="page-title">Request Trace</div>
   <div class="page-sub">Every request ctx intercepted: what it removed, what it kept, and why it chose that profile.</div>
+  <div class="trace-desktop-notice">
+    <strong style="color:var(--t1)">Claude Desktop limitation.</strong>
+    Request tracing only records traffic from Claude Code (CLI or IDE). Standalone Desktop chat does not load <code>filter.js</code> and does not route through <code>ctx proxy</code>, so those requests never appear here. Use Claude Code for per-request traces, or run <code>ctx ingest</code> for session-level Desktop data (local-agent logs when present).
+  </div>
 
   <div id="trace-list"><div class="empty">Loading...</div></div>
 </div>

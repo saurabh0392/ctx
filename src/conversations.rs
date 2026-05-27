@@ -4,7 +4,8 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
 
 use crate::user_profile::UserProfile;
 
@@ -187,9 +188,37 @@ fn extract_output_text(content: &Value) -> (Option<String>, bool) {
     (None, false)
 }
 
-fn parse_row(line: &str) -> Row {
+fn usage_block_from_value(v: &Value) -> Option<&Value> {
+    v.get("usage")
+        .or_else(|| v.get("message").and_then(|m| m.get("usage")))
+}
+
+fn parse_row_with_context(line: &str, last_model: &mut Option<String>) -> Row {
     let Ok(v) = serde_json::from_str::<Value>(line) else { return Row::Other };
     let type_ = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+
+    if type_ == "system" {
+        if v.get("compactMetadata").is_some() {
+            return Row::Compact;
+        }
+        let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
+        if subtype == "init" {
+            if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
+                if !m.is_empty() {
+                    *last_model = Some(m.to_string());
+                }
+            } else if let Some(m) = v
+                .get("message")
+                .and_then(|msg| msg.get("model"))
+                .and_then(|x| x.as_str())
+            {
+                if !m.is_empty() {
+                    *last_model = Some(m.to_string());
+                }
+            }
+        }
+        return Row::Other;
+    }
 
     if type_ == "user" {
         let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -198,19 +227,71 @@ fn parse_row(line: &str) -> Row {
         return Row::User(UserRow { timestamp, is_meta, human_text });
     }
 
+    if type_ == "result" {
+        let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
+        if subtype != "success" && subtype != "error" {
+            return Row::Other;
+        }
+        let Some(u) = usage_block_from_value(&v) else {
+            return Row::Other;
+        };
+        let input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let cache_read = u
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let cache_creation = u
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let output_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        if input_tokens == 0 && output_tokens == 0 && cache_read == 0 && cache_creation == 0 {
+            return Row::Other;
+        }
+        let request_id = v
+            .get("uuid")
+            .or_else(|| v.get("id"))
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        let timestamp = v.get("timestamp").and_then(|x| x.as_str()).map(|s| s.to_string());
+        let model = last_model
+            .clone()
+            .unwrap_or_else(|| "claude-sonnet".to_string());
+        return Row::Assistant(AssistantRow {
+            request_id,
+            _timestamp: timestamp,
+            model,
+            input_tokens,
+            cache_read,
+            cache_creation,
+            output_tokens,
+            output_text: None,
+            is_text_content: false,
+        });
+    }
+
     if type_ == "assistant" {
         let request_id = v.get("requestId").and_then(|x| x.as_str()).map(|s| s.to_string());
         let timestamp = v.get("timestamp").and_then(|x| x.as_str()).map(|s| s.to_string());
         if let Some(msg) = v.get("message") {
-            let model = msg.get("model").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            if model.is_empty() || model == "<synthetic>" {
-                return Row::Other;
-            }
+            let model_raw = msg.get("model").and_then(|x| x.as_str()).unwrap_or("");
             let u = msg.get("usage");
             let input_tokens = u.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let cache_read = u.and_then(|u| u.get("cache_read_input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let cache_creation = u.and_then(|u| u.get("cache_creation_input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let cache_read = u
+                .and_then(|u| u.get("cache_read_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let cache_creation = u
+                .and_then(|u| u.get("cache_creation_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
             let output_tokens = u.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+
+            let model = if model_raw.is_empty() || model_raw == "<synthetic>" {
+                last_model.clone().unwrap_or_else(|| "claude-sonnet".to_string())
+            } else {
+                model_raw.to_string()
+            };
 
             if input_tokens == 0 && output_tokens == 0 && cache_read == 0 && cache_creation == 0 {
                 return Row::Other;
@@ -232,10 +313,6 @@ fn parse_row(line: &str) -> Row {
             });
         }
         return Row::Other;
-    }
-
-    if type_ == "system" && v.get("compactMetadata").is_some() {
-        return Row::Compact;
     }
 
     Row::Other
@@ -331,10 +408,12 @@ fn session_id(path: &Path) -> String {
 
 fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<ParsedSession> {
     let content = std::fs::read_to_string(path).ok()?;
-    let raw_rows: Vec<Row> = content.lines()
+    let mut last_model: Option<String> = None;
+    let raw_rows: Vec<Row> = content
+        .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(parse_row)
+        .map(|l| parse_row_with_context(l, &mut last_model))
         .collect();
 
     // Find compact event row indices
@@ -613,7 +692,197 @@ fn all_sessions_from_filesystem() -> Vec<SessionCost> {
     sessions
 }
 
-/// Walk `~/.claude/projects/**/*.jsonl` and upsert into SQLite. Returns number of main session files written.
+fn desktop_dir_component_excluded(name: &std::ffi::OsStr) -> bool {
+    let s = name.to_string_lossy();
+    matches!(s.as_ref(), ".claude" | "skills-plugin" | "rpm")
+}
+
+fn collect_desktop_audit_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for ent in rd.flatten() {
+        if desktop_dir_component_excluded(&ent.file_name()) {
+            continue;
+        }
+        let p = ent.path();
+        if p.is_dir() {
+            collect_desktop_audit_jsonl_files(&p, out);
+        } else if p.file_name().and_then(|n| n.to_str()) == Some("audit.jsonl") {
+            out.push(p);
+        }
+    }
+}
+
+/// Canonical `audit.jsonl` paths under Claude Desktop local-agent session roots (content-probed).
+pub fn discover_desktop_sessions() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in crate::config::claude_desktop_session_roots() {
+        if root.is_dir() {
+            collect_desktop_audit_jsonl_files(&root, &mut out);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out.retain(|p| desktop_audit_jsonl_probe_valid(p));
+    out
+}
+
+fn desktop_audit_jsonl_probe_valid(path: &Path) -> bool {
+    let Ok(s) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let mut picked: Vec<&str> = Vec::new();
+    for line in s.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        picked.push(t);
+        if picked.len() >= 3 {
+            break;
+        }
+    }
+    let mut got_parse = false;
+    let mut got_type = false;
+    let mut got_sid = false;
+    for t in picked {
+        let Ok(val) = serde_json::from_str::<Value>(t) else {
+            continue;
+        };
+        got_parse = true;
+        if let Some(ty) = val.get("type").and_then(|x| x.as_str()) {
+            if matches!(ty, "user" | "assistant" | "system" | "result") {
+                got_type = true;
+            }
+        }
+        if val.get("session_id").and_then(|x| x.as_str()).is_some() {
+            got_sid = true;
+        }
+    }
+    got_parse && got_type && got_sid
+}
+
+fn read_desktop_init_cwd(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines().take(2000) {
+        let line = line.ok()?;
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(t).ok()?;
+        if v.get("type").and_then(|x| x.as_str()) == Some("system")
+            && v.get("subtype").and_then(|x| x.as_str()) == Some("init")
+        {
+            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
+                return Some(c.to_string());
+            }
+            if let Some(c) = v.get("message").and_then(|m| m.get("cwd")).and_then(|x| x.as_str()) {
+                return Some(c.to_string());
+            }
+            return None;
+        }
+    }
+    None
+}
+
+fn desktop_project_label_from_cwd(cwd: &str) -> String {
+    let lower = cwd.to_lowercase();
+    if lower.contains("/sessions/") || lower.contains("\\sessions\\") {
+        return "Claude Desktop".to_string();
+    }
+    let norm = cwd.replace('\\', "/");
+    let parts: Vec<&str> = norm.split('/').filter(|s| !s.is_empty()).collect();
+    if let Some(doc_idx) = parts.iter().position(|&s| s.eq_ignore_ascii_case("documents")) {
+        if doc_idx + 1 < parts.len() {
+            return parts[doc_idx + 1..].join(" ");
+        }
+    }
+    parts.last().map(|s| (*s).to_string()).unwrap_or_else(|| "Claude Desktop".to_string())
+}
+
+fn ingest_one_jsonl_session(
+    tx: &rusqlite::Transaction<'_>,
+    fpath: &Path,
+    project_display: &str,
+    profile: &UserProfile,
+    store_prompt_text: bool,
+) -> anyhow::Result<bool> {
+    let Some(parsed) = parse_session(fpath, project_display, profile) else {
+        return Ok(false);
+    };
+    let external_key = fpath.to_string_lossy().to_string();
+    let models_json = serde_json::to_string(&parsed.session.models_used)?;
+    let (first_msg, embed_text, top_json) = if store_prompt_text {
+        let top_json = serde_json::to_string(&parsed.session.top_turns)?;
+        let embed_text = crate::embedder::compose_embed_text(
+            &parsed.session.first_user_message,
+            &parsed.session.project,
+            "",
+        );
+        (
+            parsed.session.first_user_message.clone(),
+            embed_text,
+            top_json,
+        )
+    } else {
+        (String::new(), String::new(), "[]".to_string())
+    };
+    let sid = crate::db::upsert_claude_session(
+        &*tx,
+        &external_key,
+        &parsed.session.project,
+        &parsed.session.started_at,
+        Some(parsed.session.started_at.as_str()),
+        parsed.session.turn_count as i64,
+        parsed.session.total_usd,
+        parsed.session.input_tokens as i64,
+        parsed.session.cache_creation_tokens as i64,
+        parsed.session.cache_read_tokens as i64,
+        parsed.session.output_tokens as i64,
+        &models_json,
+        if parsed.session.hit_compact { 1 } else { 0 },
+        parsed.session.clarifying_turns as i64,
+        parsed.session.correction_turns as i64,
+        &first_msg,
+        &embed_text,
+        &parsed.session.project,
+        &top_json,
+    )?;
+    crate::db::replace_session_turns(&*tx, sid)?;
+    for t in &parsed.turns {
+        let flags_json = serde_json::to_string(&t.flags)?;
+        let prefix = if store_prompt_text {
+            t.human_text.chars().take(500).collect::<String>()
+        } else {
+            String::new()
+        };
+        let _tid = crate::db::insert_turn(
+            &*tx,
+            sid,
+            t.turn_index as i64,
+            "turn",
+            t.cost_usd,
+            t.input_tokens as i64,
+            t.output_tokens as i64,
+            t.cache_read_tokens as i64,
+            t.cache_creation_tokens as i64,
+            &t.model,
+            &flags_json,
+            &prefix,
+            Some(parsed.session.started_at.as_str()),
+        )?;
+    }
+    for (tool_name, server_prefix, ts) in tool_uses_from_jsonl_file(fpath) {
+        crate::db::insert_tool_invocation(&*tx, sid, None, &tool_name, &server_prefix, &ts)?;
+    }
+    Ok(true)
+}
+
+/// Walk `~/.claude/projects/**/*.jsonl`, then Claude Desktop `audit.jsonl` logs, and upsert into SQLite.
+/// Returns number of main session files written (Claude Code project JSONL plus Desktop audits).
 pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     let conn = crate::db::open_db()?;
     crate::db::ensure_schema(&conn)?;
@@ -625,115 +894,71 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     let mut count = 0usize;
     let home = dirs::home_dir().unwrap_or_default();
     let projects_dir = home.join(".claude").join("projects");
-    let Ok(proj_entries) = std::fs::read_dir(&projects_dir) else {
-        tx.commit()?;
-        return Ok(0);
-    };
 
-    for proj_entry in proj_entries.flatten() {
-        let proj_path = proj_entry.path();
-        if !proj_path.is_dir() { continue; }
-        let dir_name = proj_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if dir_name == "subagents" { continue; }
+    if projects_dir.is_dir() {
+        if let Ok(proj_entries) = std::fs::read_dir(&projects_dir) {
+            for proj_entry in proj_entries.flatten() {
+                let proj_path = proj_entry.path();
+                if !proj_path.is_dir() {
+                    continue;
+                }
+                let dir_name = proj_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if dir_name == "subagents" {
+                    continue;
+                }
 
-        let proj_display = {
-            let parts: Vec<&str> = dir_name.split('-').filter(|s| !s.is_empty()).collect();
-            if let Some(doc_idx) = parts.iter().position(|&s| s == "Documents") {
-                parts[doc_idx + 1..].join(" ")
-            } else if parts.len() > 2 {
-                parts[2..].join(" ")
-            } else {
-                dir_name.trim_start_matches('-').replace('-', " ")
-            }
-        };
-
-        let Ok(file_entries) = std::fs::read_dir(&proj_path) else { continue };
-        for file_entry in file_entries.flatten() {
-            let fpath = file_entry.path();
-            if !fpath.is_file() { continue; }
-            let fname = fpath
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if !fname.ends_with(".jsonl") { continue; }
-            if fname.contains("compact") { continue; }
-
-            let Some(parsed) = parse_session(&fpath, &proj_display, &profile) else {
-                continue;
-            };
-            let external_key = fpath.to_string_lossy().to_string();
-            let models_json = serde_json::to_string(&parsed.session.models_used)?;
-            let (first_msg, embed_text, top_json) = if store_prompt_text {
-                let top_json = serde_json::to_string(&parsed.session.top_turns)?;
-                let embed_text = crate::embedder::compose_embed_text(
-                    &parsed.session.first_user_message,
-                    &parsed.session.project,
-                    "",
-                );
-                (
-                    parsed.session.first_user_message.clone(),
-                    embed_text,
-                    top_json,
-                )
-            } else {
-                (String::new(), String::new(), "[]".to_string())
-            };
-            let sid = crate::db::upsert_claude_session(
-                &*tx,
-                &external_key,
-                &parsed.session.project,
-                &parsed.session.started_at,
-                Some(parsed.session.started_at.as_str()),
-                parsed.session.turn_count as i64,
-                parsed.session.total_usd,
-                parsed.session.input_tokens as i64,
-                parsed.session.cache_creation_tokens as i64,
-                parsed.session.cache_read_tokens as i64,
-                parsed.session.output_tokens as i64,
-                &models_json,
-                if parsed.session.hit_compact { 1 } else { 0 },
-                parsed.session.clarifying_turns as i64,
-                parsed.session.correction_turns as i64,
-                &first_msg,
-                &embed_text,
-                &parsed.session.project,
-                &top_json,
-            )?;
-            crate::db::replace_session_turns(&*tx, sid)?;
-            for t in &parsed.turns {
-                let flags_json = serde_json::to_string(&t.flags)?;
-                let prefix = if store_prompt_text {
-                    t.human_text.chars().take(500).collect::<String>()
-                } else {
-                    String::new()
+                let proj_display = {
+                    let parts: Vec<&str> = dir_name.split('-').filter(|s| !s.is_empty()).collect();
+                    if let Some(doc_idx) = parts.iter().position(|&s| s == "Documents") {
+                        parts[doc_idx + 1..].join(" ")
+                    } else if parts.len() > 2 {
+                        parts[2..].join(" ")
+                    } else {
+                        dir_name.trim_start_matches('-').replace('-', " ")
+                    }
                 };
-                let _tid = crate::db::insert_turn(
-                    &*tx,
-                    sid,
-                    t.turn_index as i64,
-                    "turn",
-                    t.cost_usd,
-                    t.input_tokens as i64,
-                    t.output_tokens as i64,
-                    t.cache_read_tokens as i64,
-                    t.cache_creation_tokens as i64,
-                    &t.model,
-                    &flags_json,
-                    &prefix,
-                    Some(parsed.session.started_at.as_str()),
-                )?;
+
+                let Ok(file_entries) = std::fs::read_dir(&proj_path) else {
+                    continue;
+                };
+                for file_entry in file_entries.flatten() {
+                    let fpath = file_entry.path();
+                    if !fpath.is_file() {
+                        continue;
+                    }
+                    let fname = fpath
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if !fname.ends_with(".jsonl") {
+                        continue;
+                    }
+                    if fname.contains("compact") {
+                        continue;
+                    }
+
+                    if ingest_one_jsonl_session(&tx, &fpath, &proj_display, &profile, store_prompt_text)? {
+                        count += 1;
+                    }
+                }
             }
-            for (tool_name, server_prefix, ts) in tool_uses_from_jsonl_file(&fpath) {
-                crate::db::insert_tool_invocation(&*tx, sid, None, &tool_name, &server_prefix, &ts)?;
-            }
-            // Each assistant `tool_use` row is stored in `tool_invocations`. When the `requests` table
-            // is empty, the dashboard aggregates this table for `/api/tool-usage` and session rows for `/api/projects`.
+        }
+    }
+
+    for audit_path in discover_desktop_sessions() {
+        let cwd = read_desktop_init_cwd(&audit_path);
+        let project = cwd
+            .as_deref()
+            .map(desktop_project_label_from_cwd)
+            .unwrap_or_else(|| "Claude Desktop".to_string());
+        if ingest_one_jsonl_session(&tx, &audit_path, &project, &profile, store_prompt_text)? {
             count += 1;
         }
     }
+
     tx.commit()?;
 
     let ts = chrono::Utc::now().to_rfc3339();

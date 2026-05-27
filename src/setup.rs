@@ -1,10 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
 use std::io::{stdin, stdout, IsTerminal, Write};
 
-const PLIST_LABEL: &str = "com.ctx.proxy";
-const DASHBOARD_PLIST_LABEL: &str = "com.ctx.dashboard";
-const INGEST_PLIST_LABEL: &str = "com.ctx.ingest";
 const DASHBOARD_PORT: u16 = 8789;
 
 const CURSOR_RULE_MDC: &str = r#"---
@@ -16,22 +13,6 @@ alwaysApply: true
 - Prefer Sonnet over Opus for standard tasks.
 - Break multi-part asks into sequential focused messages.
 "#;
-
-fn is_cursor_ide() -> bool {
-    std::env::var("CURSOR_TRACE_ID").is_ok()
-        || std::env::var("VSCODE_PID").is_ok()
-        || dirs::home_dir()
-            .map(|h| h.join(".cursor").join("extensions").is_dir())
-            .unwrap_or(false)
-}
-
-fn ingest_plist_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{INGEST_PLIST_LABEL}.plist"))
-}
 
 fn claude_projects_has_jsonl() -> bool {
     let home = dirs::home_dir().unwrap_or_default();
@@ -58,22 +39,6 @@ fn claude_projects_has_jsonl() -> bool {
     false
 }
 
-fn dashboard_plist_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{DASHBOARD_PLIST_LABEL}.plist"))
-}
-
-fn plist_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{PLIST_LABEL}.plist"))
-}
-
 fn ctx_bin() -> String {
     dirs::home_dir()
         .map(|h| h.join(".cargo").join("bin").join("ctx"))
@@ -81,70 +46,76 @@ fn ctx_bin() -> String {
         .unwrap_or_else(|| "ctx".to_string())
 }
 
-#[cfg(target_os = "macos")]
-fn claude_desktop_installed() -> bool {
-    dirs::home_dir()
-        .map(|h| h.join("Library/Application Support/Claude").is_dir())
-        .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn claude_desktop_installed() -> bool {
-    false
-}
-
-fn ide_kind_label() -> &'static str {
-    if is_cursor_ide() {
-        "Cursor IDE"
-    } else if std::env::var("TERM_PROGRAM").ok().as_deref() == Some("vscode") {
-        "VS Code (or compatible shell)"
-    } else {
-        "Claude Code CLI or other"
+fn autorun_summary(periodic_ingest: bool) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if periodic_ingest {
+            format!(
+                "{}, {}, {}",
+                crate::daemon::PROXY_LABEL,
+                crate::daemon::DASHBOARD_LABEL,
+                crate::daemon::INGEST_LABEL
+            )
+        } else {
+            format!(
+                "{}, {}",
+                crate::daemon::PROXY_LABEL,
+                crate::daemon::DASHBOARD_LABEL
+            )
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if periodic_ingest {
+            "ctx-proxy.service, ctx-dashboard.service, ctx-ingest.timer".to_string()
+        } else {
+            "ctx-proxy.service, ctx-dashboard.service".to_string()
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = periodic_ingest;
+        "ctx proxy + ctx dashboard (background processes; see ~/.ctx/*.log)".to_string()
     }
 }
 
-fn setup_preview_lines(port: u16, upstream: &str) -> Vec<String> {
-    let cursor = is_cursor_ide();
-    let ingest_tail = if cursor {
-        ", periodic ingest (Cursor, every 5 min)"
-    } else {
-        ""
-    };
+fn setup_preview_lines(port: u16, upstream: &str, periodic_ingest: bool) -> Vec<String> {
     vec![
         format!(
             "Create {} and write filter.js, CA cert, and config",
             crate::config::ctx_dir().display()
         ),
-        format!(
-            "Install launchd agents: proxy (:{port} → {upstream}), dashboard (:{DASHBOARD_PORT}){ingest_tail}"
-        ),
+        crate::daemon::background_services_summary(port, upstream, DASHBOARD_PORT, periodic_ingest),
         "Merge NODE_OPTIONS into ~/.claude/settings.json (unless --no-install)".to_string(),
-        "Index ~/.claude/projects/**/*.jsonl into ~/.ctx/ctx.db when JSONL files exist".to_string(),
+        "Index ~/.claude/projects/**/*.jsonl and Claude Desktop session logs into ~/.ctx/ctx.db when present"
+            .to_string(),
         "Choose default MCP profile (personal from history, or carrier)".to_string(),
     ]
 }
 
-fn write_cursor_rule_to_home() -> Result<()> {
-    let Some(home) = dirs::home_dir() else {
-        anyhow::bail!("no home directory");
-    };
-    let path = home.join(".cursor/rules/ctx.mdc");
+fn write_editor_rule(path: &std::path::Path, body: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, CURSOR_RULE_MDC)?;
+    std::fs::write(path, body)?;
     println!("  {} Wrote {}", "✓".green(), path.display());
     Ok(())
 }
 
-fn maybe_offer_cursor_rule() -> Result<()> {
-    print!("Write Cursor rules at ~/.cursor/rules/ctx.mdc? [y/N] ");
+fn maybe_offer_editor_rule(host: &dyn crate::host::HostAdapter) -> Result<()> {
+    if !host.offer_editor_rules() {
+        return Ok(());
+    }
+    let Some(path) = host.editor_rules_path() else {
+        return Ok(());
+    };
+    print!("Write ctx rules at {}? [y/N] ", path.display());
     stdout().flush()?;
     let mut line = String::new();
     stdin().read_line(&mut line)?;
     let t = line.trim().to_lowercase();
     if t == "y" || t == "yes" {
-        write_cursor_rule_to_home()?;
+        write_editor_rule(&path, CURSOR_RULE_MDC)?;
     }
     Ok(())
 }
@@ -157,14 +128,15 @@ pub fn run(
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
-    println!("{} Detected: {}", "i".cyan(), ide_kind_label());
-    if claude_desktop_installed() {
+    let host = crate::host::detect_primary_host();
+    println!("{} Detected: {}", "i".cyan(), host.label());
+    if crate::config::claude_desktop_installed() {
         println!(
-            "{} Claude Desktop app data found. ctx targets Claude Code in Cursor or a terminal. Desktop is not wired yet.",
+            "{} Claude Desktop detected. ctx registers an MCP server in claude_desktop_config.json. Per-request tracing and hook-driven tool filtering apply to Claude Code (CLI or IDE), not to standalone Desktop chat. Use `ctx ingest` for session-level Desktop data when local-agent logs exist. See README.",
             "i".yellow()
         );
     }
-    if std::env::var("TERM_PROGRAM").ok().as_deref() == Some("vscode") && !is_cursor_ide() {
+    if host.ide_kind() == Some(crate::host::IdeKind::VsCode) {
         println!(
             "{} VS Code shell. filter.js runs when Claude Code starts Node; VS Code extension support is limited.",
             "i".yellow()
@@ -172,7 +144,10 @@ pub fn run(
     }
     println!();
     println!("{} ctx will:", "i".cyan());
-    for (i, line) in setup_preview_lines(port, upstream).into_iter().enumerate() {
+    for (i, line) in setup_preview_lines(port, upstream, host.needs_periodic_ingest())
+        .into_iter()
+        .enumerate()
+    {
         println!("  {}. {}", i + 1, line);
     }
     println!();
@@ -201,13 +176,13 @@ pub fn run(
     crate::filter_hook::write_filter_js()?;
     crate::ca::ensure_ca()?;
 
-    // Step 1: write launchd plist
-    println!("{} Step 1/5: Installing launchd agent (auto-start on login)...", "->".cyan());
-    write_plist(port, upstream)?;
+    // Step 1: background proxy service (launchd / systemd / spawn)
+    println!("{} {}", "->".cyan(), crate::daemon::step1_banner());
+    crate::daemon::install_proxy(port, upstream)?;
 
-    // Step 2: load the agent
-    println!("{} Step 2/5: Starting ctx proxy via launchctl...", "->".cyan());
-    load_plist()?;
+    // Step 2: start proxy
+    println!("{} {}", "->".cyan(), crate::daemon::step2_banner());
+    crate::daemon::bootstrap_proxy(port, upstream)?;
     wait_for_proxy(port)?;
 
     // Step 3: create default system_prefix.md if missing
@@ -254,29 +229,43 @@ pub fn run(
     crate::filter_hook::sync_filter_config_from_active_config()?;
     let _ = crate::behavior_guard::write_behavior_hints_file();
 
-    // Step 5: start dashboard as background service
-    println!("{} Step 5/5: Starting ctx dashboard as background service...", "->".cyan());
-    write_dashboard_plist(DASHBOARD_PORT)?;
-    load_dashboard_plist()?;
+    // Step 5: dashboard background service
+    println!("{} {}", "->".cyan(), crate::daemon::step5_banner());
+    crate::daemon::install_dashboard(DASHBOARD_PORT)?;
+    crate::daemon::bootstrap_dashboard(DASHBOARD_PORT)?;
 
-    // Cursor IDE: install periodic ingest since filter.js doesn't run inside Cursor
-    let cursor_detected = is_cursor_ide();
-    if cursor_detected {
-        println!("{} Cursor IDE detected. Installing periodic ingest (every 5 min)...", "->".cyan());
-        match write_ingest_plist() {
+    // Periodic ingest for IDEs where filter.js does not cover every path, plus Desktop session logs.
+    let periodic_ingest = host.needs_periodic_ingest();
+    if periodic_ingest {
+        println!(
+            "{} Periodic ingest (every 5 min): indexing Claude Code JSONL and Desktop sessions…",
+            "->".cyan()
+        );
+        match crate::daemon::install_periodic_ingest() {
             Ok(()) => {
-                load_ingest_plist()?;
-                println!("  {} Ingest agent installed ({INGEST_PLIST_LABEL})", "✓".green());
+                let _ = crate::daemon::bootstrap_ingest();
+                println!("  {} Periodic ingest installed", "✓".green());
             }
-            Err(e) => println!("  {} Ingest agent failed: {e}. Run `ctx ingest` manually.", "!".yellow()),
+            Err(e) => println!(
+                "  {} Ingest scheduler failed: {e}. Run `ctx ingest` manually.",
+                "!".yellow()
+            ),
         }
     }
 
     println!();
+    #[cfg(target_os = "macos")]
     println!("{} ctx proxy running via launchd on :{port}", "✓".green().bold());
+    #[cfg(target_os = "linux")]
+    println!(
+        "{} ctx proxy running via systemd user service on :{port}",
+        "✓".green().bold()
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    println!("{} ctx proxy running on :{port}", "✓".green().bold());
     println!("{} ctx dashboard running at http://127.0.0.1:{DASHBOARD_PORT}", "✓".green().bold());
-    if cursor_detected {
-        println!("{} ctx ingest running every 5 min (Cursor mode)", "✓".green().bold());
+    if periodic_ingest {
+        println!("{} ctx ingest running every 5 min", "✓".green().bold());
     }
     println!();
 
@@ -287,17 +276,39 @@ pub fn run(
         println!("  ctx proxy install");
         println!("Then reload the window: Cmd+Shift+P (macOS) or Ctrl+Shift+P (Windows/Linux), type Reload Window, Enter.");
         println!("This picks up NODE_OPTIONS and MCP server config without quitting.");
-    } else if cursor_detected {
+    } else if host.ide_kind() == Some(crate::host::IdeKind::Cursor) {
         println!("{} Wiring Claude Code settings (NODE_OPTIONS in-process filter)...", "->".cyan());
         crate::proxy::install(port, upstream)?;
         println!();
         println!("  Cursor mode:  filter.js runs inside Claude Code CLI only.");
-        println!("                Cursor sessions are indexed via periodic `ctx ingest`.");
+        println!("                Sessions are indexed via periodic `ctx ingest` (Claude Code + Desktop).");
         println!("  Dashboard:    http://127.0.0.1:{DASHBOARD_PORT}");
-        println!("  Autorun:      {PLIST_LABEL}, {DASHBOARD_PLIST_LABEL}, {INGEST_PLIST_LABEL}");
+        println!("  Autorun:      {}", autorun_summary(periodic_ingest));
         println!("  Inject:       ~/.ctx/system_prefix.md (Claude Code CLI only)");
         println!();
         println!("Dashboard: open http://127.0.0.1:{DASHBOARD_PORT} to see spend, insights, and session similarity.");
+    } else if host.ide_kind().is_some() {
+        println!("{} Wiring Claude Code settings (NODE_OPTIONS in-process filter)...", "->".cyan());
+        crate::proxy::install(port, upstream)?;
+        println!();
+        println!("  IDE mode:     filter.js runs when Claude Code starts Node.");
+        println!("                Sessions are indexed via periodic `ctx ingest` when enabled.");
+        println!("  Dashboard:    http://127.0.0.1:{DASHBOARD_PORT}");
+        println!("  Autorun:      {}", autorun_summary(periodic_ingest));
+        println!("  Inject:       ~/.ctx/system_prefix.md (Claude Code CLI only)");
+        println!();
+        println!("Dashboard: open http://127.0.0.1:{DASHBOARD_PORT} to see spend, insights, and session similarity.");
+    } else if !host.supports_node_options() {
+        println!("{} Claude Desktop wiring (no NODE_OPTIONS)...", "->".cyan());
+        println!();
+        println!("  MCP tools:  registered in claude_desktop_config.json (quit + reopen to activate)");
+        println!("  Dashboard:  http://127.0.0.1:{DASHBOARD_PORT}");
+        println!("  Autorun:    {}", autorun_summary(periodic_ingest));
+        println!();
+        println!("  Tool filtering (NODE_OPTIONS / filter.js) is not supported for Claude Desktop alone.");
+        println!("  Request tracing, savings tracking from the hook, and per-request analytics need Claude Code (CLI or IDE).");
+        println!("  Desktop still gets MCP tools and session data via `ctx ingest` when local-agent logs exist.");
+        println!("  Install the Claude Code CLI for full token savings and Request Trace coverage.");
     } else {
         println!("{} Wiring Claude Code settings (NODE_OPTIONS in-process filter)...", "->".cyan());
         crate::proxy::install(port, upstream)?;
@@ -305,21 +316,28 @@ pub fn run(
         println!("  Filter:    NODE_OPTIONS loads ~/.ctx/filter.js (strips MCP tools before TLS)");
         println!("  CA:        {} (proxy process only)", crate::ca::ca_cert_path().display());
         println!("  Dashboard: http://127.0.0.1:{DASHBOARD_PORT}");
-        println!("  Autorun:   launchd agents {PLIST_LABEL}, {DASHBOARD_PLIST_LABEL}");
+        println!("  Autorun:      {}", autorun_summary(periodic_ingest));
         println!("  Inject:    ~/.ctx/system_prefix.md");
         println!();
         println!("Dashboard: open http://127.0.0.1:{DASHBOARD_PORT} to see savings and prompt stats.");
     }
 
-    wire_mcp_server()?;
+    wire_mcp_server(&*host)?;
 
     if !no_install {
         println!();
-        println!("Next: Cmd+Shift+P (macOS) or Ctrl+Shift+P (Windows/Linux), type Reload Window, then Enter.");
-        println!("This re-reads NODE_OPTIONS and MCP server config without quitting.");
-        if !cursor_detected {
-            println!("If you only use Claude Code in a plain terminal, start a new session once so NODE_OPTIONS applies.");
-            println!("Then run {} to activate filtering.", "`ctx use carrier`".bold());
+        println!("Next: {}", host.reload_instruction());
+        if host.supports_node_options() {
+            println!("This re-reads NODE_OPTIONS and MCP server config without quitting.");
+            if host.ide_kind().is_none() {
+                println!("If you only use Claude Code in a plain terminal, start a new session once so NODE_OPTIONS applies.");
+                println!("Then run {} to activate filtering.", "`ctx use carrier`".bold());
+            }
+            if crate::config::claude_desktop_installed() {
+                println!(
+                    "Claude Desktop: quit the app completely and reopen it so MCP changes in claude_desktop_config.json apply."
+                );
+            }
         }
     }
 
@@ -342,8 +360,8 @@ pub fn run(
         println!(" Dashboard not ready yet. Open {} manually.", dashboard_url);
     }
 
-    if is_cursor_ide() && stdin().is_terminal() {
-        let _ = maybe_offer_cursor_rule();
+    if host.offer_editor_rules() && stdin().is_terminal() {
+        let _ = maybe_offer_editor_rule(&*host);
     }
 
     Ok(())
@@ -353,44 +371,19 @@ pub fn uninstall() -> Result<()> {
     // Restore settings.json first so Claude Code is never left pointing at a dead proxy
     crate::proxy::uninstall()?;
 
-    let domain = format!("gui/{}", uid());
-
-    // Remove proxy agent
-    let p = plist_path();
-    if p.exists() {
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &domain, p.to_str().unwrap_or("")])
-            .status();
-        std::fs::remove_file(&p)?;
-        println!("{} Removed proxy launchd agent", "✓".green());
-    }
-
-    // Remove dashboard agent
-    let dp = dashboard_plist_path();
-    if dp.exists() {
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &domain, dp.to_str().unwrap_or("")])
-            .status();
-        std::fs::remove_file(&dp)?;
-        println!("{} Removed dashboard launchd agent", "✓".green());
-    }
-
-    // Remove ingest agent
-    let ip = ingest_plist_path();
-    if ip.exists() {
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &domain, ip.to_str().unwrap_or("")])
-            .status();
-        std::fs::remove_file(&ip)?;
-        println!("{} Removed ingest launchd agent", "✓".green());
-    }
+    crate::daemon::uninstall_all()?;
 
     unwire_mcp_server();
 
+    let host = crate::host::detect_primary_host();
     println!(
-        "{} ctx uninstalled. Reload the window (Cmd+Shift+P or Ctrl+Shift+P → Reload Window) so removed NODE_OPTIONS and MCP server config apply.",
-        "✓".green()
+        "{} ctx uninstalled. {}",
+        "✓".green(),
+        host.reload_instruction()
     );
+    if host.supports_node_options() {
+        println!("Apply the reload so removed NODE_OPTIONS and MCP server config take effect.");
+    }
     Ok(())
 }
 
@@ -399,11 +392,9 @@ fn unwire_mcp_server() {
     if settings_path.exists() {
         if let Ok(text) = std::fs::read_to_string(&settings_path) {
             if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(servers) = doc.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-                    if servers.remove("ctx").is_some() {
-                        let _ = crate::config::write_json_atomic(&settings_path, &doc);
-                        println!("{} Removed ctx MCP server from {}", "✓".green(), settings_path.display());
-                    }
+                if crate::config::remove_ctx_from_mcp_servers(&mut doc) {
+                    let _ = crate::config::write_json_atomic(&settings_path, &doc);
+                    println!("{} Removed ctx MCP server from {}", "✓".green(), settings_path.display());
                 }
             }
         }
@@ -412,13 +403,30 @@ fn unwire_mcp_server() {
         .unwrap_or_default()
         .join(".cursor")
         .join("mcp.json");
-    if cursor_mcp.exists() {
-        if let Ok(text) = std::fs::read_to_string(&cursor_mcp) {
-            if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(servers) = doc.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-                    if servers.remove("ctx").is_some() {
-                        let _ = crate::config::write_json_atomic(&cursor_mcp, &doc);
-                        println!("{} Removed ctx MCP server from {}", "✓".green(), cursor_mcp.display());
+    let windsurf_mcp = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".codeium")
+        .join("windsurf")
+        .join("mcp_config.json");
+    for mcp_path in [cursor_mcp, windsurf_mcp] {
+        if mcp_path.exists() {
+            if let Ok(text) = std::fs::read_to_string(&mcp_path) {
+                if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if crate::config::remove_ctx_from_mcp_servers(&mut doc) {
+                        let _ = crate::config::write_json_atomic(&mcp_path, &doc);
+                        println!("{} Removed ctx MCP server from {}", "✓".green(), mcp_path.display());
+                    }
+                }
+            }
+        }
+    }
+    if let Some(desktop_cfg) = crate::config::claude_desktop_config_path() {
+        if desktop_cfg.exists() {
+            if let Ok(text) = std::fs::read_to_string(&desktop_cfg) {
+                if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if crate::config::remove_ctx_from_mcp_servers(&mut doc) {
+                        let _ = crate::config::write_json_atomic(&desktop_cfg, &doc);
+                        println!("{} Removed ctx MCP server from {}", "✓".green(), desktop_cfg.display());
                     }
                 }
             }
@@ -426,115 +434,50 @@ fn unwire_mcp_server() {
     }
 }
 
-fn wire_mcp_server() -> Result<()> {
+fn wire_mcp_server(host: &dyn crate::host::HostAdapter) -> Result<()> {
     let bin = ctx_bin();
 
     let settings_path = crate::config::claude_settings_path();
     if settings_path.exists() {
         let text = std::fs::read_to_string(&settings_path).unwrap_or_default();
         let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::json!({}));
-        let servers = doc.as_object_mut()
-            .unwrap()
-            .entry("mcpServers")
-            .or_insert_with(|| serde_json::json!({}));
-        if let Some(obj) = servers.as_object_mut() {
-            obj.insert("ctx".to_string(), serde_json::json!({
-                "command": bin,
-                "args": ["mcp"],
-            }));
-        }
+        crate::config::merge_ctx_into_mcp_servers(&mut doc, &bin)?;
         crate::config::write_json_atomic(&settings_path, &doc)?;
         println!("{} Registered ctx MCP server in {}", "✓".green(), settings_path.display());
     }
 
-    if is_cursor_ide() {
-        let cursor_mcp = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".cursor")
-            .join("mcp.json");
-        let mut doc: serde_json::Value = if cursor_mcp.exists() {
-            let text = std::fs::read_to_string(&cursor_mcp).unwrap_or_default();
+    for extra in host.mcp_extra_config_paths() {
+        let mut doc: serde_json::Value = if extra.exists() {
+            let text = std::fs::read_to_string(&extra).unwrap_or_default();
             serde_json::from_str(&text).unwrap_or(serde_json::json!({}))
         } else {
             serde_json::json!({})
         };
-        let servers = doc.as_object_mut()
-            .unwrap()
-            .entry("mcpServers")
-            .or_insert_with(|| serde_json::json!({}));
-        if let Some(obj) = servers.as_object_mut() {
-            obj.insert("ctx".to_string(), serde_json::json!({
-                "command": bin,
-                "args": ["mcp"],
-            }));
-        }
-        if let Some(parent) = cursor_mcp.parent() {
+        crate::config::merge_ctx_into_mcp_servers(&mut doc, &bin)?;
+        if let Some(parent) = extra.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        crate::config::write_json_atomic(&cursor_mcp, &doc)?;
-        println!("{} Registered ctx MCP server in {}", "✓".green(), cursor_mcp.display());
+        crate::config::write_json_atomic(&extra, &doc)?;
+        println!("{} Registered ctx MCP server in {}", "✓".green(), extra.display());
     }
 
-    Ok(())
-}
+    if crate::config::claude_desktop_installed() {
+        if let Some(desktop_cfg) = crate::config::claude_desktop_config_path() {
+            let mut doc: serde_json::Value = if desktop_cfg.exists() {
+                let text = std::fs::read_to_string(&desktop_cfg).unwrap_or_default();
+                serde_json::from_str(&text).unwrap_or(serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+            crate::config::merge_ctx_into_mcp_servers(&mut doc, &bin)?;
+            if let Some(parent) = desktop_cfg.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            crate::config::write_json_atomic(&desktop_cfg, &doc)?;
+            println!("{} Registered ctx MCP server in {}", "✓".green(), desktop_cfg.display());
+        }
+    }
 
-fn write_plist(port: u16, upstream: &str) -> Result<()> {
-    let bin = ctx_bin();
-    let log_dir = crate::config::ctx_dir();
-    let stdout_log = log_dir.join("proxy.stdout.log");
-    let stderr_log = log_dir.join("proxy.stderr.log");
-    let ca_cert = crate::ca::canonical_ca_cert_path_string()?
-        .replace('&', "&amp;")
-        .replace('<', "&lt;");
-
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{PLIST_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{bin}</string>
-        <string>proxy</string>
-        <string>start</string>
-        <string>--port</string>
-        <string>{port}</string>
-        <string>--upstream</string>
-        <string>{upstream}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{stdout}</string>
-    <key>StandardErrorPath</key>
-    <string>{stderr}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOME</key>
-        <string>{home}</string>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cargo_bin}</string>
-        <key>NODE_EXTRA_CA_CERTS</key>
-        <string>{ca_cert}</string>
-    </dict>
-</dict>
-</plist>"#,
-        stdout = stdout_log.display(),
-        stderr = stderr_log.display(),
-        home = dirs::home_dir().map(|h| h.display().to_string()).unwrap_or_default(),
-        cargo_bin = dirs::home_dir()
-            .map(|h| h.join(".cargo").join("bin").display().to_string())
-            .unwrap_or_default(),
-    );
-
-    let plist_dir = plist_path().parent().unwrap().to_path_buf();
-    std::fs::create_dir_all(&plist_dir)?;
-    std::fs::write(plist_path(), &plist)?;
-    println!("  Written {}", plist_path().display());
     Ok(())
 }
 
@@ -547,184 +490,6 @@ fn wait_for_proxy(port: u16) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     anyhow::bail!("Proxy did not start within 10s on port {port}. Check ~/.ctx/proxy.stderr.log")
-}
-
-fn uid() -> String {
-    std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "501".to_string())
-}
-
-fn load_plist() -> Result<()> {
-    let p = plist_path();
-    let domain = format!("gui/{}", uid());
-
-    // Bootout first (idempotent - ignore errors)
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &domain, p.to_str().unwrap_or("")])
-        .status();
-
-    let status = std::process::Command::new("launchctl")
-        .args(["bootstrap", &domain, p.to_str().unwrap_or("")])
-        .status()
-        .context("launchctl bootstrap failed")?;
-
-    if status.success() {
-        println!("  launchd agent bootstrapped ({PLIST_LABEL})");
-    } else {
-        anyhow::bail!(
-            "launchctl bootstrap failed. Try manually:\n  launchctl bootstrap {} {}",
-            domain,
-            p.display()
-        );
-    }
-    Ok(())
-}
-
-fn write_dashboard_plist(port: u16) -> Result<()> {
-    let bin = ctx_bin();
-    let log_dir = crate::config::ctx_dir();
-    let stdout_log = log_dir.join("dashboard.stdout.log");
-    let stderr_log = log_dir.join("dashboard.stderr.log");
-
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{DASHBOARD_PLIST_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{bin}</string>
-        <string>dashboard</string>
-        <string>--port</string>
-        <string>{port}</string>
-        <string>--no-open</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{stdout}</string>
-    <key>StandardErrorPath</key>
-    <string>{stderr}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOME</key>
-        <string>{home}</string>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cargo_bin}</string>
-    </dict>
-</dict>
-</plist>"#,
-        stdout = stdout_log.display(),
-        stderr = stderr_log.display(),
-        home = dirs::home_dir().map(|h| h.display().to_string()).unwrap_or_default(),
-        cargo_bin = dirs::home_dir()
-            .map(|h| h.join(".cargo").join("bin").display().to_string())
-            .unwrap_or_default(),
-    );
-
-    let plist_dir = dashboard_plist_path().parent().unwrap().to_path_buf();
-    std::fs::create_dir_all(&plist_dir)?;
-    std::fs::write(dashboard_plist_path(), &plist)?;
-    println!("  Written {}", dashboard_plist_path().display());
-    Ok(())
-}
-
-fn load_dashboard_plist() -> Result<()> {
-    let p = dashboard_plist_path();
-    let domain = format!("gui/{}", uid());
-
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &domain, p.to_str().unwrap_or("")])
-        .status();
-
-    let status = std::process::Command::new("launchctl")
-        .args(["bootstrap", &domain, p.to_str().unwrap_or("")])
-        .status()
-        .context("launchctl bootstrap failed for dashboard")?;
-
-    if status.success() {
-        println!("  launchd dashboard bootstrapped ({DASHBOARD_PLIST_LABEL})");
-    } else {
-        // Non-fatal: proxy is more important; dashboard failure shouldn't block install
-        eprintln!("  Warning: dashboard launchd failed to start. Run `ctx dashboard` manually.");
-    }
-    Ok(())
-}
-
-fn write_ingest_plist() -> Result<()> {
-    let bin = ctx_bin();
-    let log_dir = crate::config::ctx_dir();
-    let stdout_log = log_dir.join("ingest.stdout.log");
-    let stderr_log = log_dir.join("ingest.stderr.log");
-
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{INGEST_PLIST_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{bin}</string>
-        <string>ingest</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>300</integer>
-    <key>StandardOutPath</key>
-    <string>{stdout}</string>
-    <key>StandardErrorPath</key>
-    <string>{stderr}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOME</key>
-        <string>{home}</string>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cargo_bin}</string>
-    </dict>
-</dict>
-</plist>"#,
-        stdout = stdout_log.display(),
-        stderr = stderr_log.display(),
-        home = dirs::home_dir().map(|h| h.display().to_string()).unwrap_or_default(),
-        cargo_bin = dirs::home_dir()
-            .map(|h| h.join(".cargo").join("bin").display().to_string())
-            .unwrap_or_default(),
-    );
-
-    let plist_dir = ingest_plist_path().parent().unwrap().to_path_buf();
-    std::fs::create_dir_all(&plist_dir)?;
-    std::fs::write(ingest_plist_path(), &plist)?;
-    println!("  Written {}", ingest_plist_path().display());
-    Ok(())
-}
-
-fn load_ingest_plist() -> Result<()> {
-    let p = ingest_plist_path();
-    let domain = format!("gui/{}", uid());
-
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &domain, p.to_str().unwrap_or("")])
-        .status();
-
-    let status = std::process::Command::new("launchctl")
-        .args(["bootstrap", &domain, p.to_str().unwrap_or("")])
-        .status()
-        .context("launchctl bootstrap failed for ingest")?;
-
-    if !status.success() {
-        eprintln!("  Warning: ingest launchd failed to start. Run `ctx ingest` manually.");
-    }
-    Ok(())
 }
 
 #[cfg(feature = "onnx")]

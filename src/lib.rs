@@ -10,10 +10,12 @@ pub mod compress;
 pub mod config;
 pub mod conversations;
 pub mod dashboard;
+pub mod daemon;
 pub mod db;
 pub mod embedder;
 pub mod filter;
 pub mod filter_hook;
+pub mod host;
 pub mod inject;
 pub mod profiles;
 pub mod proxy;
@@ -45,7 +47,7 @@ pub async fn run() -> Result<()> {
         Commands::Use { profile, force } => profiles::switch(&profile, force)?,
         Commands::Ingest => {
             let n = conversations::ingest_claude_jsonl()?;
-            println!("Ingested {n} Claude session file(s) into ~/.ctx/ctx.db");
+            println!("Ingested {n} session file(s) into ~/.ctx/ctx.db (Claude Code + Desktop)");
         }
         Commands::Status => profiles::status()?,
         Commands::Gain { brief, enable_hook, disable_hook } => {

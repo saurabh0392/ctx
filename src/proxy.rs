@@ -653,6 +653,7 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
     config.proxy_install_mode = Some("node_inject".to_string());
     config.save()?;
 
+    let host = crate::host::detect_primary_host();
     println!(
         "{} Claude Code wired for in-process tool filtering",
         "✓".green().bold()
@@ -664,7 +665,7 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
         proxy_http
     );
     println!("\nNext steps:");
-    println!("  1. Cmd+Shift+P (macOS) or Ctrl+Shift+P (Windows/Linux) → type Reload Window → Enter");
+    println!("  1. {}", host.reload_instruction());
     println!("     (re-reads NODE_OPTIONS and MCP config without quitting)");
     println!("  2. Run {} if you change focus profile", "`ctx use carrier`".bold());
 
@@ -680,6 +681,12 @@ pub fn uninstall() -> Result<()> {
         .unwrap_or("https://api.anthropic.com");
 
     let settings_path = crate::config::claude_settings_path();
+    if !settings_path.exists() {
+        let mut cfg = Config::load();
+        cfg.proxy_install_mode = None;
+        let _ = cfg.save();
+        return Ok(());
+    }
     let content = std::fs::read_to_string(&settings_path)?;
     let mut settings: serde_json::Value = serde_json::from_str(&content)?;
     let mut env = env_object(&settings);
@@ -735,7 +742,7 @@ pub fn uninstall() -> Result<()> {
     cfg.save()?;
 
     println!("{} Uninstalled ctx proxy env from settings.json", "✓".green());
-    println!("Reload the window (Cmd+Shift+P or Ctrl+Shift+P → Reload Window) to apply.");
+    println!("{}", crate::host::detect_primary_host().reload_instruction());
     Ok(())
 }
 

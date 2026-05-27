@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 pub fn ctx_dir() -> PathBuf {
     if let Ok(p) = std::env::var("CTX_HOME") {
@@ -51,11 +52,120 @@ pub fn write_json_atomic(path: &std::path::Path, value: &serde_json::Value) -> R
     Ok(())
 }
 
+/// Merge or replace the `ctx` entry under `mcpServers` (Claude Code / Cursor / Desktop config shape).
+pub fn merge_ctx_into_mcp_servers(doc: &mut Value, ctx_bin: &str) -> Result<()> {
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("config root must be a JSON object"))?;
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(server_obj) = servers.as_object_mut() else {
+        anyhow::bail!("mcpServers must be a JSON object");
+    };
+    server_obj.insert(
+        "ctx".to_string(),
+        serde_json::json!({
+            "command": ctx_bin,
+            "args": ["mcp"],
+        }),
+    );
+    Ok(())
+}
+
+/// Remove the `ctx` MCP server entry if present. Returns true if a change was made.
+pub fn remove_ctx_from_mcp_servers(doc: &mut Value) -> bool {
+    let Some(obj) = doc.as_object_mut() else {
+        return false;
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    servers.remove("ctx").is_some()
+}
+
 pub fn claude_settings_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude")
         .join("settings.json")
+}
+
+/// True when `~/.claude/settings.json` exists (Claude Code CLI or prior ctx setup).
+pub fn claude_code_cli_present() -> bool {
+    claude_settings_path().is_file()
+}
+
+/// Same as [`claude_code_cli_present`] but relative to `home` (for tests).
+pub fn claude_code_cli_present_for_home(home: &std::path::Path) -> bool {
+    home.join(".claude").join("settings.json").is_file()
+}
+
+/// Anthropic Claude Desktop app support directory (contains `claude_desktop_config.json`).
+pub fn claude_desktop_support_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    claude_desktop_support_dir_for_home(&home)
+}
+
+/// Same as [`claude_desktop_support_dir`] for an explicit home directory (for tests).
+pub fn claude_desktop_support_dir_for_home(home: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let p = home.join("Library/Application Support/Claude");
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for p in [
+            home.join(".config/Claude"),
+            home.join(".local/share/Claude"),
+        ] {
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = home;
+        for base in [dirs::data_dir(), dirs::data_local_dir()] {
+            if let Some(app) = base {
+                let p = app.join("Claude");
+                if p.is_dir() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn claude_desktop_installed_for_home(home: &Path) -> bool {
+    claude_desktop_support_dir_for_home(home).is_some()
+}
+
+/// `claude_desktop_config.json` path when the Desktop support directory exists.
+pub fn claude_desktop_config_path() -> Option<PathBuf> {
+    Some(claude_desktop_support_dir()?.join("claude_desktop_config.json"))
+}
+
+pub fn claude_desktop_installed() -> bool {
+    claude_desktop_support_dir().is_some()
+}
+
+/// Roots for Desktop local-agent session logs (may not exist on all installs).
+pub fn claude_desktop_session_roots() -> Vec<PathBuf> {
+    let Some(base) = claude_desktop_support_dir() else {
+        return Vec::new();
+    };
+    let lam = base.join("local-agent-mode-sessions");
+    if lam.is_dir() {
+        vec![lam]
+    } else {
+        Vec::new()
+    }
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
