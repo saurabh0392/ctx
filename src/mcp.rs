@@ -115,8 +115,7 @@ fn tool_status() -> Result<Value, String> {
     let filter_recs: Vec<_> = records.iter().filter(|r| r.tools_removed > 0).collect();
     let total_tokens: usize = filter_recs.iter().map(|r| r.tokens_saved).sum();
     let total_tools: usize = filter_recs.iter().map(|r| r.tools_removed).sum();
-    let compress_tokens: usize = records.iter().map(|r| r.compress_chars_saved / 4).sum();
-    let all_tokens = total_tokens + compress_tokens;
+    let all_tokens = total_tokens;
 
     let spend_sessions = crate::conversations::all_sessions();
     let now = chrono::Utc::now();

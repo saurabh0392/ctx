@@ -42,7 +42,7 @@ flowchart LR
 
 **Default path:** Claude Code loads `filter.js` through `NODE_OPTIONS=--require …` in `~/.claude/settings.json`. The hook patches Node `http` / `https`, rewrites `/v1/messages` bodies, appends to `analytics.jsonl`, and POSTs rows to the dashboard.
 
-**Optional path:** `ctx proxy` terminates TLS for `api.anthropic.com` and runs the same gate logic in Rust (`proxy::run_gates`) for parity with the hook.
+**Optional path:** `ctx proxy` terminates TLS for `api.anthropic.com` and runs the same gate logic in Rust (`proxy::run_gates`) for parity with `filter.js`.
 
 **Desktop:** No `NODE_OPTIONS` in the main app process. MCP (`ctx mcp`) and `ctx ingest` still read and write shared data under `CTX_HOME`.
 
@@ -55,7 +55,7 @@ flowchart LR
 | CLI | `main.rs`, `lib.rs`, `cli.rs` | Tokio entry, `run()` dispatch, clap subcommands |
 | Setup and host | `setup.rs`, `host.rs`, `daemon.rs` | One-shot install, IDE vs terminal vs Desktop detection, launchd / systemd / fallback processes |
 | Interception | `filter.rs`, `filter_hook.rs`, `proxy.rs`, `ca.rs` | Rust tool strip parity, deploy `filter.js` + `filter-config.json`, HTTPS MITM, local CA |
-| Pipeline gates | `profiles.rs`, `inject.rs`, `coach.rs`, `behavior_guard.rs`, `budget_guard.rs`, `quality_guard.rs`, `compress.rs`, `settings_hooks.rs` | Profiles, system prefix, coach signals, behavior hints, budget warnings, profile-switch safety, bash compression hooks |
+| Pipeline gates | `profiles.rs`, `inject.rs`, `coach.rs`, `behavior_guard.rs`, `budget_guard.rs`, `quality_guard.rs` | Profiles, system prefix, coach signals, behavior hints, budget warnings, profile-switch safety |
 | Analytics and storage | `analytics.rs`, `db.rs`, `conversations.rs`, `embedder.rs` | JSONL records, SQLite schema, JSONL + Desktop ingest, embeddings |
 | User-facing | `dashboard.rs`, `dashboard.html`, `mcp.rs` | Local Axum UI + REST, stdio MCP tools |
 | Config | `config.rs`, `user_profile.rs` | Paths, `config.toml`, calibrated user thresholds |
@@ -68,7 +68,7 @@ Supporting: `test_lock.rs` (tests).
 
 ## Request pipeline (gates)
 
-Single outbound `/v1/messages` body passes through the same ordered stages in the hook and in `proxy::run_gates`:
+Single outbound `/v1/messages` body passes through the same ordered stages in `filter.js` and in `proxy::run_gates`:
 
 ```mermaid
 flowchart TD

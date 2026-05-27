@@ -414,10 +414,7 @@ async fn api_stats() -> Json<Stats> {
     let total_tokens: usize = filter_recs.iter().map(|r| r.tokens_saved).sum();
     let total_tools: usize = filter_recs.iter().map(|r| r.tools_removed).sum();
     let total_kept: usize = filter_recs.iter().map(|r| r.tools_sent_count).sum();
-    let compress_tokens: usize = records.iter()
-        .map(|r| r.compress_chars_saved / 4)
-        .sum();
-    let all_tokens = total_tokens + compress_tokens;
+    let all_tokens = total_tokens;
     let sessions = group_into_sessions(&records);
 
     let spend_sessions = crate::conversations::all_sessions();
@@ -457,8 +454,7 @@ async fn api_stats() -> Json<Stats> {
         total_tools_removed: total_tools,
         total_tools_kept: total_kept,
         cost_saved: (all_tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
-        cost_saved_worst_case: (total_tokens as f64 / 1_000_000.0) * crate::analytics::WORST_CASE_INPUT_RATE_PER_MTOK
-            + (compress_tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
+        cost_saved_worst_case: (total_tokens as f64 / 1_000_000.0) * crate::analytics::WORST_CASE_INPUT_RATE_PER_MTOK,
         session_count: effective_session_count,
         request_count: filter_recs.len(),
         active_profile: config.active_profile.unwrap_or_else(|| "all".into()),

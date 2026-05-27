@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -92,29 +92,6 @@ pub fn record(tools_removed: usize, tokens_saved: usize, profile: &str, trace: T
         budget_fired: trace.budget_fired,
         behavior_kind: trace.behavior_kind,
         working_directory: trace.working_directory,
-        tools_sent_count: 0,
-        mcp_tools_invoked: vec![],
-        tools_sent_by_server: HashMap::new(),
-    });
-}
-
-pub fn record_compress(chars_saved: usize) {
-    let _ = crate::config::ensure_dir();
-    append(&Record {
-        ts: Utc::now().to_rfc3339(),
-        tools_removed: 0,
-        tokens_saved: 0,
-        compress_chars_saved: chars_saved,
-        profile: String::new(),
-        removed_servers: vec![],
-        kept_servers: vec![],
-        auto_selected: false,
-        auto_trigger: None,
-        inject_fired: false,
-        coach_kind: None,
-        budget_fired: false,
-        behavior_kind: None,
-        working_directory: String::new(),
         tools_sent_count: 0,
         mcp_tools_invoked: vec![],
         tools_sent_by_server: HashMap::new(),
@@ -239,15 +216,11 @@ pub fn show() -> Result<()> {
     }
 
     let filter_recs: Vec<&Record> = records.iter().filter(|r| r.tools_removed > 0).collect();
-    let compress_recs: Vec<&Record> = records.iter().filter(|r| r.compress_chars_saved > 0).collect();
 
     let n_filter = filter_recs.len();
     let total_tools: usize = filter_recs.iter().map(|r| r.tools_removed).sum();
     let total_filter_tokens: usize = filter_recs.iter().map(|r| r.tokens_saved).sum();
-    let total_compress_chars: usize = compress_recs.iter().map(|r| r.compress_chars_saved).sum();
-    let compress_tokens = total_compress_chars / 4;
-    let total_tokens = total_filter_tokens + compress_tokens;
-    let cost_saved = (total_tokens as f64 / 1_000_000.0) * CACHE_READ_RATE_PER_MTOK;
+    let cost_saved = (total_filter_tokens as f64 / 1_000_000.0) * CACHE_READ_RATE_PER_MTOK;
 
     let fmt = crate::profiles::fmt_k;
 
@@ -266,14 +239,6 @@ pub fn show() -> Result<()> {
         );
     }
 
-    if !compress_recs.is_empty() {
-        println!(
-            "Bash compression saved another {} tokens across {} commands.",
-            fmt(compress_tokens).green().bold(),
-            compress_recs.len(),
-        );
-    }
-
     Ok(())
 }
 
@@ -288,25 +253,5 @@ pub fn show_brief() -> Result<()> {
             fmt(rec.tokens_saved),
         );
     }
-    Ok(())
-}
-
-pub fn enable_hook() -> Result<()> {
-    let path = crate::config::claude_settings_path();
-    let content = std::fs::read_to_string(&path).context("read ~/.claude/settings.json")?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-    crate::settings_hooks::merge_gain_stop_hook(&mut settings)?;
-    crate::config::write_json_atomic(&path, &settings)?;
-    println!("{} Added Stop hook: ctx gain --brief", "✓".green());
-    Ok(())
-}
-
-pub fn disable_hook() -> Result<()> {
-    let path = crate::config::claude_settings_path();
-    let content = std::fs::read_to_string(&path).context("read ~/.claude/settings.json")?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-    crate::settings_hooks::strip_gain_stop_hook(&mut settings)?;
-    crate::config::write_json_atomic(&path, &settings)?;
-    println!("{} Removed ctx gain Stop hook", "✓".green());
     Ok(())
 }

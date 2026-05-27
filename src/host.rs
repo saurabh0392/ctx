@@ -50,6 +50,11 @@ fn vscode_shell() -> bool {
     std::env::var("TERM_PROGRAM").ok().as_deref() == Some("vscode")
 }
 
+/// Hint shown after `ctx setup --uninstall` (does not depend on host detection).
+pub fn uninstall_reload_hint() -> &'static str {
+    "Reload Window in your IDE (Cmd+Shift+P or Ctrl+Shift+P, search Reload Window). If you use Claude Code in a plain terminal, start a new shell so NODE_OPTIONS clears. If Claude Desktop is installed, quit and reopen it so MCP changes apply."
+}
+
 /// Primary host for this `ctx setup` run (Claude Code in an IDE vs terminal vs Desktop-only).
 /// Claude Desktop MCP is wired separately whenever the Desktop data dir exists.
 pub fn detect_primary_host() -> Box<dyn HostAdapter> {
@@ -202,6 +207,7 @@ impl HostAdapter for DesktopHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// IDE detection reads process env; clear it so temp-home tests are deterministic.
     struct ClearHostEnv {
@@ -238,6 +244,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn detect_desktop_standalone_when_desktop_dir_and_no_settings() {
         let _env = ClearHostEnv::new(&["CURSOR_TRACE_ID", "VSCODE_PID", "WINDSURF_SESSION", "TERM_PROGRAM"]);
         let dir = tempfile::tempdir().unwrap();
@@ -263,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn detect_terminal_when_desktop_and_cli_settings_exist() {
         let _env = ClearHostEnv::new(&["CURSOR_TRACE_ID", "VSCODE_PID", "WINDSURF_SESSION", "TERM_PROGRAM"]);
         let dir = tempfile::tempdir().unwrap();

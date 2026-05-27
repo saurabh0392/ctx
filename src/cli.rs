@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ctx", version, about = "Context Killer - MCP filter proxy + bash compressor for Claude Code")]
+#[command(name = "ctx", version, about = "Context Killer - MCP filter proxy for Claude Code")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -21,15 +21,9 @@ pub enum Commands {
     Status,
     /// Show cumulative token savings
     Gain {
-        /// Print a single summary line (used by the stop hook)
+        /// Print a single summary line (stderr) for manual use in scripts
         #[arg(long)]
         brief: bool,
-        /// Add a stop hook to ~/.claude/settings.json to show savings after each turn
-        #[arg(long)]
-        enable_hook: bool,
-        /// Remove the stop hook
-        #[arg(long)]
-        disable_hook: bool,
     },
     /// Manage custom profiles
     Profile {
@@ -81,15 +75,6 @@ pub enum Commands {
     Ingest,
     /// Run as an MCP server over stdio (JSON-RPC). Exposes ctx data to LLM clients.
     Mcp,
-    /// Claude Code PreToolUse hook - rewrites bash commands to compress output
-    #[command(hide = true)]
-    Hook,
-    /// Compress piped command output (called by rewritten bash commands)
-    #[command(hide = true)]
-    Compress {
-        #[arg(long, short)]
-        kind: Option<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -131,7 +116,7 @@ pub enum ProxyCommand {
         #[arg(long, default_value = "https://api.anthropic.com")]
         upstream: String,
     },
-    /// Uninstall: remove ctx wiring from settings.json (NODE_OPTIONS hook, proxy env, optional ANTHROPIC_BASE_URL restore)
+    /// Uninstall: remove ctx wiring from settings.json (NODE_OPTIONS, optional ANTHROPIC_BASE_URL restore) and strip legacy ctx hook lines
     Uninstall,
     /// Show proxy configuration
     Status,

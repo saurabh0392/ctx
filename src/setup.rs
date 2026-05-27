@@ -132,7 +132,7 @@ pub fn run(
     println!("{} Detected: {}", "i".cyan(), host.label());
     if crate::config::claude_desktop_installed() {
         println!(
-            "{} Claude Desktop detected. ctx registers an MCP server in claude_desktop_config.json. Per-request tracing and hook-driven tool filtering apply to Claude Code (CLI or IDE), not to standalone Desktop chat. Use `ctx ingest` for session-level Desktop data when local-agent logs exist. See README.",
+            "{} Claude Desktop detected. ctx registers an MCP server in claude_desktop_config.json. Per-request tracing and filter.js-driven savings apply to Claude Code (CLI or IDE), not to standalone Desktop chat. Use `ctx ingest` for session-level Desktop data when local-agent logs exist. See README.",
             "i".yellow()
         );
     }
@@ -363,7 +363,7 @@ pub fn run(
         println!("  Autorun:    {}", autorun_summary(periodic_ingest));
         println!();
         println!("  Tool filtering (NODE_OPTIONS / filter.js) is not supported for Claude Desktop alone.");
-        println!("  Request tracing, savings tracking from the hook, and per-request analytics need Claude Code (CLI or IDE).");
+        println!("  Request tracing, savings tracking from filter.js, and per-request analytics need Claude Code (CLI or IDE).");
         println!("  Desktop still gets MCP tools and session data via `ctx ingest` when local-agent logs exist.");
         println!("  Install the Claude Code CLI for full token savings and Request Trace coverage.");
     } else {
@@ -432,14 +432,41 @@ pub fn uninstall() -> Result<()> {
 
     unwire_mcp_server();
 
-    let host = crate::host::detect_primary_host();
+    strip_claude_settings_hooks_if_present()?;
+
+    match crate::config::remove_user_ctx_from_cursor_known_mcp_ids() {
+        Ok(true) => println!("{} Cleared stale ctx entry from Cursor MCP cache", "✓".green()),
+        Ok(false) => {}
+        Err(e) => println!(
+            "{} Cursor MCP cache cleanup skipped (close Cursor and retry if needed): {}",
+            "!".yellow(),
+            e
+        ),
+    }
+
     println!(
         "{} ctx uninstalled. {}",
         "✓".green(),
-        host.reload_instruction()
+        crate::host::uninstall_reload_hint()
     );
-    if host.supports_node_options() {
-        println!("Apply the reload so removed NODE_OPTIONS and MCP server config take effect.");
+    println!("Apply the reload so removed NODE_OPTIONS and MCP server config take effect.");
+    Ok(())
+}
+
+fn strip_claude_settings_hooks_if_present() -> Result<()> {
+    let path = crate::config::claude_settings_path();
+    if !path.is_file() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&path)?;
+    let mut doc: serde_json::Value = serde_json::from_str(&text)?;
+    if crate::config::strip_ctx_managed_hooks_from_settings(&mut doc) {
+        crate::config::write_json_atomic(&path, &doc)?;
+        println!(
+            "{} Removed ctx hook entries from {}",
+            "✓".green(),
+            path.display()
+        );
     }
     Ok(())
 }

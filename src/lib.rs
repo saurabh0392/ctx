@@ -6,7 +6,6 @@ pub mod behavior_guard;
 pub mod budget_guard;
 pub mod cli;
 pub mod coach;
-pub mod compress;
 pub mod config;
 pub mod conversations;
 pub mod dashboard;
@@ -20,7 +19,6 @@ pub mod inject;
 pub mod profiles;
 pub mod proxy;
 pub mod quality_guard;
-pub mod settings_hooks;
 pub mod setup;
 pub mod test_lock;
 pub mod mcp;
@@ -50,12 +48,8 @@ pub async fn run() -> Result<()> {
             println!("Ingested {n} session file(s) into ~/.ctx/ctx.db (Claude Code + Desktop)");
         }
         Commands::Status => profiles::status()?,
-        Commands::Gain { brief, enable_hook, disable_hook } => {
-            if enable_hook {
-                analytics::enable_hook()?;
-            } else if disable_hook {
-                analytics::disable_hook()?;
-            } else if brief {
+        Commands::Gain { brief } => {
+            if brief {
                 analytics::show_brief()?;
             } else {
                 analytics::show()?;
@@ -98,8 +92,6 @@ pub async fn run() -> Result<()> {
         }
         Commands::Dashboard { port, no_open } => dashboard::serve(port, no_open).await?,
         Commands::Mcp => mcp::serve_stdio()?,
-        Commands::Hook => compress::hook()?,
-        Commands::Compress { kind } => compress::run(kind.as_deref())?,
     }
 
     Ok(())

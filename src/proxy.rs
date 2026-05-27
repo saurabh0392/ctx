@@ -637,7 +637,6 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
     );
 
     set_env_object(&mut settings, env);
-    crate::settings_hooks::merge_compress_hook(&mut settings)?;
     crate::config::write_json_atomic(&settings_path, &settings)?;
 
     let mut config = Config::load();
@@ -727,8 +726,9 @@ pub fn uninstall() -> Result<()> {
     }
 
     set_env_object(&mut settings, env);
-    crate::settings_hooks::strip_compress_hook(&mut settings)?;
-    crate::settings_hooks::strip_gain_stop_hook(&mut settings)?;
+    if crate::config::strip_ctx_managed_hooks_from_settings(&mut settings) {
+        println!("{} Removed ctx hook entries from settings.json", "✓".green());
+    }
     crate::config::write_json_atomic(&settings_path, &settings)?;
 
     let mut cfg = Config::load();

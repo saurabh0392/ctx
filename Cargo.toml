@@ -2,7 +2,7 @@
 name = "ctx"
 version = "0.1.1"
 edition = "2021"
-description = "Context Killer - MCP filter proxy + bash compressor for Claude Code"
+description = "Context Killer - MCP filter proxy for Claude Code"
 
 [lib]
 name = "ctx"

@@ -28,7 +28,7 @@ After setup, run `ctx profile generate` once to build profiles tailored to your 
 
 ### Claude Desktop: no API interception
 
-Desktop is an Electron app. It does not read `NODE_OPTIONS` from `~/.claude/settings.json` the way the Claude Code CLI does. It also does not expose a user setting to point `ANTHROPIC_BASE_URL` at a local reverse proxy, so you cannot route its HTTPS API traffic through `ctx proxy` the way you wire Claude Code. Per-request tracing, tool stripping, and hook-driven savings on the dashboard are **Claude Code only**. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
+Desktop is an Electron app. It does not read `NODE_OPTIONS` from `~/.claude/settings.json` the way the Claude Code CLI does. It also does not expose a user setting to point `ANTHROPIC_BASE_URL` at a local reverse proxy, so you cannot route its HTTPS API traffic through `ctx proxy` the way you wire Claude Code. Per-request tracing, tool stripping, and dashboard savings from `filter.js` are **Claude Code only**. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
 
 ## Install journey
 
@@ -73,7 +73,7 @@ Quick paths:
 4. Open or create `ctx.db`, run an initial ingest when Claude Code project JSONL exists, pick a default profile, sync `filter-config.json`.
 5. Install and start the dashboard (default port `8789`).
 6. When `needs_periodic_ingest` is true, install a periodic `ctx ingest` job (macOS and Linux user services).
-7. Unless `--no-install`, run `proxy::install` to merge `NODE_OPTIONS` and hooks into `~/.claude/settings.json` **only** when `supports_node_options` is true (not Desktop-only).
+7. Unless `--no-install`, run `proxy::install` to merge `NODE_OPTIONS` into `~/.claude/settings.json` when `supports_node_options` is true (not Desktop-only).
 8. Register `ctx mcp` in Claude settings, IDE-specific MCP JSON when applicable, and Desktop config when present.
 9. Open the dashboard URL in a browser when ready.
 
@@ -123,7 +123,7 @@ After installing the binary, run setup once:
 ctx setup
 ```
 
-`setup` writes assets under `CTX_HOME` (default `~/.ctx`): `filter.js`, `filter-config.json`, optional CA material for the proxy, merges Node `NODE_OPTIONS` plus Claude hook entries where configured, and installs background services on macOS (launchd) and Linux (systemd user units). On other OS targets it starts `ctx proxy` / `ctx dashboard` as detached processes and prints how to schedule ingest yourself.
+`setup` writes assets under `CTX_HOME` (default `~/.ctx`): `filter.js`, `filter-config.json`, optional CA material for the proxy, merges Node `NODE_OPTIONS` into `~/.claude/settings.json` where configured, and installs background services on macOS (launchd) and Linux (systemd user units). On other OS targets it starts `ctx proxy` / `ctx dashboard` as detached processes and prints how to schedule ingest yourself.
 
 ## Two interception paths
 

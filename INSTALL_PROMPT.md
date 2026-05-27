@@ -69,7 +69,7 @@ If any step fails, show the error and suggest a fix. Do not skip verification.
 ## What ctx does after install
 
 - **Saves tokens**: strips MCP tool definitions your sessions don't use (~40% reduction with auto-generated personal profile)
-- **Tracks spend**: dashboard at http://127.0.0.1:8789 with savings, spend charts, and efficiency scoring; updates automatically after every turn via in-process hook, no manual refresh
+- **Tracks spend**: dashboard at http://127.0.0.1:8789 with savings, spend charts, and efficiency scoring; updates after each turn when `filter.js` POSTs to the dashboard, no manual refresh
 - **Profile generator**: `ctx profile generate` inspects your MCP stack and creates named profiles by category (data, design, comms, work, files, infra) with no usage history required
 - **LLM-accessible**: registered as an MCP server so you can ask about your ctx data in any chat
 - **Privacy**: all data under ~/.ctx/, zero telemetry, no network calls beyond your normal Anthropic API traffic
@@ -116,7 +116,7 @@ The helper script runs `ctx setup --yes`, verifies the dashboard, runs initial i
 
 **What you get:** MCP tools in Desktop, the local dashboard, and session ingest/analytics.
 
-**What you do not get:** Per-request tracing, tool filtering, and savings tracking from the hook. Those need `filter.js` (`NODE_OPTIONS`) or traffic through `ctx proxy`, neither of which applies to standalone Desktop chat. Desktop does not expose a configurable API base URL, so its traffic cannot be pointed at ctx. For full features, use Claude Code (CLI or IDE). Desktop session data is available via `ctx ingest` when local-agent logs exist.
+**What you do not get:** Per-request tracing, tool filtering, and dashboard savings from `filter.js`. Those need `NODE_OPTIONS` or traffic through `ctx proxy`, neither of which applies to standalone Desktop chat. Desktop does not expose a configurable API base URL, so its traffic cannot be pointed at ctx. For full features, use Claude Code (CLI or IDE). Desktop session data is available via `ctx ingest` when local-agent logs exist.
 
 ---
 

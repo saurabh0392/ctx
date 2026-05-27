@@ -84,6 +84,119 @@ pub fn remove_ctx_from_mcp_servers(doc: &mut Value) -> bool {
     servers.remove("ctx").is_some()
 }
 
+/// Commands referenced by a Claude Code `hooks` matcher entry (flat `command` or nested `hooks`).
+fn hook_commands_from_entry(entry: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(cmd) = entry.get("command").and_then(|c| c.as_str()) {
+        out.push(cmd.to_string());
+    }
+    if let Some(arr) = entry.get("hooks").and_then(|h| h.as_array()) {
+        for h in arr {
+            if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
+                out.push(cmd.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Remove ctx-managed `PreToolUse` (`ctx hook`) and `Stop` (`ctx gain --brief`) hook entries from settings JSON.
+/// Returns true when the document was modified.
+pub fn strip_ctx_managed_hooks_from_settings(settings: &mut Value) -> bool {
+    let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
+        return false;
+    };
+    let mut changed = false;
+    if let Some(arr) = hooks.get_mut("PreToolUse").and_then(|a| a.as_array_mut()) {
+        let before = arr.len();
+        arr.retain(|entry| {
+            !hook_commands_from_entry(entry)
+                .iter()
+                .any(|c| c.contains("ctx") && c.contains(" hook"))
+        });
+        if arr.len() != before {
+            changed = true;
+        }
+    }
+    if let Some(arr) = hooks.get_mut("Stop").and_then(|a| a.as_array_mut()) {
+        let before = arr.len();
+        arr.retain(|entry| {
+            !hook_commands_from_entry(entry)
+                .iter()
+                .any(|c| c.contains("gain --brief"))
+        });
+        if arr.len() != before {
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Cursor IDE global storage database (MCP server registry cache lives here).
+pub fn cursor_state_vscdb_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    #[cfg(target_os = "macos")]
+    {
+        let p = home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let p = home.join(".config/Cursor/User/globalStorage/state.vscdb");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(app) = dirs::data_dir() {
+            let p = app.join("Cursor/User/globalStorage/state.vscdb");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Drop `user-ctx` from Cursor's cached MCP server id list. Returns `Ok(true)` when a row was updated.
+pub fn remove_user_ctx_from_cursor_known_mcp_ids() -> Result<bool> {
+    use rusqlite::OptionalExtension;
+    let Some(db_path) = cursor_state_vscdb_path() else {
+        return Ok(false);
+    };
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+    )?;
+    let val: Option<String> = conn
+        .query_row(
+            "SELECT value FROM ItemTable WHERE key = ?1",
+            ["mcpService.knownServerIds"],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(json) = val else {
+        return Ok(false);
+    };
+    let Ok(mut arr) = serde_json::from_str::<Vec<String>>(&json) else {
+        return Ok(false);
+    };
+    let before = arr.len();
+    arr.retain(|s| s != "user-ctx");
+    if arr.len() == before {
+        return Ok(false);
+    }
+    let new_json = serde_json::to_string(&arr)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["mcpService.knownServerIds", new_json],
+    )?;
+    Ok(true)
+}
+
 pub fn claude_settings_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -245,5 +358,32 @@ impl Config {
         let content = toml::to_string_pretty(self)?;
         std::fs::write(ctx_dir().join("config.toml"), content)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hook_strip_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn strip_removes_ctx_hook_and_gain_brief() {
+        let mut doc = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{ "type": "command", "command": "/home/x/.local/bin/ctx hook" }]
+                    }
+                ],
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "/home/x/.cargo/bin/ctx gain --brief" }] }
+                ]
+            }
+        });
+        assert!(strip_ctx_managed_hooks_from_settings(&mut doc));
+        let hooks = doc["hooks"].as_object().unwrap();
+        assert_eq!(hooks["PreToolUse"].as_array().unwrap().len(), 0);
+        assert_eq!(hooks["Stop"].as_array().unwrap().len(), 0);
     }
 }
