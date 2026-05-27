@@ -570,10 +570,6 @@ if (global.__CTX_FILTER_PATCHED__) {
   }
 
   function appendAnalyticsLine(rec) {
-    try {
-      const line = JSON.stringify(rec) + '\n';
-      fs.appendFileSync(path.join(ctxDir(), 'analytics.jsonl'), line, 'utf8');
-    } catch (_e) {}
     const pe = process.env.CTX_DASHBOARD_PORT;
     const cfg = loadCfg();
     const port = pe != null && pe !== ''
@@ -624,7 +620,7 @@ if (global.__CTX_FILTER_PATCHED__) {
     };
     const req = http.request(opts);
     req.on('error', function () {
-      /* dashboard not running — jsonl remains the fallback */
+      /* dashboard not running — record is dropped; trigger-ingest covers session data */
     });
     req.write(body);
     req.end();

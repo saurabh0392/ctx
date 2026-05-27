@@ -655,7 +655,6 @@ struct SettingsGetResponse {
     system_prefix_preview: String,
     ctx_home: String,
     db_size_bytes: u64,
-    analytics_size_bytes: u64,
     row_counts: SettingsRowCounts,
     last_ingest_at: Option<String>,
     files_under_ctx: Vec<SettingsFileEntry>,
@@ -693,8 +692,6 @@ async fn api_settings_get() -> impl IntoResponse {
     let cfg = crate::config::Config::load();
     let db_path = crate::config::db_path();
     let db_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-    let apath = crate::config::analytics_path();
-    let analytics_size_bytes = std::fs::metadata(&apath).map(|m| m.len()).unwrap_or(0);
     let last_ingest_at: Option<String> = conn
         .query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| r.get(0))
         .optional()
@@ -729,7 +726,6 @@ async fn api_settings_get() -> impl IntoResponse {
         system_prefix_preview,
         ctx_home: crate::config::ctx_dir().to_string_lossy().into_owned(),
         db_size_bytes,
-        analytics_size_bytes,
         row_counts,
         last_ingest_at,
         files_under_ctx: list_ctx_dir_files(),
@@ -821,8 +817,6 @@ async fn api_settings_delete_data() -> impl IntoResponse {
         let conn = crate::db::open_db()?;
         crate::db::ensure_schema(&conn)?;
         crate::db::delete_all_indexed_data(&conn)?;
-        let ap = crate::config::analytics_path();
-        let _ = std::fs::write(&ap, "");
         let _ = conn.execute(
             "INSERT OR REPLACE INTO meta (k, v) VALUES ('last_ingest_at', '')",
             [],

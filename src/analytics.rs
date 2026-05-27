@@ -3,7 +3,6 @@ use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
 
 /// Tool schemas are almost always cache reads after request 1.
 pub const CACHE_READ_RATE_PER_MTOK: f64 = 0.30;
@@ -123,15 +122,6 @@ pub fn record_compress(chars_saved: usize) {
 }
 
 fn append(rec: &Record) {
-    if let (Ok(line), Ok(mut f)) = (
-        serde_json::to_string(rec),
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(crate::config::analytics_path()),
-    ) {
-        let _ = writeln!(f, "{line}");
-    }
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
         let _ = crate::db::insert_request(&conn, rec);

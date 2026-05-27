@@ -215,8 +215,6 @@ fn tool_settings() -> Result<Value, String> {
     let cfg = crate::config::Config::load();
     let db_path = crate::config::db_path();
     let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-    let ap = crate::config::analytics_path();
-    let analytics_size = std::fs::metadata(&ap).map(|m| m.len()).unwrap_or(0);
 
     let conn = crate::db::open_db().ok();
     let count = |table: &str| -> i64 {
@@ -241,7 +239,6 @@ fn tool_settings() -> Result<Value, String> {
         "monthly_actual_spend_usd": cfg.monthly_actual_spend_usd,
         "ctx_home": crate::config::ctx_dir().to_string_lossy().into_owned(),
         "db_size_bytes": db_size,
-        "analytics_size_bytes": analytics_size,
         "last_ingest_at": last_ingest,
         "row_counts": json!({
             "sessions": count("sessions"),

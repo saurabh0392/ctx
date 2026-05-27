@@ -1185,7 +1185,7 @@ async function loadSettingsTab() {
     const files = (s.files_under_ctx || []).map(f => `<li><code>${esc(f.name)}</code> — ${fmtBytes(f.size_bytes)}</li>`).join('');
     box.innerHTML = `
       <p><strong>ctx home:</strong> <code>${esc(s.ctx_home)}</code></p>
-      <p><strong>Database:</strong> ${fmtBytes(s.db_size_bytes || 0)} · <strong>analytics.jsonl:</strong> ${fmtBytes(s.analytics_size_bytes || 0)}</p>
+      <p><strong>Database:</strong> ${fmtBytes(s.db_size_bytes || 0)}</p>
       <p><strong>Last ingest:</strong> ${esc(s.last_ingest_at || 'never')}</p>
       <p><strong>Rows:</strong> sessions ${rc.sessions || 0}, turns ${rc.turns || 0}, tools ${rc.tool_invocations || 0}, embeddings ${rc.session_embeddings || 0}, requests ${rc.requests || 0}</p>
       <p><strong>Prompt text stored:</strong> ${s.store_prompt_text ? 'yes' : 'no'}</p>
@@ -1234,7 +1234,7 @@ async function purgePrompts() {
   alert('Purged.');
 }
 async function deleteAllData() {
-  if (!confirm('Delete ALL indexed sessions, turns, embeddings, and requests from ctx.db, and wipe analytics.jsonl?')) return;
+  if (!confirm('Delete ALL indexed sessions, turns, embeddings, and requests from ctx.db?')) return;
   await fetch('/api/settings/delete-data', { method: 'POST' });
   await loadSettingsTab();
   alert('Deleted.');
@@ -2181,7 +2181,7 @@ async function loadTrace() {
   if (!requests.length) {
     el.innerHTML = `<div class="card" style="padding:20px;margin-bottom:16px;border-color:rgba(147,192,67,.25)">
       <div class="section-head" style="margin-bottom:8px">No filter events</div>
-      <div class="section-sub" style="margin-bottom:0">The trace lists rows where MCP tools were stripped. With only session ingest data, run Claude Code with <code>filter.js</code> and keep this dashboard open so POST <code>/api/ingest-request</code> fills the <code>requests</code> table. Legacy lines in <code>analytics.jsonl</code> import on dashboard start.</div>
+      <div class="section-sub" style="margin-bottom:0">The trace lists rows where MCP tools were stripped. Run Claude Code with <code>filter.js</code> active and keep this dashboard open — each turn POSTs to <code>/api/ingest-request</code> which writes directly to ctx.db.</div>
     </div>`;
     return;
   }
