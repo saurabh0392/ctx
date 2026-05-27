@@ -322,7 +322,9 @@ pub fn get(slug: &str) -> Result<Profile> {
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found. Run `ctx profile list`.", slug))
 }
 
-/// Server display names for Claude Code `allowedMcpServers`. Empty means allow all MCP servers.
+/// Server identifiers for Claude Code `allowedMcpServers`. Empty means allow all MCP servers.
+/// Uses underscore-preserving IDs (e.g. `Data_Shippo`) because `serverName` in
+/// `allowedMcpServers` only allows `[a-zA-Z0-9_-]`.
 pub fn allowed_server_names_for_profile(p: &Profile) -> Vec<String> {
     if p.keep.is_empty() {
         return Vec::new();
@@ -332,9 +334,9 @@ pub fn allowed_server_names_for_profile(p: &Profile) -> Vec<String> {
         .iter()
         .map(|k| {
             if k.starts_with("mcp__") {
-                mcp_prefix_to_server_display(k)
+                mcp_prefix_to_server_id(k)
             } else {
-                k.clone()
+                k.replace(' ', "_")
             }
         })
         .collect();
@@ -677,14 +679,21 @@ const SERVER_CATEGORY_MAP: &[(&str, &str)] = &[
     ("Shippo MCP DEV QA", "shippo"),
 ];
 
-/// Convert a server prefix back to its display name.
-/// `mcp__claude_ai_Data_Shippo__` -> `Data Shippo`
-pub fn mcp_prefix_to_server_display(prefix: &str) -> String {
+/// Extract the server identifier from an MCP tool prefix, keeping underscores.
+/// `mcp__claude_ai_Data_Shippo__` -> `Data_Shippo`
+/// Valid for `allowedMcpServers.serverName` which requires `[a-zA-Z0-9_-]`.
+pub fn mcp_prefix_to_server_id(prefix: &str) -> String {
     prefix
         .strip_prefix("mcp__claude_ai_")
         .and_then(|s| s.strip_suffix("__"))
         .unwrap_or(prefix)
-        .replace('_', " ")
+        .to_string()
+}
+
+/// Convert a server prefix back to its human-readable display name.
+/// `mcp__claude_ai_Data_Shippo__` -> `Data Shippo`
+pub fn mcp_prefix_to_server_display(prefix: &str) -> String {
+    mcp_prefix_to_server_id(prefix).replace('_', " ")
 }
 
 fn capitalize(s: &str) -> String {
@@ -1037,14 +1046,16 @@ mod tests {
     }
 
     #[test]
-    fn allowed_server_names_maps_mcp_prefixes_to_display_names() {
+    fn allowed_server_names_maps_mcp_prefixes_to_server_ids() {
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CTX_HOME", tmp.path());
 
         let p = get("data").unwrap();
         let names = allowed_server_names_for_profile(&p);
-        assert!(names.iter().any(|n| n == "Data Shippo"));
-        assert!(names.iter().any(|n| n == "Slack"));
+        assert!(names.iter().any(|n| n == "Data_Shippo"), "expected Data_Shippo, got {:?}", names);
+        assert!(names.iter().any(|n| n == "Slack"), "expected Slack, got {:?}", names);
+        assert!(names.iter().all(|n| n.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')),
+            "serverName must match [a-zA-Z0-9_-], got {:?}", names);
 
         std::env::remove_var("CTX_HOME");
     }
