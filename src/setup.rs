@@ -181,9 +181,24 @@ pub fn run(
     crate::daemon::install_proxy(port, upstream)?;
 
     // Step 2: start proxy
+    // For IDE and terminal users, filter.js (NODE_OPTIONS) handles all request
+    // interception in-process — the proxy is optional. Treat startup failure as
+    // a warning so setup can continue to write settings.json and the dashboard.
     println!("{} {}", "->".cyan(), crate::daemon::step2_banner());
-    crate::daemon::bootstrap_proxy(port, upstream)?;
-    wait_for_proxy(port)?;
+    let proxy_is_optional = host.supports_node_options();
+    if let Err(e) = crate::daemon::bootstrap_proxy(port, upstream)
+        .and_then(|_| wait_for_proxy(port))
+    {
+        if proxy_is_optional {
+            println!(
+                "  {} Proxy did not start ({}). Continuing — filter.js covers all filtering for Claude Code.",
+                "!".yellow(), e
+            );
+            println!("  Run `ctx proxy start` manually or check ~/.ctx/proxy.stderr.log to debug.");
+        } else {
+            return Err(e);
+        }
+    }
 
     // Step 3: create default system_prefix.md if missing
     println!("{} Step 3/5: Creating default system_prefix.md...", "->".cyan());
