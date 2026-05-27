@@ -111,6 +111,8 @@ pub enum ProfileCommand {
         #[arg(long)]
         refresh: bool,
     },
+    /// Auto-generate profiles from your actual MCP server stack (no history needed)
+    Generate,
 }
 
 #[derive(Subcommand)]

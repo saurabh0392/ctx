@@ -600,6 +600,290 @@ pub fn remove(slug: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Profile generator
+// ---------------------------------------------------------------------------
+
+/// Maps server display names to coarse task categories.
+/// Display names are the human-readable form: "Data Shippo", "Atlassian", etc.
+const SERVER_CATEGORY_MAP: &[(&str, &str)] = &[
+    ("Data Shippo", "data"),
+    ("Fullstory", "data"),
+    ("AWS Marketplace", "data"),
+    ("Figma", "design"),
+    ("Canva", "design"),
+    ("Miro", "design"),
+    ("Adobe Marketing Agent", "design"),
+    ("Webflow", "design"),
+    ("Slack", "comms"),
+    ("Gmail", "comms"),
+    ("Microsoft 365", "comms"),
+    ("Zoom for Claude", "comms"),
+    ("Fireflies", "comms"),
+    ("Atlassian", "work"),
+    ("Linear", "work"),
+    ("Notion", "work"),
+    ("Incident io", "work"),
+    ("Postman", "work"),
+    ("Zapier", "work"),
+    ("Stripe", "finance"),
+    ("Ramp", "finance"),
+    ("NetSuite", "finance"),
+    ("NetSuite Sandbox", "finance"),
+    ("Moody s", "finance"),
+    ("Intuit Mailchimp", "finance"),
+    ("ZoomInfo", "finance"),
+    ("Clay", "finance"),
+    ("Tropic", "finance"),
+    ("Google Drive", "files"),
+    ("Google Calendar", "files"),
+    ("Docusign", "files"),
+    ("Cloudflare Developer Platform", "infra"),
+    ("Shippo MCP Dev", "shippo"),
+    ("Shippo MCP DEV QA", "shippo"),
+];
+
+/// Convert a server prefix back to its display name.
+/// `mcp__claude_ai_Data_Shippo__` -> `Data Shippo`
+fn prefix_to_display(prefix: &str) -> String {
+    prefix
+        .strip_prefix("mcp__claude_ai_")
+        .and_then(|s| s.strip_suffix("__"))
+        .unwrap_or(prefix)
+        .replace('_', " ")
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+/// Collect every server prefix seen in the analytics DB.
+/// Primary source: `tool_invocations.server_prefix` (actually invoked tools).
+/// Secondary source: `requests.kept_servers` + `removed_servers` JSON arrays
+///   (tools that were sent, even if never invoked).
+/// Falls back to the full SERVER_COUNTS list when the DB is empty.
+fn collect_observed_prefixes() -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+
+    if crate::db::db_exists() {
+        if let Ok(conn) = crate::db::open_db() {
+            let _ = crate::db::ensure_schema(&conn);
+
+            // Servers actually invoked
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT DISTINCT server_prefix FROM tool_invocations",
+            ) {
+                let _ = stmt.query_map([], |r| r.get::<_, String>(0)).map(|rows| {
+                    rows.flatten().for_each(|p| { seen.insert(p); });
+                });
+            }
+
+            // Servers present in requests (kept or removed) even if never invoked
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT kept_servers, removed_servers FROM requests \
+                 WHERE kept_servers IS NOT NULL OR removed_servers IS NOT NULL",
+            ) {
+                let _ = stmt.query_map([], |r| {
+                    Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
+                }).map(|rows| {
+                    rows.flatten().for_each(|(kept, removed)| {
+                        for json in [kept, removed].into_iter().flatten() {
+                            if let Ok(names) = serde_json::from_str::<Vec<String>>(&json) {
+                                for name in names {
+                                    let prefix = format!("mcp__claude_ai_{}__", name.replace(' ', "_"));
+                                    seen.insert(prefix);
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+        }
+    }
+
+    if seen.is_empty() {
+        // First-time user with no history: seed from the known server table.
+        return SERVER_COUNTS.iter().map(|(k, _)| k.to_string()).collect();
+    }
+
+    let mut result: Vec<String> = seen.into_iter().collect();
+    result.sort();
+    result
+}
+
+/// Generate profiles from the user's actual observed (or configured) MCP servers.
+///
+/// Each non-comms category that has at least one discovered server gets a profile.
+/// Comms servers (Slack, Gmail, …) are included in every profile as communication glue.
+/// A standalone `comms` profile is always generated if any comms servers were found.
+/// Unknown/uncategorized servers are bundled into an `other` profile.
+pub fn generate_from_config() -> Result<()> {
+    let prefixes = collect_observed_prefixes();
+    if prefixes.is_empty() {
+        bail!(
+            "No MCP servers discovered. Use Claude Code for a session, run `ctx ingest`, then retry."
+        );
+    }
+
+    // Build category lookup from display name
+    let cat_map: HashMap<&str, &str> = SERVER_CATEGORY_MAP.iter().copied().collect();
+
+    // Partition prefixes into categories
+    let mut by_category: HashMap<String, Vec<String>> = HashMap::new();
+    let mut uncategorized: Vec<String> = Vec::new();
+    for prefix in &prefixes {
+        let display = prefix_to_display(prefix);
+        if let Some(cat) = cat_map.get(display.as_str()) {
+            by_category.entry(cat.to_string()).or_default().push(prefix.clone());
+        } else {
+            uncategorized.push(prefix.clone());
+        }
+    }
+
+    // Comms servers go into every profile
+    let mut comms_servers: Vec<String> = by_category.get("comms").cloned().unwrap_or_default();
+    comms_servers.sort();
+
+    // Print discovery summary
+    let total = prefixes.len();
+    println!(
+        "\nDiscovered {} MCP server{} from your sessions:\n",
+        total,
+        if total == 1 { "" } else { "s" }
+    );
+    let mut all_cats: Vec<&str> = by_category.keys().map(|s| s.as_str()).collect();
+    all_cats.sort();
+    for cat in &all_cats {
+        let servers = &by_category[*cat];
+        let names: Vec<String> = servers.iter().map(|p| prefix_to_display(p)).collect();
+        println!("  {:<10}  {}", cat, names.join(", "));
+    }
+    if !uncategorized.is_empty() {
+        let names: Vec<String> = uncategorized.iter().map(|p| prefix_to_display(p)).collect();
+        println!("  {:<10}  {}", "other", names.join(", "));
+    }
+
+    // Load existing custom profiles so we don't wipe user edits of other slugs
+    let custom_path = crate::config::ctx_dir().join("profiles.toml");
+    crate::config::ensure_dir()?;
+    let mut existing: HashMap<String, Profile> = if custom_path.exists() {
+        toml::from_str(&std::fs::read_to_string(&custom_path)?).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    let mut generated: Vec<(String, usize, f32)> = Vec::new();
+
+    for cat in &["data", "design", "work", "finance", "files", "infra", "shippo"] {
+        let Some(cat_servers) = by_category.get(*cat) else { continue };
+
+        let mut keep: Vec<String> = cat_servers.clone();
+        for s in &comms_servers {
+            if !keep.contains(s) {
+                keep.push(s.clone());
+            }
+        }
+        keep.sort();
+
+        let tool_count: usize = keep
+            .iter()
+            .map(|p| {
+                SERVER_COUNTS
+                    .iter()
+                    .find(|(k, _)| k.starts_with(p.as_str()) || p.starts_with(*k))
+                    .map(|(_, c)| *c)
+                    .unwrap_or(3)
+            })
+            .sum();
+        let savings_pct = (1.0 - tool_count as f32 / TOTAL_TOOLS as f32) * 100.0;
+
+        let cat_names: Vec<String> = cat_servers.iter().map(|p| prefix_to_display(p)).collect();
+        let comms_names: Vec<String> = comms_servers.iter().map(|p| prefix_to_display(p)).collect();
+        let description = if comms_names.is_empty() {
+            cat_names.join(", ")
+        } else {
+            format!("{} + {}", cat_names.join(", "), comms_names.join(", "))
+        };
+
+        existing.insert(
+            cat.to_string(),
+            Profile {
+                display: capitalize(cat),
+                description,
+                keep,
+                path_patterns: vec![],
+                triggers: vec![],
+            },
+        );
+        generated.push((cat.to_string(), tool_count, savings_pct));
+    }
+
+    // Comms-only profile
+    if !comms_servers.is_empty() {
+        let names: Vec<String> = comms_servers.iter().map(|p| prefix_to_display(p)).collect();
+        existing.insert(
+            "comms".to_string(),
+            Profile {
+                display: "Comms".to_string(),
+                description: names.join(", "),
+                keep: comms_servers.clone(),
+                path_patterns: vec![],
+                triggers: vec![],
+            },
+        );
+    }
+
+    // Catch-all for uncategorized servers
+    if !uncategorized.is_empty() {
+        let mut keep = uncategorized.clone();
+        for s in &comms_servers {
+            if !keep.contains(s) {
+                keep.push(s.clone());
+            }
+        }
+        keep.sort();
+        let names: Vec<String> = uncategorized.iter().map(|p| prefix_to_display(p)).collect();
+        existing.insert(
+            "other".to_string(),
+            Profile {
+                display: "Other".to_string(),
+                description: format!("{} + comms", names.join(", ")),
+                keep,
+                path_patterns: vec![],
+                triggers: vec![],
+            },
+        );
+    }
+
+    std::fs::write(&custom_path, toml::to_string_pretty(&existing)?)?;
+
+    println!("\nGenerated {} profile{}:\n", generated.len(), if generated.len() == 1 { "" } else { "s" });
+    for (slug, tools, pct) in &generated {
+        println!(
+            "  {:<10}  ~{} tools   {:.0}% savings vs unfiltered",
+            slug, tools, pct
+        );
+    }
+    println!(
+        "\n{} Wrote to {}",
+        "✓".green().bold(),
+        custom_path.display()
+    );
+    println!(
+        "  Review with {}   activate with {}",
+        "`ctx profile list`".bold(),
+        "`ctx use <profile>`".bold()
+    );
+
+    let _ = crate::filter_hook::sync_filter_config_from_active_config();
+    let _ = crate::behavior_guard::write_behavior_hints_file();
+    Ok(())
+}
+
 pub fn fmt_k(n: usize) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)

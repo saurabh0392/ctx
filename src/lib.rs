@@ -67,6 +67,7 @@ pub async fn run() -> Result<()> {
             ProfileCommand::Add { name, keep } => profiles::add(&name, keep)?,
             ProfileCommand::Remove { name } => profiles::remove(&name)?,
             ProfileCommand::Auto { refresh } => profiles::auto_generate(refresh)?,
+            ProfileCommand::Generate => profiles::generate_from_config()?,
         },
         Commands::Proxy { command } => match command {
             ProxyCommand::Start { port, upstream } => proxy::start(port, &upstream).await?,
