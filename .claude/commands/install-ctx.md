@@ -8,9 +8,10 @@ rustc --version
 ```
 If missing, stop and tell the user to install Rust first: https://rustup.rs
 
-## Build and install
+## Clone and install
 
 ```bash
+git clone https://github.com/goshippo/ctx.git ~/Documents/ctx
 cd ~/Documents/ctx
 cargo install --path .
 ```
