@@ -2,6 +2,8 @@
 
 Contributor-oriented overview of the Rust CLI, native Claude Code hooks, SQLite store, dashboard, and MCP server. End-user install steps live in [README.md](README.md).
 
+**Primary audience:** Claude Code users (terminal CLI or IDE-embedded). Claude Desktop is secondary — analytics and `ctx mcp` only; no hooks or native filtering path.
+
 ## System overview
 
 ```mermaid
@@ -11,9 +13,9 @@ flowchart LR
     CC_CLI["Claude Code CLI"]
     Desktop["Claude Desktop"]
   end
-  subgraph native [Native path default]
+  subgraph native [Native path default soft mode]
     Hooks["UserPromptSubmit hook ctx hook"]
-    Allow["allowedMcpServers profile filter"]
+    Deny["permissions.deny profile filter"]
   end
   subgraph data [CTX_HOME]
     DB["ctx.db SQLite"]
@@ -29,7 +31,7 @@ flowchart LR
 
   CC_IDE --> Hooks
   CC_CLI --> Hooks
-  Hooks --> Allow
+  Hooks --> Deny
   Hooks -->|"insert hook_traces"| DB
   Hooks -->|"POST /api/trigger-ingest"| Dashboard
   Ingest --> DB
@@ -38,9 +40,11 @@ flowchart LR
   Desktop -.->|"audit.jsonl only"| Ingest
 ```
 
-**Default path:** Claude Code enforces MCP allowlisting via `allowedMcpServers` in `~/.claude/settings.json`. On each prompt, `ctx hook user-prompt-submit` runs auto-profile, optional system and adaptive prefix injection, coaching, budget hard-stop, and records a row in `hook_traces`. Ingest enriches those rows with token and cost data from session JSONL.
+**Default path (soft filter):** Claude Code hides stripped MCP tools via `permissions.deny` in `~/.claude/settings.json` — either server wildcards (`mcp__claude_ai_{Server}__*`) for prefix-based profiles, or **exact tool names** when `keep_tools` is set. MCP servers **stay connected** in `/mcp` in soft mode (tool-level profiles can keep 4 of 22 Atlassian tools while the server stays connected). On each prompt, `ctx hook user-prompt-submit` runs similarity-first auto-profile, optional prefix injection, coaching, budget hard-stop, and records a row in `hook_traces`. Ingest enriches those rows with token and cost data from session JSONL. **`personal`** profile is upserted from observed tool usage (≥ `min_tool_invocations_per_tool` per tool) once `[profile_thresholds]` are met; category profiles require a higher bar or `ctx profile generate`.
 
-**Optional:** `ctx proxy` MITM for parity tests and legacy workflows. `filter.js` + `NODE_OPTIONS` are deprecated (Bun-based Claude Code ignores Node preload).
+**Strict mode (opt-in):** `filter_mode = strict` uses `allowedMcpServers` instead — non-allowlisted remote connectors disconnect for maximum token savings.
+
+**Optional:** `ctx proxy` MITM (`ctx proxy install --mode complement|standalone|filter-only`). **complement** adds HTTP-body tool stripping alongside hooks; **standalone** runs the full gate pipeline without hooks; **filter_only** is filter + analytics only. SSE responses stream through the proxy (fixes 429 retry storms from buffering). Not started by `ctx setup`. Deprecated: `ANTHROPIC_BASE_URL` reverse mode. `filter.js` + `NODE_OPTIONS` are deprecated (Bun-based Claude Code ignores Node preload).
 
 **Desktop:** No hooks path. MCP tools, dashboard, and ingest of `audit.jsonl` still work.
 
@@ -52,7 +56,7 @@ flowchart LR
 | --- | --- | --- |
 | CLI | `main.rs`, `lib.rs`, `cli.rs` | Entry, subcommands |
 | Setup | `setup.rs`, `host.rs`, `daemon.rs` | Install, host detection, launchd/systemd |
-| Native hooks | `hook.rs`, `claude_settings.rs`, `profiles.rs` | `UserPromptSubmit`, settings merge, allowlist |
+| Native hooks | `hook.rs`, `filter_control.rs`, `claude_settings.rs`, `profiles.rs` | `UserPromptSubmit`, filter modes, settings merge, deny/allowlist |
 | Gates | `inject.rs`, `adaptive.rs`, `coach.rs`, `budget_guard.rs`, `behavior_guard.rs` | Prefixes, coaching, budget |
 | A/B | `ab.rs`, `config::AbTestConfig` | Per-feature treatment vs control coin flips |
 | Modes | `modes.rs` | Named presets (profile + toggles) |
@@ -67,18 +71,35 @@ flowchart LR
 
 ---
 
+## Filter modes (`config::FilterMode`, `filter_control.rs`)
+
+| Mode | Settings mechanism | Connectors in `/mcp` |
+| --- | --- | --- |
+| `soft` (default) | `permissions.deny` with `mcp__claude_ai_*__*` wildcards | All stay connected |
+| `strict` | `allowedMcpServers` allowlist | Non-listed disconnect |
+| `off` | Strip ctx-managed deny and allowlist | All connected |
+
+- `profiles::deny_patterns_for_profile()` maps profile keep-lists → deny wildcards (prefix mode) or per-tool deny entries (`keep_tools` mode); local MCP servers (including `ctx`) are never denied.
+- `Profile::keeps_tool()` / `filters_tool()` — tool-level filtering when `keep_tools` is non-empty; proxy MITM strips individual `tools[]` entries via the same methods.
+- `ctx profile migrate-tools` expands legacy server-prefix `keep` into `keep_tools` from SQLite invocation counts.
+- `claude_settings::merge_profile_filter()` applies mode-specific merge; `strip_ctx_deny_rules()` on uninstall.
+- CLI: `ctx filter mode|expand|clear-expansion`.
+- Session expansion (`session_expansion` in config): temporarily remove deny rules for a named server during soft mode.
+
+---
+
 ## Request pipeline (native hooks)
 
 On each `UserPromptSubmit`, `hook::user_prompt_submit()`:
 
 1. Resolve A/B assignments (`ab.rs`) when `[ab_test]` is present in `config.toml`.
-2. Auto-profile (if enabled and profile gate is treatment).
+2. Auto-profile (if enabled and profile gate is treatment): similarity vote over past sessions (hook trace profiles preferred), then cwd/path fallback on visible profiles only.
 3. Budget hard-stop on huge prompts.
 4. Build `additionalContext`: static `system_prefix.md`, coaching, `adaptive_prefix.md` (model-budget capped).
 5. Insert `hook_traces` with gate flags, savings metrics, and optional `ab_group` string.
 6. Fire-and-forget `POST /api/trigger-ingest` so the dashboard refreshes JSONL.
 
-MCP tool stripping happens outside the hook via `allowedMcpServers` when the profile gate is in treatment. Control profile requests apply the `all` allowlist and record `P:C` in `ab_group`.
+MCP tool stripping happens outside the hook via **`permissions.deny`** (soft mode) or **`allowedMcpServers`** (strict mode) when the profile gate is in treatment. In soft mode, `hook_sync_profile()` rewrites deny rules on auto-profile without touching `allowedMcpServers`. Control profile requests skip filtering and record `P:C` in `ab_group`.
 
 ---
 
@@ -190,7 +211,16 @@ Initial extraction from a monolithic file (one-time or after a deliberate merge-
 | --- | --- | --- |
 | Dashboard | `:8789` | UI + APIs |
 | Ingest | every 300s | JSONL → SQLite, enrich `hook_traces`, rebuild adaptive prefix |
-| Proxy | `:8788` | Optional MITM |
+| Proxy | `:8788` | Optional MITM (`ctx proxy install --mode …`; default `proxy_mode = off`) |
+
+### Proxy modes
+
+| Mode | MITM env | Hooks / deny | Proxy gates |
+| --- | --- | --- | --- |
+| `off` | No | Yes (default) | N/A |
+| `complement` | Yes | Yes | Filter tools + analytics only |
+| `filter_only` | Yes | Optional | Filter tools + analytics only |
+| `standalone` | Yes | Stripped on install | Full pipeline (filter, inject, coach, budget) |
 
 ---
 
@@ -206,7 +236,7 @@ stdio JSON-RPC. Tools read `ctx.db` and config. Registered in Claude/Cursor/Desk
 cargo test
 ```
 
-Integration tests isolate `CTX_HOME`. Hook and A/B: `tests/ab_hook.rs`, `tests/journey_ab_experiment.rs`, `tests/ab_api.rs`. Power features: `tests/journey_mode_switch.rs`, `journey_subagent_costs.rs`, `journey_socket.rs`, `journey_self_tuning.rs`. Simulate: `journey_simulate.rs`. Dashboard stitch: `tests/dashboard_stitch_test.rs`.
+Integration tests isolate `CTX_HOME`. Hook and A/B: `tests/ab_hook.rs`, `tests/journey_ab_experiment.rs`, `tests/ab_api.rs`. Soft filter: `tests/permissions_filter_test.rs`. Power features: `tests/journey_mode_switch.rs`, `journey_subagent_costs.rs`, `journey_socket.rs`, `journey_self_tuning.rs`. Simulate: `journey_simulate.rs`. Dashboard stitch: `tests/dashboard_stitch_test.rs`.
 
 ---
 
@@ -215,6 +245,8 @@ Integration tests isolate `CTX_HOME`. Hook and A/B: `tests/ab_hook.rs`, `tests/j
 | Path | Purpose |
 | --- | --- |
 | `src/hook.rs` | Native hook |
+| `src/filter_control.rs` | Filter mode CLI + hook profile sync |
+| `src/claude_settings.rs` | Deny/allowlist merge, hooks wiring |
 | `src/ab.rs` | A/B coin flip + group formatting |
 | `src/modes.rs` | Context mode switch/list/save |
 | `src/tuning.rs` | Self-tuning engine + experiment CLI |

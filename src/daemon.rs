@@ -35,6 +35,27 @@ fn cargo_bin_display() -> String {
         .unwrap_or_default()
 }
 
+/// Preview line for setup when proxy is not installed by default.
+pub fn dashboard_ingest_summary(dashboard_port: u16, periodic_ingest: bool) -> String {
+    let ingest_tail = if periodic_ingest {
+        ", periodic ingest (every 5 min)"
+    } else {
+        ""
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        format!(
+            "Install launchd/systemd: ctx dashboard (:{dashboard_port}){ingest_tail}"
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        format!(
+            "Start ctx dashboard (:{dashboard_port}) in the background{ingest_tail}"
+        )
+    }
+}
+
 /// Human-readable description for `ctx setup` preview lines.
 pub fn background_services_summary(port: u16, upstream: &str, dashboard_port: u16, periodic_ingest: bool) -> String {
     let ingest_tail = if periodic_ingest {
@@ -132,6 +153,15 @@ pub fn bootstrap_proxy(port: u16, upstream: &str) -> Result<()> {
         try_spawn_proxy(port, upstream)?;
         Ok(())
     }
+}
+
+pub fn stop_proxy_service() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    return macos::unload_proxy_plist();
+    #[cfg(target_os = "linux")]
+    return linux::stop_proxy_unit();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    Ok(())
 }
 
 pub fn install_dashboard(port: u16) -> Result<()> {
@@ -278,6 +308,7 @@ mod macos {
     pub fn write_proxy_plist(port: u16, upstream: &str) -> Result<()> {
         let bin = ctx_binary();
         let log_dir = crate::config::ctx_dir();
+        let ctx_home = log_dir.display().to_string();
         let stdout_log = log_dir.join("proxy.stdout.log");
         let stderr_log = log_dir.join("proxy.stderr.log");
         let ca_cert = crate::ca::canonical_ca_cert_path_string()?
@@ -313,6 +344,8 @@ mod macos {
     <dict>
         <key>HOME</key>
         <string>{home}</string>
+        <key>CTX_HOME</key>
+        <string>{ctx_home}</string>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cargo_bin}</string>
         <key>NODE_EXTRA_CA_CERTS</key>
@@ -464,6 +497,20 @@ mod macos {
         bootout_bootstrap(PROXY_LABEL, "proxy")
     }
 
+    pub fn unload_proxy_plist() -> Result<()> {
+        let p = plist_path(PROXY_LABEL);
+        if !p.exists() {
+            return Ok(());
+        }
+        let domain = format!("gui/{}", uid());
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &domain, p.to_str().unwrap_or("")])
+            .status();
+        let _ = std::fs::remove_file(&p);
+        println!("  Stopped {PROXY_LABEL} launchd agent");
+        Ok(())
+    }
+
     pub fn load_dashboard_plist() -> Result<()> {
         let p = plist_path(DASHBOARD_LABEL);
         let domain = format!("gui/{}", uid());
@@ -550,6 +597,7 @@ mod linux {
         let bin = ctx_binary();
         let ca = crate::ca::canonical_ca_cert_path_string().unwrap_or_default();
         let home = home_display();
+        let ctx_home = crate::config::ctx_dir().display().to_string();
         let path = systemd_user_dir()
             .ok_or_else(|| anyhow::anyhow!("no XDG config dir for systemd user units"))?
             .join("ctx-proxy.service");
@@ -564,6 +612,7 @@ ExecStart={bin} proxy start --port {port} --upstream {upstream}
 Restart=always
 WorkingDirectory={home}
 Environment=HOME={home}
+Environment=CTX_HOME={ctx_home}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cbin}
 Environment=NODE_EXTRA_CA_CERTS={ca}
 
@@ -653,6 +702,20 @@ WantedBy=timers.target
                 anyhow::bail!("systemctl --user enable --now {u} failed");
             }
             println!("  systemd --user: enabled {u}");
+        }
+        Ok(())
+    }
+
+    pub fn stop_proxy_unit() -> Result<()> {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "--now", "ctx-proxy.service"])
+            .status();
+        if let Some(dir) = systemd_user_dir() {
+            let p = dir.join("ctx-proxy.service");
+            if p.exists() {
+                let _ = std::fs::remove_file(&p);
+                println!("Removed {}", p.display());
+            }
         }
         Ok(())
     }

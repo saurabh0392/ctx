@@ -1,0 +1,128 @@
+<article id="savings-story" class="savings-story">
+  <header class="story-page-head">
+    <div>
+      <h1 class="page-title" style="margin-bottom:4px">Savings</h1>
+      <div class="story-kicker" id="story-kicker">Loading…</div>
+    </div>
+    <div class="story-confidence" id="story-confidence"></div>
+  </header>
+
+  <div class="story-hero card" id="story-hero" hidden>
+    <div class="story-hero-grid">
+      <div class="story-hero-stat">
+        <div class="story-hero-label">Observed spend</div>
+        <div class="story-hero-val" id="story-hero-spend">n/a</div>
+        <div class="story-hero-sub" id="story-hero-spend-sub">This month</div>
+      </div>
+      <div class="story-hero-stat">
+        <div class="story-hero-label">Sessions</div>
+        <div class="story-hero-val" id="story-hero-sessions">n/a</div>
+        <div class="story-hero-sub" id="story-hero-sessions-sub">Tracked by ctx</div>
+      </div>
+      <div class="story-hero-stat">
+        <div class="story-hero-label">Active profile</div>
+        <div class="story-hero-val story-hero-val-sm" id="story-hero-profile">n/a</div>
+        <div class="story-hero-sub" id="story-hero-profile-sub">Tool filter</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chapter 1: baseline -->
+  <section class="story-chapter" id="story-chapter-1">
+    <div class="story-chapter-head">
+      <span class="story-chapter-num">1</span>
+      <div>
+        <h2 class="story-chapter-title">Where you stand</h2>
+        <p class="story-chapter-sub" id="story-ch1-sub">Every improvement story starts with an honest baseline.</p>
+      </div>
+    </div>
+    <div class="story-chapter-grid">
+      <div class="story-panel card card-sm">
+        <div class="story-body" id="story-act-1-body"></div>
+        <div class="story-meters" id="story-meters"></div>
+      </div>
+      <div class="story-panel card">
+        <div class="section-head" id="timeline-chart-title">Spend over time</div>
+        <div class="section-sub" id="timeline-chart-sub">Your trajectory since ctx started tracking</div>
+        <div class="story-chart-meta">
+          <span style="display:inline-block;width:20px;height:2px;background:var(--primary);border-radius:2px"></span>
+          <span id="timeline-chart-legend">Cumulative spend</span>
+        </div>
+        <div class="chart-wrap"><canvas id="timeline-chart"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Chapter 2: mechanism -->
+  <section class="story-chapter" id="story-chapter-2">
+    <div class="story-chapter-head">
+      <span class="story-chapter-num">2</span>
+      <div>
+        <h2 class="story-chapter-title">What ctx is doing</h2>
+        <p class="story-chapter-sub" id="story-ch2-sub">Ctx trims tool noise so each session stays focused. Here's the evidence.</p>
+      </div>
+    </div>
+    <div class="story-chapter-grid story-chapter-2-grid">
+      <div class="story-panel card card-sm">
+        <div class="story-body" id="story-act-2-body"></div>
+        <div id="story-act-2-stats" class="story-mechanism-stats"></div>
+        <div class="story-links" id="story-act-2-links"></div>
+      </div>
+      <div id="story-act-2-persona" class="persona-card" hidden></div>
+    </div>
+    <div id="access-friction-panel" class="card card-sm story-panel-wide" style="margin-top:16px;display:none">
+      <div class="section-head" style="margin-bottom:8px">Tool recovery</div>
+      <div class="section-sub" style="margin-bottom:12px">Ctx hid tools that similar sessions needed. Keep them when the pattern repeats.</div>
+      <div id="access-friction-body"></div>
+    </div>
+    <div class="insights-split story-insights-split">
+      <div class="card">
+        <div class="section-head">By project folder</div>
+        <div class="section-sub">Where your work lives. Ctx groups spend by working directory.</div>
+        <div id="projects-body"><div class="empty" style="padding:16px 0">Loading…</div></div>
+      </div>
+      <div class="card">
+        <div class="section-head">MCP tool traffic</div>
+        <div class="section-sub">Tools sent vs used. The gap ctx is closing on each request.</div>
+        <div id="tool-usage-body"><div class="empty" style="padding:16px 0">Loading…</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Chapter 3: action -->
+  <section class="story-chapter story-chapter-accent" id="story-chapter-3">
+    <div class="story-chapter-head">
+      <span class="story-chapter-num">3</span>
+      <div>
+        <h2 class="story-chapter-title">What to try next</h2>
+        <p class="story-chapter-sub" id="story-ch3-sub">One small change compounds across sessions.</p>
+      </div>
+    </div>
+    <div class="story-chapter-grid">
+      <div class="story-panel card card-sm">
+        <div class="story-body" id="story-act-3-body"></div>
+      </div>
+      <div class="story-panel card card-sm">
+        <div class="section-head" style="margin-bottom:12px">Recent sessions</div>
+        <div class="section-sub" style="margin-bottom:12px">The raw material. Each row is a chance to tighten how you work with Claude.</div>
+        <div id="sessions-compact"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Chapter 4: arc -->
+  <section class="story-chapter" id="story-chapter-4">
+    <div class="story-chapter-head">
+      <span class="story-chapter-num">4</span>
+      <div>
+        <h2 class="story-chapter-title">How you're improving</h2>
+        <p class="story-chapter-sub" id="story-ch4-sub">Profiles, auto-switches, and estimated savings over time.</p>
+      </div>
+    </div>
+    <div class="card story-panel-wide">
+      <div id="profile-analytics-body"><div class="empty">Loading…</div></div>
+    </div>
+  </section>
+
+  <p class="story-data-note" id="story-data-note"></p>
+</article>

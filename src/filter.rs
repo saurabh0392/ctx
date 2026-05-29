@@ -7,9 +7,7 @@ fn active_profile() -> Profile {
     load_all().remove(slug).unwrap_or_else(|| Profile {
         display: "All".into(),
         description: String::new(),
-        keep: vec![],
-        path_patterns: vec![],
-        triggers: vec![],
+        ..Default::default()
     })
 }
 
@@ -51,7 +49,7 @@ pub fn filter_with_trace(body: &[u8], profile: &Profile) -> FilterResult {
         return FilterResult { body: body.to_vec(), tools_removed: 0, removed_servers: vec![], kept_servers: vec![] };
     };
 
-    if profile.keep.is_empty() {
+    if !profile.filtering_enabled() {
         return FilterResult { body: body.to_vec(), tools_removed: 0, removed_servers: vec![], kept_servers: vec![] };
     }
 
@@ -101,8 +99,16 @@ mod tests {
             display: "test".into(),
             description: String::new(),
             keep: keep.into_iter().map(|s| s.to_string()).collect(),
-            path_patterns: vec![],
-            triggers: vec![],
+            ..Default::default()
+        }
+    }
+
+    fn make_tool_profile(tools: Vec<&str>) -> Profile {
+        Profile {
+            display: "test".into(),
+            description: String::new(),
+            keep_tools: tools.into_iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 
@@ -202,5 +208,29 @@ mod tests {
         let body = body_with_tools(&["mcp__claude_ai_Slack__send", "mcp__claude_ai_Figma__get"]);
         let result = filter_with_trace(&body, &profile);
         assert_eq!(result.tools_removed, 0);
+    }
+
+    #[test]
+    fn filter_keep_tools_strips_only_unlisted_tools() {
+        let profile = make_tool_profile(vec![
+            "mcp__claude_ai_Atlassian__jira_get_issue",
+            "mcp__claude_ai_Slack__send_message",
+        ]);
+        let body = body_with_tools(&[
+            "mcp__claude_ai_Atlassian__jira_get_issue",
+            "mcp__claude_ai_Atlassian__jira_search",
+            "mcp__claude_ai_Slack__send_message",
+        ]);
+        let result = filter_with_trace(&body, &profile);
+        assert_eq!(result.tools_removed, 1);
+        let parsed: serde_json::Value = serde_json::from_slice(&result.body).unwrap();
+        let names: Vec<_> = parsed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"mcp__claude_ai_Atlassian__jira_search"));
+        assert!(names.contains(&"mcp__claude_ai_Atlassian__jira_get_issue"));
     }
 }

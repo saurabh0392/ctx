@@ -117,6 +117,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: ExperimentCommand,
     },
+    /// MCP filter mode (soft / strict / off) and session expansion
+    Filter {
+        #[command(subcommand)]
+        command: FilterCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -127,6 +132,16 @@ pub enum ModeCommand {
     Show { name: String },
     /// Save current settings as a named mode
     Save { name: String },
+}
+
+#[derive(Subcommand)]
+pub enum FilterCommand {
+    /// Set filter mode: soft (default), strict, or off
+    Mode { mode: String },
+    /// Temporarily un-deny an MCP server or tool for this session (soft mode)
+    Expand { target: String },
+    /// Clear all session expansion entries
+    ClearExpansion,
 }
 
 #[derive(Subcommand)]
@@ -145,11 +160,13 @@ pub enum ProfileCommand {
     List,
     /// Show profile details
     Show { name: String },
-    /// Add a custom profile (--keep mcp__claude_ai_Foo__,mcp__claude_ai_Bar__)
+    /// Add a custom profile (--keep server prefixes and/or --keep-tool tool names)
     Add {
         name: String,
-        #[arg(long, value_delimiter = ',', required = true)]
-        keep: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        keep: Option<Vec<String>>,
+        #[arg(long = "keep-tool", value_delimiter = ',')]
+        keep_tool: Option<Vec<String>>,
     },
     /// Remove a custom profile
     Remove { name: String },
@@ -160,6 +177,13 @@ pub enum ProfileCommand {
     },
     /// Auto-generate profiles from your actual MCP server stack (no history needed)
     Generate,
+    /// Expand server-prefix keep lists into per-tool keep_tools from usage history
+    MigrateTools {
+        /// Profile slug (default: all profiles in profiles.toml)
+        name: Option<String>,
+        #[arg(long, help = "Re-migrate profiles that already use keep_tools")]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -177,14 +201,17 @@ pub enum ProxyCommand {
         #[arg(long, default_value = "https://api.anthropic.com")]
         upstream: String,
     },
-    /// Install: update ~/.claude/settings.json (allowedMcpServers + hooks; no NODE_OPTIONS filter)
+    /// Install MITM proxy: wire HTTPS_PROXY + CA trust in ~/.claude/settings.json
     Install {
+        /// complement | standalone | filter-only
+        #[arg(long, value_name = "MODE")]
+        mode: String,
         #[arg(long, default_value = "8788")]
         port: u16,
         #[arg(long, default_value = "https://api.anthropic.com")]
         upstream: String,
     },
-    /// Uninstall: remove ctx wiring from settings.json (NODE_OPTIONS, optional ANTHROPIC_BASE_URL restore) and strip legacy ctx hook lines
+    /// Uninstall: remove ctx MITM env from settings.json and stop proxy service
     Uninstall,
     /// Show proxy configuration
     Status,

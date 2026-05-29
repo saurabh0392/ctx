@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
 use crate::ca::{self, CertAuthority};
-use crate::{analytics, config::Config};
+use crate::{analytics, config::{Config, ProxyMode}};
 
 pub struct ProxyState {
     pub client: reqwest::Client,
@@ -47,6 +47,7 @@ pub async fn start(port: u16, upstream: &str) -> Result<()> {
     let active = config.active_profile.as_deref().unwrap_or("all");
 
     println!("{} ctx proxy on :{port}", "->".cyan().bold());
+    println!("  Mode:     {}", config.proxy_mode.as_str());
     println!("  Upstream: {upstream}");
     println!("  MITM:     CONNECT {}:443 (HTTPS_PROXY mode)", ca::ANTHROPIC_API_HOST);
     println!("  Profile:  {active}");
@@ -209,7 +210,7 @@ async fn mitm_http_forward_inner(
     let has_encoding = parts.headers.contains_key(http::header::CONTENT_ENCODING);
 
     let filtered_bytes = if is_messages && !has_encoding {
-        run_gates(&body_bytes)
+        run_gates_for_mode(&body_bytes)
     } else {
         body_bytes.to_vec()
     };
@@ -233,22 +234,10 @@ async fn mitm_http_forward_inner(
     }
     req_builder = req_builder
         .header("content-length", filtered_bytes.len().to_string())
-        .body(filtered_bytes);
+        .body(filtered_bytes.clone());
 
     let upstream_resp = req_builder.send().await?;
-    let status = HyperStatusCode::from_u16(upstream_resp.status().as_u16())
-        .unwrap_or(HyperStatusCode::INTERNAL_SERVER_ERROR);
-
-    let mut response = HyperResponse::builder().status(status);
-    for (k, v) in upstream_resp.headers() {
-        let n = k.as_str().to_lowercase();
-        if n == "transfer-encoding" || n == "connection" || n == "keep-alive" {
-            continue;
-        }
-        response = response.header(k, v);
-    }
-    let full_body = upstream_resp.bytes().await?;
-    Ok(response.body(Body::from(full_body)).unwrap())
+    build_hyper_response(upstream_resp, &filtered_bytes, path).await
 }
 
 async fn legacy_hyper_forward(
@@ -262,7 +251,7 @@ async fn legacy_hyper_forward(
     let has_encoding = parts.headers.contains_key(http::header::CONTENT_ENCODING);
 
     let filtered_bytes = if is_messages && !has_encoding {
-        run_gates(&body_bytes)
+        run_gates_for_mode(&body_bytes)
     } else {
         body_bytes.to_vec()
     };
@@ -288,22 +277,10 @@ async fn legacy_hyper_forward(
     }
     req_builder = req_builder
         .header("content-length", filtered_bytes.len().to_string())
-        .body(filtered_bytes);
+        .body(filtered_bytes.clone());
 
     let upstream_resp = req_builder.send().await?;
-    let status = HyperStatusCode::from_u16(upstream_resp.status().as_u16())
-        .unwrap_or(HyperStatusCode::INTERNAL_SERVER_ERROR);
-
-    let mut response = HyperResponse::builder().status(status);
-    for (k, v) in upstream_resp.headers() {
-        let n = k.as_str().to_lowercase();
-        if n == "transfer-encoding" || n == "connection" || n == "keep-alive" {
-            continue;
-        }
-        response = response.header(k, v);
-    }
-    let full_body = upstream_resp.bytes().await?;
-    Ok(response.body(Body::from(full_body)).unwrap())
+    build_hyper_response(upstream_resp, &filtered_bytes, path).await
 }
 
 pub async fn proxy_handler(
@@ -320,7 +297,7 @@ pub async fn proxy_handler(
     let has_encoding = parts.headers.contains_key("content-encoding");
 
     let filtered_bytes = if is_messages && !has_encoding {
-        run_gates(&body_bytes)
+        run_gates_for_mode(&body_bytes)
     } else {
         body_bytes.to_vec()
     };
@@ -341,15 +318,24 @@ pub async fn proxy_handler(
 
     req_builder = req_builder
         .header("content-length", filtered_bytes.len().to_string())
-        .body(filtered_bytes);
+        .body(filtered_bytes.clone());
 
     let upstream_resp = req_builder.send().await.map_err(|e| {
         eprintln!("[ctx] upstream error: {e}");
         StatusCode::BAD_GATEWAY
     })?;
 
-    let status = StatusCode::from_u16(upstream_resp.status().as_u16())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status_code = upstream_resp.status().as_u16();
+    let streaming = is_streaming_request(&filtered_bytes)
+        || response_is_event_stream(upstream_resp.headers());
+    log_proxy_response(
+        parts.uri.path(),
+        streaming,
+        status_code,
+        upstream_resp.headers().get("request-id"),
+    );
+
+    let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     let mut response = Response::builder().status(status);
     for (k, v) in upstream_resp.headers() {
@@ -360,8 +346,143 @@ pub async fn proxy_handler(
         response = response.header(k, v);
     }
 
-    let body = Body::from_stream(upstream_resp.bytes_stream());
+    let body = if streaming {
+        Body::from_stream(upstream_resp.bytes_stream())
+    } else {
+        Body::from(upstream_resp.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?)
+    };
     Ok(response.body(body).unwrap())
+}
+
+fn is_streaming_request(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    value.get("stream").and_then(|v| v.as_bool()) == Some(true)
+}
+
+fn response_is_event_stream(headers: &reqwest::header::HeaderMap) -> bool {
+    headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.starts_with("text/event-stream"))
+        .unwrap_or(false)
+}
+
+fn log_proxy_response(path: &str, stream: bool, status: u16, request_id: Option<&reqwest::header::HeaderValue>) {
+    let rid = request_id
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
+    let line = format!(
+        "proxy path={path} stream={stream} status={status} request-id={rid}\n"
+    );
+    eprintln!("[ctx] {line}");
+    let log_path = crate::config::ctx_dir().join("proxy.stderr.log");
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+}
+
+async fn build_hyper_response(
+    upstream_resp: reqwest::Response,
+    request_body: &[u8],
+    path: &str,
+) -> Result<HyperResponse<Body>, anyhow::Error> {
+    let status_code = upstream_resp.status().as_u16();
+    let status = HyperStatusCode::from_u16(status_code)
+        .unwrap_or(HyperStatusCode::INTERNAL_SERVER_ERROR);
+    let stream_req = is_streaming_request(request_body);
+    let stream_resp = response_is_event_stream(upstream_resp.headers());
+    let streaming = stream_req || stream_resp;
+
+    log_proxy_response(
+        path,
+        streaming,
+        status_code,
+        upstream_resp.headers().get("request-id"),
+    );
+
+    let mut response = HyperResponse::builder().status(status);
+    for (k, v) in upstream_resp.headers() {
+        let n = k.as_str().to_lowercase();
+        if n == "transfer-encoding" || n == "connection" || n == "keep-alive" {
+            continue;
+        }
+        response = response.header(k, v);
+    }
+
+    if streaming {
+        Ok(response
+            .body(Body::from_stream(upstream_resp.bytes_stream()))
+            .unwrap())
+    } else {
+        let full_body = upstream_resp.bytes().await?;
+        Ok(response.body(Body::from(full_body)).unwrap())
+    }
+}
+
+/// Mode-aware gate pipeline for MITM / reverse proxy paths.
+pub fn run_gates_for_mode(body: &[u8]) -> Vec<u8> {
+    let original = body.to_vec();
+    let mode = Config::load().proxy_mode;
+    let result = std::panic::catch_unwind(|| match mode {
+        ProxyMode::Off => Ok(original.clone()),
+        ProxyMode::Complement | ProxyMode::FilterOnly => run_gates_filter_only(body),
+        ProxyMode::Standalone => run_gates_inner(body),
+    });
+    match result {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
+            eprintln!("[ctx] gate pipeline error (fail-open): {e}");
+            original
+        }
+        Err(_) => {
+            eprintln!("[ctx] gate pipeline panic (fail-open): forwarding original body");
+            original
+        }
+    }
+}
+
+fn run_gates_filter_only(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let config = Config::load();
+    let active_slug = config.active_profile.as_deref().unwrap_or("all").to_string();
+    let working_directory = working_dir_from_body(body);
+
+    let bytes_before = body.len();
+    let filter_result = crate::filter::filter_request(body);
+    let removed = filter_result.tools_removed;
+    let removed_servers = filter_result.removed_servers;
+    let kept_servers = filter_result.kept_servers;
+    let bytes = filter_result.body;
+
+    let tokens_saved = if removed > 0 {
+        let saved = bytes_before.saturating_sub(bytes.len()) / 4;
+        eprintln!("[ctx] -{removed} tools (~{saved} tokens)  profile={active_slug} (proxy filter-only)");
+        saved
+    } else {
+        0
+    };
+
+    if removed > 0 {
+        analytics::record(removed, tokens_saved, &active_slug, analytics::TraceInfo {
+            removed_servers,
+            kept_servers,
+            auto_selected: false,
+            auto_trigger: None,
+            inject_fired: false,
+            inject_chars: 0,
+            adaptive_chars: 0,
+            budget_blocked: false,
+            coach_kind: None,
+            budget_fired: false,
+            behavior_kind: None,
+            working_directory,
+        });
+    }
+
+    Ok(bytes)
 }
 
 /// Run all gate pipeline stages against `body`. Returns the (possibly modified) body bytes.
@@ -421,13 +542,16 @@ fn run_gates_inner(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     };
 
     let mut inject_fired = false;
+    let mut inject_chars = 0usize;
     let mut coach_kind: Option<String> = None;
     let mut budget_fired = false;
     let mut behavior_kind: Option<String> = None;
 
     if config.inject_enabled {
         if let Some(prefix) = crate::inject::load_prefix() {
-            bytes = crate::inject::inject_system(&bytes, &prefix);
+            let trimmed = prefix.trim();
+            inject_chars = trimmed.chars().count();
+            bytes = crate::inject::inject_system(&bytes, trimmed);
             inject_fired = true;
         }
     }
@@ -468,6 +592,9 @@ fn run_gates_inner(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             auto_selected,
             auto_trigger,
             inject_fired,
+            inject_chars,
+            adaptive_chars: 0,
+            budget_blocked: false,
             coach_kind,
             budget_fired,
             behavior_kind,
@@ -494,6 +621,31 @@ fn working_dir_from_body(body: &[u8]) -> String {
     crate::profiles::extract_working_directory_from_system(&system_text).unwrap_or_default()
 }
 
+fn first_user_text_from_body(value: &serde_json::Value) -> String {
+    let Some(messages) = value.get("messages").and_then(|m| m.as_array()) else {
+        return String::new();
+    };
+    for msg in messages {
+        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+            return text.to_string();
+        }
+        if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+            let text: String = blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
+    String::new()
+}
+
 fn auto_profile_info(body: &[u8], active_slug: &str) -> Option<(String, String)> {
     let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
 
@@ -504,10 +656,14 @@ fn auto_profile_info(body: &[u8], active_slug: &str) -> Option<(String, String)>
             .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
             .collect::<Vec<_>>()
             .join(" "),
-        _ => return None,
+        _ => String::new(),
     };
 
-    if let Some((slug, trigger)) = crate::profiles::auto_select(&system_text, active_slug) {
+    let cwd = crate::profiles::extract_working_directory_from_system(&system_text)
+        .unwrap_or_default();
+    let prompt = first_user_text_from_body(&value);
+
+    if let Some((slug, trigger)) = crate::profiles::auto_select(&cwd, &prompt, active_slug) {
         eprintln!("[ctx] auto-profile: {slug} (matched \"{trigger}\")");
         return Some((slug, trigger));
     }
@@ -545,13 +701,12 @@ fn is_ctx_forward_proxy_url(url: &str, port: u16) -> bool {
     url == proxy_url_for_port(port)
 }
 
-pub fn install(port: u16, upstream: &str) -> Result<()> {
-    if !is_proxy_listening(port) {
-        eprintln!(
-            "{} ctx proxy is not listening on :{port} (optional for native allowlist installs)",
-            "!".yellow()
-        );
+pub fn install(port: u16, upstream: &str, mode: ProxyMode) -> Result<()> {
+    if mode == ProxyMode::Off {
+        anyhow::bail!("Choose a MITM mode: --mode complement, standalone, or filter-only");
     }
+
+    ca::ensure_ca()?;
 
     crate::filter_hook::write_filter_js()?;
     crate::filter_hook::sync_filter_config_from_active_config()?;
@@ -570,13 +725,12 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
 
     let mut env = env_object(&settings);
     let proxy_http = proxy_url_for_port(port);
+    let ca_path = ca::canonical_ca_cert_path_string()?;
 
     let prev_anthropic = env
         .get("ANTHROPIC_BASE_URL")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-
-    let ca_path_opt = ca::canonical_ca_cert_path_string().ok();
 
     let mut original_base = prev_anthropic
         .clone()
@@ -590,30 +744,25 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
         }
     }
 
+    // Deprecate reverse-proxy mode (breaks MCP Tool Search).
     if let Some(ref u) = prev_anthropic {
         if is_ctx_reverse_base_url(u, port) {
             env.remove("ANTHROPIC_BASE_URL");
         }
     }
 
-    for key in [
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "CLAUDE_CODE_HTTPS_PROXY",
-        "CLAUDE_CODE_HTTP_PROXY",
-    ] {
-        if let Some(v) = env.get(key).and_then(|x| x.as_str()) {
-            if is_ctx_forward_proxy_url(v, port) {
-                env.remove(key);
-            }
-        }
-    }
-
-    if let Some(ref ca_path) = ca_path_opt {
-        if env.get("NODE_EXTRA_CA_CERTS").and_then(|v| v.as_str()) == Some(ca_path.as_str()) {
-            env.remove("NODE_EXTRA_CA_CERTS");
-        }
-    }
+    env.insert(
+        "CLAUDE_CODE_HTTPS_PROXY".to_string(),
+        serde_json::Value::String(proxy_http.clone()),
+    );
+    env.insert(
+        "HTTPS_PROXY".to_string(),
+        serde_json::Value::String(proxy_http.clone()),
+    );
+    env.insert(
+        "NODE_EXTRA_CA_CERTS".to_string(),
+        serde_json::Value::String(ca_path.clone()),
+    );
 
     if let Some(curr) = env.get("NODE_OPTIONS").and_then(|v| v.as_str()) {
         match crate::filter_hook::strip_ctx_require_from_node_options(Some(curr)) {
@@ -631,7 +780,22 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
     let cfg_snapshot = Config::load();
     let active = cfg_snapshot.active_profile.as_deref().unwrap_or("all");
     let dash = cfg_snapshot.dashboard_port.unwrap_or(8789);
-    crate::claude_settings::apply_native_ctx_to_settings_doc(&mut settings, active, dash)?;
+
+    match mode {
+        ProxyMode::Complement | ProxyMode::FilterOnly => {
+            crate::claude_settings::apply_native_ctx_to_settings_doc(&mut settings, active, dash)?;
+        }
+        ProxyMode::Standalone => {
+            crate::claude_settings::strip_ctx_native_hooks_from_settings(&mut settings);
+            crate::claude_settings::strip_ctx_deny_rules(&mut settings);
+            crate::claude_settings::strip_allowed_mcp_servers(&mut settings);
+            eprintln!(
+                "{} standalone mode: removed ctx hooks and deny rules from settings.json",
+                "i".yellow()
+            );
+        }
+        ProxyMode::Off => unreachable!(),
+    }
 
     crate::config::write_json_atomic(&settings_path, &settings)?;
 
@@ -639,20 +803,47 @@ pub fn install(port: u16, upstream: &str) -> Result<()> {
     config.proxy_port = Some(port);
     config.proxy_upstream = Some(upstream.to_string());
     config.original_base_url = Some(original_base);
-    config.proxy_install_mode = Some("native_hooks".to_string());
+    config.proxy_mode = mode;
+    config.proxy_install_mode = None;
     config.save()?;
+
+    if let Err(e) = crate::daemon::install_proxy(port, upstream) {
+        eprintln!("{} launchd/systemd proxy install: {e}", "!".yellow());
+        eprintln!("  Start manually: ctx proxy start --port {port}");
+    } else if let Err(e) = crate::daemon::bootstrap_proxy(port, upstream) {
+        eprintln!("{} proxy service bootstrap: {e}", "!".yellow());
+        eprintln!("  Start manually: ctx proxy start --port {port}");
+    }
+
+    if !is_proxy_listening(port) {
+        eprintln!(
+            "{} ctx proxy is not listening on :{port} yet — start it or wait for launchd",
+            "!".yellow()
+        );
+    }
 
     let host = crate::host::detect_primary_host();
     println!(
-        "{} Claude Code wired: allowedMcpServers + hooks (ctx v2 native path)",
-        "✓".green().bold()
+        "{} MITM proxy installed ({})",
+        "✓".green().bold(),
+        mode.as_str()
     );
-    println!("  Removed ctx filter.js preload from NODE_OPTIONS when present");
-    println!("  Dashboard hook ingest: http://127.0.0.1:{dash}/api/hook/event");
-    println!("  ctx proxy (optional): {proxy_http} -> {upstream}");
+    println!("  CLAUDE_CODE_HTTPS_PROXY={proxy_http}");
+    println!("  HTTPS_PROXY={proxy_http}");
+    println!("  NODE_EXTRA_CA_CERTS={ca_path}");
+    println!("  Upstream: {upstream}");
+    if matches!(mode, ProxyMode::Complement | ProxyMode::FilterOnly) {
+        println!(
+            "  Hooks + {} filter remain active (proxy strips tools in HTTP body only)",
+            cfg_snapshot.filter_mode.as_str()
+        );
+    }
     println!("\nNext steps:");
     println!("  1. {}", host.reload_instruction());
-    println!("  2. Run {} after changing profiles", "`ctx use <profile>`".bold());
+    println!("  2. Run {} to verify wiring", "`ctx proxy status`".bold());
+    println!(
+        "  3. Test streaming: curl -x {proxy_http} https://api.anthropic.com/v1/messages ..."
+    );
 
     Ok(())
 }
@@ -666,71 +857,66 @@ pub fn uninstall() -> Result<()> {
         .unwrap_or("https://api.anthropic.com");
 
     let settings_path = crate::config::claude_settings_path();
-    if !settings_path.exists() {
-        let mut cfg = Config::load();
-        cfg.proxy_install_mode = None;
-        let _ = cfg.save();
-        return Ok(());
-    }
-    let content = std::fs::read_to_string(&settings_path)?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-    let mut env = env_object(&settings);
+    if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)?;
+        let mut settings: serde_json::Value = serde_json::from_str(&content)?;
+        let mut env = env_object(&settings);
 
-    let still_points_at_ctx_reverse = env
-        .get("ANTHROPIC_BASE_URL")
-        .and_then(|v| v.as_str())
-        .map(|u| is_ctx_reverse_base_url(u, port))
-        .unwrap_or(false);
+        let still_points_at_ctx_reverse = env
+            .get("ANTHROPIC_BASE_URL")
+            .and_then(|v| v.as_str())
+            .map(|u| is_ctx_reverse_base_url(u, port))
+            .unwrap_or(false);
 
-    let our_ca = ca::canonical_ca_cert_path_string().ok();
+        let our_ca = ca::canonical_ca_cert_path_string().ok();
 
-    for key in ["HTTPS_PROXY", "HTTP_PROXY", "CLAUDE_CODE_HTTPS_PROXY", "CLAUDE_CODE_HTTP_PROXY"] {
-        if let Some(v) = env.get(key).and_then(|x| x.as_str()) {
-            if is_ctx_forward_proxy_url(v, port) {
-                env.remove(key);
+        for key in [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "CLAUDE_CODE_HTTPS_PROXY",
+            "CLAUDE_CODE_HTTP_PROXY",
+        ] {
+            if let Some(v) = env.get(key).and_then(|x| x.as_str()) {
+                if is_ctx_forward_proxy_url(v, port) {
+                    env.remove(key);
+                }
             }
         }
-    }
 
-    if let Some(ref ca_path) = our_ca {
-        if env.get("NODE_EXTRA_CA_CERTS").and_then(|v| v.as_str()) == Some(ca_path.as_str()) {
-            env.remove("NODE_EXTRA_CA_CERTS");
-        }
-    }
-
-    if let Some(curr) = env.get("NODE_OPTIONS").and_then(|v| v.as_str()) {
-        match crate::filter_hook::strip_ctx_require_from_node_options(Some(curr)) {
-            Some(stripped) if !stripped.trim().is_empty() => {
-                env.insert("NODE_OPTIONS".to_string(), serde_json::Value::String(stripped));
-            }
-            _ => {
-                env.remove("NODE_OPTIONS");
+        if let Some(ref ca_path) = our_ca {
+            if env.get("NODE_EXTRA_CA_CERTS").and_then(|v| v.as_str()) == Some(ca_path.as_str()) {
+                env.remove("NODE_EXTRA_CA_CERTS");
             }
         }
+
+        if config.proxy_mode == ProxyMode::Standalone {
+            let leg = crate::config::strip_ctx_managed_hooks_from_settings(&mut settings);
+            let nat = crate::claude_settings::strip_ctx_native_hooks_from_settings(&mut settings);
+            let mcp = crate::claude_settings::strip_allowed_mcp_servers(&mut settings);
+            if leg || nat || mcp {
+                println!("{} Removed ctx hooks from settings.json", "✓".green());
+            }
+        }
+
+        if still_points_at_ctx_reverse {
+            env.insert(
+                "ANTHROPIC_BASE_URL".to_string(),
+                serde_json::Value::String(original.to_string()),
+            );
+        }
+
+        set_env_object(&mut settings, env);
+        crate::config::write_json_atomic(&settings_path, &settings)?;
     }
 
-    let mode = config.proxy_install_mode.as_deref();
-    if mode == Some("reverse") || still_points_at_ctx_reverse {
-        env.insert(
-            "ANTHROPIC_BASE_URL".to_string(),
-            serde_json::Value::String(original.to_string()),
-        );
-    }
-
-    set_env_object(&mut settings, env);
-    let leg = crate::config::strip_ctx_managed_hooks_from_settings(&mut settings);
-    let nat = crate::claude_settings::strip_ctx_native_hooks_from_settings(&mut settings);
-    let mcp = crate::claude_settings::strip_allowed_mcp_servers(&mut settings);
-    if leg || nat || mcp {
-        println!("{} Removed ctx hooks / allowedMcpServers from settings.json", "✓".green());
-    }
-    crate::config::write_json_atomic(&settings_path, &settings)?;
+    let _ = crate::daemon::stop_proxy_service();
 
     let mut cfg = Config::load();
+    cfg.proxy_mode = ProxyMode::Off;
     cfg.proxy_install_mode = None;
     cfg.save()?;
 
-    println!("{} Uninstalled ctx proxy env from settings.json", "✓".green());
+    println!("{} Uninstalled ctx MITM proxy env from settings.json", "✓".green());
     println!("{}", crate::host::detect_primary_host().reload_instruction());
     Ok(())
 }
@@ -743,15 +929,52 @@ pub fn status() -> Result<()> {
         .as_deref()
         .unwrap_or("https://api.anthropic.com");
     let profile = config.active_profile.as_deref().unwrap_or("all");
+    let listening = is_proxy_listening(port);
 
-    println!("Proxy:    http://127.0.0.1:{port} -> {upstream}");
+    println!("Mode:     {}", config.proxy_mode.as_str());
+    println!(
+        "Proxy:    http://127.0.0.1:{port} -> {upstream} ({})",
+        if listening {
+            "listening".green().to_string()
+        } else {
+            "not listening".red().to_string()
+        }
+    );
     println!("Profile:  {profile}");
     println!("Auto-profile: {}", if config.auto_profile_enabled { "on" } else { "off" });
     println!("Inject:   {}", if config.inject_enabled { "on" } else { "off" });
 
+    let ca_path = ca::canonical_ca_cert_path_string().unwrap_or_else(|_| "(CA not generated)".to_string());
+    println!("CA cert:  {ca_path}");
+
+    let log_path = crate::config::ctx_dir().join("proxy.stderr.log");
+    if log_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&log_path) {
+            let tail: String = content
+                .lines()
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !tail.is_empty() {
+                println!("Recent log (~/.ctx/proxy.stderr.log):");
+                for line in tail.lines() {
+                    println!("  {line}");
+                }
+            }
+        }
+    }
+
     let settings_path = crate::config::claude_settings_path();
     if let Ok(content) = std::fs::read_to_string(&settings_path) {
         if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
+            let claude_proxy = settings
+                .pointer("/env/CLAUDE_CODE_HTTPS_PROXY")
+                .and_then(|v| v.as_str())
+                .unwrap_or("not set");
             let https_proxy = settings
                 .pointer("/env/HTTPS_PROXY")
                 .and_then(|v| v.as_str())
@@ -764,19 +987,16 @@ pub fn status() -> Result<()> {
                 .pointer("/env/NODE_EXTRA_CA_CERTS")
                 .and_then(|v| v.as_str())
                 .unwrap_or("not set");
-            let node_opts = settings
-                .pointer("/env/NODE_OPTIONS")
-                .and_then(|v| v.as_str())
-                .unwrap_or("not set");
-            let mitm_on = is_ctx_forward_proxy_url(https_proxy, port);
+            let mitm_on = is_ctx_forward_proxy_url(claude_proxy, port)
+                || is_ctx_forward_proxy_url(https_proxy, port);
             println!(
-                "MITM:     {} (HTTPS_PROXY={})",
-                if mitm_on { "yes".green().to_string() } else { "no".red().to_string() },
-                https_proxy
+                "MITM env: {} (CLAUDE_CODE_HTTPS_PROXY={})",
+                if mitm_on { "wired".green().to_string() } else { "not wired".red().to_string() },
+                claude_proxy
             );
+            println!("  HTTPS_PROXY={https_proxy}");
             println!("  ANTHROPIC_BASE_URL={anthropic}");
             println!("  NODE_EXTRA_CA_CERTS={node_extra}");
-            println!("  NODE_OPTIONS={node_opts}");
             let mcp_allow = match settings.get("allowedMcpServers") {
                 Some(serde_json::Value::Array(a)) if a.is_empty() => {
                     "allowedMcpServers=[] (explicit empty)".to_string()
@@ -818,6 +1038,14 @@ pub fn status() -> Result<()> {
                 "  ctx v2 hooks: UserPromptSubmit (ctx)={ups_ctx}, async HTTP to dashboard keys={async_ctx}"
             );
         }
+    }
+
+    if config.proxy_mode.mitm_active() && !listening {
+        println!(
+            "\n{} Proxy mode is {} but nothing is listening on :{port}. Run `ctx proxy start` or check launchd.",
+            "!".yellow(),
+            config.proxy_mode.as_str()
+        );
     }
 
     Ok(())

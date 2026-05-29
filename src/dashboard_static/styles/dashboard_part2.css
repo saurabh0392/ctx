@@ -55,37 +55,37 @@
 /* ── Tab 5: Pipeline ─────────────────────────────────────── */
 .gate-flow {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 0;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
   margin-bottom: 28px;
-  overflow-x: auto;
 }
 .gate-card {
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-right: none;
-  padding: 18px 14px;
+  border-radius: 12px;
+  padding: 16px 14px 14px;
   overflow: hidden;
   transition: border-color .15s, background .15s;
+  min-width: 0;
 }
-.gate-card:first-child { border-radius: 12px 0 0 12px; }
-.gate-card:last-child  { border-radius: 0 12px 12px 0; border-right: 1px solid var(--border); }
-.gate-card.fired { border-color: rgba(147,192,67,.3); background: rgba(147,192,67,.04); }
-.gate-card.fired + .gate-card { border-left-color: rgba(147,192,67,.3); }
-.gate-card.disabled { opacity: .4; }
+.gate-card:first-child { border-radius: 12px; }
+.gate-card:last-child  { border-radius: 12px; border-right: 1px solid var(--border); }
+.gate-card.fired { border-color: rgba(147,192,67,.35); background: rgba(147,192,67,.04); }
+.gate-card.disabled { opacity: .45; }
 .gate-top-bar { position: absolute; top: 0; left: 0; right: 0; height: 3px; }
-.gate-name { font-size: 12px; font-weight: 700; color: var(--t1); margin-bottom: 10px; margin-top: 4px; line-height: 1.3; }
-.gate-status-row { display: flex; align-items: center; gap: 5px; margin-bottom: 12px; }
+.gate-name { font-size: 12px; font-weight: 700; color: var(--t1); margin-bottom: 8px; margin-top: 4px; line-height: 1.3; }
+.gate-status-row { display: flex; align-items: center; gap: 5px; margin-bottom: 10px; }
 .gate-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .gate-dot.on   { background: var(--green); box-shadow: 0 0 5px rgba(147,192,67,.5); }
 .gate-dot.idle { background: var(--amber); }
 .gate-dot.off  { background: var(--t4); }
 .gate-status-text { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-.gate-count { font-size: 30px; font-weight: 800; color: var(--t1); line-height: 1; }
+.gate-count { font-size: 28px; font-weight: 800; color: var(--t1); line-height: 1; }
 .gate-count-sub { font-size: 10px; color: var(--t3); margin-top: 3px; }
-.gate-detail { font-size: 10px; color: var(--t4); margin-top: 10px; line-height: 1.5; }
-.gate-tokens { font-size: 11px; color: var(--green); margin-top: 4px; font-weight: 600; }
+.gate-detail { font-size: 11px; color: var(--t2); margin-top: 8px; line-height: 1.45; }
+.gate-tokens { font-size: 11px; color: var(--green); margin-top: 6px; font-weight: 600; }
+.gate-desc { font-size: 10px; color: var(--t4); margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); line-height: 1.45; }
 
 /* Activity feed */
 .gf-row {

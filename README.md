@@ -8,13 +8,13 @@ bash ~/Documents/ctx/scripts/install.sh
 ctx setup
 ```
 
-After setup, run `ctx profile generate` once to build profiles tailored to your MCP stack, then `ctx use <profile>` to activate one.
+After setup, ctx stays on the `all` profile until MCP usage crosses configurable thresholds, then builds a **`personal`** profile automatically from your tool history. Q&A-only turns with no MCP calls still benefit from similarity-based auto-select once past sessions exist in the index.
 
 ## Compatibility
 
 | Feature | Claude Code in an IDE | Terminal CLI | Claude Desktop |
 | --- | --- | --- | --- |
-| Native MCP allowlist (`allowedMcpServers` in `~/.claude/settings.json`) | Yes | Yes | No (Desktop uses its own config) |
+| Native MCP filter (`permissions.deny` soft mode, or opt-in `allowedMcpServers` strict mode in `~/.claude/settings.json`) | Yes | Yes | No (Desktop uses its own config) |
 | Claude Code hooks (`UserPromptSubmit`, `PostToolUse`, …) | Yes | Yes | No |
 | Legacy in-process filter (`NODE_OPTIONS` + `filter.js`) | Deprecated (ignored by Bun-based `claude` binary) | Deprecated | No |
 | Per-request tracing (dashboard Request Trace tab) | Yes (native hooks, no proxy needed) | Yes | No |
@@ -30,19 +30,19 @@ After setup, run `ctx profile generate` once to build profiles tailored to your 
 
 ### Claude Desktop: no Claude Code hooks path
 
-Desktop is an Electron app. It does not load `~/.claude/settings.json` the way the Claude Code CLI does for MCP allowlists and hooks. Per-request tracing in the dashboard applies in **Claude Code** (CLI or IDE) via native hooks and SQLite, not in standalone Desktop chat. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
+Desktop is an Electron app. It does not load `~/.claude/settings.json` the way the Claude Code CLI does for MCP filtering and hooks. Per-request tracing in the dashboard applies in **Claude Code** (CLI or IDE) via native hooks and SQLite, not in standalone Desktop chat. On Desktop, use MCP plus `ctx ingest` for session-level data when local-agent `audit.jsonl` logs exist.
 
 ## Install journey
 
-`ctx setup` is the single entry point after you build or install the `ctx` binary. It detects your environment ([`host.rs`](src/host.rs)), writes files under `CTX_HOME` (default `~/.ctx`), starts background services where supported, merges MCP config, and merges **`allowedMcpServers` plus Claude Code `hooks`** into `~/.claude/settings.json` when Claude Code settings apply. Legacy `NODE_OPTIONS --require filter.js` is stripped when present; the shipped `claude` binary is Bun-based and does not honor Node preload.
+`ctx setup` is the single entry point after you build or install the `ctx` binary. It detects your environment ([`host.rs`](src/host.rs)), writes files under `CTX_HOME` (default `~/.ctx`), starts background services where supported, merges MCP config, and merges **`permissions.deny` (soft filter) plus Claude Code `hooks`** into `~/.claude/settings.json` when Claude Code settings apply. Legacy `NODE_OPTIONS --require filter.js` is stripped when present; the shipped `claude` binary is Bun-based and does not honor Node preload.
 
 ```mermaid
 flowchart TD
   Start["ctx setup"] --> Detect["Detect host host.rs"]
   Detect --> IsIDE{IDE detected?}
-  IsIDE -->|Cursor VS Code Windsurf| IDE_Path["allowedMcpServers + hooks in settings.json\nMerge MCP into settings.json and IDE mcp.json\nInstall proxy dashboard and ingest services"]
+  IsIDE -->|Cursor VS Code Windsurf| IDE_Path["permissions.deny + hooks in settings.json\nMerge MCP into settings.json and IDE mcp.json\nInstall dashboard and ingest services"]
   IsIDE -->|No| IsCLI{Claude Code CLI present?}
-  IsCLI -->|Yes| CLI_Path["allowedMcpServers + hooks in settings.json\nMerge MCP into settings.json\nInstall proxy dashboard and ingest when host requests it"]
+  IsCLI -->|Yes| CLI_Path["permissions.deny + hooks in settings.json\nMerge MCP into settings.json\nInstall dashboard and ingest when host requests it"]
   IsCLI -->|No| Desktop_Path["Skip Claude Code hooks path\nMerge MCP into desktop config\nInstall dashboard and ingest services"]
   IDE_Path --> Done["Reload IDE window"]
   CLI_Path --> Done2["Open new terminal session"]
@@ -60,24 +60,22 @@ Quick paths:
   gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
   bash ~/Documents/ctx/scripts/install.sh
   ctx setup
-  ctx profile generate   # build profiles from your actual MCP stack
-  ctx use <profile>
-  ```
-- **Claude Code in a terminal only:** Same install, then reload Claude Code so `~/.claude/settings.json` hooks and allowlist apply.
+  ctx use <profile>   # optional — setup picks one when history exists
+```
+- **Claude Code in a terminal only:** Same install, then reload Claude Code so `~/.claude/settings.json` hooks and soft filter rules apply.
 - **Claude Desktop:** Same install from an OS terminal, run `ctx setup`, then quit Desktop fully and reopen. Native Claude Code filtering is not available on Desktop (see table), but MCP tools and the dashboard work.
 - **Build from source:** `gh repo clone goshippo/ctx ~/Documents/ctx` then `source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)).
 
 ### What happens during `ctx setup`
 
-1. Ensure `CTX_HOME`, generate local CA material for the proxy if needed, write `filter.js` from the embedded asset.
-2. Install and start the proxy (default port `8788`), wait until it listens.
-3. Create default `system_prefix.md` if missing; optionally download ONNX embedding weights when built with the `onnx` feature.
-4. Open or create `ctx.db`, run an initial ingest when Claude Code project JSONL exists, pick a default profile, sync `filter-config.json`.
-5. Install and start the dashboard (default port `8789`).
-6. When `needs_periodic_ingest` is true, install a periodic `ctx ingest` job (macOS and Linux user services).
-7. Unless `--no-install`, run `proxy::install` to merge **`allowedMcpServers`**, **hooks** (`ctx hook user-prompt-submit`, async `POST /api/hook/event`), and strip legacy `NODE_OPTIONS` filter preload when `supports_node_options` is true (not Desktop-only).
-8. Register `ctx mcp` in Claude settings, IDE-specific MCP JSON when applicable, and Desktop config when present.
-9. Open the dashboard URL in a browser when ready.
+1. Ensure `CTX_HOME`, write `filter.js` from the embedded asset (legacy experiments only).
+2. Create default `system_prefix.md` if missing; optionally download ONNX embedding weights when built with the `onnx` feature.
+3. Open or create `ctx.db`, run an initial ingest when Claude Code project JSONL exists, pick a default profile, sync `filter-config.json`.
+4. Install and start the dashboard (default port `8789`).
+5. When `needs_periodic_ingest` is true, install a periodic `ctx ingest` job (macOS and Linux user services).
+6. Unless `--no-install`, merge **`permissions.deny`** (soft filter), **hooks** (`ctx hook user-prompt-submit`, async `POST /api/hook/event`), and strip legacy `NODE_OPTIONS` filter preload when `supports_node_options` is true (not Desktop-only). Proxy is **not** installed by default — run `ctx proxy install` for legacy MITM.
+7. Register `ctx mcp` in Claude settings, IDE-specific MCP JSON when applicable, and Desktop config when present.
+8. Open the dashboard URL in a browser when ready.
 
 Other entry points: paste the prompt from [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) for a guided Claude Code install, or run [`scripts/install-desktop.sh`](scripts/install-desktop.sh) from an OS terminal for a Desktop-first flow.
 
@@ -91,7 +89,7 @@ Contributor-level diagrams, module tables, and pipeline detail: [ARCHITECTURE.md
 
 ## Teardown
 
-- `ctx setup --uninstall` removes background services where supported, strips ctx from MCP JSON files (Claude settings, Cursor, Windsurf, Desktop), removes ctx native hooks and `allowedMcpServers` keys written by ctx, and runs `ctx proxy uninstall` for env cleanup.
+- `ctx setup --uninstall` removes background services where supported, strips ctx from MCP JSON files (Claude settings, Cursor, Windsurf, Desktop), removes ctx native hooks and ctx-managed filter rules (`permissions.deny` and `allowedMcpServers`), and runs `ctx proxy uninstall` for env cleanup.
 - Reload the IDE window or restart Desktop so removed env and MCP entries apply.
 
 ---
@@ -104,8 +102,9 @@ Contributor-level diagrams, module tables, and pipeline detail: [ARCHITECTURE.md
 gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
 bash ~/Documents/ctx/scripts/install.sh
 ctx setup
-ctx profile generate
 ```
+
+`setup` indexes your Claude Code JSONL, generates MCP profiles from usage history when available, and activates the best match. Re-run `ctx profile generate` only after you add or remove MCP connectors.
 
 `install.sh` detects your platform (macOS arm64/x86_64 or Linux x86_64), downloads the matching binary from the [latest release](https://github.com/goshippo/ctx/releases/latest) via `gh release download`, and installs it to `/usr/local/bin`. Set `CTX_INSTALL_DIR` to override the destination.
 
@@ -125,32 +124,67 @@ After installing the binary, run setup once:
 ctx setup
 ```
 
-`setup` writes assets under `CTX_HOME` (default `~/.ctx`): `filter.js`, `filter-config.json` (legacy), optional CA material for the proxy, merges **`allowedMcpServers` and hooks** into `~/.claude/settings.json` where configured, and installs background services on macOS (launchd) and Linux (systemd user units). On other OS targets it starts `ctx proxy` / `ctx dashboard` as detached processes and prints how to schedule ingest yourself.
+`setup` writes assets under `CTX_HOME` (default `~/.ctx`): `filter.js`, `filter-config.json` (legacy), optional CA material for the proxy, merges **`permissions.deny` (soft filter) and hooks** into `~/.claude/settings.json` where configured, and installs background services on macOS (launchd) and Linux (systemd user units). On other OS targets it starts `ctx dashboard` as a detached process and prints how to schedule ingest yourself. The MITM proxy is opt-in via `ctx proxy install`.
 
 ## Filtering paths
 
-1. **Default (v2 — native Claude Code)**  
-   `allowedMcpServers` in `~/.claude/settings.json` plus hooks. MCP servers outside the allowlist never attach tool schemas to the API request. `ctx hook user-prompt-submit` handles auto-profile, budget hard-stop, optional JSONL-based coaching (correction cascades and re-asks from `~/.claude/projects/**/*.jsonl`), and `additionalContext` injection from `~/.ctx/system_prefix.md`. Async hooks POST telemetry to `http://127.0.0.1:8789/api/hook/event`. The Request Trace tab shows full per-turn pipeline cards for hook rows (profile, inject, coach, savings) and enriches them with model, tokens, and cost after JSONL ingest on turn end.
+ctx supports three **filter modes** (see `filter_mode` in `~/.ctx/config.toml` or `ctx filter mode`):
 
-2. **Legacy (`NODE_OPTIONS` + `filter.js`)**  
+| Mode | Mechanism | MCP servers in `/mcp` | Token savings |
+| --- | --- | --- | --- |
+| **soft** (default) | `permissions.deny` wildcards like `mcp__claude_ai_Figma__*` | All stay connected | High — tools hidden from model |
+| **strict** (opt-in) | `allowedMcpServers` allowlist | Non-listed servers disconnect | Maximum |
+| **off** | No ctx filter rules | All connected | None |
+
+Claude Code **MCP Tool Search** (on by default) defers tool schemas until needed. ctx soft filtering complements this by hiding stripped tools from discovery. The **proxy path must not be default** because routing through a non-first-party `ANTHROPIC_BASE_URL` disables tool search.
+
+1. **Default (v2 — native Claude Code, soft mode)**  
+   `permissions.deny` in `~/.claude/settings.json` plus hooks. MCP servers outside the active profile have their tools denied; **servers stay connected** in `/mcp`. `ctx hook user-prompt-submit` handles auto-profile, budget hard-stop, optional JSONL-based coaching, and `additionalContext` injection from `~/.ctx/system_prefix.md`. Async hooks POST telemetry to `http://127.0.0.1:8789/api/hook/event`. Request Trace shows per-turn pipeline cards and enriches them with cost after JSONL ingest.
+
+2. **Strict mode (opt-in maximum savings)**  
+   `ctx filter mode strict` switches to `allowedMcpServers`. Non-allowlisted remote connectors **disconnect** from `/mcp`. Use when you need every token saved and can tolerate dropped connectors.
+
+3. **Legacy (`NODE_OPTIONS` + `filter.js`)**  
    Deprecated: the `claude` CLI is a Bun binary and ignores Node preload. Files remain under `CTX_HOME` for experiments only.
 
-3. **HTTPS proxy**  
-   Optional MITM path for the Anthropic API host. Same gate logic exists in Rust (`proxy::run_gates`) for parity tests and for teams who route traffic through the proxy.
+4. **HTTPS MITM proxy (opt-in power mode)**  
+   `ctx proxy install --mode complement|standalone|filter-only` wires `CLAUDE_CODE_HTTPS_PROXY`, `HTTPS_PROXY`, and `NODE_EXTRA_CA_CERTS` in `~/.claude/settings.json`. The proxy streams SSE responses (required for Claude Code) and strips tools from HTTP bodies. **complement** keeps hooks + soft deny and filters in the proxy only; **standalone** runs the full gate pipeline in the proxy and strips hooks on install; **filter-only** is filter + analytics only. Not started by `ctx setup`. Deprecated: `ANTHROPIC_BASE_URL` reverse mode (breaks MCP Tool Search).
 
-Keep feature work aligned with the native path so dashboards stay populated for everyone who uses Claude Code with hooks.
+Keep feature work aligned with the native soft-filter path so dashboards stay populated for everyone who uses Claude Code with hooks.
 
 ## Profiles
 
-Profiles live in the Rust side (`profiles` module), sync to **`allowedMcpServers`** in `~/.claude/settings.json`, and still export `filter-config.json` for legacy setups. Each profile lists MCP server prefixes (or display names) to **keep**; other servers are blocked by Claude Code before tool schemas enter the request.
+Profiles live in the Rust side (`profiles` module), sync to **`permissions.deny`** in soft mode (default) or **`allowedMcpServers`** in strict mode, and still export `filter-config.json` for legacy setups. Each profile lists MCP server prefixes (legacy) or explicit **tool names** (`keep_tools`) to **keep**; other tools are hidden via soft deny + proxy, or whole servers disconnect in strict mode.
 
-Generate profiles from your actual MCP stack (no usage history required):
+**Tool-level profiles:** When `keep_tools` is set in `profiles.toml`, it overrides server-prefix `keep`. New `[personal]` and category profiles are written with `keep_tools` automatically once usage thresholds are met. To convert older server-prefix entries already in `profiles.toml`:
+
+```bash
+ctx profile migrate-tools          # all prefix-based profiles in profiles.toml
+ctx profile migrate-tools data     # copy a built-in template, then convert to keep_tools
+ctx profile add mine --keep-tool mcp__claude_ai_Atlassian__jira_get_issue
+```
+
+**Personal profile (automatic):** After ingest indexes enough MCP usage (defaults: 20 tool calls, 3 servers, 2 sessions in the last 30 days), ctx writes `[personal]` with a `keep_tools` list to `~/.ctx/profiles.toml` and activates it when you are still on `all`. Until then, ctx stays on `all` with no filtering. Override thresholds in `~/.ctx/config.toml`:
+
+```toml
+[profile_thresholds]
+min_tool_invocations = 20
+min_distinct_servers = 3
+min_sessions_with_mcp = 2
+lookback_days = 30
+min_tool_invocations_categories = 80
+min_tool_invocations_per_tool = 3
+```
+
+**Auto-select:** On each prompt, the hook embeds `[dir: {cwd}] {prompt}`, finds similar past sessions, and votes among **visible** profiles (weighted by similarity × tokens saved from enriched hook traces). Falls back to cwd/path matching on usage-generated profiles when embeddings are unavailable.
+
+**Category profiles (optional):** At a higher usage bar (default 80 tool calls) or via manual generate:
 
 ```bash
 ctx profile generate
 ```
 
-This inspects your configured MCP servers, groups them by category (data, design, comms, work, files, finance, infra), and writes named profiles to `~/.ctx/profiles.toml`. Each profile is named after its primary category and includes communication tools alongside it so common workflows stay intact. Run it once after `ctx setup`, then re-run whenever you add or remove MCP servers.
+This groups observed servers by category and writes named profiles to `~/.ctx/profiles.toml`. Run `ctx ingest` first if you just finished a Claude Code session.
 
 Switch the active profile:
 
@@ -165,6 +199,19 @@ ctx profile list
 ```
 
 Tighter profiles remove more tool schemas, which saves more tokens on each request.
+
+## Filter mode CLI
+
+```bash
+ctx filter mode soft      # default — permissions.deny, servers stay connected
+ctx filter mode strict    # allowedMcpServers — maximum savings, connectors drop
+ctx filter mode off       # no ctx filter rules
+ctx filter expand figma   # temporarily allow a stripped server this session (soft mode)
+ctx filter expand mcp__claude_ai_Figma__get_file   # or a specific tool name
+ctx filter clear-expansion
+```
+
+`ctx status` shows the active profile and filter mode.
 
 ## Dashboard
 
@@ -304,11 +351,13 @@ When `coaching_enabled` is true in `~/.ctx/config.toml` (default), `UserPromptSu
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `active_profile` | `all` | Currently active MCP filter profile |
+| `filter_mode` | `soft` | MCP filter: `soft` (permissions.deny), `strict` (allowedMcpServers), or `off` |
 | `inject_enabled` | `true` | When true, prepend `~/.ctx/system_prefix.md` via `additionalContext` on each prompt |
 | `coaching_enabled` | `true` | When true, scan session JSONL for correction cascades and re-asks; optional hard block on severe fatigue |
 | `monthly_budget_usd` | (none) | Triggers budget alerts when projected spend approaches this limit |
 | `session_gap_minutes` | `30` | Idle minutes between turns before a new session boundary in analytics |
 | `proxy_port` | `8788` | Local MITM proxy listen port |
+| `proxy_mode` | `off` | MITM mode: `off`, `complement`, `standalone`, `filter_only` |
 | `dashboard_port` | `8789` | Dashboard HTTP listen port |
 | `active_mode` | (none) | Last mode applied via `ctx mode` or dashboard |
 | `auto_apply_recommendations` | `false` | Apply self-tuning after ingest when true |
@@ -325,6 +374,15 @@ When `coaching_enabled` is true in `~/.ctx/config.toml` (default), `UserPromptSu
 | `src/dashboard.html` | Embedded dashboard UI |
 | [`scripts/install.sh`](scripts/install.sh) | One-liner binary installer (no Rust required) |
 | [`.github/workflows/release.yml`](.github/workflows/release.yml) | CI release pipeline: builds macOS + Linux binaries, publishes GitHub release |
+
+## Proxy troubleshooting (429 / streaming)
+
+If Claude Code hits **429 rate limits** with MITM enabled:
+
+1. Run **`ctx proxy status`** — confirm mode, listening port, and that `CLAUDE_CODE_HTTPS_PROXY` / `NODE_EXTRA_CA_CERTS` are wired.
+2. Check **`~/.ctx/proxy.stderr.log`** for `stream=true` lines on `/v1/messages` requests.
+3. Compare with MITM off: `ctx proxy uninstall` and reload Claude Code — default soft filter + hooks avoid proxy buffering issues.
+4. Re-install after proxy changes: `ctx proxy install --mode complement` (or `standalone` / `filter-only`).
 
 ## Tests
 

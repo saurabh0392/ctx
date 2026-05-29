@@ -1,6 +1,7 @@
 //! ctx library surface for integration tests and the `ctx` binary.
 
 pub mod ab;
+pub mod allowance;
 pub mod analytics;
 pub mod adaptive;
 pub mod ca;
@@ -12,15 +13,18 @@ pub mod coach;
 pub mod config;
 pub mod conversations;
 pub mod dashboard;
+pub mod dashboard_push;
 pub mod daemon;
 pub mod db;
 pub mod embedder;
 pub mod filter;
+pub mod filter_control;
 pub mod filter_hook;
 pub mod host;
 pub mod hook;
 pub mod inject;
 pub mod profiles;
+pub mod semantic_tools;
 pub mod proxy;
 pub mod quality_guard;
 pub mod setup;
@@ -44,8 +48,8 @@ pub fn ensure_tls_crypto_provider() {
 use anyhow::Result;
 use clap::Parser;
 use cli::{
-    Cli, Commands, ExperimentCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand,
-    ProxyCommand,
+    Cli, Commands, ExperimentCommand, FilterCommand, HookCommand, InjectCommand, ModeCommand,
+    ProfileCommand, ProxyCommand,
 };
 
 pub async fn run() -> Result<()> {
@@ -69,14 +73,29 @@ pub async fn run() -> Result<()> {
         Commands::Profile { command } => match command {
             ProfileCommand::List => profiles::list()?,
             ProfileCommand::Show { name } => profiles::show(&name)?,
-            ProfileCommand::Add { name, keep } => profiles::add(&name, keep)?,
+            ProfileCommand::Add { name, keep, keep_tool } => {
+                profiles::add(
+                    &name,
+                    keep.unwrap_or_default(),
+                    keep_tool.unwrap_or_default(),
+                )?
+            }
             ProfileCommand::Remove { name } => profiles::remove(&name)?,
             ProfileCommand::Auto { refresh } => profiles::auto_generate(refresh)?,
-            ProfileCommand::Generate => profiles::generate_from_config()?,
+            ProfileCommand::Generate => profiles::generate_from_config(true)?,
+            ProfileCommand::MigrateTools { name, force } => {
+                profiles::migrate_tools(name.as_deref(), force)?
+            }
         },
         Commands::Proxy { command } => match command {
             ProxyCommand::Start { port, upstream } => proxy::start(port, &upstream).await?,
-            ProxyCommand::Install { port, upstream } => proxy::install(port, &upstream)?,
+            ProxyCommand::Install { mode, port, upstream } => {
+                let mode = crate::config::ProxyMode::parse(&mode)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "Invalid --mode {mode:?}; use complement, standalone, or filter-only"
+                    ))?;
+                proxy::install(port, &upstream, mode)?;
+            }
             ProxyCommand::Uninstall => proxy::uninstall()?,
             ProxyCommand::Status => proxy::status()?,
         },
@@ -192,6 +211,16 @@ pub async fn run() -> Result<()> {
             ExperimentCommand::Status => tuning::print_experiment_status()?,
             ExperimentCommand::Apply => tuning::apply_recommendations()?,
             ExperimentCommand::Reset => tuning::reset_experiment()?,
+        },
+        Commands::Filter { command } => match command {
+            FilterCommand::Mode { mode } => {
+                let fm = crate::config::FilterMode::parse(&mode).ok_or_else(|| {
+                    anyhow::anyhow!("unknown filter mode '{mode}' (use soft, strict, or off)")
+                })?;
+                filter_control::set_filter_mode(fm)?;
+            }
+            FilterCommand::Expand { target } => filter_control::expand_session_target(&target)?,
+            FilterCommand::ClearExpansion => filter_control::clear_session_expansion()?,
         },
     }
 

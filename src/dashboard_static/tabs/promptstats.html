@@ -14,7 +14,7 @@
       <div>
         <div style="font-size:11px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px" id="budget-month-label">This month</div>
         <div style="display:flex;align-items:baseline;gap:8px">
-          <div class="budget-spent" id="budget-spent">—</div>
+          <div class="budget-spent" id="budget-spent">n/a</div>
           <div class="budget-of" id="budget-of">spent</div>
         </div>
       </div>
@@ -41,7 +41,7 @@
             style="transition: stroke-dashoffset 1.2s cubic-bezier(.34,1.1,.64,1), stroke .4s"/>
         </svg>
         <div class="score-ring-val">
-          <div class="score-big" id="score-big" style="color:var(--t3)">—</div>
+          <div class="score-big" id="score-big" style="color:var(--t3)">n/a</div>
           <div class="score-denom">/100</div>
         </div>
       </div>
@@ -74,7 +74,7 @@
 
   <div class="card" id="intel-patterns-wrap" style="margin-bottom:20px;display:block">
     <div class="section-head">Repeat patterns</div>
-    <div class="section-sub">Rule-based checks on this month's indexed sessions (embedding similarity + spend).</div>
+    <div class="section-sub">Simple checks on this month's sessions. Flags when spend or behavior clusters on one project or repeats too often.</div>
     <div id="intel-patterns-body"><p class="section-sub" style="margin:0">Loading…</p></div>
   </div>
 
@@ -92,7 +92,7 @@
 
   <div class="card" style="margin-bottom:20px" id="task-costs-card">
     <div class="section-head">Cost by task</div>
-    <div class="section-sub">Groups requests by parent session. When you use subagents (Cursor Task tool, Claude Code sub-agents), each child session appears nested under its parent.</div>
+    <div class="section-sub">Groups subagent work under the parent session. Expand a row to see each child session's cost.</div>
     <div id="task-costs-body"><div class="empty">Loading…</div></div>
   </div>
 

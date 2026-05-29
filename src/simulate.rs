@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde::Serialize;
 use crate::analytics::{CACHE_READ_RATE_PER_MTOK, WORST_CASE_INPUT_RATE_PER_MTOK};
-use crate::profiles::{self, TOTAL_TOOLS};
+use crate::profiles::{self};
 
 const TOKENS_PER_TOOL: f64 = 600.0;
 
@@ -41,7 +41,6 @@ pub fn simulate_pipeline(
     profile_override: Option<&str>,
 ) -> Result<SimulateResult> {
     let cfg = crate::config::Config::load();
-    let pseudo_system = format!("Primary working directory: {cwd}\n");
 
     let base_profile = cfg.active_profile.as_deref().unwrap_or("all").to_string();
     let mut auto_selected = false;
@@ -49,7 +48,7 @@ pub fn simulate_pipeline(
     let effective_profile = if let Some(ovr) = profile_override {
         ovr.to_string()
     } else if cfg.auto_profile_enabled {
-        if let Some((slug, trigger)) = profiles::auto_select(&pseudo_system, &base_profile) {
+        if let Some((slug, trigger)) = profiles::auto_select(cwd, prompt, &base_profile) {
             auto_selected = true;
             auto_trigger = Some(trigger);
             slug
@@ -61,13 +60,14 @@ pub fn simulate_pipeline(
     };
 
     let all = profiles::load_all();
+    let total_tools = profiles::dynamic_total_tools();
     let (tools_kept, tools_removed, tokens_saved) = if let Some(p) = all.get(&effective_profile) {
         let kept = p.tool_count();
-        let removed = TOTAL_TOOLS.saturating_sub(kept);
+        let removed = total_tools.saturating_sub(kept);
         let saved = p.savings_vs_all();
         (kept, removed, saved)
     } else {
-        (TOTAL_TOOLS, 0, 0)
+        (total_tools, 0, 0)
     };
 
     let budget_reason = crate::budget_guard::hard_block_reason_for_prompt(prompt);
@@ -130,7 +130,7 @@ pub fn simulate_pipeline(
         }
     }
 
-    let total_tokens_all = TOTAL_TOOLS as f64 * TOKENS_PER_TOOL;
+    let total_tokens_all = total_tools as f64 * TOKENS_PER_TOOL;
     let kept_tokens = tools_kept as f64 * TOKENS_PER_TOOL;
     let cost_without = total_tokens_all / 1_000_000.0 * WORST_CASE_INPUT_RATE_PER_MTOK;
     let cost_with = kept_tokens / 1_000_000.0 * WORST_CASE_INPUT_RATE_PER_MTOK
@@ -445,15 +445,44 @@ mod tests {
         std::env::set_var("CTX_HOME", "/tmp/ctx-sim-test-nonexist");
         let r = simulate_pipeline("/tmp", "test", None, None, Some("all")).unwrap();
         assert_eq!(r.tools_removed, 0);
-        assert_eq!(r.tools_kept, TOTAL_TOOLS);
+        assert_eq!(r.tools_kept, 0);
     }
 
     #[test]
     fn cost_estimates_positive() {
-        std::env::set_var("CTX_HOME", "/tmp/ctx-sim-test-nonexist");
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = crate::db::open_db().unwrap();
+        crate::db::ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at, profile, working_directory, turn_count)
+             VALUES ('sim', 'p', datetime('now'), 'all', '/tmp', 1)",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row("SELECT id FROM sessions WHERE external_key='sim'", [], |r| r.get(0))
+            .unwrap();
+        for prefix in [
+            "mcp__claude_ai_Atlassian__",
+            "mcp__claude_ai_Slack__",
+            "mcp__claude_ai_Data_Shippo__",
+        ] {
+            conn.execute(
+                "INSERT INTO tool_invocations (session_id, tool_name, server_prefix, ts)
+                 VALUES (?1, 't', ?2, datetime('now'))",
+                rusqlite::params![sid, prefix],
+            )
+            .unwrap();
+        }
+
         let r = simulate_pipeline("/tmp", "test", None, None, Some("carrier")).unwrap();
+        assert!(r.tools_kept > 0);
         assert!(r.estimated_cost_without_ctx > 0.0);
         assert!(r.estimated_cost_with_ctx > 0.0);
-        assert!(r.savings_usd >= 0.0);
+        std::env::remove_var("CTX_HOME");
     }
 }

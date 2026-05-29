@@ -1,30 +1,44 @@
 <!-- ═══ Tab 8: Simulate (dev) ═══ -->
 <div class="tab-panel" id="tab-simulate">
-  <div class="page-title">Simulate</div>
-  <div class="page-sub">Dry-run a prompt through the ctx pipeline. No tokens consumed. Uses your current config and profiles.</div>
+  <div class="page-title">What would ctx do?</div>
+  <div class="page-sub">Dry-run a prompt through your live Settings config. No API call, no tokens spent.</div>
 
-  <div class="card" style="margin-bottom:20px">
-    <div class="section-head">Input</div>
-    <label style="font-size:12px;color:var(--t3)">Prompt</label>
-    <textarea id="sim-prompt" rows="4" placeholder="Paste a prompt here" style="width:100%;margin:6px 0 10px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></textarea>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
-      <div style="flex:1;min-width:200px">
-        <label style="font-size:12px;color:var(--t3)">Working directory</label>
-        <input type="text" id="sim-cwd" placeholder="/Users/you/project" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
-      </div>
-      <div style="min-width:140px">
-        <label style="font-size:12px;color:var(--t3)">Profile override</label>
-        <select id="sim-profile" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
-          <option value="">(auto)</option>
-        </select>
-      </div>
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <button type="button" class="modal-btn primary" onclick="runSimulate()">Run</button>
-      <button type="button" class="modal-btn secondary" onclick="runSimulateAllProfiles()">Compare all profiles</button>
-      <button type="button" class="modal-btn secondary" onclick="runSimulateReplay()">Replay last 10 traces</button>
-    </div>
+  <div id="sim-how-it-works" class="exp-how-it-works">
+    <div class="exp-how-title">How this works</div>
+    <div class="exp-how-body">Paste any prompt. ctx runs your current config through the pipeline locally. Use this to preview savings or pick the best profile before you work.</div>
   </div>
 
-  <div id="sim-result" style="display:none"></div>
+  <div class="card sim-input-card">
+    <div class="section-head">Your prompt</div>
+    <textarea id="sim-prompt" class="sim-prompt" rows="4" placeholder="Paste a prompt here…"></textarea>
+    <div class="sim-quick-fill">
+      <button type="button" class="modal-btn secondary sim-quick-btn" onclick="simUseLastPrompt()">Use last prompt</button>
+      <button type="button" class="modal-btn secondary sim-quick-btn" onclick="simUseLastFolder()">Use last folder</button>
+    </div>
+    <details class="sim-details sim-advanced">
+      <summary>Advanced options</summary>
+      <div class="sim-advanced-body">
+        <label class="sim-label">Working directory</label>
+        <input type="text" id="sim-cwd" class="sim-input" placeholder="/Users/you/project">
+        <label class="sim-label">Profile override</label>
+        <select id="sim-profile" class="sim-select">
+          <option value="">(auto, let ctx pick)</option>
+        </select>
+      </div>
+    </details>
+  </div>
+
+  <div id="sim-actions" class="exp-actions">
+    <button type="button" class="modal-btn primary" id="sim-btn-preview" onclick="runSimulate()">Preview</button>
+    <button type="button" class="modal-btn secondary" id="sim-btn-compare" onclick="runSimulateAllProfiles()">Compare profiles</button>
+    <button type="button" class="modal-btn secondary" id="sim-btn-replay" onclick="runSimulateReplay()">Check last 10</button>
+    <span class="sim-actions-hint">Uses your live Settings config</span>
+  </div>
+
+  <div id="sim-idle" class="sim-idle-callout">
+    Paste a prompt above and click Preview, Compare profiles, or Check last 10 to see results here.
+  </div>
+
+  <div id="sim-results" style="display:none"></div>
+  <div id="sim-status" class="exp-status" style="display:none"></div>
 </div>

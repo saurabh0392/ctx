@@ -102,12 +102,85 @@ fn migrate_hook_traces_savings_columns(conn: &Connection) {
     }
 }
 
+fn migrate_hook_traces_prefix_and_budget_columns(conn: &Connection) {
+    let table_exists: bool = conn
+        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
+        .is_ok();
+    if !table_exists {
+        return;
+    }
+    if conn.prepare("SELECT inject_chars FROM hook_traces LIMIT 0").is_err() {
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN inject_chars INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN adaptive_chars INTEGER DEFAULT 0", []);
+    }
+    if conn.prepare("SELECT budget_blocked FROM hook_traces LIMIT 0").is_err() {
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN budget_blocked INTEGER DEFAULT 0", []);
+    }
+}
+
+fn migrate_hook_traces_pinned_profile(conn: &Connection) {
+    let table_exists: bool = conn
+        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
+        .is_ok();
+    if !table_exists {
+        return;
+    }
+    if conn
+        .prepare("SELECT pinned_profile FROM hook_traces LIMIT 0")
+        .is_err()
+    {
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN pinned_profile TEXT", []);
+    }
+    if conn
+        .prepare("SELECT effective_profile FROM hook_traces LIMIT 0")
+        .is_err()
+    {
+        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN effective_profile TEXT", []);
+    }
+}
+
+fn migrate_requests_prefix_and_budget_columns(conn: &Connection) {
+    let table_exists: bool = conn.prepare("SELECT 1 FROM requests LIMIT 0").is_ok();
+    if !table_exists {
+        return;
+    }
+    if conn.prepare("SELECT inject_chars FROM requests LIMIT 0").is_err() {
+        let _ = conn.execute("ALTER TABLE requests ADD COLUMN inject_chars INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE requests ADD COLUMN adaptive_chars INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE requests ADD COLUMN budget_blocked INTEGER DEFAULT 0", []);
+    }
+}
+
+fn migrate_allowance_snapshots_table(conn: &Connection) {
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS allowance_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            model TEXT,
+            window TEXT NOT NULL,
+            used_pct REAL NOT NULL,
+            remaining_pct REAL,
+            resets_at INTEGER,
+            session_cost_usd REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_allowance_ts ON allowance_snapshots(ts);
+        CREATE INDEX IF NOT EXISTS idx_allowance_window_ts ON allowance_snapshots(window, ts);
+        "#,
+    );
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
     migrate_hook_traces_adaptive_fired(conn);
     migrate_hook_traces_ab_columns(conn);
     migrate_hook_traces_power_columns(conn);
+    migrate_hook_traces_prefix_and_budget_columns(conn);
+    migrate_hook_traces_pinned_profile(conn);
+    migrate_requests_prefix_and_budget_columns(conn);
+    migrate_allowance_snapshots_table(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -141,7 +214,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             removed_servers TEXT,
             kept_servers TEXT,
             mcp_tools_invoked TEXT,
-            tools_sent_by_server TEXT
+            tools_sent_by_server TEXT,
+            inject_chars INTEGER DEFAULT 0,
+            adaptive_chars INTEGER DEFAULT 0,
+            budget_blocked INTEGER DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
@@ -250,6 +326,9 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             tools_removed INTEGER DEFAULT 0,
             tokens_saved INTEGER DEFAULT 0,
             adaptive_fired INTEGER DEFAULT 0,
+            inject_chars INTEGER DEFAULT 0,
+            adaptive_chars INTEGER DEFAULT 0,
+            budget_blocked INTEGER DEFAULT 0,
             -- enriched by ingest (NULL until matched)
             input_tokens INTEGER,
             output_tokens INTEGER,
@@ -345,6 +424,11 @@ pub fn insert_hook_trace(
     tokens_saved: usize,
     adaptive_fired: bool,
     ab_group: Option<&str>,
+    inject_chars: usize,
+    adaptive_chars: usize,
+    budget_blocked: bool,
+    pinned_profile: Option<&str>,
+    effective_profile: Option<&str>,
 ) -> Result<i64> {
     ensure_schema(conn)?;
     let ts = chrono::Utc::now().to_rfc3339();
@@ -352,8 +436,9 @@ pub fn insert_hook_trace(
         r#"INSERT INTO hook_traces (
             ts, session_id, parent_session_id, working_directory, profile, mode,
             auto_selected, auto_trigger, inject_fired, coach_kind, budget_fired,
-            tools_kept, tools_removed, tokens_saved, adaptive_fired, ab_group
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
+            tools_kept, tools_removed, tokens_saved, adaptive_fired, ab_group,
+            inject_chars, adaptive_chars, budget_blocked, pinned_profile, effective_profile
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"#,
         params![
             ts,
             session_id,
@@ -371,6 +456,11 @@ pub fn insert_hook_trace(
             tokens_saved as i64,
             adaptive_fired as i64,
             ab_group,
+            inject_chars as i64,
+            adaptive_chars as i64,
+            budget_blocked as i64,
+            pinned_profile,
+            effective_profile,
         ],
     )?;
     stamp_ctx_active_since(conn);
@@ -404,6 +494,14 @@ pub struct HookTraceRow {
     pub adaptive_fired: bool,
     pub ab_group: Option<String>,
     pub human_text_prefix: Option<String>,
+    #[serde(default)]
+    pub inject_chars: usize,
+    #[serde(default)]
+    pub adaptive_chars: usize,
+    #[serde(default)]
+    pub budget_blocked: bool,
+    pub pinned_profile: Option<String>,
+    pub effective_profile: Option<String>,
 }
 
 pub fn load_hook_traces(
@@ -430,7 +528,12 @@ pub fn load_hook_traces(
         COALESCE(enriched, 0) AS enriched,
         COALESCE(adaptive_fired, 0) AS adaptive_fired,
         ab_group,
-        human_text_prefix
+        human_text_prefix,
+        COALESCE(inject_chars, 0) AS inject_chars,
+        COALESCE(adaptive_chars, 0) AS adaptive_chars,
+        COALESCE(budget_blocked, 0) AS budget_blocked,
+        pinned_profile,
+        effective_profile
     FROM hook_traces"#;
     let map_row = |r: &rusqlite::Row<'_>| {
         Ok(HookTraceRow {
@@ -459,6 +562,11 @@ pub fn load_hook_traces(
             adaptive_fired: r.get::<_, i64>(22)? != 0,
             ab_group: r.get(23)?,
             human_text_prefix: r.get(24)?,
+            inject_chars: r.get::<_, i64>(25)? as usize,
+            adaptive_chars: r.get::<_, i64>(26)? as usize,
+            budget_blocked: r.get::<_, i64>(27)? != 0,
+            pinned_profile: r.get(28)?,
+            effective_profile: r.get(29)?,
         })
     };
     let mut out = Vec::new();
@@ -715,6 +823,13 @@ pub fn get_ctx_active_since(conn: &Connection) -> Option<String> {
         .flatten()
 }
 
+pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT v FROM meta WHERE k = ?1", params![key], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten()
+}
+
 /// Clear the install watermark so the dashboard shows all historical rows again until the next hook or request stamps it.
 pub fn reset_ctx_active_since(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM meta WHERE k = 'ctx_active_since'", [])?;
@@ -732,8 +847,8 @@ pub fn insert_request(conn: &Connection, rec: &Record) -> Result<i64> {
             ts, profile, tools_removed, tokens_saved, compress_chars_saved,
             auto_selected, auto_trigger, inject_fired, coach_kind, budget_fired, behavior_kind,
             working_directory, tools_sent_count, removed_servers, kept_servers, mcp_tools_invoked,
-            tools_sent_by_server
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"#,
+            tools_sent_by_server, inject_chars, adaptive_chars, budget_blocked
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"#,
         params![
             rec.ts,
             rec.profile,
@@ -752,6 +867,9 @@ pub fn insert_request(conn: &Connection, rec: &Record) -> Result<i64> {
             kept,
             mcp,
             by_srv,
+            rec.inject_chars as i64,
+            rec.adaptive_chars as i64,
+            rec.budget_blocked as i64,
         ],
     )?;
     stamp_ctx_active_since(conn);
@@ -764,7 +882,7 @@ pub fn load_requests_ordered(conn: &Connection) -> Result<Vec<Record>> {
         "SELECT ts, profile, tools_removed, tokens_saved, compress_chars_saved,
                 auto_selected, auto_trigger, inject_fired, coach_kind, budget_fired, behavior_kind,
                 working_directory, tools_sent_count, removed_servers, kept_servers, mcp_tools_invoked,
-                tools_sent_by_server
+                tools_sent_by_server, inject_chars, adaptive_chars, budget_blocked
          FROM requests ORDER BY id ASC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -790,6 +908,9 @@ pub fn load_requests_ordered(conn: &Connection) -> Result<Vec<Record>> {
             kept_servers: serde_json::from_str(&kept_s).unwrap_or_default(),
             mcp_tools_invoked: serde_json::from_str(&mcp_s).unwrap_or_default(),
             tools_sent_by_server: serde_json::from_str(&by_srv_s).unwrap_or_default(),
+            inject_chars: r.get::<_, i64>(17)? as usize,
+            adaptive_chars: r.get::<_, i64>(18)? as usize,
+            budget_blocked: r.get::<_, i64>(19)? != 0,
         })
     })?;
 
@@ -1093,6 +1214,54 @@ pub fn delete_all_indexed_data(conn: &Connection) -> Result<()> {
 /// kept_servers stores JSON arrays of display names like ["Databricks", "Slack"].
 /// tool_invocations.server_prefix stores prefixes like "mcp__claude_ai_Data_Shippo__".
 /// We convert kept display names to prefix form for comparison.
+/// One observed MCP tool with invocation count in the lookback window.
+#[derive(Debug, Clone)]
+pub struct ObservedToolRow {
+    pub tool_name: String,
+    pub server_prefix: String,
+    pub count: u64,
+}
+
+/// All MCP tools invoked since `cutoff` (RFC3339), ordered by count descending.
+pub fn observed_tools(conn: &Connection, cutoff: &str) -> Result<Vec<ObservedToolRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT tool_name, server_prefix, COUNT(*) AS c FROM tool_invocations \
+         WHERE ts >= ?1 GROUP BY tool_name, server_prefix ORDER BY c DESC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![cutoff], |r| {
+            Ok(ObservedToolRow {
+                tool_name: r.get(0)?,
+                server_prefix: r.get(1)?,
+                count: r.get::<_, i64>(2)? as u64,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Distinct MCP tool names observed since `cutoff`.
+pub fn distinct_observed_tool_count(conn: &Connection, cutoff: &str) -> Result<usize> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT tool_name) FROM tool_invocations WHERE ts >= ?1",
+        rusqlite::params![cutoff],
+        |r| r.get(0),
+    )?;
+    Ok(n.max(0) as usize)
+}
+
+/// Distinct tool names under a server prefix since `cutoff`.
+pub fn tools_under_prefix(conn: &Connection, prefix: &str, cutoff: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT tool_name FROM tool_invocations \
+         WHERE ts >= ?1 AND server_prefix = ?2 ORDER BY tool_name",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![cutoff, prefix], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn zero_usage_servers(conn: &Connection, lookback_days: u32) -> Result<Vec<String>> {
     let cutoff = format!("now, '-{lookback_days} days'");
     // Collect all kept display names from recent requests
@@ -1138,4 +1307,133 @@ pub fn zero_usage_servers(conn: &Connection, lookback_days: u32) -> Result<Vec<S
         .collect();
     unused.sort();
     Ok(unused)
+}
+
+#[derive(Debug, Clone)]
+pub struct AllowanceSnapshotRow {
+    pub id: i64,
+    pub ts: String,
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub window: String,
+    pub used_pct: f64,
+    pub remaining_pct: Option<f64>,
+    pub resets_at: Option<i64>,
+    pub session_cost_usd: Option<f64>,
+}
+
+fn map_allowance_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AllowanceSnapshotRow> {
+    Ok(AllowanceSnapshotRow {
+        id: r.get(0)?,
+        ts: r.get(1)?,
+        session_id: r.get(2)?,
+        model: r.get(3)?,
+        window: r.get(4)?,
+        used_pct: r.get(5)?,
+        remaining_pct: r.get(6)?,
+        resets_at: r.get(7)?,
+        session_cost_usd: r.get(8)?,
+    })
+}
+
+/// Insert snapshot unless throttled (same window + used_pct within 60s).
+pub fn insert_allowance_snapshot(
+    conn: &Connection,
+    ts: &str,
+    session_id: Option<&str>,
+    model: Option<&str>,
+    window: &str,
+    used_pct: f64,
+    remaining_pct: Option<f64>,
+    resets_at: Option<i64>,
+    session_cost_usd: Option<f64>,
+) -> Result<bool> {
+    ensure_schema(conn)?;
+    if let Ok((last_used, last_ts)) = conn.query_row(
+        "SELECT used_pct, ts FROM allowance_snapshots WHERE window = ?1 ORDER BY id DESC LIMIT 1",
+        params![window],
+        |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?)),
+    ) {
+        if (last_used - used_pct).abs() < 0.05 {
+            if let Ok(last_dt) = last_ts.parse::<chrono::DateTime<chrono::Utc>>() {
+                if let Ok(cur_dt) = ts.parse::<chrono::DateTime<chrono::Utc>>() {
+                    if cur_dt.signed_duration_since(last_dt).num_seconds() < 60 {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+
+    conn.execute(
+        "INSERT INTO allowance_snapshots \
+         (ts, session_id, model, window, used_pct, remaining_pct, resets_at, session_cost_usd) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            ts,
+            session_id,
+            model,
+            window,
+            used_pct,
+            remaining_pct,
+            resets_at,
+            session_cost_usd
+        ],
+    )?;
+    stamp_ctx_active_since(conn);
+    Ok(true)
+}
+
+pub fn latest_allowance_snapshot(conn: &Connection, window: &str) -> Option<AllowanceSnapshotRow> {
+    ensure_schema(conn).ok()?;
+    conn.query_row(
+        "SELECT id, ts, session_id, model, window, used_pct, remaining_pct, resets_at, session_cost_usd \
+         FROM allowance_snapshots WHERE window = ?1 ORDER BY id DESC LIMIT 1",
+        params![window],
+        map_allowance_row,
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+pub fn load_allowance_snapshots(
+    conn: &Connection,
+    window: &str,
+    since_iso: Option<&str>,
+    until_iso: Option<&str>,
+) -> Vec<AllowanceSnapshotRow> {
+    ensure_schema(conn).ok();
+    let sql = match (since_iso, until_iso) {
+        (Some(_), Some(_)) => {
+            "SELECT id, ts, session_id, model, window, used_pct, remaining_pct, resets_at, session_cost_usd \
+             FROM allowance_snapshots WHERE window = ?1 AND ts >= ?2 AND ts <= ?3 ORDER BY ts ASC"
+        }
+        (Some(_), None) => {
+            "SELECT id, ts, session_id, model, window, used_pct, remaining_pct, resets_at, session_cost_usd \
+             FROM allowance_snapshots WHERE window = ?1 AND ts >= ?2 ORDER BY ts ASC"
+        }
+        (None, Some(_)) => {
+            "SELECT id, ts, session_id, model, window, used_pct, remaining_pct, resets_at, session_cost_usd \
+             FROM allowance_snapshots WHERE window = ?1 AND ts <= ?2 ORDER BY ts ASC"
+        }
+        (None, None) => {
+            "SELECT id, ts, session_id, model, window, used_pct, remaining_pct, resets_at, session_cost_usd \
+             FROM allowance_snapshots WHERE window = ?1 ORDER BY ts ASC"
+        }
+    };
+
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return vec![];
+    };
+
+    let rows = match (since_iso, until_iso) {
+        (Some(s), Some(u)) => stmt.query_map(params![window, s, u], map_allowance_row),
+        (Some(s), None) => stmt.query_map(params![window, s], map_allowance_row),
+        (None, Some(u)) => stmt.query_map(params![window, u], map_allowance_row),
+        (None, None) => stmt.query_map(params![window], map_allowance_row),
+    };
+
+    rows.map(|r| r.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default()
 }

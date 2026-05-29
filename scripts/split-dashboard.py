@@ -77,6 +77,7 @@ styles:styles/onboarding.css
 styles:styles/dashboard_part2.css
 fragments/shell_body.html
 tabs/savings_head.html
+tabs/savings_story.html
 tabs/savings_onboarding_wrap_open.html
 include:fragments/onboarding.fragment.html
 tabs/savings_tail.html
@@ -85,6 +86,7 @@ tabs/profiles.html
 tabs/trace.html
 tabs/pipeline.html
 tabs/experiment.html
+tabs/simulate.html
 tabs/settings.html
 fragments/modals.html
 script:js/core.js
@@ -96,7 +98,10 @@ script:js/promptstats.js
 script:js/profiles.js
 script:js/trace.js
 script:js/pipeline.js
+script:js/simulate.js
+script:js/experiment.js
 script:js/profile_analytics.js
+script:js/realtime.js
 script:js/theme.js
 script:js/boot.js
 fragments/tail.html

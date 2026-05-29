@@ -1,10 +1,13 @@
-//! Merge `allowedMcpServers` and Claude Code `hooks` into `~/.claude/settings.json` (native ctx v2 path).
+//! Merge Claude Code hooks and MCP filter rules into `~/.claude/settings.json`.
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use crate::config::FilterMode;
+
 pub const CTX_USER_PROMPT_SUBCOMMAND: &str = "hook user-prompt-submit";
 pub const CTX_HOOK_EVENT_PATH: &str = "/api/hook/event";
+pub const CTX_STATUSLINE_SCRIPT_NAME: &str = "ctx-statusline.sh";
 
 fn hook_commands_from_entry(entry: &Value) -> Vec<String> {
     let mut out = Vec::new();
@@ -140,6 +143,43 @@ pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Resu
     Ok(())
 }
 
+fn statusline_command_is_ctx_managed(cmd: &str) -> bool {
+    cmd.contains(CTX_STATUSLINE_SCRIPT_NAME)
+        || cmd.contains(".ctx/bin/ctx-statusline")
+}
+
+/// Remove ctx-managed `statusLine` entry. Returns true if modified.
+pub fn strip_ctx_statusline(settings: &mut Value) -> bool {
+    let Some(sl) = settings.get("statusLine") else {
+        return false;
+    };
+    let is_ctx = sl
+        .get("command")
+        .and_then(|c| c.as_str())
+        .map(statusline_command_is_ctx_managed)
+        .unwrap_or(false);
+    if is_ctx {
+        if let Some(obj) = settings.as_object_mut() {
+            obj.remove("statusLine");
+        }
+        return true;
+    }
+    false
+}
+
+/// Install ctx statusLine wrapper that records allowance snapshots for the dashboard.
+pub fn merge_ctx_statusline(settings: &mut Value) -> Result<()> {
+    strip_ctx_statusline(settings);
+    let script = crate::config::statusline_script_path();
+    settings["statusLine"] = json!({
+        "type": "command",
+        "command": script.to_string_lossy(),
+        "padding": 0,
+        "timeoutMs": 2000
+    });
+    Ok(())
+}
+
 /// Build `allowedMcpServers` JSON array for Claude Code, or `None` when all servers are allowed.
 pub fn allowed_mcp_servers_value_for_slug(slug: &str) -> Result<Option<Value>> {
     let profile = crate::profiles::get(slug)?;
@@ -194,19 +234,125 @@ pub fn strip_ctx_filter_from_node_options_in_settings(settings: &mut Value) -> b
     }
 }
 
-/// Apply native ctx wiring: remove legacy NODE_OPTIONS filter, set allowlist + hooks.
+/// Remove ctx-managed `permissions.deny` MCP rules. Returns true if modified.
+pub fn strip_ctx_deny_rules(settings: &mut Value) -> bool {
+    let Some(perms) = settings.get_mut("permissions").and_then(|p| p.as_object_mut()) else {
+        return false;
+    };
+    let Some(deny) = perms.get_mut("deny").and_then(|d| d.as_array_mut()) else {
+        return false;
+    };
+    let before = deny.len();
+    deny.retain(|v| {
+        v.as_str()
+            .map(|s| !crate::profiles::is_ctx_managed_deny_pattern(s))
+            .unwrap_or(true)
+    });
+    deny.len() != before
+}
+
+/// Write soft-filter deny rules for `slug`, preserving non-ctx deny entries.
+pub fn merge_profile_deny_rules(settings: &mut Value, slug: &str) -> Result<()> {
+    let profile = crate::profiles::get(slug)?;
+    let cfg = crate::config::Config::load();
+    let mut expansion = cfg.session_expansion.clone();
+    expansion.extend(cfg.session_semantic_tools.clone());
+    let local_names = crate::profiles::local_mcp_server_names(settings);
+    let patterns = crate::profiles::deny_patterns_for_profile(&profile, &expansion, &local_names);
+
+    if !settings.get("permissions").map(|p| p.is_object()).unwrap_or(false) {
+        settings["permissions"] = json!({});
+    }
+    let perms = settings
+        .get_mut("permissions")
+        .and_then(|p| p.as_object_mut())
+        .context("settings.permissions must be object")?;
+
+    let mut deny: Vec<String> = perms
+        .get("deny")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .filter(|s| !crate::profiles::is_ctx_managed_deny_pattern(s))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    deny.extend(patterns);
+    deny.sort();
+    deny.dedup();
+
+    if deny.is_empty() {
+        if let Some(arr) = perms.get_mut("deny").and_then(|d| d.as_array_mut()) {
+            arr.retain(|v| {
+                v.as_str()
+                    .map(|s| !crate::profiles::is_ctx_managed_deny_pattern(s))
+                    .unwrap_or(true)
+            });
+            if arr.is_empty() {
+                perms.remove("deny");
+            }
+        }
+    } else {
+        perms.insert(
+            "deny".to_string(),
+            Value::Array(deny.into_iter().map(Value::String).collect()),
+        );
+    }
+    Ok(())
+}
+
+/// Apply profile filter for the given mode (soft / strict / off).
+pub fn merge_profile_filter(settings: &mut Value, slug: &str, mode: FilterMode) -> Result<()> {
+    match mode {
+        FilterMode::Soft => {
+            strip_allowed_mcp_servers(settings);
+            merge_profile_deny_rules(settings, slug)?;
+        }
+        FilterMode::Strict => {
+            strip_ctx_deny_rules(settings);
+            merge_allowed_mcp_servers(settings, slug)?;
+        }
+        FilterMode::Off => {
+            strip_allowed_mcp_servers(settings);
+            strip_ctx_deny_rules(settings);
+        }
+    }
+    Ok(())
+}
+
+/// Apply native ctx wiring: legacy NODE_OPTIONS cleanup, filter mode, hooks.
 pub fn apply_native_ctx_to_settings_doc(
     settings: &mut Value,
     active_slug: &str,
     dashboard_port: u16,
 ) -> Result<()> {
     strip_ctx_filter_from_node_options_in_settings(settings);
-    merge_allowed_mcp_servers(settings, active_slug)?;
+    let mode = crate::config::Config::load().filter_mode;
+    merge_profile_filter(settings, active_slug, mode)?;
     if !settings.get("hooks").map(|h| h.is_object()).unwrap_or(false) {
         settings["hooks"] = json!({});
     }
     merge_ctx_native_hooks(settings, dashboard_port)?;
+    merge_ctx_statusline(settings)?;
     Ok(())
+}
+
+/// True when `~/.claude/settings.json` points statusLine at the ctx-managed script.
+pub fn ctx_statusline_wired_in_settings() -> bool {
+    let path = crate::config::claude_settings_path();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(doc) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    doc.get("statusLine")
+        .and_then(|sl| sl.get("command"))
+        .and_then(|c| c.as_str())
+        .map(|cmd| cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline"))
+        .unwrap_or(false)
 }
 
 /// Read ~/.claude/settings.json, apply [`apply_native_ctx_to_settings_doc`], write atomically.
@@ -232,6 +378,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn merge_soft_deny_rules_for_data_profile() {
+        let mut doc = json!({
+            "permissions": {
+                "deny": ["Bash(rm -rf *)"]
+            }
+        });
+        merge_profile_filter(&mut doc, "data", FilterMode::Soft).unwrap();
+        assert!(doc.get("allowedMcpServers").is_none());
+        let deny = doc["permissions"]["deny"].as_array().unwrap();
+        assert!(deny.iter().any(|v| v.as_str() == Some("Bash(rm -rf *)")));
+        assert!(deny.iter().any(|v| {
+            v.as_str()
+                .map(|s| s.starts_with("mcp__claude_ai_") && s.ends_with("__*"))
+                .unwrap_or(false)
+        }));
+        assert!(!deny.iter().any(|v| v.as_str() == Some("mcp__claude_ai_Data_Shippo__*")));
+    }
+
+    #[test]
+    fn strip_ctx_deny_preserves_user_rules() {
+        let mut doc = json!({
+            "permissions": {
+                "deny": ["Bash(rm *)", "mcp__claude_ai_Figma__*"]
+            }
+        });
+        assert!(strip_ctx_deny_rules(&mut doc));
+        let deny = doc["permissions"]["deny"].as_array().unwrap();
+        assert_eq!(deny.len(), 1);
+        assert_eq!(deny[0], "Bash(rm *)");
+    }
+
+    #[test]
     fn merge_idempotent_allowed_mcp() {
         let mut doc = json!({});
         merge_allowed_mcp_servers(&mut doc, "data").unwrap();
@@ -254,5 +432,17 @@ mod tests {
         );
         merge_ctx_native_hooks(&mut doc, 8789).unwrap();
         assert!(doc["hooks"]["Stop"].as_array().unwrap().len() >= 1);
+    }
+
+    #[test]
+    fn strip_and_merge_statusline_roundtrip() {
+        let mut doc = json!({});
+        merge_ctx_statusline(&mut doc).unwrap();
+        assert!(doc["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("ctx-statusline.sh"));
+        assert!(strip_ctx_statusline(&mut doc));
+        assert!(doc.get("statusLine").is_none());
     }
 }

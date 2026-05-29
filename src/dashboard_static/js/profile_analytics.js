@@ -6,8 +6,9 @@ async function loadProfileAnalytics() {
   ]);
 
   const el = document.getElementById('profile-analytics-body');
+  if (!el) return;
   if (!stats.length) {
-    el.innerHTML = `<div class="empty">No requests recorded yet. Start the proxy and use Claude Code to see your profile breakdown here.</div>`;
+    el.innerHTML = `<div class="empty">No profile data yet. Send a few Claude Code prompts and ctx will show which profiles ran and how often auto-select switched.</div>`;
     return;
   }
 
@@ -44,7 +45,7 @@ async function loadProfileAnalytics() {
     return `<div class="pa-bar-row">
       <div class="pa-bar-label">${s.display || s.slug}</div>
       <div class="pa-bar-track"><div class="pa-bar-fill" style="width:${pct}%"></div></div>
-      <div class="pa-bar-meta">${s.requests} req &middot; $${s.cost_saved.toFixed(2)} saved${s.auto_selected_count > 0 ? ' &middot; <span style="color:var(--blue)">'+s.auto_selected_count+' auto</span>' : ''}</div>
+      <div class="pa-bar-meta">${s.requests} req, $${s.cost_saved.toFixed(2)} saved${s.auto_selected_count > 0 ? ', <span style="color:var(--blue)">'+s.auto_selected_count+' auto</span>' : ''}</div>
     </div>`;
   }).join('');
 

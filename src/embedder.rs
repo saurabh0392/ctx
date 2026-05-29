@@ -90,7 +90,7 @@ fn blob_to_vec(blob: &[u8]) -> Option<Vec<f32>> {
     Some(v)
 }
 
-fn vec_to_blob(v: &[f32]) -> Vec<u8> {
+pub fn vec_to_blob(v: &[f32]) -> Vec<u8> {
     let mut b = Vec::with_capacity(v.len() * 4);
     for x in v {
         b.extend_from_slice(&x.to_le_bytes());

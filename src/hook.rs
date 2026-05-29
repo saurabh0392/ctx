@@ -26,6 +26,24 @@ fn spawn_trigger_ingest(dashboard_port: u16) {
     });
 }
 
+/// Notify open dashboard tabs via SSE (fire-and-forget).
+fn spawn_dashboard_push(dashboard_port: u16, kind: &str) {
+    let kind = kind.replace('"', "");
+    std::thread::spawn(move || {
+        let body = format!(r#"{{"kind":"{kind}"}}"#);
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, dashboard_port));
+        let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(800)) else {
+            return;
+        };
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let req = format!(
+            "POST /api/dashboard/push HTTP/1.1\r\nHost: 127.0.0.1:{dashboard_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(req.as_bytes());
+    });
+}
+
 fn find_claude_session_jsonl(session_id: &str) -> Option<std::path::PathBuf> {
     let home = dirs::home_dir()?;
     let projects = home.join(".claude").join("projects");
@@ -138,13 +156,14 @@ fn coach_kind_for_signal(sig: &crate::coach::CoachSignal) -> &'static str {
 
 fn profile_savings(profile_slug: &str) -> (usize, usize, usize) {
     let profiles = crate::profiles::load_all();
+    let total = crate::profiles::dynamic_total_tools();
     if let Some(p) = profiles.get(profile_slug) {
         let kept = p.tool_count();
-        let removed = crate::profiles::TOTAL_TOOLS.saturating_sub(kept);
+        let removed = total.saturating_sub(kept);
         let saved = p.savings_vs_all();
         (kept, removed, saved)
     } else {
-        (crate::profiles::TOTAL_TOOLS, 0, 0)
+        (total, 0, 0)
     }
 }
 
@@ -172,6 +191,11 @@ fn record_hook_trace(
     tokens_saved: usize,
     adaptive_fired: bool,
     ab_group: Option<&str>,
+    inject_chars: usize,
+    adaptive_chars: usize,
+    budget_blocked: bool,
+    pinned_profile: Option<&str>,
+    effective_profile: Option<&str>,
 ) {
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
@@ -192,7 +216,14 @@ fn record_hook_trace(
             tokens_saved,
             adaptive_fired,
             ab_group,
+            inject_chars,
+            adaptive_chars,
+            budget_blocked,
+            pinned_profile,
+            effective_profile,
         );
+        let port = crate::config::Config::load().dashboard_port.unwrap_or(8789);
+        spawn_dashboard_push(port, "hook_trace");
     }
 }
 
@@ -207,7 +238,6 @@ pub fn user_prompt_submit() -> Result<()> {
     let prompt = input["prompt"].as_str().unwrap_or("");
     let session_id = input["session_id"].as_str().or_else(|| input["sessionId"].as_str());
     let parent_session_id = parent_session_from_input(&input);
-    let pseudo_system = format!("Primary working directory: {cwd}\n");
 
     let mut cfg = crate::config::Config::load();
     let active_mode_name = cfg.active_mode.clone();
@@ -232,22 +262,73 @@ pub fn user_prompt_submit() -> Result<()> {
 
     let mut auto_selected = false;
     let mut auto_trigger: Option<String> = None;
+    let mut effective_profile = active.clone();
 
-    if ab.profile && cfg.auto_profile_enabled {
-        if let Some((new_slug, trigger)) = crate::profiles::auto_select(&pseudo_system, &active) {
+    // Auto-profile runs regardless of A/B arm; it picks the effective profile when enabled.
+    if cfg.auto_profile_enabled {
+        if let Some((new_slug, trigger)) =
+            crate::profiles::auto_select(cwd, prompt, &active)
+        {
             auto_selected = true;
             auto_trigger = Some(trigger);
-            crate::profiles::apply_profile(&new_slug, true, true)?;
-            cfg = crate::config::Config::load();
+            effective_profile = new_slug;
         }
-    } else if !ab.profile {
-        let _ = crate::profiles::apply_profile("all", true, true);
-        cfg = crate::config::Config::load();
     }
 
-    let trace_profile = cfg.active_profile.as_deref().unwrap_or("all").to_string();
+    // Profile-filter experiment: treatment applies auto's pick; control strips filtering for this prompt.
+    let filter_profile = if ab.profile {
+        effective_profile.as_str()
+    } else {
+        "all"
+    };
+    let mut trace_profile = filter_profile.to_string();
+
+    if cfg.filter_mode == crate::config::FilterMode::Soft {
+        if ab.profile {
+            crate::filter_control::hook_sync_profile(filter_profile, prompt, cwd, true)?;
+            cfg = crate::config::Config::load();
+            trace_profile = cfg.active_profile.as_deref().unwrap_or("all").to_string();
+        } else {
+            crate::filter_control::hook_apply_control_filter(true)?;
+        }
+    } else if !ab.profile {
+        trace_profile = "all".to_string();
+    }
+
+    let trace_effective = if auto_selected {
+        Some(effective_profile.as_str())
+    } else {
+        None
+    };
 
     if let Some(reason) = crate::budget_guard::hard_block_reason_for_prompt(prompt) {
+        let (tools_kept, tools_removed, tokens_saved) = if ab.profile {
+            profile_savings(&trace_profile)
+        } else {
+            profile_savings("all")
+        };
+        record_hook_trace(
+            session_id,
+            parent_session_id,
+            cwd,
+            &trace_profile,
+            active_mode_name.as_deref(),
+            auto_selected,
+            auto_trigger.as_deref(),
+            false,
+            None,
+            false,
+            tools_kept,
+            tools_removed,
+            tokens_saved,
+            false,
+            ab_group.as_deref(),
+            0,
+            0,
+            true,
+            Some(active.as_str()),
+            trace_effective,
+        );
         let out = json!({
             "decision": "block",
             "reason": reason
@@ -286,6 +367,11 @@ pub fn user_prompt_submit() -> Result<()> {
                 tokens_saved,
                 false,
                 ab_group.as_deref(),
+                0,
+                0,
+                false,
+                Some(active.as_str()),
+                trace_effective,
             );
             let out = json!({
                 "decision": "block",
@@ -297,10 +383,13 @@ pub fn user_prompt_submit() -> Result<()> {
     }
 
     let mut inject_fired = false;
+    let mut inject_chars = 0usize;
     let mut extra = String::new();
     if cfg.inject_enabled && ab.inject {
         if let Some(prefix) = crate::inject::load_prefix() {
-            extra.push_str(prefix.trim());
+            let trimmed = prefix.trim();
+            inject_chars = trimmed.chars().count();
+            extra.push_str(trimmed);
             extra.push_str("\n\n");
             inject_fired = true;
         }
@@ -321,10 +410,12 @@ pub fn user_prompt_submit() -> Result<()> {
         .or_else(|| input.pointer("/transcript/model").and_then(|x| x.as_str()));
     let max_adaptive = crate::adaptive::max_chars_for_hook_input(model_hint);
     let mut adaptive_fired = false;
+    let mut adaptive_chars = 0usize;
     if cfg.adaptive_prefix_enabled && ab.adaptive {
         if let Some(ad) = crate::adaptive::load_adaptive_prefix() {
             let trimmed = crate::adaptive::truncate_to_char_budget(ad.trim(), max_adaptive);
             if !trimmed.is_empty() {
+                adaptive_chars = trimmed.chars().count();
                 extra.push_str(&trimmed);
                 extra.push_str("\n\n");
                 adaptive_fired = true;
@@ -332,7 +423,21 @@ pub fn user_prompt_submit() -> Result<()> {
         }
     }
 
-    let budget_fired = false;
+    let mut budget_fired = false;
+    let mut budget_texts = coaching_texts.clone();
+    budget_texts.push(prompt.to_string());
+    if let Some(warning) = crate::budget_guard::soft_warning_for_hook_input(
+        &input,
+        prompt,
+        &budget_texts,
+        model_hint,
+    ) {
+        extra.push_str(warning.trim());
+        extra.push_str("\n\n");
+        budget_fired = true;
+    }
+
+    let budget_blocked = false;
 
     let (tools_kept, tools_removed, tokens_saved) = if ab.profile {
         profile_savings(&trace_profile)
@@ -356,6 +461,11 @@ pub fn user_prompt_submit() -> Result<()> {
         tokens_saved,
         adaptive_fired,
         ab_group.as_deref(),
+        inject_chars,
+        adaptive_chars,
+        budget_blocked,
+        Some(active.as_str()),
+        trace_effective,
     );
 
     if extra.trim().is_empty() {

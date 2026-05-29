@@ -1,0 +1,16 @@
+{
+  "gates": [
+    { "id": "filter", "name": "Profile filter", "enabled": true, "today_count": 0, "today_tokens": 0, "detail": "Active profile: all" },
+    { "id": "auto", "name": "Auto-profile", "enabled": true, "today_count": 0, "today_tokens": 0, "detail": "No switches today" },
+    { "id": "inject", "name": "System prefix", "enabled": true, "today_count": 8, "today_tokens": 0, "detail": "system_prefix.md active" },
+    { "id": "adaptive", "name": "Adaptive prefix", "enabled": true, "today_count": 8, "today_tokens": 0, "detail": "adaptive_prefix.md active" },
+    { "id": "coach", "name": "Coaching", "enabled": true, "today_count": 1, "today_tokens": 0, "detail": "1 correction signal" },
+    { "id": "budget", "name": "Budget guard", "enabled": true, "today_count": 0, "today_tokens": 0, "detail": "Within pace" },
+    { "id": "behavior", "name": "Behavior guard", "enabled": false, "today_count": 0, "today_tokens": 0, "detail": "Proxy only" },
+    { "id": "compress", "name": "Bash compress", "enabled": false, "today_count": 0, "today_tokens": 0, "detail": "Not shipped" }
+  ],
+  "activity": [],
+  "hook_only": true,
+  "active_profile": "all",
+  "prompts_today": 12
+}

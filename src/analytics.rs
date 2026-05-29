@@ -31,6 +31,12 @@ pub struct Record {
     #[serde(default)]
     pub inject_fired: bool,
     #[serde(default)]
+    pub inject_chars: usize,
+    #[serde(default)]
+    pub adaptive_chars: usize,
+    #[serde(default)]
+    pub budget_blocked: bool,
+    #[serde(default)]
     pub coach_kind: Option<String>,
     #[serde(default)]
     pub budget_fired: bool,
@@ -69,6 +75,9 @@ pub struct TraceInfo {
     pub auto_selected: bool,
     pub auto_trigger: Option<String>,
     pub inject_fired: bool,
+    pub inject_chars: usize,
+    pub adaptive_chars: usize,
+    pub budget_blocked: bool,
     pub coach_kind: Option<String>,
     pub budget_fired: bool,
     pub behavior_kind: Option<String>,
@@ -88,6 +97,9 @@ pub fn record(tools_removed: usize, tokens_saved: usize, profile: &str, trace: T
         auto_selected: trace.auto_selected,
         auto_trigger: trace.auto_trigger,
         inject_fired: trace.inject_fired,
+        inject_chars: trace.inject_chars,
+        adaptive_chars: trace.adaptive_chars,
+        budget_blocked: trace.budget_blocked,
         coach_kind: trace.coach_kind,
         budget_fired: trace.budget_fired,
         behavior_kind: trace.behavior_kind,

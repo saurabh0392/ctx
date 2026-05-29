@@ -513,6 +513,18 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
 
                 prev_output_tokens = a.output_tokens;
                 prev_output_text = a.output_text.clone();
+
+                if a.is_text_content {
+                    if let Some(ref text) = a.output_text {
+                        let slug = crate::config::Config::load()
+                            .active_profile
+                            .unwrap_or_else(|| "all".into());
+                        if let Ok(p) = crate::profiles::get(&slug) {
+                            let tools = crate::semantic_tools::detect_access_friction_tools(text, &p);
+                            let _ = crate::semantic_tools::record_access_friction(&tools);
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -1044,6 +1056,8 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     } else {
         let _ = conn.execute("DELETE FROM session_embeddings", []);
     }
+
+    let _ = crate::profiles::after_ingest_profile_sync();
 
     Ok(count)
 }

@@ -75,6 +75,80 @@ coaching_pct = 100
 
 #[test]
 #[serial]
+fn hook_profile_control_clears_runtime_deny() {
+    let h = CtxHarness::new();
+    std::env::set_var("HOME", h.tmp.path());
+    let claude_dir = h.tmp.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{"permissions":{"deny":["Bash(rm *)"]}}"#,
+    )
+    .unwrap();
+
+    h.write_config(
+        r#"
+active_profile = "data"
+filter_mode = "soft"
+inject_enabled = false
+coaching_enabled = false
+auto_profile_enabled = false
+adaptive_prefix_enabled = false
+
+[ab_test]
+profile_pct = 0
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+"#,
+    );
+
+    ctx::profiles::apply_profile("data", true, true).expect("seed treatment deny");
+    let before: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    let deny_before = before["permissions"]["deny"].as_array().unwrap();
+    assert!(
+        deny_before.iter().any(|v| {
+            v.as_str()
+                .map(|s| s.starts_with("mcp__claude_ai_"))
+                .unwrap_or(false)
+        }),
+        "expected ctx deny before control hook"
+    );
+
+    let stdin_json = serde_json::json!({
+        "cwd": "/tmp",
+        "prompt": "ping",
+        "model": "claude-sonnet-4-20250514"
+    })
+    .to_string();
+    run_hook(&h, &stdin_json);
+
+    let after: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    let deny_after = after["permissions"]["deny"].as_array().unwrap();
+    assert!(
+        deny_after.iter().any(|v| v.as_str() == Some("Bash(rm *)")),
+        "user deny rule should be preserved"
+    );
+    assert!(
+        !deny_after.iter().any(|v| {
+            v.as_str()
+                .map(|s| ctx::profiles::is_ctx_managed_deny_pattern(s))
+                .unwrap_or(false)
+        }),
+        "control hook should strip ctx-managed deny rules"
+    );
+
+    std::env::remove_var("HOME");
+}
+
+#[test]
+#[serial]
 fn hook_default_config_ab_group_null() {
     let h = CtxHarness::new();
     h.write_config(

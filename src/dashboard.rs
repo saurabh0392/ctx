@@ -24,6 +24,27 @@ fn ingest_running() -> &'static AtomicBool {
     INGEST_RUNNING.get_or_init(|| AtomicBool::new(false))
 }
 
+/// Run JSONL ingest once and notify SSE clients when finished.
+fn spawn_background_ingest(hook_type: Option<String>) {
+    if ingest_running()
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(|| {
+            let _ = crate::conversations::ingest_claude_jsonl();
+        })
+        .await;
+        ingest_running().store(false, Ordering::Release);
+        crate::dashboard_push::notify(crate::dashboard_push::DashboardEvent {
+            kind: "ingest_complete".into(),
+            hook_type,
+        });
+    });
+}
+
 use crate::analytics::{group_into_sessions, load_records};
 
 const HTML: &str = include_str!("dashboard.html");
@@ -162,6 +183,198 @@ fn savings_sessions_from_db(conn: &rusqlite::Connection, watermark: Option<&str>
     out
 }
 
+fn savings_sessions_from_hook_traces(
+    conn: &rusqlite::Connection,
+    watermark: Option<&str>,
+) -> Vec<crate::analytics::Session> {
+    let sql = "SELECT MIN(ts) AS started_at,
+                      CAST((julianday(MAX(ts)) - julianday(MIN(ts))) * 24 * 60 AS INTEGER) AS duration_mins,
+                      COUNT(*) AS requests,
+                      COALESCE(SUM(tools_removed), 0) AS tools_removed,
+                      COALESCE(SUM(tokens_saved), 0) AS tokens_saved,
+                      COALESCE(SUM(cost_usd), 0.0) AS cost,
+                      COALESCE(MAX(profile), '') AS profile,
+                      COALESCE(MAX(working_directory), '') AS working_directory
+               FROM hook_traces
+               WHERE (?1 IS NULL OR ts >= ?1)
+               GROUP BY COALESCE(session_id, id)
+               ORDER BY started_at DESC
+               LIMIT 20";
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return vec![];
+    };
+    let rows = stmt.query_map(params![watermark], map_savings_session_row);
+    let Ok(rows) = rows else {
+        return vec![];
+    };
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+fn spend_sessions_from_hook_traces(
+    conn: &rusqlite::Connection,
+    watermark: Option<&str>,
+) -> Vec<crate::conversations::SessionCost> {
+    let sql = "SELECT COALESCE(session_id, CAST(id AS TEXT)) AS session_id,
+                      COALESCE(MAX(working_directory), '') AS project,
+                      MIN(ts) AS started_at,
+                      COUNT(*) AS turn_count,
+                      COALESCE(SUM(cost_usd), 0.0) AS total_usd,
+                      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                      COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                      COALESCE(MAX(model), '') AS model
+               FROM hook_traces
+               WHERE (?1 IS NULL OR ts >= ?1)
+               GROUP BY COALESCE(session_id, id)
+               ORDER BY started_at DESC
+               LIMIT 20";
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return vec![];
+    };
+    let Ok(rows) = stmt.query_map(params![watermark], |r| {
+        let model: String = r.get(9)?;
+        let models_used = if model.is_empty() {
+            vec![]
+        } else {
+            vec![model]
+        };
+        Ok(crate::conversations::SessionCost {
+            session_id: r.get(0)?,
+            project: r.get(1)?,
+            started_at: r.get(2)?,
+            first_user_message: String::new(),
+            turn_count: r.get::<_, i64>(3)? as usize,
+            total_usd: r.get(4)?,
+            input_tokens: r.get::<_, i64>(5)? as usize,
+            cache_creation_tokens: r.get::<_, i64>(6)? as usize,
+            cache_read_tokens: r.get::<_, i64>(7)? as usize,
+            output_tokens: r.get::<_, i64>(8)? as usize,
+            models_used,
+            hit_compact: false,
+            clarifying_turns: 0,
+            correction_turns: 0,
+            top_turns: vec![],
+        })
+    }) else {
+        return vec![];
+    };
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+fn timeline_from_hook_traces(
+    conn: &rusqlite::Connection,
+    cutoff_iso: &str,
+    watermark: Option<&str>,
+) -> Vec<TimelinePoint> {
+    let effective_cutoff = match watermark {
+        Some(s) if s > cutoff_iso => s,
+        _ => cutoff_iso,
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT substr(ts, 1, 10) AS d,
+                CAST(COALESCE(SUM(tokens_saved), 0) AS INTEGER) AS tok,
+                COALESCE(SUM(cost_usd), 0.0) AS spend,
+                COUNT(*) AS turns
+         FROM hook_traces
+         WHERE ts >= ?1
+         GROUP BY d
+         ORDER BY d ASC",
+    ) else {
+        return vec![];
+    };
+    let rows = stmt.query_map(params![effective_cutoff], |r| {
+        Ok(TimelinePoint {
+            date: r.get(0)?,
+            tokens: r.get::<_, i64>(1)? as usize,
+            cost: r.get(2)?,
+            requests: r.get::<_, i64>(3)? as usize,
+        })
+    });
+    let Ok(rows) = rows else {
+        return vec![];
+    };
+    rows.filter_map(|x| x.ok()).collect()
+}
+
+fn hook_trace_month_spend(conn: &rusqlite::Connection, watermark: Option<&str>, month: &str) -> f64 {
+    let pattern = format!("{month}%");
+    conn.query_row(
+        "SELECT COALESCE(SUM(cost_usd), 0.0)
+         FROM hook_traces
+         WHERE ts LIKE ?1 AND (?2 IS NULL OR ts >= ?2)",
+        params![pattern, watermark],
+        |r| r.get(0),
+    )
+    .unwrap_or(0.0)
+}
+
+fn hook_trace_session_count(conn: &rusqlite::Connection, watermark: Option<&str>, month: &str) -> usize {
+    let pattern = format!("{month}%");
+    conn.query_row(
+        "SELECT COUNT(DISTINCT COALESCE(session_id, CAST(id AS TEXT)))
+         FROM hook_traces
+         WHERE ts LIKE ?1 AND (?2 IS NULL OR ts >= ?2)",
+        params![pattern, watermark],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+    .max(0) as usize
+}
+
+/// Aggregate filter stats from hook_traces when proxy `requests` table is empty.
+fn hook_trace_filter_totals(conn: &rusqlite::Connection, watermark: Option<&str>) -> (usize, usize, usize, usize) {
+    conn.query_row(
+        "SELECT COUNT(*) AS requests,
+                COALESCE(SUM(tokens_saved), 0) AS tokens,
+                COALESCE(SUM(tools_removed), 0) AS tools_removed,
+                COALESCE(SUM(tools_kept), 0) AS tools_kept
+         FROM hook_traces
+         WHERE (?1 IS NULL OR ts >= ?1)",
+        params![watermark],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)? as usize,
+                r.get::<_, i64>(1)? as usize,
+                r.get::<_, i64>(2)? as usize,
+                r.get::<_, i64>(3)? as usize,
+            ))
+        },
+    )
+    .unwrap_or((0, 0, 0, 0))
+}
+
+/// Per-profile breakdown from hook_traces (slug -> (requests, tokens, auto_count)).
+fn profiles_analytics_from_hook_traces(
+    conn: &rusqlite::Connection,
+    watermark: Option<&str>,
+) -> HashMap<String, (usize, usize, usize)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(NULLIF(TRIM(effective_profile), ''), NULLIF(TRIM(profile), ''), 'all') AS slug,
+                COUNT(*) AS requests,
+                COALESCE(SUM(tokens_saved), 0) AS tokens,
+                COALESCE(SUM(CASE WHEN auto_selected != 0 THEN 1 ELSE 0 END), 0) AS auto_count
+         FROM hook_traces
+         WHERE (?1 IS NULL OR ts >= ?1)
+         GROUP BY slug",
+    ) else {
+        return HashMap::new();
+    };
+    let Ok(rows) = stmt.query_map(params![watermark], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)? as usize,
+            r.get::<_, i64>(2)? as usize,
+            r.get::<_, i64>(3)? as usize,
+        ))
+    }) else {
+        return HashMap::new();
+    };
+    rows.filter_map(|r| r.ok())
+        .map(|(slug, requests, tokens, auto_count)| (slug, (requests, tokens, auto_count)))
+        .collect()
+}
+
 fn map_project_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRow> {
     Ok(ProjectRow {
         working_directory: r.get(0)?,
@@ -273,6 +486,526 @@ fn tool_usage_from_invocations(conn: &rusqlite::Connection, watermark: Option<&s
     out
 }
 
+const VERDICT_MIN_PROMPTS: usize = 20;
+
+#[derive(Default)]
+struct HookGateTotals {
+    trace_count: usize,
+    filter_count: usize,
+    filter_tokens: usize,
+    inject_count: usize,
+    adaptive_count: usize,
+    auto_count: usize,
+    coach_count: usize,
+    budget_count: usize,
+    budget_blocked_count: usize,
+    inject_chars: usize,
+    adaptive_chars: usize,
+}
+
+fn prompt_word(n: usize) -> &'static str {
+    if n == 1 {
+        "prompt"
+    } else {
+        "prompts"
+    }
+}
+
+fn too_early_verdict(feature: &str, count: usize) -> String {
+    format!(
+        "{feature} on {count} {} today — need about {VERDICT_MIN_PROMPTS} before a recommendation.",
+        prompt_word(count)
+    )
+}
+
+fn hook_trace_gate_totals(
+    conn: &rusqlite::Connection,
+    today: &str,
+    wm: Option<&str>,
+) -> HookGateTotals {
+    let row: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = if let Some(since) = wm {
+        conn.query_row(
+            "SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN tools_removed > 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(tokens_saved), 0),
+                COALESCE(SUM(CASE WHEN inject_fired = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN adaptive_fired = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN auto_selected = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN coach_kind IS NOT NULL THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN budget_fired = 1 OR budget_blocked = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN budget_blocked = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(inject_chars), 0),
+                COALESCE(SUM(adaptive_chars), 0)
+             FROM hook_traces
+             WHERE substr(ts, 1, 10) = ?1 AND ts >= ?2",
+            params![today, since],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                ))
+            },
+        )
+    } else {
+        conn.query_row(
+            "SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN tools_removed > 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(tokens_saved), 0),
+                COALESCE(SUM(CASE WHEN inject_fired = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN adaptive_fired = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN auto_selected = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN coach_kind IS NOT NULL THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN budget_fired = 1 OR budget_blocked = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN budget_blocked = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(inject_chars), 0),
+                COALESCE(SUM(adaptive_chars), 0)
+             FROM hook_traces
+             WHERE substr(ts, 1, 10) = ?1",
+            params![today],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                ))
+            },
+        )
+    }
+    .unwrap_or((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+
+    HookGateTotals {
+        trace_count: row.0.max(0) as usize,
+        filter_count: row.1.max(0) as usize,
+        filter_tokens: row.2.max(0) as usize,
+        inject_count: row.3.max(0) as usize,
+        adaptive_count: row.4.max(0) as usize,
+        auto_count: row.5.max(0) as usize,
+        coach_count: row.6.max(0) as usize,
+        budget_count: row.7.max(0) as usize,
+        budget_blocked_count: row.8.max(0) as usize,
+        inject_chars: row.9.max(0) as usize,
+        adaptive_chars: row.10.max(0) as usize,
+    }
+}
+
+fn merge_request_prefix_totals(
+    totals: &mut HookGateTotals,
+    today_recs: &[&crate::analytics::Record],
+) {
+    for r in today_recs {
+        totals.inject_chars += r.inject_chars;
+        totals.adaptive_chars += r.adaptive_chars;
+        if r.budget_fired || r.budget_blocked {
+            totals.budget_count = totals.budget_count.saturating_add(1);
+        }
+        if r.budget_blocked {
+            totals.budget_blocked_count = totals.budget_blocked_count.saturating_add(1);
+        }
+    }
+}
+
+fn correction_rate_7d(conn: &rusqlite::Connection, wm: Option<&str>) -> Option<f64> {
+    let rate: f64 = if let Some(since) = wm {
+        conn.query_row(
+            "SELECT AVG(CAST(correction_turns AS REAL) / MAX(turn_count, 1))
+             FROM sessions
+             WHERE started_at >= datetime('now', '-7 days')
+               AND started_at >= ?1
+               AND turn_count > 0",
+            params![since],
+            |r| r.get(0),
+        )
+    } else {
+        conn.query_row(
+            "SELECT AVG(CAST(correction_turns AS REAL) / MAX(turn_count, 1))
+             FROM sessions
+             WHERE started_at >= datetime('now', '-7 days')
+               AND turn_count > 0",
+            [],
+            |r| r.get(0),
+        )
+    }
+    .unwrap_or(None)
+    .unwrap_or(0.0);
+    if rate > 0.0 {
+        Some(rate)
+    } else {
+        None
+    }
+}
+
+fn correction_rate_with_coaching(
+    conn: &rusqlite::Connection,
+    wm: Option<&str>,
+) -> Option<f64> {
+    let rate: f64 = if let Some(since) = wm {
+        conn.query_row(
+            "SELECT AVG(CAST(s.correction_turns AS REAL) / MAX(s.turn_count, 1))
+             FROM sessions s
+             WHERE s.started_at >= datetime('now', '-7 days')
+               AND s.started_at >= ?1
+               AND s.turn_count > 0
+               AND EXISTS (
+                 SELECT 1 FROM hook_traces h
+                 WHERE h.coach_kind IS NOT NULL
+                   AND h.session_id IS NOT NULL
+                   AND s.external_key LIKE '%' || h.session_id || '%'
+               )",
+            params![since],
+            |r| r.get(0),
+        )
+    } else {
+        conn.query_row(
+            "SELECT AVG(CAST(s.correction_turns AS REAL) / MAX(s.turn_count, 1))
+             FROM sessions s
+             WHERE s.started_at >= datetime('now', '-7 days')
+               AND s.turn_count > 0
+               AND EXISTS (
+                 SELECT 1 FROM hook_traces h
+                 WHERE h.coach_kind IS NOT NULL
+                   AND h.session_id IS NOT NULL
+                   AND s.external_key LIKE '%' || h.session_id || '%'
+               )",
+            [],
+            |r| r.get(0),
+        )
+    }
+    .unwrap_or(None)
+    .unwrap_or(0.0);
+    if rate > 0.0 {
+        Some(rate)
+    } else {
+        None
+    }
+}
+
+fn enrich_gate_stats(
+    gates: &mut [GateStat],
+    active_profile: &str,
+    hook_only: bool,
+    personal_ready: bool,
+    corr_rate_7d: Option<f64>,
+    coach_rate_with_coaching: Option<f64>,
+    budget_threshold: f64,
+    auto_tokens_saved: usize,
+    auto_tools_removed: usize,
+    totals: &HookGateTotals,
+) {
+    for g in gates.iter_mut() {
+        match g.id.as_str() {
+            "filter" => {
+                g.impact_kind = "cost".into();
+                if g.today_tokens > 0 && g.today_count >= VERDICT_MIN_PROMPTS {
+                    g.impact_primary = format!("~{} tokens stripped today", fmt_tok(g.today_tokens));
+                    g.impact_secondary = Some(format!("{} prompts with fewer tools", g.today_count));
+                    g.verdict = "keep".into();
+                    g.verdict_detail =
+                        "Profile filtering is saving context — keep your active profile on.".into();
+                } else if g.today_tokens > 0 {
+                    g.impact_primary = format!(
+                        "~{} tokens stripped on {} {} today",
+                        fmt_tok(g.today_tokens),
+                        g.today_count,
+                        prompt_word(g.today_count)
+                    );
+                    g.impact_secondary = Some(
+                        "Pinned profile strips tools — separate from auto-profile picking".into(),
+                    );
+                    g.verdict = "early".into();
+                    g.verdict_detail = too_early_verdict("Filtering", g.today_count);
+                } else if active_profile == "all" && !personal_ready {
+                    g.impact_primary =
+                        "Measuring your MCP tool universe — no strip while on `all`".into();
+                    g.impact_secondary = Some(g.detail.clone());
+                    g.verdict = "early".into();
+                    g.verdict_detail =
+                        "ctx is collecting usage until your personal profile auto-activates.".into();
+                } else if active_profile == "all" {
+                    g.impact_primary = "On `all` — every tool stays visible".into();
+                    g.verdict = "review".into();
+                    g.verdict_detail =
+                        "Switch to a narrower profile when you want token savings.".into();
+                } else if g.today_count > 0 {
+                    g.impact_primary = "Filtering active — token savings may be small today".into();
+                    g.verdict = "early".into();
+                    g.verdict_detail = too_early_verdict("Filtering", g.today_count);
+                } else {
+                    g.impact_primary = "No tool strips recorded today".into();
+                    g.verdict = "early".into();
+                    g.verdict_detail = "Use MCP tools normally — activity shows up after prompts.".into();
+                }
+            }
+            "auto" => {
+                g.impact_kind = "quality".into();
+                if !g.enabled {
+                    g.impact_primary = "Auto-profile is off in config".into();
+                    g.verdict = "off".into();
+                    g.verdict_detail = "Enable auto_profile in ~/.ctx/config.toml to switch by folder."
+                        .into();
+                } else if g.today_count > 0 {
+                    g.impact_primary = format!(
+                        "{} auto match{} today",
+                        g.today_count,
+                        if g.today_count == 1 { "" } else { "es" }
+                    );
+                    if auto_tokens_saved > 0 {
+                        g.impact_secondary = Some(format!(
+                            "~{} tok saved on matched prompts (−{} tools)",
+                            fmt_tok(auto_tokens_saved),
+                            auto_tools_removed
+                        ));
+                    } else {
+                        g.impact_secondary =
+                            Some("Matched via similar past work or path/keyword rules".into());
+                    }
+                    if g.today_count >= VERDICT_MIN_PROMPTS {
+                        g.verdict = "keep".into();
+                        g.verdict_detail =
+                            "Auto-profile is routing you — review matches in the feed below.".into();
+                    } else {
+                        g.verdict = "early".into();
+                        g.verdict_detail = too_early_verdict("Auto-profile", g.today_count);
+                    }
+                } else if totals.filter_count > 0 && active_profile != "all" {
+                    g.impact_primary = format!(
+                        "No auto match today — pinned `{active_profile}` is filtering"
+                    );
+                    g.impact_secondary = Some(format!(
+                        "{} {} stripped tools today (filter ≠ auto)",
+                        totals.filter_count,
+                        prompt_word(totals.filter_count)
+                    ));
+                    g.verdict = "early".into();
+                    g.verdict_detail = "Auto picks a profile from similar sessions or path rules. \
+                        Filtering always uses your pinned profile."
+                        .into();
+                } else {
+                    g.impact_primary = "No auto matches today".into();
+                    g.verdict = "early".into();
+                    g.verdict_detail = "Matches when cwd fits a path pattern or past sessions \
+                        vote for a profile."
+                        .into();
+                }
+            }
+            "inject" => {
+                g.impact_kind = "cost".into();
+                if !g.enabled {
+                    g.impact_primary = "Static prefix not active".into();
+                    g.verdict = "off".into();
+                    g.verdict_detail =
+                        "Add system_prefix.md or enable inject in config.".into();
+                } else if g.today_count > 0 {
+                    g.impact_primary = format!(
+                        "Prefix applied on {} prompt{}",
+                        g.today_count,
+                        if g.today_count == 1 { "" } else { "s" }
+                    );
+                    if totals.inject_chars > 0 {
+                        g.chars_added = Some(totals.inject_chars);
+                        g.impact_secondary = Some(format!(
+                            "~{} chars (~{} tok) added today",
+                            totals.inject_chars,
+                            fmt_tok(totals.inject_chars / 4)
+                        ));
+                    } else {
+                        g.impact_secondary =
+                            Some("Adds context each turn — check Experiment for cost delta".into());
+                    }
+                    if g.today_count >= VERDICT_MIN_PROMPTS {
+                        g.verdict = "review".into();
+                        g.verdict_detail =
+                            "Enough samples — use Experiment tab to see if the prefix pays for itself."
+                                .into();
+                    } else {
+                        g.verdict = "early".into();
+                        g.verdict_detail = too_early_verdict("System prefix", g.today_count);
+                    }
+                } else {
+                    g.impact_primary = "Enabled but no fires yet today".into();
+                    g.verdict = "early".into();
+                    g.verdict_detail = "Send a prompt through Claude Code with ctx active.".into();
+                }
+            }
+            "adaptive" => {
+                g.impact_kind = "cost".into();
+                if !g.enabled {
+                    g.impact_primary = "Adaptive prefix disabled".into();
+                    g.verdict = "off".into();
+                    g.verdict_detail = "Turn on adaptive_prefix_enabled in config.".into();
+                } else if g.today_count > 0 {
+                    g.impact_primary = format!(
+                        "Learned prefix on {} prompt{}",
+                        g.today_count,
+                        if g.today_count == 1 { "" } else { "s" }
+                    );
+                    if totals.adaptive_chars > 0 {
+                        g.chars_added = Some(totals.adaptive_chars);
+                        g.impact_secondary = Some(format!(
+                            "~{} chars (~{} tok) added today",
+                            totals.adaptive_chars,
+                            fmt_tok(totals.adaptive_chars / 4)
+                        ));
+                    } else {
+                        g.impact_secondary =
+                            Some("Built from indexed sessions — quality impact in Experiment".into());
+                    }
+                    if g.today_count >= VERDICT_MIN_PROMPTS {
+                        g.verdict = "review".into();
+                        g.verdict_detail =
+                            "Enough samples — use Experiment tab before deciding to keep adaptive on."
+                                .into();
+                    } else {
+                        g.verdict = "early".into();
+                        g.verdict_detail = too_early_verdict("Adaptive prefix", g.today_count);
+                    }
+                } else {
+                    g.impact_primary = "Waiting for enough session history".into();
+                    g.verdict = "early".into();
+                    g.verdict_detail =
+                        "Adaptive prefix fires once ctx has indexed sessions to learn from.".into();
+                }
+            }
+            "coach" => {
+                g.impact_kind = "quality".into();
+                if let Some(rate) = corr_rate_7d {
+                    g.impact_primary =
+                        format!("{:.0}% correction rate over the last 7 days", rate * 100.0);
+                } else {
+                    g.impact_primary = "Correction rate baseline building".into();
+                }
+                if let (Some(base), Some(coach)) = (corr_rate_7d, coach_rate_with_coaching) {
+                    let delta = coach - base;
+                    g.quality_delta = Some(delta as f32);
+                    g.impact_secondary = Some(format!(
+                        "{:.0}% on coached sessions vs {:.0}% baseline (7d)",
+                        coach * 100.0,
+                        base * 100.0
+                    ));
+                }
+                if g.today_count > 0 {
+                    if g.impact_secondary.is_none() {
+                        g.impact_secondary = Some(format!(
+                            "{} coaching signal{} today",
+                            g.today_count,
+                            if g.today_count == 1 { "" } else { "s" }
+                        ));
+                    }
+                    if g.today_count >= VERDICT_MIN_PROMPTS {
+                        g.verdict = "keep".into();
+                        g.verdict_detail =
+                            "Coaching is intervening on heavy correction patterns.".into();
+                    } else {
+                        g.verdict = "early".into();
+                        g.verdict_detail = too_early_verdict("Coaching", g.today_count);
+                    }
+                } else {
+                    g.verdict = "early".into();
+                    g.verdict_detail =
+                        "No coaching fires today — that's normal on smooth sessions.".into();
+                }
+            }
+            "behavior" => {
+                g.impact_kind = "quality".into();
+                if hook_only {
+                    g.enabled = false;
+                    g.impact_primary = "Not available on hook-only installs".into();
+                    g.verdict = "unavailable".into();
+                    g.verdict_detail =
+                        "Behavior Guard runs on the ctx proxy path, not filter.js hooks.".into();
+                } else if g.today_count > 0 {
+                    g.impact_primary = format!("{} pattern hint{} today", g.today_count, if g.today_count == 1 { "" } else { "s" });
+                    if g.today_count >= VERDICT_MIN_PROMPTS {
+                        g.verdict = "keep".into();
+                        g.verdict_detail =
+                            "Behavior Guard warned about repeating costly patterns.".into();
+                    } else {
+                        g.verdict = "early".into();
+                        g.verdict_detail = too_early_verdict("Behavior guard", g.today_count);
+                    }
+                } else {
+                    g.impact_primary = "Monitoring session patterns".into();
+                    g.verdict = "early".into();
+                    g.verdict_detail = "Hints appear when history suggests a risky repeat.".into();
+                }
+            }
+            "budget" => {
+                g.impact_kind = "control".into();
+                if totals.budget_blocked_count > 0 {
+                    g.impact_primary = format!(
+                        "{} hard block{} today",
+                        totals.budget_blocked_count,
+                        if totals.budget_blocked_count == 1 { "" } else { "s" }
+                    );
+                    if g.today_count > totals.budget_blocked_count {
+                        g.impact_secondary = Some(format!(
+                            "Plus {} soft budget hint{}",
+                            g.today_count - totals.budget_blocked_count,
+                            if g.today_count - totals.budget_blocked_count == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ));
+                    }
+                    g.verdict = "keep".into();
+                    g.verdict_detail =
+                        "Budget Guard blocked or warned on costly sessions.".into();
+                } else if g.today_count > 0 {
+                    g.impact_primary = format!(
+                        "{} budget hint{} today",
+                        g.today_count,
+                        if g.today_count == 1 { "" } else { "s" }
+                    );
+                    if g.today_count >= VERDICT_MIN_PROMPTS {
+                        g.verdict = "keep".into();
+                        g.verdict_detail =
+                            "Budget Guard is pacing spend — review threshold in config.".into();
+                    } else {
+                        g.verdict = "early".into();
+                        g.verdict_detail = too_early_verdict("Budget guard", g.today_count);
+                    }
+                } else {
+                    g.impact_primary =
+                        format!("~${budget_threshold:.0} session threshold (from monthly budget)");
+                    g.verdict = "armed".into();
+                    g.verdict_detail =
+                        "No threshold crossings today — guard is on and waiting.".into();
+                }
+            }
+            "compress" => {
+                g.enabled = false;
+                g.impact_kind = "none".into();
+                g.impact_primary = "Coming soon — not shipped yet".into();
+                g.verdict = "unavailable".into();
+                g.verdict_detail =
+                    "Bash output compression is on the roadmap; ctx does not compress yet.".into();
+                g.today_count = 0;
+                g.today_tokens = 0;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn gate_activity_from_hook_trace(h: &crate::db::HookTraceRow) -> Option<GateActivity> {
     let mut events: Vec<GateEvent> = Vec::new();
     if h.tools_removed > 0 {
@@ -306,7 +1039,12 @@ fn gate_activity_from_hook_trace(h: &crate::db::HookTraceRow) -> Option<GateActi
             label: k.clone(),
         });
     }
-    if h.budget_fired {
+    if h.budget_blocked {
+        events.push(GateEvent {
+            id: "budget".into(),
+            label: "budget block".into(),
+        });
+    } else if h.budget_fired {
         events.push(GateEvent {
             id: "budget".into(),
             label: "budget hint".into(),
@@ -362,21 +1100,15 @@ fn gates_when_no_requests(
         .unwrap_or((0, 0, 0, 0))
     };
 
-    let adaptive_today: i64 = if let Some(since) = wm {
-        conn.query_row(
-            "SELECT COUNT(*) FROM hook_traces WHERE substr(ts,1,10)=?1 AND adaptive_fired=1 AND ts >= ?2",
-            params![today, since],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
-    } else {
-        conn.query_row(
-            "SELECT COUNT(*) FROM hook_traces WHERE substr(ts,1,10)=?1 AND adaptive_fired=1",
-            params![today],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
-    };
+    let totals = hook_trace_gate_totals(conn, today, wm);
+    let active_profile = config
+        .active_profile
+        .clone()
+        .unwrap_or_else(|| "all".into());
+    let personal_ready = crate::profiles::personal_ready(&crate::profiles::usage_stats());
+    let corr_rate = correction_rate_7d(conn, wm);
+    let coach_rate = correction_rate_with_coaching(conn, wm);
+    let (auto_tokens_saved, auto_tools_removed) = auto_switch_savings(conn, today, wm);
 
     let corr_n = corr_sum.max(0) as usize;
     let compact_n = compact_sum.max(0) as usize;
@@ -389,85 +1121,107 @@ fn gates_when_no_requests(
         "No per-request filter events in ctx.db. Showing all historical sessions (watermark off).".into()
     };
 
-    let gates = vec![
-        GateStat {
-            id: "filter".into(),
-            name: "Profile Filter".into(),
-            enabled: true,
-            detail: "No MCP strip rows for today (see note below).".into(),
-            today_count: 0,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "auto".into(),
-            name: "Auto-Profile".into(),
-            enabled: auto_on,
-            detail: "watching cwd".into(),
-            today_count: 0,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "inject".into(),
-            name: "Inject".into(),
-            enabled: inject_on,
-            detail: if inject_on {
+    let filter_detail = if totals.filter_count > 0 {
+        format!("{active_profile} profile · {} strip rows", totals.filter_count)
+    } else {
+        format!("{active_profile} profile · hook traces only")
+    };
+
+    let coach_detail = if totals.coach_count > 0 {
+        format!("{} coaching signal{} from hooks", totals.coach_count, if totals.coach_count == 1 { "" } else { "s" })
+    } else if corr_n > 0 {
+        format!("{corr_n} correction turns today (session ingest)")
+    } else {
+        "no coaching signals today".into()
+    };
+
+    let mut gates = vec![
+        make_gate_stat(
+            "filter",
+            "Profile Filter",
+            true,
+            filter_detail,
+            totals.filter_count,
+            totals.filter_tokens,
+        ),
+        make_gate_stat(
+            "auto",
+            "Auto-Profile",
+            auto_on,
+            if totals.auto_count > 0 {
+                format!("switched {}× today", totals.auto_count)
+            } else {
+                "watching cwd".into()
+            },
+            totals.auto_count,
+            0,
+        ),
+        make_gate_stat(
+            "inject",
+            "Inject",
+            inject_on,
+            if inject_on {
                 "system_prefix.md"
             } else {
                 "no prefix file"
-            }
-            .into(),
-            today_count: 0,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "adaptive".into(),
-            name: "Adaptive prefix".into(),
-            enabled: adaptive_on,
-            detail: "Learned from ctx.db session index".into(),
-            today_count: adaptive_today as usize,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "coach".into(),
-            name: "Coaching".into(),
-            enabled: true,
-            detail: if corr_n > 0 {
-                format!("{corr_n} correction turns today (session quality)")
-            } else {
-                "no correction-heavy turns today".into()
             },
-            today_count: corr_n,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "behavior".into(),
-            name: "Behavior Guard".into(),
-            enabled: true,
-            detail: "session-derived signals only without request log".into(),
-            today_count: 0,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "budget".into(),
-            name: "Budget Guard".into(),
-            enabled: true,
-            detail: format!("~${budget_threshold:.0} session threshold (from monthly budget)"),
-            today_count: 0,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "compress".into(),
-            name: "Bash Compress".into(),
-            enabled: true,
-            detail: if compact_n > 0 {
-                format!("{compact_n} sessions hit context compact today")
-            } else {
-                "no compacts today".into()
-            },
-            today_count: compact_n,
-            today_tokens: 0,
-        },
+            totals.inject_count,
+            0,
+        ),
+        make_gate_stat(
+            "adaptive",
+            "Adaptive prefix",
+            adaptive_on,
+            "Learned from ctx.db session index",
+            totals.adaptive_count,
+            0,
+        ),
+        make_gate_stat(
+            "coach",
+            "Coaching",
+            true,
+            coach_detail,
+            totals.coach_count,
+            0,
+        ),
+        make_gate_stat(
+            "behavior",
+            "Behavior Guard",
+            true,
+            "session-derived signals only without request log",
+            0,
+            0,
+        ),
+        make_gate_stat(
+            "budget",
+            "Budget Guard",
+            true,
+            format!("~${budget_threshold:.0} session threshold (from monthly budget)"),
+            totals.budget_count,
+            0,
+        ),
+        make_gate_stat(
+            "compress",
+            "Bash Compress",
+            false,
+            "coming soon",
+            0,
+            0,
+        ),
     ];
+
+    enrich_gate_stats(
+        &mut gates,
+        &active_profile,
+        true,
+        personal_ready,
+        corr_rate,
+        coach_rate,
+        budget_threshold,
+        auto_tokens_saved,
+        auto_tools_removed,
+        &totals,
+    );
 
     let mut activity: Vec<GateActivity> = Vec::new();
     fn map_sess_gate_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, i64, i64)> {
@@ -565,6 +1319,11 @@ fn gates_when_no_requests(
         gates,
         activity,
         sessions_fallback_note: Some(sessions_note),
+        hook_only: true,
+        active_profile,
+        correction_rate_7d: corr_rate,
+        prompts_today: totals.trace_count,
+        verdict_min_prompts: VERDICT_MIN_PROMPTS,
     }
 }
 
@@ -592,7 +1351,15 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/stats", get(api_stats))
         .route("/api/ingest-request", post(api_ingest_request))
         .route("/api/hook/event", post(api_hook_event))
+        .route("/api/allowance/snapshot", post(api_allowance_snapshot))
+        .route("/api/allowance/current", get(api_allowance_current))
+        .route("/api/allowance/burn-rate", get(api_allowance_burn_rate))
+        .route("/api/savings/tool-mix", get(api_savings_tool_mix))
+        .route("/api/savings/access-friction", get(api_savings_access_friction))
+        .route("/api/savings/keep-tool", post(api_savings_keep_tool))
         .route("/api/trigger-ingest", post(api_trigger_ingest))
+        .route("/api/events/stream", get(crate::dashboard_push::api_events_stream))
+        .route("/api/dashboard/push", post(crate::dashboard_push::api_dashboard_push))
         .route("/api/timeline", get(api_timeline))
         .route("/api/sessions", get(api_sessions))
         .route("/api/gates", get(api_gates))
@@ -613,6 +1380,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/settings/export", get(api_settings_export))
         // Tab 3: profiles
         .route("/api/profiles", get(api_profiles))
+        .route("/api/profiles/tools", get(api_profiles_tools))
         .route("/api/profiles/switch", post(api_profiles_switch))
         .route("/api/profiles/create", post(api_profiles_create))
         .route("/api/profiles/analytics", get(api_profiles_analytics))
@@ -634,6 +1402,8 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/pattern-alerts", get(api_pattern_alerts))
         .route("/api/quality-alerts", get(api_quality_alerts))
         .route("/api/profiles/auto", post(api_profiles_auto))
+        .route("/api/profiles/generate", post(api_profiles_generate))
+        .route("/api/profiles/readiness", get(api_profiles_readiness))
         .route("/api/project-health", get(api_project_health))
         .route("/api/prompt-clusters", get(api_prompt_clusters));
 
@@ -679,22 +1449,96 @@ async fn api_hook_event(Json(payload): Json<serde_json::Value>) -> impl IntoResp
         let _ = crate::db::insert_hook_event(&conn, hook_type, &payload_s);
     }
 
+    crate::dashboard_push::notify(crate::dashboard_push::DashboardEvent {
+        kind: "hook_event".into(),
+        hook_type: Some(hook_type.to_string()),
+    });
+
     if matches!(hook_type, "Stop" | "SessionEnd") {
-        if ingest_running()
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            tokio::spawn(async move {
-                let _ = tokio::task::spawn_blocking(|| {
-                    let _ = crate::conversations::ingest_claude_jsonl();
-                })
-                .await;
-                ingest_running().store(false, Ordering::Release);
-            });
-        }
+        spawn_background_ingest(Some(hook_type.to_string()));
     }
 
     StatusCode::OK
+}
+
+async fn api_allowance_snapshot(Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let Ok(conn) = crate::db::open_db() else {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    };
+    let _ = crate::db::ensure_schema(&conn);
+    match crate::allowance::ingest_statusline_payload(&conn, &payload) {
+        Ok(n) if n > 0 => {
+            crate::dashboard_push::notify(crate::dashboard_push::DashboardEvent {
+                kind: "allowance_snapshot".into(),
+                hook_type: None,
+            });
+            StatusCode::OK
+        }
+        Ok(_) => StatusCode::OK,
+        Err(e) => {
+            eprintln!("allowance snapshot: {e}");
+            StatusCode::BAD_REQUEST
+        }
+    }
+}
+
+async fn api_allowance_current() -> Json<crate::allowance::AllowanceCurrentResponse> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(crate::allowance::AllowanceCurrentResponse {
+            configured: false,
+            statusline_wired: crate::claude_settings::ctx_statusline_wired_in_settings(),
+            stale: true,
+            last_statusline_at: None,
+            setup_hint: Some("ctx database unavailable.".into()),
+            windows: std::collections::HashMap::new(),
+        });
+    };
+    Json(crate::allowance::current_allowance(&conn))
+}
+
+async fn api_allowance_burn_rate() -> Json<crate::allowance::AllowanceBurnRateResponse> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(crate::allowance::AllowanceBurnRateResponse {
+            metrics_ready: false,
+            window: crate::allowance::PRIMARY_WINDOW.into(),
+            ctx_active_since: None,
+            baseline_pct_per_hour: None,
+            recent_pct_per_hour: None,
+            delta_pct: None,
+            direction: None,
+            message: Some("ctx database unavailable.".into()),
+        });
+    };
+    Json(crate::allowance::burn_rate(&conn))
+}
+
+async fn api_savings_tool_mix() -> Json<crate::semantic_tools::ToolMixSummary> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(crate::semantic_tools::ToolMixSummary::default());
+    };
+    Json(crate::semantic_tools::load_tool_mix_summary(&conn))
+}
+
+async fn api_savings_access_friction() -> Json<Vec<crate::semantic_tools::AccessFrictionRow>> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(vec![]);
+    };
+    Json(crate::semantic_tools::list_access_friction(&conn, 1))
+}
+
+#[derive(serde::Deserialize)]
+struct KeepToolBody {
+    tool: String,
+}
+
+async fn api_savings_keep_tool(Json(body): Json<KeepToolBody>) -> impl IntoResponse {
+    match crate::semantic_tools::promote_tool_to_profile(body.tool.trim()) {
+        Ok(()) => StatusCode::OK,
+        Err(e) => {
+            eprintln!("keep-tool: {e}");
+            StatusCode::BAD_REQUEST
+        }
+    }
 }
 
 async fn api_ingest_request(Json(rec): Json<crate::analytics::Record>) -> impl IntoResponse {
@@ -719,20 +1563,7 @@ async fn api_ingest_request(Json(rec): Json<crate::analytics::Record>) -> impl I
 /// ingest is still in progress this returns 202 and the in-flight run will pick up the
 /// new data (because `ingest_claude_jsonl` rescans modified files on each invocation).
 async fn api_trigger_ingest() -> impl IntoResponse {
-    if ingest_running()
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
-        // Already running — the in-flight ingest will cover the latest turn.
-        return StatusCode::ACCEPTED;
-    }
-    tokio::spawn(async move {
-        let _ = tokio::task::spawn_blocking(|| {
-            let _ = crate::conversations::ingest_claude_jsonl();
-        })
-        .await;
-        ingest_running().store(false, Ordering::Release);
-    });
+    spawn_background_ingest(None);
     StatusCode::ACCEPTED
 }
 
@@ -781,10 +1612,10 @@ async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
         .filter(|r| r.tools_removed > 0)
         .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
         .collect();
-    let total_tokens: usize = filter_recs.iter().map(|r| r.tokens_saved).sum();
-    let total_tools: usize = filter_recs.iter().map(|r| r.tools_removed).sum();
-    let total_kept: usize = filter_recs.iter().map(|r| r.tools_sent_count).sum();
-    let all_tokens = total_tokens;
+    let mut total_tokens: usize = filter_recs.iter().map(|r| r.tokens_saved).sum();
+    let mut total_tools: usize = filter_recs.iter().map(|r| r.tools_removed).sum();
+    let mut total_kept: usize = filter_recs.iter().map(|r| r.tools_sent_count).sum();
+    let mut request_count = filter_recs.len();
     let rec_filtered: Vec<_> = records
         .iter()
         .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
@@ -802,12 +1633,17 @@ async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
     let spend_sessions = crate::conversations::all_sessions();
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
-    let month_spend: f64 = spend_sessions
+    let mut month_spend: f64 = spend_sessions
         .iter()
         .filter(|s| s.started_at.starts_with(&current_month))
         .filter(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()))
         .map(|s| s.total_usd)
         .sum();
+    if month_spend <= 0.0 && records.is_empty() {
+        if let Some(ref c) = conn {
+            month_spend = hook_trace_month_spend(c, wm_ref, &current_month);
+        }
+    }
     let day = now.day().max(1) as f64;
     use chrono::NaiveDate;
     let month_start = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
@@ -823,7 +1659,7 @@ async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
         None
     };
 
-    let effective_session_count = if sessions.is_empty() {
+    let mut effective_session_count = if sessions.is_empty() {
         spend_sessions
             .iter()
             .filter(|s| s.started_at.starts_with(&current_month))
@@ -832,22 +1668,38 @@ async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
     } else {
         sessions.len()
     };
+    if effective_session_count == 0 && records.is_empty() {
+        if let Some(ref c) = conn {
+            effective_session_count = hook_trace_session_count(c, wm_ref, &current_month);
+        }
+    }
 
     let sessions_fallback = records.is_empty();
+    if sessions_fallback {
+        if let Some(ref c) = conn {
+            let (ht_req, ht_tokens, ht_tools, ht_kept) = hook_trace_filter_totals(c, wm_ref);
+            if ht_req > 0 {
+                request_count = ht_req;
+                total_tokens = ht_tokens;
+                total_tools = ht_tools;
+                total_kept = ht_kept;
+            }
+        }
+    }
 
     let ctx_active_since = conn.as_ref().and_then(|c| crate::db::get_ctx_active_since(c));
     let dashboard_watermark_filtering =
         use_ctx_watermark(&q) && ctx_active_since.is_some();
 
     Json(Stats {
-        total_tokens_saved: all_tokens,
+        total_tokens_saved: total_tokens,
         total_tools_removed: total_tools,
         total_tools_kept: total_kept,
-        cost_saved: (all_tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
+        cost_saved: (total_tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
         cost_saved_worst_case: (total_tokens as f64 / 1_000_000.0)
             * crate::analytics::WORST_CASE_INPUT_RATE_PER_MTOK,
         session_count: effective_session_count,
-        request_count: filter_recs.len(),
+        request_count,
         active_profile: config.active_profile.unwrap_or_else(|| "all".into()),
         proxy_listening: std::net::TcpStream::connect(format!(
             "127.0.0.1:{}",
@@ -919,6 +1771,10 @@ async fn api_timeline(Query(q): Query<SinceQuery>) -> Json<Vec<TimelinePoint>> {
         if !points.is_empty() {
             return Json(points);
         }
+        let hook_points = timeline_from_hook_traces(c, &cutoff_iso, ctx_line);
+        if !hook_points.is_empty() {
+            return Json(hook_points);
+        }
     }
 
     Json(vec![])
@@ -943,6 +1799,10 @@ async fn api_sessions(Query(q): Query<SinceQuery>) -> Json<Vec<crate::analytics:
         let rows = savings_sessions_from_db(c, wm_ref);
         if !rows.is_empty() {
             return Json(rows);
+        }
+        let hook_rows = savings_sessions_from_hook_traces(c, wm_ref);
+        if !hook_rows.is_empty() {
+            return Json(hook_rows);
         }
     }
     Json(vec![])
@@ -1004,6 +1864,12 @@ async fn api_spend_sessions(
     };
     let mut sessions = crate::conversations::all_sessions();
     sessions.retain(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()));
+
+    if sessions.is_empty() {
+        if let Some(ref c) = conn {
+            sessions = spend_sessions_from_hook_traces(c, spend_ctx.as_deref());
+        }
+    }
 
     if let Some(month) = &q.month {
         sessions.retain(|s| s.started_at.starts_with(month.as_str()));
@@ -1097,8 +1963,11 @@ struct SettingsGetResponse {
     proxy_port: Option<u16>,
     dashboard_port: Option<u16>,
     proxy_upstream: Option<String>,
+    proxy_mode: String,
+    proxy_mitm_wired: bool,
     proxy_install_mode: Option<String>,
     auto_profile_enabled: bool,
+    filter_mode: String,
     inject_enabled: bool,
     coaching_enabled: bool,
     adaptive_prefix_enabled: bool,
@@ -1175,6 +2044,23 @@ async fn api_settings_get() -> impl IntoResponse {
     let adaptive_prefix_preview = adaptive_full.chars().take(4000).collect::<String>();
     let adaptive_prefix_char_budget = crate::adaptive::rebuild_max_chars_for_db(&conn);
     let ctx_active_since = crate::db::get_ctx_active_since(&conn);
+    let proxy_port = cfg.proxy_port.unwrap_or(8788);
+    let proxy_mitm_wired = std::fs::read_to_string(crate::config::claude_settings_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .map(|settings| {
+            let claude = settings
+                .pointer("/env/CLAUDE_CODE_HTTPS_PROXY")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let https = settings
+                .pointer("/env/HTTPS_PROXY")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let url = format!("http://127.0.0.1:{proxy_port}");
+            claude == url || https == url
+        })
+        .unwrap_or(false);
     let row_counts = SettingsRowCounts {
         sessions: count_table(&conn, "sessions"),
         turns: count_table(&conn, "turns"),
@@ -1187,8 +2073,11 @@ async fn api_settings_get() -> impl IntoResponse {
         proxy_port: cfg.proxy_port,
         dashboard_port: cfg.dashboard_port,
         proxy_upstream: cfg.proxy_upstream.clone(),
+        proxy_mode: cfg.proxy_mode.as_str().to_string(),
+        proxy_mitm_wired,
         proxy_install_mode: cfg.proxy_install_mode.clone(),
         auto_profile_enabled: cfg.auto_profile_enabled,
+        filter_mode: cfg.filter_mode.as_str().to_string(),
         inject_enabled: cfg.inject_enabled,
         coaching_enabled: cfg.coaching_enabled,
         adaptive_prefix_enabled: cfg.adaptive_prefix_enabled,
@@ -1417,69 +2306,99 @@ struct ProfileInfo {
     display: String,
     description: String,
     tool_count: usize,
+    server_count: usize,
     tokens_per_turn: usize,
     savings_pct: f32,
     active: bool,
     servers_included: Vec<String>,
     servers_excluded: Vec<String>,
+    keep_tools: Vec<String>,
+    uses_tool_level: bool,
+    deny_rule_count: usize,
+    metrics_pending: bool,
+    origin: String,
+    filter_mode: String,
+}
+
+#[derive(Serialize)]
+struct ObservedToolInfo {
+    tool_name: String,
+    server: String,
+    count: u64,
+}
+
+async fn api_profiles_tools() -> Json<Vec<ObservedToolInfo>> {
+    let catalog = crate::profiles::observed_tool_catalog();
+    Json(
+        catalog
+            .into_iter()
+            .map(|(tool_name, server, count)| ObservedToolInfo {
+                tool_name,
+                server,
+                count,
+            })
+            .collect(),
+    )
 }
 
 async fn api_profiles() -> Json<Vec<ProfileInfo>> {
     let config = crate::config::Config::load();
     let active = config.active_profile.as_deref().unwrap_or("all");
+    let filter_mode = config.filter_mode.as_str().to_string();
+    let expansion = config.session_expansion.clone();
     let profiles = crate::profiles::load_all();
+    let custom_slugs = crate::profiles::slugs_from_profiles_toml();
 
-    // All known server display names
-    let all_servers: Vec<&str> = crate::profiles::SERVER_COUNTS
-        .iter()
-        .map(|(k, _)| *k)
+    let metrics_ready = crate::profiles::tool_metrics_ready();
+    let mut result: Vec<ProfileInfo> = profiles
+        .into_iter()
+        .filter(|(slug, _)| crate::profiles::is_profile_visible(slug, active))
+        .map(|(slug, p)| {
+            let (servers_included, servers_excluded) =
+                crate::profiles::profile_server_display_lists(&p);
+            let deny_rule_count = if !p.filtering_enabled() {
+                0
+            } else {
+                crate::profiles::deny_patterns_for_profile(&p, &expansion, &[]).len()
+            };
+            let origin = if custom_slugs.contains(&slug) {
+                "custom".to_string()
+            } else {
+                "builtin".to_string()
+            };
+
+            ProfileInfo {
+                active: slug == active,
+                tool_count: if metrics_ready { p.tool_count() } else { 0 },
+                server_count: if metrics_ready { p.server_count() } else { 0 },
+                tokens_per_turn: if metrics_ready { p.token_cost() } else { 0 },
+                savings_pct: if metrics_ready { p.savings_pct() } else { 0.0 },
+                metrics_pending: !metrics_ready,
+                servers_included,
+                servers_excluded,
+                keep_tools: p.keep_tools.clone(),
+                uses_tool_level: p.uses_tool_level(),
+                deny_rule_count,
+                origin,
+                filter_mode: filter_mode.clone(),
+                slug,
+                display: p.display,
+                description: p.description,
+            }
+        })
         .collect();
 
-    let mut result: Vec<ProfileInfo> = profiles.into_iter().map(|(slug, p)| {
-        let servers_included: Vec<String> = if p.keep.is_empty() {
-            all_servers.iter().map(|s| server_display(s)).collect()
-        } else {
-            p.keep.iter().map(|k| server_display(k)).collect()
-        };
-
-        let servers_excluded: Vec<String> = if p.keep.is_empty() {
-            vec![]
-        } else {
-            all_servers.iter()
-                .filter(|s| !p.keep.iter().any(|k| s.starts_with(k.as_str()) || k.starts_with(*s)))
-                .map(|s| server_display(s))
-                .collect()
-        };
-
-        ProfileInfo {
-            active: slug == active,
-            tool_count: p.tool_count(),
-            tokens_per_turn: p.token_cost(),
-            savings_pct: p.savings_pct(),
-            servers_included,
-            servers_excluded,
-            slug,
-            display: p.display,
-            description: p.description,
-        }
-    }).collect();
-
-    // Sort: built-in first in a fixed order, then custom alphabetically
-    let order = ["carrier", "data", "design", "minimal", "all"];
     result.sort_by(|a, b| {
-        let ai = order.iter().position(|&s| s == a.slug).unwrap_or(99);
-        let bi = order.iter().position(|&s| s == b.slug).unwrap_or(99);
-        ai.cmp(&bi).then(a.slug.cmp(&b.slug))
+        b.active
+            .cmp(&a.active)
+            .then_with(|| {
+                crate::profiles::generated_profile_sort_key(&a.slug)
+                    .cmp(&crate::profiles::generated_profile_sort_key(&b.slug))
+            })
+            .then(a.slug.cmp(&b.slug))
     });
 
     Json(result)
-}
-
-fn server_display(prefix: &str) -> String {
-    prefix
-        .trim_start_matches("mcp__claude_ai_")
-        .trim_end_matches("__")
-        .replace("_", " ")
 }
 
 #[derive(Deserialize)]
@@ -1504,6 +2423,8 @@ async fn api_profiles_switch(Json(body): Json<SwitchBody>) -> Json<SwitchRespons
 struct CreateProfileBody {
     name: String,
     servers: Vec<String>,
+    #[serde(default)]
+    tools: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -1512,7 +2433,11 @@ struct CreateResponse {
 }
 
 async fn api_profiles_create(Json(body): Json<CreateProfileBody>) -> Json<CreateResponse> {
-    let ok = crate::profiles::add(&body.name, body.servers).is_ok();
+    let ok = if !body.tools.is_empty() {
+        crate::profiles::add(&body.name, vec![], body.tools).is_ok()
+    } else {
+        crate::profiles::add(&body.name, body.servers, vec![]).is_ok()
+    };
     Json(CreateResponse { ok })
 }
 
@@ -1541,16 +2466,27 @@ async fn api_profiles_analytics(Query(q): Query<SinceQuery>) -> Json<Vec<Profile
         .filter(|r| r.tools_removed > 0)
         .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
         .collect();
-    let total = filter_recs.len();
 
     let mut by_profile: HashMap<String, (usize, usize, usize)> = HashMap::new(); // (requests, tokens, auto_count)
-    for rec in &filter_recs {
-        let slug = if rec.profile.is_empty() { "all".to_string() } else { rec.profile.clone() };
-        let e = by_profile.entry(slug).or_default();
-        e.0 += 1;
-        e.1 += rec.tokens_saved;
-        if rec.auto_selected { e.2 += 1; }
+    if !filter_recs.is_empty() {
+        for rec in &filter_recs {
+            let slug = if rec.profile.is_empty() {
+                "all".to_string()
+            } else {
+                rec.profile.clone()
+            };
+            let e = by_profile.entry(slug).or_default();
+            e.0 += 1;
+            e.1 += rec.tokens_saved;
+            if rec.auto_selected {
+                e.2 += 1;
+            }
+        }
+    } else if let Some(ref c) = conn {
+        by_profile = profiles_analytics_from_hook_traces(c, wm_ref);
     }
+
+    let total: usize = by_profile.values().map(|(r, _, _)| r).sum();
 
     let profiles = crate::profiles::load_all();
     let mut stats: Vec<ProfileStat> = by_profile.into_iter().map(|(slug, (requests, tokens, auto_count))| {
@@ -1758,7 +2694,54 @@ struct AbCohortMetrics {
     avg_cost_usd: f64,
     avg_input_tokens: f64,
     avg_output_tokens: f64,
+    avg_cache_read_tokens: f64,
+    avg_tokens_saved: f64,
+    avg_tools_removed: f64,
+    avg_inject_chars: f64,
+    avg_adaptive_chars: f64,
+    /// Session-level avg(correction_turns / turn_count) for sessions in this arm.
     correction_rate_pct: f64,
+    /// Prompt-level: share of turns where coaching injected a nudge.
+    coach_fire_rate_pct: f64,
+}
+
+fn ab_session_correction_rate(
+    conn: &rusqlite::Connection,
+    group_pattern: &str,
+    wm: Option<&str>,
+) -> f64 {
+    let sql = if wm.is_some() {
+        "SELECT AVG(CAST(s.correction_turns AS REAL) / MAX(s.turn_count, 1))
+         FROM sessions s
+         WHERE s.turn_count > 0
+           AND EXISTS (
+             SELECT 1 FROM hook_traces h
+             WHERE h.session_id IS NOT NULL
+               AND h.enriched = 1
+               AND h.ab_group LIKE ?1
+               AND h.ts >= ?2
+               AND s.external_key LIKE '%' || h.session_id || '%'
+           )"
+    } else {
+        "SELECT AVG(CAST(s.correction_turns AS REAL) / MAX(s.turn_count, 1))
+         FROM sessions s
+         WHERE s.turn_count > 0
+           AND EXISTS (
+             SELECT 1 FROM hook_traces h
+             WHERE h.session_id IS NOT NULL
+               AND h.enriched = 1
+               AND h.ab_group LIKE ?1
+               AND s.external_key LIKE '%' || h.session_id || '%'
+           )"
+    };
+    let rate: Option<f64> = if let Some(since) = wm {
+        conn.query_row(sql, rusqlite::params![group_pattern, since], |r| r.get(0))
+            .unwrap_or(None)
+    } else {
+        conn.query_row(sql, rusqlite::params![group_pattern], |r| r.get(0))
+            .unwrap_or(None)
+    };
+    rate.unwrap_or(0.0) * 100.0
 }
 
 #[derive(Serialize)]
@@ -1789,36 +2772,81 @@ fn ab_cohort_metrics(
                 AVG(cost_usd),
                 AVG(input_tokens),
                 AVG(output_tokens),
-                SUM(CASE WHEN coach_kind IS NOT NULL AND coach_kind != '' THEN 1 ELSE 0 END)
+                SUM(CASE WHEN coach_kind IS NOT NULL AND coach_kind != '' THEN 1 ELSE 0 END),
+                AVG(tokens_saved),
+                AVG(tools_removed),
+                AVG(cache_read_tokens),
+                AVG(inject_chars),
+                AVG(adaptive_chars)
          FROM hook_traces
          WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE ?1",
     );
     if wm.is_some() {
         sql.push_str(" AND ts >= ?2");
     }
-    let row: (i64, Option<f64>, Option<f64>, Option<f64>, i64) = if let Some(since) = wm {
+    let row: (
+        i64,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        i64,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    ) = if let Some(since) = wm {
         conn.query_row(&sql, rusqlite::params![group_pattern, since], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+            ))
         })
-        .unwrap_or((0, None, None, None, 0))
+        .unwrap_or((0, None, None, None, 0, None, None, None, None, None))
     } else {
         conn.query_row(&sql, rusqlite::params![group_pattern], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+            ))
         })
-        .unwrap_or((0, None, None, None, 0))
+        .unwrap_or((0, None, None, None, 0, None, None, None, None, None))
     };
     let count = row.0;
-    let correction_rate_pct = if count > 0 {
+    let coach_fire_rate_pct = if count > 0 {
         (row.4 as f64 / count as f64) * 100.0
     } else {
         0.0
     };
+    let correction_rate_pct = ab_session_correction_rate(conn, group_pattern, wm);
     AbCohortMetrics {
         count,
         avg_cost_usd: row.1.unwrap_or(0.0),
         avg_input_tokens: row.2.unwrap_or(0.0),
         avg_output_tokens: row.3.unwrap_or(0.0),
+        avg_cache_read_tokens: row.7.unwrap_or(0.0),
+        avg_tokens_saved: row.5.unwrap_or(0.0),
+        avg_tools_removed: row.6.unwrap_or(0.0),
+        avg_inject_chars: row.8.unwrap_or(0.0),
+        avg_adaptive_chars: row.9.unwrap_or(0.0),
         correction_rate_pct,
+        coach_fire_rate_pct,
     }
 }
 
@@ -2065,6 +3093,84 @@ struct GateStat {
     detail: String,
     today_count: usize,
     today_tokens: usize,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    impact_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    impact_primary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    impact_secondary: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    verdict: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    verdict_detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ab_feature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chars_added: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quality_delta: Option<f32>,
+}
+
+fn ab_feature_for_gate(id: &str) -> Option<String> {
+    match id {
+        "filter" => Some("profile".into()),
+        "inject" => Some("inject".into()),
+        "adaptive" => Some("adaptive".into()),
+        "coach" => Some("coaching".into()),
+        _ => None,
+    }
+}
+
+fn make_gate_stat(
+    id: &str,
+    name: &str,
+    enabled: bool,
+    detail: impl Into<String>,
+    today_count: usize,
+    today_tokens: usize,
+) -> GateStat {
+    GateStat {
+        id: id.into(),
+        name: name.into(),
+        enabled,
+        detail: detail.into(),
+        today_count,
+        today_tokens,
+        impact_kind: String::new(),
+        impact_primary: String::new(),
+        impact_secondary: None,
+        verdict: String::new(),
+        verdict_detail: String::new(),
+        ab_feature: ab_feature_for_gate(id),
+        chars_added: None,
+        quality_delta: None,
+    }
+}
+
+fn auto_switch_savings(
+    conn: &rusqlite::Connection,
+    today: &str,
+    wm: Option<&str>,
+) -> (usize, usize) {
+    let row: (i64, i64) = if let Some(since) = wm {
+        conn.query_row(
+            "SELECT COALESCE(SUM(tokens_saved), 0), COALESCE(SUM(tools_removed), 0)
+             FROM hook_traces
+             WHERE substr(ts, 1, 10) = ?1 AND auto_selected = 1 AND ts >= ?2",
+            params![today, since],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    } else {
+        conn.query_row(
+            "SELECT COALESCE(SUM(tokens_saved), 0), COALESCE(SUM(tools_removed), 0)
+             FROM hook_traces
+             WHERE substr(ts, 1, 10) = ?1 AND auto_selected = 1",
+            params![today],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
+    .unwrap_or((0, 0));
+    (row.0.max(0) as usize, row.1.max(0) as usize)
 }
 
 #[derive(Serialize)]
@@ -2093,6 +3199,15 @@ struct GatesResponse {
     activity: Vec<GateActivity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sessions_fallback_note: Option<String>,
+    #[serde(default)]
+    hook_only: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    active_profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    correction_rate_7d: Option<f64>,
+    #[serde(default)]
+    prompts_today: usize,
+    verdict_min_prompts: usize,
 }
 
 async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
@@ -2112,6 +3227,11 @@ async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
             gates: vec![],
             activity: vec![],
             sessions_fallback_note: None,
+            hook_only: false,
+            active_profile: String::new(),
+            correction_rate_7d: None,
+            prompts_today: 0,
+            verdict_min_prompts: VERDICT_MIN_PROMPTS,
         });
     }
 
@@ -2158,102 +3278,137 @@ async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
     let auto_on = config.auto_profile_enabled;
 
     let budget_threshold = crate::budget_guard::session_threshold_usd();
+    let personal_ready = crate::profiles::personal_ready(&crate::profiles::usage_stats());
+    let corr_rate = conn
+        .as_ref()
+        .and_then(|c| correction_rate_7d(c, wm_ref));
+    let coach_rate = conn
+        .as_ref()
+        .and_then(|c| correction_rate_with_coaching(c, wm_ref));
+    let (auto_tokens_saved, auto_tools_removed) = conn
+        .as_ref()
+        .map(|c| auto_switch_savings(c, &today, wm_ref))
+        .unwrap_or((0, 0));
 
-    let gates = vec![
-        GateStat {
-            id: "filter".into(),
-            name: "Profile Filter".into(),
-            enabled: true,
-            detail: format!("{active_profile} profile"),
-            today_count: filter_count,
-            today_tokens: filter_tokens,
-        },
-        GateStat {
-            id: "auto".into(),
-            name: "Auto-Profile".into(),
-            enabled: auto_on,
-            detail: if auto_count > 0 {
-                format!("switched {auto_count}x today")
+    let hook_totals = conn
+        .as_ref()
+        .map(|c| hook_trace_gate_totals(c, &today, wm_ref))
+        .unwrap_or_default();
+    let mut combined_totals = hook_totals;
+    merge_request_prefix_totals(&mut combined_totals, &today_recs);
+    let inject_count = inject_count.max(combined_totals.inject_count);
+    let coach_count = coach_count.max(combined_totals.coach_count);
+    let auto_count = auto_count.max(combined_totals.auto_count);
+    let budget_count = budget_count.max(combined_totals.budget_count);
+    let filter_count = filter_count.max(combined_totals.filter_count);
+    let filter_tokens = filter_tokens.max(combined_totals.filter_tokens);
+    let adaptive_today = adaptive_today.max(combined_totals.adaptive_count);
+
+    let mut gates = vec![
+        make_gate_stat(
+            "filter",
+            "Profile Filter",
+            true,
+            format!("{active_profile} profile"),
+            filter_count,
+            filter_tokens,
+        ),
+        make_gate_stat(
+            "auto",
+            "Auto-Profile",
+            auto_on,
+            if auto_count > 0 {
+                format!("switched {auto_count}× today")
             } else {
                 "watching cwd".into()
             },
-            today_count: auto_count,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "inject".into(),
-            name: "Inject".into(),
-            enabled: inject_on,
-            detail: if inject_on {
+            auto_count,
+            0,
+        ),
+        make_gate_stat(
+            "inject",
+            "Inject",
+            inject_on,
+            if inject_on {
                 "system_prefix.md"
             } else {
                 "no prefix file"
-            }
-            .into(),
-            today_count: inject_count,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "adaptive".into(),
-            name: "Adaptive prefix".into(),
-            enabled: adaptive_on,
-            detail: "Learned from ctx.db session index".into(),
-            today_count: adaptive_today,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "coach".into(),
-            name: "Coaching".into(),
-            enabled: true,
-            detail: if coach_count > 0 {
+            },
+            inject_count,
+            0,
+        ),
+        make_gate_stat(
+            "adaptive",
+            "Adaptive prefix",
+            adaptive_on,
+            "Learned from ctx.db session index",
+            adaptive_today,
+            0,
+        ),
+        make_gate_stat(
+            "coach",
+            "Coaching",
+            true,
+            if coach_count > 0 {
                 format!("{coach_count} signals today")
             } else {
                 "no signals".to_string()
-            }
-            .into(),
-            today_count: coach_count,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "behavior".into(),
-            name: "Behavior Guard".into(),
-            enabled: true,
-            detail: if behavior_count > 0 {
+            },
+            coach_count,
+            0,
+        ),
+        make_gate_stat(
+            "behavior",
+            "Behavior Guard",
+            true,
+            if behavior_count > 0 {
                 format!("{behavior_count} hints fired")
             } else {
                 "monitoring history".to_string()
-            }
-            .into(),
-            today_count: behavior_count,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "budget".into(),
-            name: "Budget Guard".into(),
-            enabled: true,
-            detail: if budget_count > 0 {
+            },
+            behavior_count,
+            0,
+        ),
+        make_gate_stat(
+            "budget",
+            "Budget Guard",
+            true,
+            if budget_count > 0 {
                 "threshold crossed".into()
             } else {
                 format!("~${budget_threshold:.0} session threshold (from monthly budget)")
             },
-            today_count: budget_count,
-            today_tokens: 0,
-        },
-        GateStat {
-            id: "compress".into(),
-            name: "Bash Compress".into(),
-            enabled: true,
-            detail: if compress_chars > 0 {
+            budget_count,
+            0,
+        ),
+        make_gate_stat(
+            "compress",
+            "Bash Compress",
+            false,
+            if compress_chars > 0 {
                 fmt_tok(compress_chars / 4) + " tok saved"
             } else {
-                "hook ready".into()
+                "coming soon".into()
             },
-            today_count: compress_count,
-            today_tokens: compress_chars / 4,
-        },
+            compress_count,
+            compress_chars / 4,
+        ),
     ];
 
-    let activity: Vec<GateActivity> = records
+    enrich_gate_stats(
+        &mut gates,
+        &active_profile,
+        false,
+        personal_ready,
+        corr_rate,
+        coach_rate,
+        budget_threshold,
+        auto_tokens_saved,
+        auto_tools_removed,
+        &combined_totals,
+    );
+
+    let mut activity: Vec<GateActivity> = records
         .iter()
         .rev()
         .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
@@ -2325,10 +3480,27 @@ async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
         .take(40)
         .collect();
 
+    if let Some(ref c) = conn {
+        if let Ok(rows) = crate::db::load_hook_traces(c, 50, 0, wm_ref) {
+            for h in rows {
+                if let Some(a) = gate_activity_from_hook_trace(&h) {
+                    activity.push(a);
+                }
+            }
+        }
+    }
+    activity.sort_by(|a, b| b.ts.cmp(&a.ts));
+    activity.truncate(45);
+
     Json(GatesResponse {
         gates,
         activity,
         sessions_fallback_note: None,
+        hook_only: false,
+        active_profile,
+        correction_rate_7d: corr_rate,
+        prompts_today: combined_totals.trace_count.max(today_recs.len()),
+        verdict_min_prompts: VERDICT_MIN_PROMPTS,
     })
 }
 
@@ -2418,51 +3590,19 @@ struct ProfileSuggestion {
 /// ~/.ctx/profile-suggestion.json for filter.js to read on the next request.
 async fn api_profile_suggest(Json(body): Json<ProfileSuggestBody>) -> Json<ProfileSuggestion> {
     let fallback = ProfileSuggestion { profile: String::new(), confidence: 0.0, based_on: 0 };
-    let Ok(conn) = crate::db::open_db() else { return Json(fallback) };
-    let _ = crate::db::ensure_schema(&conn);
+    let cfg = crate::config::Config::load();
+    let active = cfg.active_profile.as_deref().unwrap_or("all");
 
-    let query_text = format!("[dir: {}] {}", body.dir.trim(), body.text.trim());
-    let Ok(embedding) = crate::embedder::embed_text(&query_text) else { return Json(fallback) };
-
-    let sims = crate::embedder::similar_sessions_by_query(&conn, &embedding, 5, None)
-        .unwrap_or_default();
-    if sims.is_empty() { return Json(fallback); }
-
-    // Aggregate: for each similar session, weight its profile vote by similarity * tokens_saved.
-    // Skip sessions on "all" — they give no filtering signal.
-    let mut scores: std::collections::HashMap<String, (f32, usize)> = std::collections::HashMap::new();
-    let mut total_weight = 0f32;
-    for (sid, sim) in &sims {
-        if let Ok((profile, tokens_saved)) = conn.query_row(
-            "SELECT COALESCE(profile,''), tokens_saved FROM sessions WHERE id = ?1",
-            rusqlite::params![sid],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-        ) {
-            if profile.is_empty() || profile == "all" { continue; }
-            let w = sim * (tokens_saved.max(0) as f32 + 1.0); // +1 so zero-saving sessions still vote
-            let entry = scores.entry(profile).or_insert((0.0, 0));
-            entry.0 += w;
-            entry.1 += 1;
-            total_weight += w;
-        }
+    if let Some(m) = crate::profiles::select_by_similarity(&body.dir, &body.text, active) {
+        let suggestion = ProfileSuggestion {
+            profile: m.slug,
+            confidence: m.confidence,
+            based_on: m.based_on,
+        };
+        return Json(suggestion);
     }
 
-    let Some((best_profile, (best_score, based_on))) = scores
-        .into_iter()
-        .max_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap_or(std::cmp::Ordering::Equal))
-    else { return Json(fallback) };
-
-    // Require at least 2 agreeing sessions to avoid single-session noise.
-    if based_on < 2 { return Json(fallback); }
-
-    let confidence = if total_weight > 0.0 { (best_score / total_weight).min(1.0) } else { 0.0 };
-    let suggestion = ProfileSuggestion { profile: best_profile, confidence, based_on };
-
-    // Persist for filter.js
-    let p = crate::config::ctx_dir().join("profile-suggestion.json");
-    let _ = std::fs::write(&p, serde_json::to_string(&suggestion).unwrap_or_default());
-
-    Json(suggestion)
+    Json(fallback)
 }
 
 async fn api_pattern_alerts() -> Json<Vec<crate::conversations::PatternAlert>> {
@@ -2483,6 +3623,18 @@ async fn api_profiles_auto() -> Json<serde_json::Value> {
         "ok": res.is_ok(),
         "error": res.err().map(|e| e.to_string()),
     }))
+}
+
+async fn api_profiles_generate() -> Json<serde_json::Value> {
+    let res = crate::profiles::generate_from_config(true);
+    Json(serde_json::json!({
+        "ok": res.is_ok(),
+        "error": res.err().map(|e| e.to_string()),
+    }))
+}
+
+async fn api_profiles_readiness() -> Json<serde_json::Value> {
+    Json(crate::profiles::personal_readiness_json())
 }
 
 #[derive(Serialize)]

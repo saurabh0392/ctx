@@ -504,6 +504,7 @@ if (global.__CTX_FILTER_PATCHED__) {
 
   function applyGates(cfg, o) {
     let inject_fired = false;
+    let inject_chars = 0;
     let coach_kind = null;
     let budget_fired = false;
     let behavior_kind = null;
@@ -515,6 +516,7 @@ if (global.__CTX_FILTER_PATCHED__) {
         if (prefix) {
           prependToSystem(o, prefix);
           inject_fired = true;
+          inject_chars = prefix.length;
         }
       } catch (_e) {}
     }
@@ -566,7 +568,7 @@ if (global.__CTX_FILTER_PATCHED__) {
       }
     }
 
-    return { inject_fired: inject_fired, coach_kind: coach_kind, budget_fired: budget_fired, behavior_kind: behavior_kind };
+    return { inject_fired: inject_fired, inject_chars: inject_chars, coach_kind: coach_kind, budget_fired: budget_fired, behavior_kind: behavior_kind };
   }
 
   function appendAnalyticsLine(rec) {
@@ -688,6 +690,9 @@ if (global.__CTX_FILTER_PATCHED__) {
       auto_selected: picked.auto,
       auto_trigger: picked.trigger,
       inject_fired: gates.inject_fired,
+      inject_chars: gates.inject_chars || 0,
+      adaptive_chars: 0,
+      budget_blocked: false,
       coach_kind: gates.coach_kind,
       budget_fired: gates.budget_fired,
       behavior_kind: gates.behavior_kind,

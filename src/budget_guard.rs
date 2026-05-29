@@ -45,6 +45,77 @@ pub fn check(body: &[u8]) -> Option<String> {
     check_with_threshold(body, session_threshold_usd())
 }
 
+/// Soft budget hint from recent user texts (hook path — no full API body).
+pub fn soft_warning_for_user_texts(texts: &[String], model: Option<&str>) -> Option<String> {
+    if texts.is_empty() {
+        return None;
+    }
+    let model = model.unwrap_or("claude-sonnet-4-20250514");
+    let messages: Vec<Value> = texts
+        .iter()
+        .map(|t| serde_json::json!({"role": "user", "content": t.as_str()}))
+        .collect();
+    let body = serde_json::to_vec(&serde_json::json!({"model": model, "messages": messages})).ok()?;
+    check(&body)
+}
+
+/// Soft budget hint for UserPromptSubmit — prefers transcript messages when present.
+pub fn soft_warning_for_hook_input(
+    input: &Value,
+    prompt: &str,
+    fallback_texts: &[String],
+    model: Option<&str>,
+) -> Option<String> {
+    let model = model.unwrap_or("claude-sonnet-4-20250514");
+    if let Some(body) = hook_budget_body(input, prompt, model) {
+        if let Some(w) = check(&body) {
+            return Some(w);
+        }
+    }
+    soft_warning_for_user_texts(fallback_texts, Some(model))
+}
+
+fn hook_budget_body(input: &Value, prompt: &str, model: &str) -> Option<Vec<u8>> {
+    let mut messages: Vec<Value> = Vec::new();
+    if let Some(transcript) = input.get("transcript") {
+        if let Some(msgs) = transcript.get("messages").and_then(|m| m.as_array()) {
+            messages.extend(msgs.iter().cloned());
+        }
+    }
+    if messages.is_empty() {
+        if let Some(msgs) = input.get("messages").and_then(|m| m.as_array()) {
+            messages.extend(msgs.iter().cloned());
+        }
+    }
+    if messages.is_empty() {
+        return None;
+    }
+    let prompt_trim = prompt.trim();
+    let last_user = messages.iter().rev().find(|m| {
+        m.get("role").and_then(|r| r.as_str()) == Some("user")
+    });
+    let needs_append = match last_user {
+        None => true,
+        Some(m) => message_text(m).trim() != prompt_trim,
+    };
+    if needs_append && !prompt_trim.is_empty() {
+        messages.push(serde_json::json!({"role": "user", "content": prompt}));
+    }
+    serde_json::to_vec(&serde_json::json!({"model": model, "messages": messages})).ok()
+}
+
+fn message_text(msg: &Value) -> String {
+    match msg.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
 pub(crate) fn check_with_threshold(body: &[u8], threshold: f64) -> Option<String> {
     let value: Value = serde_json::from_slice(body).ok()?;
     let messages = value.get("messages")?.as_array()?;
@@ -224,6 +295,27 @@ mod tests {
         let sonnet_body = make_body_with_model(&[("user", &"z".repeat(4_000_000))], "claude-sonnet-4-6");
         let sonnet_val: Value = serde_json::from_slice(&sonnet_body).unwrap();
         assert!((estimate_cost(&val) - estimate_cost(&sonnet_val)).abs() < 0.001);
+    }
+
+    #[test]
+    fn hook_input_uses_transcript_messages_for_estimate() {
+        let _g = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reset_warned_for_tests();
+        let input = serde_json::json!({
+            "prompt": "follow up",
+            "transcript": {
+                "messages": [
+                    {"role": "user", "content": "z".repeat(6_000_000)},
+                    {"role": "assistant", "content": "ok"}
+                ]
+            }
+        });
+        let body = super::hook_budget_body(&input, "follow up", "claude-sonnet-4-20250514")
+            .expect("transcript should produce a budget body");
+        let w = super::check_with_threshold(&body, 1.0);
+        assert!(w.is_some(), "transcript-sized session should cross a low threshold");
     }
 
     #[test]

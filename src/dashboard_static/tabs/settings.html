@@ -11,7 +11,7 @@
     <input type="number" id="set-budget" min="0" step="10" style="width:100%;max-width:280px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
     <label style="font-size:12px;color:var(--t3)">Actual Anthropic spend (optional)</label>
     <input type="number" id="set-actual" min="0" step="1" style="width:100%;max-width:280px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
-    <div style="font-size:13px;color:var(--t2)">Dashboard port <strong id="set-dash-port">—</strong> · Proxy port <strong id="set-proxy-port">—</strong></div>
+    <div style="font-size:13px;color:var(--t2)">Dashboard port <strong id="set-dash-port">n/a</strong>, Proxy port <strong id="set-proxy-port">n/a</strong></div>
     <div style="margin-top:12px"><button type="button" class="modal-btn primary" onclick="saveSettingsGeneral()">Save general</button></div>
   </div>
 
@@ -72,7 +72,7 @@
     <label style="font-size:12px;color:var(--t3)">Adaptive max chars (optional override, 0 = model default)</label>
     <input type="number" id="set-adaptive-max" min="0" max="8000" step="50" placeholder="0 = auto" style="width:100%;max-width:200px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
     <label style="font-size:12px;color:var(--t3)">Adaptive prefix preview (~/.ctx/adaptive_prefix.md)</label>
-    <div id="set-adaptive-meta" style="font-size:12px;color:var(--t2);margin:6px 0 4px">—</div>
+    <div id="set-adaptive-meta" style="font-size:12px;color:var(--t2);margin:6px 0 4px">n/a</div>
     <textarea id="set-adaptive-preview" readonly rows="8" style="width:100%;margin-top:4px;font-family:ui-monospace,monospace;font-size:11px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">
       <button type="button" class="modal-btn secondary" onclick="regenerateAdaptivePrefix()">Regenerate adaptive prefix</button>
@@ -103,7 +103,7 @@
   <div class="card" style="margin-bottom:20px">
     <div class="section-head">Install watermark</div>
     <div class="section-sub">ctx stamps the first proxy or hook event so the dashboard defaults to data from after you turned ctx on. Reset to include older indexed sessions until the next event re-stamps.</div>
-    <p style="font-size:12px;color:var(--t2);margin:0 0 10px">Current stamp: <code id="set-ctx-since-display">—</code></p>
+    <p style="font-size:12px;color:var(--t2);margin:0 0 10px">Current stamp: <code id="set-ctx-since-display">n/a</code></p>
     <button type="button" class="modal-btn secondary" onclick="resetDashboardWatermark()" style="border-color:#b45309;color:#fdba74">Reset watermark</button>
   </div>
 
