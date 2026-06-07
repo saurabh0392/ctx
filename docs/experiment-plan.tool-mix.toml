@@ -1,0 +1,67 @@
+# Focused experiment: tool-level static deny vs vector-powered semantic tool mix.
+# Init: ctx experiment plan init --corpus /path/to/project --template tool-mix
+
+started_at = "__STARTED_AT__"
+corpus_path = "__CORPUS__"
+mode = "stress_test"
+apply_recommendations_on_final_day = false
+
+[[phases]]
+name = "baseline_static"
+until_day = 1
+
+[phases.config]
+active_profile = "personal"
+auto_profile_enabled = false
+hooks_enabled = true
+semantic_tool_mix_enabled = false
+compress_enabled = false
+
+[phases.config.ab_test]
+profile_pct = 100
+tool_mix_pct = 100
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 100
+
+[[phases]]
+name = "tool_mix_ab"
+until_day = 7
+
+[phases.config]
+active_profile = "personal"
+auto_profile_enabled = false
+hooks_enabled = true
+semantic_tool_mix_enabled = true
+compress_enabled = false
+
+[phases.config.ab_test]
+profile_pct = 100
+tool_mix_pct = 50
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 100
+
+[[phases]]
+name = "lock_in"
+until_day = 8
+
+[phases.config]
+active_profile = "personal"
+auto_profile_enabled = false
+hooks_enabled = true
+semantic_tool_mix_enabled = true
+compress_enabled = false
+
+[phases.config.ab_test]
+profile_pct = 100
+tool_mix_pct = 100
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 100

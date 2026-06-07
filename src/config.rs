@@ -42,6 +42,16 @@ pub fn behavior_hints_path() -> PathBuf {
     ctx_dir().join("behavior-hints.json")
 }
 
+/// Local learned outcome model (Act 1). Per repo/profile, retrained on ingest.
+pub fn retention_model_path() -> PathBuf {
+    ctx_dir().join("retention-model.json")
+}
+
+/// Append-only history of trained model versions, for the Improving dashboard view.
+pub fn retention_model_history_path() -> PathBuf {
+    ctx_dir().join("retention-model-history.jsonl")
+}
+
 pub fn system_prefix_path() -> PathBuf {
     ctx_dir().join("system_prefix.md")
 }
@@ -229,6 +239,16 @@ pub fn remove_user_ctx_from_cursor_known_mcp_ids() -> Result<bool> {
 }
 
 pub fn claude_settings_path() -> PathBuf {
+    // In the lib's own unit tests, never touch the real ~/.claude. Those tests isolate via
+    // CTX_HOME (not HOME), and some exercise settings writers (sync, friction recovery) that
+    // would otherwise clobber the live PostToolUse collection hook. Route the Claude settings
+    // file alongside CTX_HOME for them. Production and integration tests (which isolate HOME)
+    // keep the normal home-based path.
+    if cfg!(test) {
+        if let Ok(p) = std::env::var("CTX_HOME") {
+            return PathBuf::from(p).join(".claude").join("settings.json");
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude")
@@ -372,6 +392,50 @@ impl FilterMode {
     }
 }
 
+/// User-facing compression preset. During the Act 0 collection window the default is
+/// `off`: ctx records the decision it *would* make in shadow mode but never modifies
+/// tool output. Activation moves to `safe` then `full` only once labels prove it.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CompressPreset {
+    /// No user-facing compression. Shadow collection still runs (zero UX risk).
+    #[default]
+    Off,
+    /// Trim git, test, and grep output only. The proven-safe-first set.
+    Safe,
+    /// Trim every supported tool output, including Read and MCP.
+    Full,
+}
+
+impl CompressPreset {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "safe" => Some(Self::Safe),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Safe => "safe",
+            Self::Full => "full",
+        }
+    }
+
+    /// Whether this preset permits user-facing compression for a compress kind label
+    /// (the labels emitted by `compress::shadow::kind_str`).
+    pub fn allows_kind(self, kind: &str) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Safe => matches!(kind, "git-status" | "git-diff" | "git-log" | "test" | "grep"),
+            Self::Full => true,
+        }
+    }
+}
+
 /// MITM proxy operating mode (`ctx proxy install --mode`).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
@@ -469,6 +533,9 @@ pub struct Config {
     /// Per-feature A/B ratios. Omitted features default to 100 (always on).
     #[serde(default)]
     pub ab_test: Option<AbTestConfig>,
+    /// When false, experiment pre-ctx phase: strip intervention hooks and filters (ingest only).
+    #[serde(default = "default_true")]
+    pub experiment_hooks_enabled: bool,
     /// When true, dashboard shows the Experiment tab (also via `?dev=1` or localStorage).
     #[serde(default)]
     pub dev_mode: bool,
@@ -502,6 +569,54 @@ pub struct Config {
     /// Semantic overlay from the latest hook (refreshed each UserPromptSubmit).
     #[serde(default)]
     pub session_semantic_tools: Vec<String>,
+    /// When true, the PostToolUse hook runs at all (master switch for shadow + apply).
+    #[serde(default = "default_true")]
+    pub compress_enabled: bool,
+    /// User-facing compression preset (off | safe | full). Default off during collection.
+    #[serde(default)]
+    pub compress_preset: CompressPreset,
+    /// When true, the hook records the would-do retention decision for every tool result
+    /// into `compress_decisions` (Act 0 self-labeling). Independent of `compress_preset`.
+    #[serde(default = "default_true")]
+    pub compress_shadow_enabled: bool,
+    /// Bypass the Act 1 evidence gate and activate any preset-allowed tool immediately.
+    /// Off by default: activation is earned from the user's own labels.
+    #[serde(default)]
+    pub compress_force_active: bool,
+    /// Deliberate before/after trial (SAU-150). Tool names in this list are trimmed live
+    /// even while `compress_preset` stays off, so a single tool can be measured (trimmed vs
+    /// baseline) without the evidence gate, which cannot pass before any trimmed data exists.
+    /// This is the only way to generate the "after" arm; keep it scoped to one tool at a time.
+    #[serde(default)]
+    pub compress_trial_tools: Vec<String>,
+    /// Edit-intent guard for Read (ADR 0001 / CTX-8). When on, a Read is only trim-eligible if it
+    /// is a reference read (a file the agent is not positioned to edit); working reads of editable
+    /// project files are never trimmed, even under a trial or after the activation gate. Default on;
+    /// turning it off is an experiment knob to measure how much harm the guard prevents.
+    #[serde(default = "default_true")]
+    pub compress_read_edit_guard: bool,
+    /// Session-grounded retention (v2): score lines by task frame after v1 format pass.
+    #[serde(default)]
+    pub compress_sgr_enabled: bool,
+    /// Cross-turn dedup for identical tool output blocks (v2.1).
+    #[serde(default = "default_true")]
+    pub compress_sgr_dedup: bool,
+    /// Adjust compress target by debug/scan mode (v2).
+    #[serde(default = "default_true")]
+    pub compress_adaptive_budget: bool,
+    /// Only compress when raw output exceeds this many chars.
+    #[serde(default = "default_compress_max_output_chars")]
+    pub compress_max_output_chars: usize,
+    /// Target size after compression.
+    #[serde(default = "default_compress_target_chars")]
+    pub compress_target_chars: usize,
+    /// Built-in tool names eligible for compression (MCP tools always eligible when enabled).
+    #[serde(default = "default_compress_tools")]
+    pub compress_tools: Vec<String>,
+    #[serde(default = "default_true")]
+    pub compress_redact_secrets: bool,
+    #[serde(default = "default_true")]
+    pub compress_preserve_errors: bool,
 }
 
 /// Thresholds for automatic profile generation from MCP usage history.
@@ -582,7 +697,7 @@ pub struct ModeConfig {
 }
 
 /// Per-feature A/B percentages (0 = always control, 100 = always treatment).
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AbTestConfig {
     #[serde(default = "default_hundred")]
     pub profile_pct: u8,
@@ -592,10 +707,35 @@ pub struct AbTestConfig {
     pub adaptive_pct: u8,
     #[serde(default = "default_hundred")]
     pub coaching_pct: u8,
+    #[serde(default = "default_hundred")]
+    pub compress_pct: u8,
+    /// When compress is on, 50/50 v1-only vs v1+SGR retention.
+    #[serde(default = "default_hundred")]
+    pub compress_sgr_pct: u8,
+    /// Semantic tool mix overlay (vector neighbors → un-deny tools per prompt).
+    #[serde(default = "default_hundred")]
+    pub tool_mix_pct: u8,
 }
 
 fn default_hundred() -> u8 {
     100
+}
+
+fn default_compress_max_output_chars() -> usize {
+    12_000
+}
+
+fn default_compress_target_chars() -> usize {
+    2_500
+}
+
+fn default_compress_tools() -> Vec<String> {
+    vec![
+        "Bash".into(),
+        "Read".into(),
+        "Grep".into(),
+        "Glob".into(),
+    ]
 }
 
 fn default_true() -> bool {
@@ -609,6 +749,9 @@ impl Default for AbTestConfig {
             inject_pct: 100,
             adaptive_pct: 100,
             coaching_pct: 100,
+            compress_pct: 100,
+            compress_sgr_pct: 100,
+            tool_mix_pct: 100,
         }
     }
 }
@@ -630,6 +773,20 @@ impl Config {
         self.embeddings_enabled != Some(false)
     }
 
+    /// Whether user-facing compression should apply for a compress kind label given the
+    /// current preset. Act 1 layers a per-tool evidence gate on top of this via
+    /// [`crate::compress::activation`].
+    pub fn compress_applies_kind(&self, kind: &str) -> bool {
+        self.compress_enabled && self.compress_preset.allows_kind(kind)
+    }
+
+    /// Whether this exact tool is under a deliberate trim trial (SAU-150). A trialed tool is
+    /// trimmed live regardless of preset and the evidence gate, so we can collect the "after"
+    /// arm of the causal before/after. Still requires `compress_enabled`.
+    pub fn compress_trialing(&self, tool_name: &str) -> bool {
+        self.compress_enabled && self.compress_trial_tools.iter().any(|t| t == tool_name)
+    }
+
     pub fn load() -> Self {
         let path = ctx_dir().join("config.toml");
         let mut cfg = if !path.exists() {
@@ -639,6 +796,14 @@ impl Config {
                 inject_enabled: true,
                 coaching_enabled: true,
                 adaptive_prefix_enabled: true,
+                compress_enabled: true,
+                // Act 0 collection is on by default: it never changes tool output, it only
+                // records the would-do decision so the system can learn. The derived
+                // `Default` would leave this false, which silently disables all learning.
+                compress_shadow_enabled: true,
+                // Safety guard on by default (ADR 0001): never trim a Read the agent may edit.
+                compress_read_edit_guard: true,
+                experiment_hooks_enabled: true,
                 ..Default::default()
             }
         } else {
@@ -650,11 +815,45 @@ impl Config {
                     inject_enabled: true,
                     coaching_enabled: true,
                     adaptive_prefix_enabled: true,
+                    compress_enabled: true,
+                    compress_shadow_enabled: true,
+                    compress_read_edit_guard: true,
+                    experiment_hooks_enabled: true,
                     ..Default::default()
                 })
         };
         cfg.migrate_proxy_mode();
+        cfg.migrate_compress_defaults();
+        if cfg.migrate_experiment_hooks_enabled() {
+            let _ = cfg.save();
+        }
         cfg
+    }
+
+    /// Fresh installs used `Default` for bool fields (false). Re-enable hooks when no experiment plan is active.
+    fn migrate_experiment_hooks_enabled(&mut self) -> bool {
+        if self.experiment_hooks_enabled {
+            return false;
+        }
+        if crate::experiment_plan::plan_path().exists() {
+            return false;
+        }
+        self.experiment_hooks_enabled = true;
+        true
+    }
+
+    /// Repair compress fields written as zero/empty by `Default` before serde defaults applied on save.
+    fn migrate_compress_defaults(&mut self) {
+        if self.compress_max_output_chars == 0
+            || self.compress_target_chars == 0
+            || self.compress_tools.is_empty()
+        {
+            self.compress_max_output_chars = default_compress_max_output_chars();
+            self.compress_target_chars = default_compress_target_chars();
+            self.compress_tools = default_compress_tools();
+            self.compress_redact_secrets = true;
+            self.compress_preserve_errors = true;
+        }
     }
 
     /// Map legacy `proxy_install_mode` strings to `proxy_mode` when unset.
@@ -686,6 +885,38 @@ impl Config {
 mod hook_strip_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn migrate_reenables_hooks_without_experiment_plan() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let mut cfg = Config {
+            experiment_hooks_enabled: false,
+            ..Default::default()
+        };
+        assert!(cfg.migrate_experiment_hooks_enabled());
+        assert!(cfg.experiment_hooks_enabled);
+    }
+
+    #[test]
+    fn fresh_install_enables_shadow_collection() {
+        // A fresh config (no file on disk) must have Act 0 shadow collection on, otherwise
+        // the system silently records nothing and never learns. The derived `Default`
+        // leaves bools false, so this is a real regression guard.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let cfg = Config::load();
+        assert!(
+            cfg.compress_shadow_enabled,
+            "fresh install must collect shadow decisions by default"
+        );
+    }
 
     #[test]
     fn strip_removes_ctx_hook_and_gain_brief() {

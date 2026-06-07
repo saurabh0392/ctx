@@ -1,12 +1,27 @@
 # ctx
 
-ctx strips the MCP tool definitions Claude Code doesn't need for the current task, tracks what each session actually costs, and serves a local dashboard. Install with no Rust required — just `gh` authenticated to the goshippo org.
+ctx is a self-learning context controller for coding agents. It watches your real sessions, learns what each tool's output actually needs to keep for the next decision in *this* repo, and trims the rest, getting sharper the more you use it. Filtering unused MCP tools and tracking per-session cost are mechanisms, not the headline. No cloud, no LLM in the hook.
+
+Install with no Rust required — just `gh` authenticated to the goshippo org.
 
 ```bash
 gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
 bash ~/Documents/ctx/scripts/install.sh
 ctx setup
 ```
+
+### How it earns its turn
+
+Compression starts **off**. ctx first runs in shadow mode: for every tool result it records the lines it *would* keep or drop and then watches the next few turns to see if dropping them would have caused a correction or a re-read. Only when a tool's own collected labels clear the evidence bar does ctx turn user-facing trimming on for that tool, lowest-risk first (git, test, grep before Read and MCP). The original output always stays in your transcript.
+
+```bash
+ctx context status     # collection progress + which tools have earned activation
+ctx context learn      # train the local outcome model on your labels (volume-gated)
+ctx context on         # opt into the safe preset (git/test/grep); tools still gate on evidence
+ctx bench run          # reproducible, outcome-first benchmark on your own sessions
+```
+
+The dashboard's **Context** home is the spine: Learning (what ctx is recording, with 0 corrections caused), Earning (which tools turned on and the count of your runs behind each), and Improving (the local model's version history). The honesty gate: ctx does not claim to beat native compaction until the Act 2 benchmark has real data.
 
 After setup, ctx stays on the `all` profile until MCP usage crosses configurable thresholds, then builds a **`personal`** profile automatically from your tool history. Q&A-only turns with no MCP calls still benefit from similarity-based auto-select once past sessions exist in the index.
 
@@ -213,6 +228,32 @@ ctx filter clear-expansion
 
 `ctx status` shows the active profile and filter mode.
 
+## Output compression
+
+ctx Compress runs as a **PostToolUse** hook (`ctx hook post-tool-use`). The real command or tool call runs unchanged; Claude sees a shorter `updatedToolOutput` when output is large. This covers **Bash, Read, Grep, Glob, and MCP** in one hook. Requires Claude Code with `updatedToolOutput` support (v2.1.121+).
+
+Default config in `~/.ctx/config.toml`:
+
+```toml
+compress_enabled = true
+compress_max_output_chars = 12000
+compress_target_chars = 2500
+compress_tools = ["Bash", "Read", "Grep", "Glob"]
+compress_redact_secrets = true
+compress_preserve_errors = true
+```
+
+**What we measure:** chars removed from tool results per session (observed in `compress_events` and Trace rows). **What we do not claim:** headline percent savings until you have your own corpus numbers.
+
+Pipeline and Savings tabs show today's compression count when data exists. Optional A/B:
+
+```toml
+[ab_test]
+compress_pct = 50
+```
+
+Treatment runs the compressor; control passes output through. Compare correction rate and input tokens in the Experiment tab after ingest.
+
 ## Dashboard
 
 ```bash
@@ -242,7 +283,7 @@ When running Claude Code in an IDE or terminal, the dashboard ingests hook paylo
 
 ## A/B experiments (optional)
 
-You can measure whether each gate (profile filter, system prefix, adaptive prefix, coaching) actually lowers cost per request. Add to `~/.ctx/config.toml`:
+You can measure whether each gate (profile filter, system prefix, adaptive prefix, coaching, output compression) actually lowers cost per request. Add to `~/.ctx/config.toml`:
 
 ```toml
 [ab_test]
@@ -250,9 +291,10 @@ profile_pct = 50
 inject_pct = 100
 adaptive_pct = 50
 coaching_pct = 100
+compress_pct = 100
 ```
 
-Each prompt gets an independent coin flip per feature. Control requests skip that gate but still appear in `hook_traces` with an `ab_group` label like `P:T I:C A:T C:T`. After ingest enriches rows with cost data, open the dashboard with `?dev=1` or enable `dev_mode = true` in config to use the Experiment tab. Settings also has sliders and Start/Stop 50/50 buttons.
+Each prompt gets an independent coin flip per feature. Control requests skip that gate but still appear in `hook_traces` with an `ab_group` label like `P:T I:C A:T C:T X:T`. After ingest enriches rows with cost data, open the dashboard with `?dev=1` or enable `dev_mode = true` in config to use the Experiment tab. Settings also has sliders and Start/Stop 50/50 buttons.
 
 Omit `[ab_test]` entirely for normal operation (all gates always on, no experiment metadata).
 
@@ -265,6 +307,24 @@ ctx experiment reset     # remove ab-results.json
 ```
 
 Set `auto_apply_recommendations = true` in config to apply recommendations automatically after each ingest.
+
+### 15-day automated experiment plan
+
+Run a calendar-driven stress test without daily manual config changes:
+
+```bash
+ctx experiment plan init --corpus ~/Documents/the-gaffer --template gaffer
+ctx experiment install-schedule   # macOS: daily tick at 09:00 via launchd
+ctx experiment tick               # apply today's phase, ingest, digest, notify
+ctx experiment digest             # human-readable summary
+ctx experiment plan status        # current day / phase
+```
+
+Plan file: `~/.ctx/experiment-plan.toml`. Journal: `~/.ctx/experiment-journal.jsonl`. See [`docs/15-day-stress-test.md`](docs/15-day-stress-test.md).
+
+Days 1–2 run **without ctx hooks** (true baseline). Day 3 turns ctx fully on before feature A/B tests. Reload your IDE when the phase changes.
+
+Keep `auto_apply_recommendations = false` during the 15-day plan — use `ctx experiment apply` manually on day 15 if desired.
 
 ## Context modes
 

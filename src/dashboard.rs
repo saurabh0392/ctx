@@ -344,6 +344,146 @@ fn hook_trace_filter_totals(conn: &rusqlite::Connection, watermark: Option<&str>
     .unwrap_or((0, 0, 0, 0))
 }
 
+fn profile_slug_for_estimate(raw: &str, fallback: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() || t == "all" {
+        fallback.to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+fn records_have_filter_metrics(records: &[crate::analytics::Record]) -> bool {
+    records
+        .iter()
+        .any(|r| r.tools_removed > 0 || r.tokens_saved > 0)
+}
+
+fn records_have_mcp_metrics(records: &[crate::analytics::Record]) -> bool {
+    records.iter().any(|r| {
+        !r.mcp_tools_invoked.is_empty() || !r.tools_sent_by_server.is_empty()
+    })
+}
+
+/// When hook traces are sparse, estimate filter impact from ingested sessions × profile.
+fn session_filter_estimates(
+    conn: &rusqlite::Connection,
+    watermark: Option<&str>,
+    fallback_profile: &str,
+) -> (usize, usize, usize, usize) {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(NULLIF(TRIM(profile), ''), 'all') AS prof,
+                CAST(COALESCE(SUM(turn_count), 0) AS INTEGER) AS turns
+         FROM sessions
+         WHERE (?1 IS NULL OR started_at >= ?1)
+         GROUP BY prof",
+    ) else {
+        return (0, 0, 0, 0);
+    };
+    let Ok(rows) = stmt.query_map(params![watermark], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+    }) else {
+        return (0, 0, 0, 0);
+    };
+    let mut requests = 0usize;
+    let mut tokens = 0usize;
+    let mut tools_removed = 0usize;
+    let mut tools_kept = 0usize;
+    for row in rows.flatten() {
+        let (prof, turns) = row;
+        if turns == 0 {
+            continue;
+        }
+        let slug = profile_slug_for_estimate(&prof, fallback_profile);
+        let (kept, removed, saved) = crate::profiles::filter_impact_for_slug(&slug);
+        requests += turns;
+        tools_kept += kept.saturating_mul(turns);
+        tools_removed += removed.saturating_mul(turns);
+        tokens += saved.saturating_mul(turns);
+    }
+    (requests, tokens, tools_removed, tools_kept)
+}
+
+/// Weight prompts per profile from hook traces plus session turn counts.
+fn profile_prompt_weights(
+    conn: &rusqlite::Connection,
+    watermark: Option<&str>,
+    fallback_profile: &str,
+) -> HashMap<String, usize> {
+    let mut weights: HashMap<String, usize> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(NULLIF(TRIM(effective_profile), ''), NULLIF(TRIM(profile), ''), 'all') AS prof,
+                COUNT(*) AS n
+         FROM hook_traces
+         WHERE (?1 IS NULL OR ts >= ?1)
+         GROUP BY prof",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![watermark], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+        }) {
+            for row in rows.flatten() {
+                let slug = profile_slug_for_estimate(&row.0, fallback_profile);
+                *weights.entry(slug).or_default() += row.1;
+            }
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(NULLIF(TRIM(profile), ''), 'all') AS prof,
+                CAST(COALESCE(SUM(turn_count), 0) AS INTEGER) AS turns
+         FROM sessions
+         WHERE (?1 IS NULL OR started_at >= ?1)
+         GROUP BY prof",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![watermark], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+        }) {
+            for row in rows.flatten() {
+                let slug = profile_slug_for_estimate(&row.0, fallback_profile);
+                *weights.entry(slug).or_default() += row.1;
+            }
+        }
+    }
+    weights
+}
+
+fn tools_sent_estimates_by_server(
+    conn: &rusqlite::Connection,
+    watermark: Option<&str>,
+    fallback_profile: &str,
+) -> HashMap<String, usize> {
+    let mut sent: HashMap<String, usize> = HashMap::new();
+    for (prof, weight) in profile_prompt_weights(conn, watermark, fallback_profile) {
+        if weight == 0 {
+            continue;
+        }
+        for (prefix, n) in crate::profiles::tools_sent_by_server_prefix(&prof) {
+            *sent.entry(prefix).or_default() += n.saturating_mul(weight);
+        }
+    }
+    sent
+}
+
+fn merge_tool_usage_with_estimates(mut rows: Vec<ServerHeat>, sent: HashMap<String, usize>) -> Vec<ServerHeat> {
+    for row in &mut rows {
+        if let Some(n) = sent.get(&row.server) {
+            row.tools_sent = *n;
+        }
+    }
+    let mut seen: HashSet<String> = rows.iter().map(|r| r.server.clone()).collect();
+    for (server, tools_sent) in sent {
+        if seen.insert(server.clone()) {
+            rows.push(ServerHeat {
+                server,
+                tools_sent,
+                tools_invoked: 0,
+            });
+        }
+    }
+    rows.sort_by(|a, b| (b.tools_invoked + b.tools_sent).cmp(&(a.tools_invoked + a.tools_sent)));
+    rows.truncate(40);
+    rows
+}
+
 /// Per-profile breakdown from hook_traces (slug -> (requests, tokens, auto_count)).
 fn profiles_analytics_from_hook_traces(
     conn: &rusqlite::Connection,
@@ -501,6 +641,8 @@ struct HookGateTotals {
     budget_blocked_count: usize,
     inject_chars: usize,
     adaptive_chars: usize,
+    compress_count: usize,
+    compress_chars: usize,
 }
 
 fn prompt_word(n: usize) -> &'static str {
@@ -604,6 +746,8 @@ fn hook_trace_gate_totals(
         budget_blocked_count: row.8.max(0) as usize,
         inject_chars: row.9.max(0) as usize,
         adaptive_chars: row.10.max(0) as usize,
+        compress_count: 0,
+        compress_chars: 0,
     }
 }
 
@@ -619,6 +763,10 @@ fn merge_request_prefix_totals(
         }
         if r.budget_blocked {
             totals.budget_blocked_count = totals.budget_blocked_count.saturating_add(1);
+        }
+        if r.compress_chars_saved > 0 {
+            totals.compress_count = totals.compress_count.saturating_add(1);
+            totals.compress_chars += r.compress_chars_saved;
         }
     }
 }
@@ -992,14 +1140,39 @@ fn enrich_gate_stats(
                 }
             }
             "compress" => {
-                g.enabled = false;
-                g.impact_kind = "none".into();
-                g.impact_primary = "Coming soon — not shipped yet".into();
-                g.verdict = "unavailable".into();
-                g.verdict_detail =
-                    "Bash output compression is on the roadmap; ctx does not compress yet.".into();
-                g.today_count = 0;
-                g.today_tokens = 0;
+                g.impact_kind = "cost".into();
+                if !g.enabled {
+                    g.impact_primary = "Output compression disabled".into();
+                    g.verdict = "off".into();
+                    g.verdict_detail = "Turn on compress_enabled in config.".into();
+                } else if g.today_count > 0 {
+                    g.impact_primary = format!(
+                        "Compressed output on {} tool call{}",
+                        g.today_count,
+                        if g.today_count == 1 { "" } else { "s" }
+                    );
+                    if totals.compress_chars > 0 {
+                        g.chars_added = Some(totals.compress_chars);
+                        g.impact_secondary = Some(format!(
+                            "~{} chars (~{} tok) removed from tool results today",
+                            totals.compress_chars,
+                            fmt_tok(totals.compress_chars / 4)
+                        ));
+                    }
+                    if g.today_count >= VERDICT_MIN_PROMPTS {
+                        g.verdict = "review".into();
+                        g.verdict_detail =
+                            "Observed compression savings. Watch correction rate if you run a compress A/B.".into();
+                    } else {
+                        g.verdict = "early".into();
+                        g.verdict_detail = too_early_verdict("Output compression", g.today_count);
+                    }
+                } else {
+                    g.impact_primary = "Ready. Waiting for large tool output".into();
+                    g.verdict = "early".into();
+                    g.verdict_detail =
+                        "Compression runs after Bash, Read, Grep, Glob, and MCP tools when output is large.".into();
+                }
             }
             _ => {}
         }
@@ -1050,6 +1223,12 @@ fn gate_activity_from_hook_trace(h: &crate::db::HookTraceRow) -> Option<GateActi
             label: "budget hint".into(),
         });
     }
+    if h.compress_chars_saved > 0 {
+        events.push(GateEvent {
+            id: "compress".into(),
+            label: format!("-{} chars compressed", h.compress_chars_saved),
+        });
+    }
     if events.is_empty() {
         return None;
     }
@@ -1079,6 +1258,7 @@ fn gates_when_no_requests(
 ) -> GatesResponse {
     let inject_on = config.inject_enabled && crate::config::system_prefix_path().exists();
     let adaptive_on = config.adaptive_prefix_enabled;
+    let compress_on = config.compress_enabled;
     let auto_on = config.auto_profile_enabled;
     let budget_threshold = crate::budget_guard::session_threshold_usd();
 
@@ -1101,6 +1281,10 @@ fn gates_when_no_requests(
     };
 
     let totals = hook_trace_gate_totals(conn, today, wm);
+    let (compress_count, compress_chars) = crate::db::compress_totals_today(conn, today, wm);
+    let mut totals = totals;
+    totals.compress_count = compress_count;
+    totals.compress_chars = compress_chars;
     let active_profile = config
         .active_profile
         .clone()
@@ -1202,11 +1386,17 @@ fn gates_when_no_requests(
         ),
         make_gate_stat(
             "compress",
-            "Bash Compress",
-            false,
-            "coming soon",
-            0,
-            0,
+            "Output Compress",
+            compress_on,
+            if totals.compress_chars > 0 {
+                format!("~{} chars saved today", totals.compress_chars)
+            } else if compress_on {
+                "ready for large tool output".into()
+            } else {
+                "disabled".into()
+            },
+            totals.compress_count,
+            totals.compress_chars / 4,
         ),
     ];
 
@@ -1356,6 +1546,12 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/allowance/burn-rate", get(api_allowance_burn_rate))
         .route("/api/savings/tool-mix", get(api_savings_tool_mix))
         .route("/api/savings/access-friction", get(api_savings_access_friction))
+        .route("/api/savings/compress", get(api_savings_compress))
+        .route("/api/context", get(api_context))
+        .route("/api/context/preset", post(api_context_preset))
+        .route("/api/context/proof", get(api_context_proof))
+        .route("/api/context/trial", post(api_context_trial))
+        .route("/api/bench", get(api_bench))
         .route("/api/savings/keep-tool", post(api_savings_keep_tool))
         .route("/api/trigger-ingest", post(api_trigger_ingest))
         .route("/api/events/stream", get(crate::dashboard_push::api_events_stream))
@@ -1392,6 +1588,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/simulate", post(api_simulate))
         .route("/api/ab-report", get(api_ab_report))
         .route("/api/ab-daily", get(api_ab_daily))
+        .route("/api/experiment/plan", get(api_experiment_plan))
         // Projects + tool heatmap
         .route("/api/projects", get(api_projects))
         .route("/api/tool-usage", get(api_tool_usage))
@@ -1455,6 +1652,7 @@ async fn api_hook_event(Json(payload): Json<serde_json::Value>) -> impl IntoResp
     });
 
     if matches!(hook_type, "Stop" | "SessionEnd") {
+        let _ = crate::semantic_tools::process_stop_hook_recovery(&payload);
         spawn_background_ingest(Some(hook_type.to_string()));
     }
 
@@ -1524,6 +1722,332 @@ async fn api_savings_access_friction() -> Json<Vec<crate::semantic_tools::Access
         return Json(vec![]);
     };
     Json(crate::semantic_tools::list_access_friction(&conn, 1))
+}
+
+async fn api_savings_compress(Query(q): Query<SinceQuery>) -> Json<Vec<crate::db::CompressSummaryRow>> {
+    let Some(conn) = open_ctx_db() else {
+        return Json(vec![]);
+    };
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let wm = watermark_ts(&conn, &q);
+    let rows = if q.since.as_deref() == Some("all") {
+        crate::db::compress_summary_all(&conn)
+    } else {
+        crate::db::compress_summary_today(&conn, &today, wm.as_deref())
+    };
+    Json(rows.unwrap_or_default())
+}
+
+// ---------------------------------------------------------------------------
+// Context home (Learning / Earning / Improving) — the self-learning controller
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ContextToolView {
+    tool: String,
+    decisions: i64,
+    joined: i64,
+    clean_runs: i64,
+    corrections: i64,
+    rereads: i64,
+    active: bool,
+    earned: bool,
+    need: i64,
+}
+
+#[derive(Serialize)]
+struct ContextModelView {
+    version: u32,
+    trained_at: String,
+    holdout_auc: f64,
+    holdout_accuracy: f64,
+    base_correction_rate: f64,
+    history: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct ContextView {
+    preset: String,
+    shadow_enabled: bool,
+    activation_min: i64,
+    stats: crate::db::CompressDecisionStats,
+    tools: Vec<ContextToolView>,
+    feed: Vec<crate::db::CompressDecisionFeedRow>,
+    model: Option<ContextModelView>,
+}
+
+/// GET /api/context — everything the Context home needs, drawn only from real data.
+async fn api_context() -> Json<ContextView> {
+    use crate::compress::activation::{causal_clears_bar, CausalThresholds};
+    let cfg = crate::config::Config::load();
+    let th = CausalThresholds::default();
+    let (stats, tools, feed) = match open_ctx_db() {
+        Some(conn) => {
+            let stats = crate::db::compress_decision_stats(&conn);
+            let progress = crate::db::compress_tool_progress(&conn);
+            let causal = crate::db::causal_tool_outcomes(&conn, None);
+            let tools = progress
+                .into_iter()
+                .map(|p| {
+                    // Earned means causal: trimming is not measurably worse than leaving the
+                    // tool alone. Fails closed until a trial collects the trimmed arm, so the
+                    // badge never claims "ready" on baseline volume alone.
+                    let earned = causal
+                        .iter()
+                        .find(|o| o.tool_name == p.tool_name)
+                        .map(|o| causal_clears_bar(o, &th))
+                        .unwrap_or(false);
+                    ContextToolView {
+                        tool: p.tool_name,
+                        decisions: p.decisions,
+                        joined: p.joined,
+                        clean_runs: p.clean_runs,
+                        corrections: p.corrections,
+                        rereads: p.rereads,
+                        active: p.active,
+                        earned,
+                        need: th.min_baseline,
+                    }
+                })
+                .collect();
+            let feed = crate::db::compress_decision_feed(&conn, 12);
+            (stats, tools, feed)
+        }
+        None => (Default::default(), Vec::new(), Vec::new()),
+    };
+
+    let model = crate::learn::load_model().map(|m| {
+        let history = read_model_history(40);
+        ContextModelView {
+            version: m.version,
+            trained_at: m.trained_at,
+            holdout_auc: m.holdout_auc,
+            holdout_accuracy: m.holdout_accuracy,
+            base_correction_rate: m.base_correction_rate,
+            history,
+        }
+    });
+
+    Json(ContextView {
+        preset: cfg.compress_preset.as_str().to_string(),
+        shadow_enabled: cfg.compress_shadow_enabled,
+        activation_min: th.min_baseline,
+        stats,
+        tools,
+        feed,
+        model,
+    })
+}
+
+/// Read the last `limit` model-version history lines (Improving view), newest first.
+fn read_model_history(limit: usize) -> Vec<serde_json::Value> {
+    let path = crate::config::retention_model_history_path();
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    rows.reverse();
+    rows.truncate(limit);
+    rows
+}
+
+/// GET /api/bench — Act 2 benchmark report (outcome-first arms from collected labels).
+async fn api_bench() -> Json<crate::bench::BenchReport> {
+    Json(crate::bench::run_report())
+}
+
+#[derive(serde::Deserialize)]
+struct ContextPresetBody {
+    preset: String,
+}
+
+/// POST /api/context/preset — set off | safe | full from the dashboard.
+async fn api_context_preset(Json(body): Json<ContextPresetBody>) -> impl IntoResponse {
+    match crate::context_ctl::set_preset(&body.preset) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Proof — the causal before/after (SAU-150 / CTX-2), the USP made visible.
+// All rates and intervals are computed here so the page, the CLI, and the live
+// activation gate share one definition of "earned" (ADR 0002).
+// ---------------------------------------------------------------------------
+
+/// A proportion with its 95% Wilson interval. Rates are fractions in [0, 1].
+#[derive(Serialize)]
+struct ProofMetric {
+    rate: f64,
+    lo: f64,
+    hi: f64,
+}
+
+/// A trimmed-minus-baseline difference with its 95% Newcombe interval and a per-metric verdict.
+#[derive(Serialize)]
+struct ProofDelta {
+    diff: f64,
+    lo: f64,
+    hi: f64,
+    verdict: String,
+}
+
+#[derive(Serialize)]
+struct ProofToolView {
+    tool: String,
+    trialing: bool,
+    baseline_n: i64,
+    trimmed_n: i64,
+    /// Present when baseline_n > 0.
+    baseline_corrections: Option<ProofMetric>,
+    baseline_rereads: Option<ProofMetric>,
+    /// Present when trimmed_n > 0.
+    trimmed_corrections: Option<ProofMetric>,
+    trimmed_rereads: Option<ProofMetric>,
+    correction_delta: Option<ProofDelta>,
+    reread_delta: Option<ProofDelta>,
+    /// not_tested | collecting | safe | harmful | unclear.
+    verdict: String,
+}
+
+#[derive(Serialize)]
+struct ProofView {
+    preset: String,
+    trial_tools: Vec<String>,
+    min_baseline: i64,
+    min_trimmed: i64,
+    tools: Vec<ProofToolView>,
+}
+
+fn proof_metric(hits: i64, n: i64) -> Option<ProofMetric> {
+    if n <= 0 {
+        return None;
+    }
+    let (lo, hi) = crate::stats::wilson_interval(hits, n);
+    Some(ProofMetric {
+        rate: hits as f64 / n as f64,
+        lo,
+        hi,
+    })
+}
+
+/// Plain-token verdict for a single delta interval, relative to zero. The tool-level verdict
+/// uses the causal gate (with its noise slack); this is the readable per-metric description.
+fn delta_verdict(lo: f64, hi: f64) -> &'static str {
+    if hi <= 0.0 {
+        "safe"
+    } else if lo > 0.0 {
+        "harmful"
+    } else {
+        "unclear"
+    }
+}
+
+fn proof_delta(trim_hits: i64, trim_n: i64, base_hits: i64, base_n: i64) -> Option<ProofDelta> {
+    if trim_n <= 0 || base_n <= 0 {
+        return None;
+    }
+    let (diff, lo, hi) = crate::stats::newcombe_diff(trim_hits, trim_n, base_hits, base_n);
+    Some(ProofDelta {
+        diff,
+        lo,
+        hi,
+        verdict: delta_verdict(lo, hi).to_string(),
+    })
+}
+
+fn proof_tool_view(
+    o: &crate::db::CausalToolOutcome,
+    th: &crate::compress::activation::CausalThresholds,
+    trialing: bool,
+) -> ProofToolView {
+    let correction_delta = proof_delta(
+        o.trimmed_corrections,
+        o.trimmed_n,
+        o.baseline_corrections,
+        o.baseline_n,
+    );
+    let reread_delta = proof_delta(o.trimmed_rereads, o.trimmed_n, o.baseline_rereads, o.baseline_n);
+
+    // Tool-level verdict. Fails closed: never "safe" until both arms clear the minimum and the
+    // causal gate passes, so the page agrees with live activation.
+    let verdict = if o.trimmed_n == 0 {
+        "not_tested"
+    } else if o.baseline_n < th.min_baseline || o.trimmed_n < th.min_trimmed {
+        "collecting"
+    } else if crate::compress::activation::causal_clears_bar(o, th) {
+        "safe"
+    } else if correction_delta.as_ref().is_some_and(|d| d.lo > 0.0)
+        || reread_delta.as_ref().is_some_and(|d| d.lo > 0.0)
+    {
+        "harmful"
+    } else {
+        "unclear"
+    };
+
+    ProofToolView {
+        tool: o.tool_name.clone(),
+        trialing,
+        baseline_n: o.baseline_n,
+        trimmed_n: o.trimmed_n,
+        baseline_corrections: proof_metric(o.baseline_corrections, o.baseline_n),
+        baseline_rereads: proof_metric(o.baseline_rereads, o.baseline_n),
+        trimmed_corrections: proof_metric(o.trimmed_corrections, o.trimmed_n),
+        trimmed_rereads: proof_metric(o.trimmed_rereads, o.trimmed_n),
+        correction_delta,
+        reread_delta,
+        verdict: verdict.to_string(),
+    }
+}
+
+/// GET /api/context/proof — per-tool causal before/after with intervals and verdicts. Only tools
+/// the heuristic has wanted to trim (a non-empty baseline or trimmed arm) appear, so the page
+/// never shows a tool with nothing to prove.
+async fn api_context_proof() -> Json<ProofView> {
+    use crate::compress::activation::CausalThresholds;
+    let cfg = crate::config::Config::load();
+    let th = CausalThresholds::default();
+    let tools = match open_ctx_db() {
+        Some(conn) => crate::db::causal_tool_outcomes(&conn, None)
+            .into_iter()
+            .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0)
+            .map(|o| {
+                let trialing = cfg.compress_trial_tools.iter().any(|t| t == &o.tool_name);
+                proof_tool_view(&o, &th, trialing)
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    Json(ProofView {
+        preset: cfg.compress_preset.as_str().to_string(),
+        trial_tools: cfg.compress_trial_tools.clone(),
+        min_baseline: th.min_baseline,
+        min_trimmed: th.min_trimmed,
+        tools,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct ContextTrialBody {
+    tool: String,
+    on: bool,
+}
+
+/// POST /api/context/trial — start or stop a single-tool trim trial from the dashboard.
+async fn api_context_trial(Json(body): Json<ContextTrialBody>) -> impl IntoResponse {
+    let tool = body.tool.trim();
+    if tool.is_empty() {
+        return (StatusCode::BAD_REQUEST, "name a tool to trial".to_string()).into_response();
+    }
+    let res = crate::context_ctl::trial(Some(tool), body.on, !body.on);
+    match res {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1598,11 +2122,15 @@ struct Stats {
     /// True when `?since=all` was not passed and the DB has a watermark (default view hides pre-install rows).
     #[serde(default)]
     dashboard_watermark_filtering: bool,
+    /// True when filter tool counts were filled from ingested sessions (hook path estimate).
+    #[serde(default)]
+    filter_metrics_from_sessions: bool,
 }
 
 async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
     let records = load_records();
     let config = crate::config::Config::load();
+    let active_prof = config.active_profile.as_deref().unwrap_or("all");
     let conn = open_ctx_db();
     let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
     let wm_ref = wm.as_deref();
@@ -1674,15 +2202,32 @@ async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
         }
     }
 
-    let sessions_fallback = records.is_empty();
-    if sessions_fallback {
+    let sessions_fallback = records.is_empty() || !records_have_filter_metrics(&records);
+    let mut filter_metrics_from_sessions = false;
+    if request_count == 0 {
         if let Some(ref c) = conn {
             let (ht_req, ht_tokens, ht_tools, ht_kept) = hook_trace_filter_totals(c, wm_ref);
-            if ht_req > 0 {
-                request_count = ht_req;
-                total_tokens = ht_tokens;
-                total_tools = ht_tools;
-                total_kept = ht_kept;
+            request_count = ht_req;
+            total_tokens = ht_tokens;
+            total_tools = ht_tools;
+            total_kept = ht_kept;
+
+            let (s_req, s_tokens, s_tools, s_kept) =
+                session_filter_estimates(c, wm_ref, active_prof);
+            if s_req > request_count {
+                request_count = s_req;
+                filter_metrics_from_sessions = true;
+            }
+            if s_tools > total_tools {
+                total_tools = s_tools;
+                total_tokens = total_tokens.max(s_tokens);
+                total_kept = total_kept.max(s_kept);
+                filter_metrics_from_sessions = true;
+            } else if total_tools == 0 && s_tools > 0 {
+                total_tools = s_tools;
+                total_tokens = s_tokens;
+                total_kept = s_kept;
+                filter_metrics_from_sessions = true;
             }
         }
     }
@@ -1712,6 +2257,7 @@ async fn api_stats(Query(q): Query<SinceQuery>) -> Json<Stats> {
         current_month_session_spend_usd: month_spend,
         ctx_active_since,
         dashboard_watermark_filtering,
+        filter_metrics_from_sessions,
     })
 }
 
@@ -1748,17 +2294,19 @@ async fn api_timeline(Query(q): Query<SinceQuery>) -> Json<Vec<TimelinePoint>> {
             e.1 += 1;
         }
 
-        let mut points: Vec<TimelinePoint> = by_day
-            .into_iter()
-            .map(|(date, (tokens, requests))| TimelinePoint {
-                date,
-                tokens,
-                cost: (tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
-                requests,
-            })
-            .collect();
-        points.sort_by(|a, b| a.date.cmp(&b.date));
-        return Json(points);
+        if !by_day.is_empty() {
+            let mut points: Vec<TimelinePoint> = by_day
+                .into_iter()
+                .map(|(date, (tokens, requests))| TimelinePoint {
+                    date,
+                    tokens,
+                    cost: (tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
+                    requests,
+                })
+                .collect();
+            points.sort_by(|a, b| a.date.cmp(&b.date));
+            return Json(points);
+        }
     }
 
     if let Some(ref c) = conn {
@@ -1793,7 +2341,9 @@ async fn api_sessions(Query(q): Query<SinceQuery>) -> Json<Vec<crate::analytics:
             .collect();
         let mut sessions = group_into_sessions(&rec_filtered);
         sessions.truncate(20);
-        return Json(sessions);
+        if !sessions.is_empty() {
+            return Json(sessions);
+        }
     }
     if let Some(ref c) = conn {
         let rows = savings_sessions_from_db(c, wm_ref);
@@ -1888,12 +2438,22 @@ async fn api_spend_tips(Query(q): Query<SinceQuery>) -> Json<Vec<crate::conversa
     } else {
         None
     };
-    let mut sessions = crate::conversations::all_sessions();
-    sessions.retain(|s| session_after_ctx(&s.started_at, spend_ctx.as_deref()));
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
-    sessions.retain(|s| s.started_at.starts_with(&current_month));
-    Json(crate::conversations::generate_tips(&sessions))
+
+    let tips_for = |ctx_filter: Option<&str>| {
+        let mut sessions = crate::conversations::all_sessions();
+        sessions.retain(|s| session_after_ctx(&s.started_at, ctx_filter));
+        sessions.retain(|s| s.started_at.starts_with(&current_month));
+        crate::conversations::generate_tips(&sessions)
+    };
+
+    let tips = tips_for(spend_ctx.as_deref());
+    if tips.is_empty() && spend_ctx.is_some() {
+        Json(tips_for(None))
+    } else {
+        Json(tips)
+    }
 }
 
 #[derive(Deserialize)]
@@ -1971,6 +2531,8 @@ struct SettingsGetResponse {
     inject_enabled: bool,
     coaching_enabled: bool,
     adaptive_prefix_enabled: bool,
+    compress_enabled: bool,
+    compress_sgr_enabled: bool,
     adaptive_prefix_max_chars: Option<usize>,
     adaptive_prefix_char_budget: usize,
     adaptive_prefix_preview: String,
@@ -2081,6 +2643,8 @@ async fn api_settings_get() -> impl IntoResponse {
         inject_enabled: cfg.inject_enabled,
         coaching_enabled: cfg.coaching_enabled,
         adaptive_prefix_enabled: cfg.adaptive_prefix_enabled,
+        compress_enabled: cfg.compress_enabled,
+        compress_sgr_enabled: cfg.compress_sgr_enabled,
         adaptive_prefix_max_chars: cfg.adaptive_prefix_max_chars,
         adaptive_prefix_char_budget,
         adaptive_prefix_preview,
@@ -2129,6 +2693,8 @@ struct SettingsPostBody {
     inject_enabled: Option<bool>,
     coaching_enabled: Option<bool>,
     adaptive_prefix_enabled: Option<bool>,
+    compress_enabled: Option<bool>,
+    compress_sgr_enabled: Option<bool>,
     /// Omit or use `0` to clear override and use model-based budget.
     adaptive_prefix_max_chars: Option<usize>,
     monthly_budget_usd: Option<f64>,
@@ -2147,6 +2713,24 @@ struct SettingsModeBody {
 }
 
 async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoResponse {
+    if let Some(prefix) = &body.system_prefix {
+        if let Err(e) = (|| -> anyhow::Result<()> {
+            crate::config::ensure_dir()?;
+            std::fs::write(crate::config::system_prefix_path(), prefix)?;
+            Ok(())
+        })() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    if let Some(slug) = &body.active_profile {
+        let slug = slug.trim();
+        if !slug.is_empty() {
+            if let Err(e) = crate::profiles::switch(slug, true) {
+                return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+            }
+        }
+    }
+
     let mut cfg = crate::config::Config::load();
     if let Some(v) = body.auto_profile_enabled {
         cfg.auto_profile_enabled = v;
@@ -2159,6 +2743,12 @@ async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoRespo
     }
     if let Some(v) = body.adaptive_prefix_enabled {
         cfg.adaptive_prefix_enabled = v;
+    }
+    if let Some(v) = body.compress_enabled {
+        cfg.compress_enabled = v;
+    }
+    if let Some(v) = body.compress_sgr_enabled {
+        cfg.compress_sgr_enabled = v;
     }
     if let Some(v) = body.adaptive_prefix_max_chars {
         cfg.adaptive_prefix_max_chars = if v == 0 { None } else { Some(v) };
@@ -2192,24 +2782,6 @@ async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoRespo
     }
     if let Some(v) = body.auto_apply_recommendations {
         cfg.auto_apply_recommendations = v;
-    }
-    if let Some(prefix) = &body.system_prefix {
-        if let Err(e) = (|| -> anyhow::Result<()> {
-            crate::config::ensure_dir()?;
-            std::fs::write(crate::config::system_prefix_path(), prefix)?;
-            Ok(())
-        })() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
-    }
-    if let Some(slug) = &body.active_profile {
-        let slug = slug.trim();
-        if !slug.is_empty() {
-            if let Err(e) = crate::profiles::switch(slug, true) {
-                return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
-            }
-            cfg = crate::config::Config::load();
-        }
     }
     if let Err(e) = cfg.save() {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -2549,7 +3121,7 @@ async fn api_requests(Query(q): Query<RequestsQuery>) -> Json<Vec<RequestTrace>>
 
     let traces: Vec<RequestTrace> = records
         .into_iter()
-        .filter(|r| r.tools_removed > 0)
+        .filter(|r| r.tools_removed > 0 || r.compress_chars_saved > 0)
         .filter(|r| record_ts_after_watermark(&r.ts, wm_ref))
         .rev()
         .skip(offset)
@@ -2688,6 +3260,10 @@ async fn api_hook_traces(Query(q): Query<HookTracesQuery>) -> Json<Vec<crate::db
 // A/B experiment reports
 // ---------------------------------------------------------------------------
 
+async fn api_experiment_plan() -> Json<crate::experiment_plan::ExperimentPlanDashboard> {
+    Json(crate::experiment_plan::plan_for_dashboard())
+}
+
 #[derive(Serialize)]
 struct AbCohortMetrics {
     count: i64,
@@ -2699,6 +3275,7 @@ struct AbCohortMetrics {
     avg_tools_removed: f64,
     avg_inject_chars: f64,
     avg_adaptive_chars: f64,
+    avg_compress_chars_saved: f64,
     /// Session-level avg(correction_turns / turn_count) for sessions in this arm.
     correction_rate_pct: f64,
     /// Prompt-level: share of turns where coaching injected a nudge.
@@ -2777,7 +3354,8 @@ fn ab_cohort_metrics(
                 AVG(tools_removed),
                 AVG(cache_read_tokens),
                 AVG(inject_chars),
-                AVG(adaptive_chars)
+                AVG(adaptive_chars),
+                AVG(compress_chars_saved)
          FROM hook_traces
          WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE ?1",
     );
@@ -2790,6 +3368,7 @@ fn ab_cohort_metrics(
         Option<f64>,
         Option<f64>,
         i64,
+        Option<f64>,
         Option<f64>,
         Option<f64>,
         Option<f64>,
@@ -2808,9 +3387,10 @@ fn ab_cohort_metrics(
                 r.get(7)?,
                 r.get(8)?,
                 r.get(9)?,
+                r.get(10)?,
             ))
         })
-        .unwrap_or((0, None, None, None, 0, None, None, None, None, None))
+        .unwrap_or((0, None, None, None, 0, None, None, None, None, None, None))
     } else {
         conn.query_row(&sql, rusqlite::params![group_pattern], |r| {
             Ok((
@@ -2824,9 +3404,10 @@ fn ab_cohort_metrics(
                 r.get(7)?,
                 r.get(8)?,
                 r.get(9)?,
+                r.get(10)?,
             ))
         })
-        .unwrap_or((0, None, None, None, 0, None, None, None, None, None))
+        .unwrap_or((0, None, None, None, 0, None, None, None, None, None, None))
     };
     let count = row.0;
     let coach_fire_rate_pct = if count > 0 {
@@ -2845,6 +3426,7 @@ fn ab_cohort_metrics(
         avg_tools_removed: row.6.unwrap_or(0.0),
         avg_inject_chars: row.8.unwrap_or(0.0),
         avg_adaptive_chars: row.9.unwrap_or(0.0),
+        avg_compress_chars_saved: row.10.unwrap_or(0.0),
         correction_rate_pct,
         coach_fire_rate_pct,
     }
@@ -2867,6 +3449,9 @@ async fn api_ab_report(Query(q): Query<SinceQuery>) -> Json<Vec<AbFeatureReport>
         ("inject", "%I:T%", "%I:C%"),
         ("adaptive", "%A:T%", "%A:C%"),
         ("coaching", "%C:T%", "%C:C%"),
+        ("compress", "%X:T%", "%X:C%"),
+        ("compress_sgr", "%S:T%", "%S:C%"),
+        ("tool_mix", "%M:T%", "%M:C%"),
     ];
     let mut out = Vec::new();
     for (name, t_pat, c_pat) in features {
@@ -2935,6 +3520,36 @@ async fn api_ab_daily(Query(q): Query<SinceQuery>) -> Json<Vec<AbDailyRow>> {
                    'coaching', 'control'
             FROM hook_traces
             WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%C:C%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'compress', 'treatment'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%X:T%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'compress', 'control'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%X:C%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'compress_sgr', 'treatment'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%S:T%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'compress_sgr', 'control'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%S:C%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'tool_mix', 'treatment'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%M:T%'
+            UNION ALL
+            SELECT ts, cost_usd, input_tokens, output_tokens,
+                   'tool_mix', 'control'
+            FROM hook_traces
+            WHERE ab_group IS NOT NULL AND enriched = 1 AND ab_group LIKE '%M:C%'
         )
         WHERE 1=1
     "#;
@@ -3040,10 +3655,12 @@ struct ServerHeat {
 
 async fn api_tool_usage(Query(q): Query<SinceQuery>) -> Json<Vec<ServerHeat>> {
     let records = load_records();
+    let config = crate::config::Config::load();
+    let active_prof = config.active_profile.as_deref().unwrap_or("all");
     let conn = open_ctx_db();
     let wm = conn.as_ref().and_then(|c| watermark_ts(c, &q));
     let wm_ref = wm.as_deref();
-    if !records.is_empty() {
+    if records_have_mcp_metrics(&records) {
         let mut sent: HashMap<String, usize> = HashMap::new();
         let mut inv: HashMap<String, usize> = HashMap::new();
         for r in records
@@ -3075,7 +3692,8 @@ async fn api_tool_usage(Query(q): Query<SinceQuery>) -> Json<Vec<ServerHeat>> {
     if let Some(ref c) = conn {
         let rows = tool_usage_from_invocations(c, wm_ref);
         if !rows.is_empty() {
-            return Json(rows);
+            let sent = tools_sent_estimates_by_server(c, wm_ref, active_prof);
+            return Json(merge_tool_usage_with_estimates(rows, sent));
         }
     }
     Json(vec![])
@@ -3248,8 +3866,6 @@ async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
     let coach_count = today_recs.iter().filter(|r| r.coach_kind.is_some()).count();
     let behavior_count = today_recs.iter().filter(|r| r.behavior_kind.is_some()).count();
     let budget_count = today_recs.iter().filter(|r| r.budget_fired).count();
-    let compress_count = today_recs.iter().filter(|r| r.compress_chars_saved > 0).count();
-    let compress_chars: usize = today_recs.iter().map(|r| r.compress_chars_saved).sum();
 
     let adaptive_today = conn
         .as_ref()
@@ -3275,6 +3891,7 @@ async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
     let active_profile = config.active_profile.as_deref().unwrap_or("all").to_string();
     let inject_on = config.inject_enabled && crate::config::system_prefix_path().exists();
     let adaptive_on = config.adaptive_prefix_enabled;
+    let compress_on = config.compress_enabled;
     let auto_on = config.auto_profile_enabled;
 
     let budget_threshold = crate::budget_guard::session_threshold_usd();
@@ -3303,6 +3920,8 @@ async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
     let filter_count = filter_count.max(combined_totals.filter_count);
     let filter_tokens = filter_tokens.max(combined_totals.filter_tokens);
     let adaptive_today = adaptive_today.max(combined_totals.adaptive_count);
+    let compress_count = combined_totals.compress_count;
+    let compress_chars = combined_totals.compress_chars;
 
     let mut gates = vec![
         make_gate_stat(
@@ -3383,12 +4002,14 @@ async fn api_gates(Query(q): Query<SinceQuery>) -> Json<GatesResponse> {
         ),
         make_gate_stat(
             "compress",
-            "Bash Compress",
-            false,
+            "Output Compress",
+            compress_on,
             if compress_chars > 0 {
                 fmt_tok(compress_chars / 4) + " tok saved"
+            } else if compress_on {
+                "ready for large tool output".into()
             } else {
-                "coming soon".into()
+                "disabled".into()
             },
             compress_count,
             compress_chars / 4,

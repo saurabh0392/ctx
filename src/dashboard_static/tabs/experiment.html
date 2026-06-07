@@ -5,6 +5,8 @@
 
   <div id="exp-status" class="card" style="display:none;margin-bottom:16px;padding:14px 18px;font-size:13px;color:var(--t2)"></div>
 
+  <div id="exp-plan-card" class="card exp-plan-card" style="display:none;margin-bottom:16px"></div>
+
   <div id="exp-hero" class="narrative-card exp-hero-card"></div>
 
   <div class="exp-actions-row" style="margin-bottom:20px">
@@ -25,7 +27,7 @@
   <div id="exp-idle" class="exp-empty-state" style="display:none">
     <div class="exp-empty-icon">⚗</div>
     <div class="exp-empty-title">No experiment running</div>
-    <p class="exp-empty-copy">Start a 50/50 profile test above, or set feature percentages below 100% in Settings. Results appear after prompts and ingest.</p>
+    <p class="exp-empty-copy">Start a 50/50 profile test above, or set feature percentages below 100% in Settings. If you use the 15-day calendar, baseline days keep everything at 100% on purpose.</p>
   </div>
 
   <div id="exp-body" style="display:none">
@@ -41,6 +43,8 @@
         <option value="inject">System prefix</option>
         <option value="adaptive">Adaptive prefix</option>
         <option value="coaching">Coaching</option>
+        <option value="compress">Output compression</option>
+        <option value="compress_sgr">Session-grounded retention (SGR)</option>
       </select>
       <div id="exp-daily-table" style="overflow-x:auto"></div>
     </div>

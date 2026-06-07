@@ -12,18 +12,27 @@ const GATE_META = {
 };
 
 async function loadTrace() {
-    const [requests, hookTraces] = await Promise.all([
+    const [requests, hookTraces, plan, settings] = await Promise.all([
         fetch(appendSince("/api/requests?limit=100")).then((r) => r.json()),
         fetch(appendSince("/api/hook-traces?limit=100"))
         .then((r) => r.json())
         .catch(() => []),
+        fetch("/api/experiment/plan").then((r) => r.json()).catch(() => ({ configured: false })),
+        fetch("/api/settings").then((r) => r.json()).catch(() => ({})),
     ]);
+    const compressEnabled = settings.compress_enabled !== false;
     const el = document.getElementById("trace-list");
 
     if (!requests.length && !hookTraces.length) {
+        let sub = "No trace events recorded yet. Use Claude Code with ctx hooks enabled. Each turn records a trace row automatically.";
+        if (plan.configured && plan.hooks_enabled === false) {
+            sub = "Days 1–2 (pre-ctx): hooks are off on purpose. Session spend still ingests, but per-request traces need hooks. They return on day 3 (ctx warmup). Reload your IDE after the phase changes.";
+        } else if (plan.configured && plan.phase_applied === false) {
+            sub = "Calendar advanced but hooks have not synced yet. Open Experiment or run ctx experiment tick, then reload your IDE.";
+        }
         el.innerHTML = `<div class="card" style="padding:20px;margin-bottom:16px;border-color:rgba(147,192,67,.25)">
       <div class="section-head" style="margin-bottom:8px">No trace events</div>
-      <div class="section-sub" style="margin-bottom:0">No trace events recorded yet. Use Claude Code with ctx hooks enabled. Each turn records a trace row automatically.</div>
+      <div class="section-sub" style="margin-bottom:0">${esc(sub)}</div>
     </div>`;
         return;
     }
@@ -34,6 +43,10 @@ async function loadTrace() {
         (h) => h.ts.slice(0, 10) === todayStr,
     );
     const todayTokens = todayReqs.reduce((s, r) => s + r.tokens_saved, 0);
+    const todayCompressChars = todayHookTraces.reduce(
+        (s, h) => s + (h.compress_chars_saved || 0),
+        0,
+    );
     const todayCost = todayReqs.reduce((s, r) => s + r.cost_saved, 0);
     const totalToday = todayReqs.length + todayHookTraces.length;
     const autoCount =
@@ -48,7 +61,9 @@ async function loadTrace() {
     if (todayReqs.length) bannerParts.push(`${todayReqs.length} proxy traces`);
     if (todayHookTraces.length)
         bannerParts.push(`${todayHookTraces.length} hook traces`);
-    if (todayTokens > 0) bannerParts.push(`${fmtK(todayTokens)} tokens stripped`);
+    if (todayTokens > 0) bannerParts.push(`${fmtK(todayTokens)} schema tok stripped`);
+    if (todayCompressChars > 0)
+        bannerParts.push(`${fmtK(todayCompressChars)} chars compressed`);
 
     const banner = totalToday ?
         `
@@ -77,15 +92,37 @@ async function loadTrace() {
             data: ht
         });
     unified.sort((a, b) => b.ts.localeCompare(a.ts));
+    const deduped = dedupeTraceTimeline(unified);
 
     el.innerHTML =
         banner +
-        unified
+        deduped
         .map((item, i) => {
-            if (item.type === "request") return traceRow(item.data, i);
-            return hookTraceRow(item.data, i);
+            if (item.type === "request") return traceRow(item.data, i, compressEnabled);
+            return hookTraceRow(item.data, i, compressEnabled);
         })
         .join("");
+}
+
+/** One row per prompt: drop proxy request traces when a hook trace covers the same turn. */
+function dedupeTraceTimeline(items) {
+    const hooks = items.filter((i) => i.type === "hook_trace");
+    return items.filter((item) => {
+        if (item.type !== "request") return true;
+        const req = item.data;
+        return !hooks.some((h) => traceMatchesHookRequest(req, item.ts, h.data, h.ts));
+    });
+}
+
+function traceMatchesHookRequest(req, reqTs, ht, htTs) {
+    if (req.working_directory && ht.working_directory
+        && req.working_directory !== ht.working_directory) {
+        return false;
+    }
+    const diffMs = Math.abs(new Date(reqTs).getTime() - new Date(htTs).getTime());
+    if (diffMs > 3 * 60 * 1000) return false;
+    if (req.profile && ht.profile && req.profile !== ht.profile) return false;
+    return true;
 }
 
 function renderAbBadges(abGroup) {
@@ -94,7 +131,7 @@ function renderAbBadges(abGroup) {
         .split(/\s+/)
         .filter(Boolean)
         .map((p) => {
-            const m = p.match(/^([PIAC]):([TC])$/);
+            const m = p.match(/^([PIACXM]):([TC])$/);
             if (!m) return "";
             const cls = m[2] === "T" ? "ab-chip-t" : "ab-chip-c";
             return `<span class="ab-chip ${cls}">${esc(p)}</span>`;
@@ -118,29 +155,183 @@ function renderCtxBulletList(items) {
 }
 
 const TRACE_CTX_SAVINGS_RATE = 0.30;
+/** Rough chars-to-tokens for compress context (not invoice-grade). */
+const TRACE_CHARS_PER_TOKEN = 4;
+
+function estimateCtxTokensFromChars(chars) {
+    if (!chars || chars <= 0) return 0;
+    return Math.max(1, Math.round(chars / TRACE_CHARS_PER_TOKEN));
+}
 
 function traceCostTrio(tokensSaved, costUsd, enriched) {
     const ctxSavings = (tokensSaved / 1_000_000) * TRACE_CTX_SAVINGS_RATE;
     const afterCtx = enriched && costUsd > 0 ? costUsd : null;
     const estimatedTotal = afterCtx != null ? afterCtx + ctxSavings : null;
-    return { estimatedTotal, afterCtx, ctxSavings };
+    return { estimatedTotal, afterCtx, ctxSavings, filterTokens: tokensSaved || 0 };
 }
 
-function renderTraceCostStack(trio, compact) {
-    const est = trio.estimatedTotal != null ? fmtCost(trio.estimatedTotal) : "—";
-    const after = trio.afterCtx != null ? fmtCost(trio.afterCtx) : "—";
-    const save = fmtCost(trio.ctxSavings);
+function traceSummaryStat(opts) {
+    const parts = [];
+    const totalTools = opts.totalTools || 0;
+    const toolsRemoved = opts.toolsRemoved || 0;
+    const tokensSaved = opts.tokensSaved || 0;
+    const compressChars = opts.compressChars || 0;
+
+    if (totalTools > 0 && toolsRemoved > 0) {
+        const pct = Math.round((toolsRemoved / totalTools) * 100);
+        parts.push(
+            `-<strong>${toolsRemoved}</strong> of ${totalTools} tools · <strong>${fmtK(tokensSaved)}</strong> schema tok · ${pct}% cut`,
+        );
+    } else if (totalTools > 0) {
+        parts.push(`${totalTools} tools (no schema cut)`);
+    }
+
+    if (compressChars > 0) {
+        const est = estimateCtxTokensFromChars(compressChars);
+        parts.push(
+            `<span class="trace-compress-stat"><strong>${fmtK(compressChars)}</strong> chars out · ~<strong>${fmtK(est)}</strong> ctx</span>`,
+        );
+    }
+
+    if (parts.length === 0) {
+        return "No ctx savings on this turn yet";
+    }
+    return parts.join(" · ");
+}
+
+function expansionReasonLabel(reason) {
+    if (reason === "keyword") return "you mentioned it in the prompt";
+    if (reason === "semantic") return "similar past sessions used it";
+    if (reason === "access_friction") return "Claude could not access it on the last turn";
+    return "session recovery";
+}
+
+function renderExpansionBlock(entries) {
+    if (!entries || !entries.length) return "";
+    const lines = entries.map((e) => {
+        const name = esc(e.display || e.target || "tool");
+        const why = esc(expansionReasonLabel(e.reason));
+        return `<div class="trace-expansion-item"><strong>${name}</strong> · ${why}</div>`;
+    });
+    return `<div class="trace-expansion-block">
+      <div class="trace-expansion-title">Tools un-denied for this session</div>
+      ${lines.join("")}
+    </div>`;
+}
+
+function renderTurnPanel(opts) {
+    const prompt = opts.prompt || "";
+    const meta = opts.meta || "";
+    const promptBlock = prompt ?
+        `<div class="trace-turn-prompt" onclick="event.stopPropagation();this.classList.toggle('expanded')">${esc(prompt)}</div>` :
+        `<div class="trace-turn-prompt trace-turn-prompt-pending">${opts.enriched ? "Prompt not recorded for this turn." : "Prompt and savings fill in after ingest."}</div>`;
+
+    const rows = [];
+    const totalTools = opts.totalTools || 0;
+    const toolsRemoved = opts.toolsRemoved || 0;
+    const toolsKept = opts.toolsKept || 0;
+    const tokensSaved = opts.tokensSaved || 0;
+    const compressChars = opts.compressChars || 0;
+    const compressCount = opts.compressCount || 0;
+
+    if (totalTools > 0 && toolsRemoved > 0) {
+        const pct = Math.round((toolsRemoved / totalTools) * 100);
+        const schemaUsd = fmtCost((tokensSaved / 1_000_000) * TRACE_CTX_SAVINGS_RATE);
+        rows.push(
+            `<span class="trace-turn-metric-label">Schema filter</span><span class="trace-turn-metric-val">${toolsKept} of ${totalTools} tools kept (${pct}% cut) · ${fmtK(tokensSaved)} tok · est. ${schemaUsd}/turn</span>`,
+        );
+    } else if (totalTools > 0) {
+        rows.push(
+            `<span class="trace-turn-metric-label">Schema filter</span><span class="trace-turn-metric-val">${totalTools} tools, none stripped</span>`,
+        );
+    }
+
+    if (compressChars > 0) {
+        const est = estimateCtxTokensFromChars(compressChars);
+        const toolNote =
+            compressCount > 0 ?
+            ` · ${compressCount} tool call${compressCount === 1 ? "" : "s"}` :
+            "";
+        rows.push(
+            `<span class="trace-turn-metric-label trace-turn-metric-compress">Output compress</span><span class="trace-turn-metric-val trace-turn-metric-compress">${fmtK(compressChars)} chars · ~${fmtK(est)} ctx kept${toolNote}</span>`,
+        );
+    }
+
+    if (opts.enriched && opts.costUsd > 0) {
+        rows.push(
+            `<span class="trace-turn-metric-label">Turn cost</span><span class="trace-turn-metric-val">${fmtCost(opts.costUsd)} · ${opts.model ? esc(opts.model) + " · " : ""}${fmtK(opts.inputTok || 0)} in · ${fmtK(opts.outputTok || 0)} out${opts.cacheRead ? " · " + fmtK(opts.cacheRead) + " cache" : ""}</span>`,
+        );
+    } else if (!opts.enriched && (totalTools > 0 || compressChars > 0)) {
+        rows.push(
+            `<span class="trace-turn-metric-label">Turn cost</span><span class="trace-turn-metric-val trace-turn-metric-pending">pending ingest</span>`,
+        );
+    }
+
+    if (opts.ctxLine) {
+        rows.push(
+            `<span class="trace-turn-metric-label">Profile</span><span class="trace-turn-metric-val">${esc(opts.ctxLine)}</span>`,
+        );
+    }
+    const expansionHtml = renderExpansionBlock(opts.toolsExpanded);
+    for (const action of opts.ctxActions || []) {
+        rows.push(
+            `<span class="trace-turn-metric-label">Ctx</span><span class="trace-turn-metric-val">${esc(action)}</span>`,
+        );
+    }
+
+    const metrics =
+        rows.length > 0 ?
+        `<div class="trace-turn-metrics">${rows.map((r) => `<div class="trace-turn-metric-row">${r}</div>`).join("")}</div>` :
+        `<div class="trace-turn-metrics trace-turn-metrics-empty">No savings recorded on this turn yet.</div>`;
+
+    const pipeline = opts.pipelineItems && opts.pipelineItems.length ?
+        `<details class="trace-pipeline-fold" onclick="event.stopPropagation()">
+      <summary>Pipeline steps</summary>
+      <div class="trace-flow-inline">${opts.pipelineItems.map((item) => {
+            if (item.type === "link") return renderTraceFlowLink(item);
+            return renderTraceFlowNode(item);
+        }).join("")}</div>
+    </details>` :
+        "";
+
+    return `<div class="trace-turn-panel">
+    ${meta ? `<div class="trace-turn-meta">${meta}</div>` : ""}
+    ${promptBlock}
+    ${expansionHtml}
+    ${metrics}
+    ${pipeline}
+  </div>`;
+}
+
+function renderTraceCostStack(trio, compact, compressChars) {
+    const chars = compressChars || 0;
+    const hasFilter = (trio.filterTokens || 0) > 0;
+    const hasCompress = chars > 0;
+    const est = trio.estimatedTotal != null ? fmtCost(trio.estimatedTotal) : "n/a";
+    const after = trio.afterCtx != null ? fmtCost(trio.afterCtx) : "n/a";
+    const filterSave = fmtCost(trio.ctxSavings);
+    const filterLabelShort = hasCompress ? "Schema filter" : "Savings";
+    const filterLabelLong = hasCompress ? "Schema filter savings" : "Filter savings (ctx)";
+    const filterVal = hasFilter ?
+        filterSave :
+        (hasCompress ? "none" : filterSave);
+    const filterValCls = hasFilter ? " trace-cost-save" : "";
+    const compressLine = hasCompress ?
+        `<div class="trace-cost-row trace-cost-compress-row"><span class="trace-cost-label">${compact ? "Output compress" : "Output compress (ctx kept)"}</span><span class="trace-cost-val trace-cost-compress">${fmtK(chars)} chars · ~${fmtK(estimateCtxTokensFromChars(chars))} ctx</span></div>` :
+        "";
     if (compact) {
         return `<div class="trace-cost-stack trace-cost-stack-compact">
       <div class="trace-cost-row"><span class="trace-cost-label">Est. total</span><span class="trace-cost-val">${est}</span></div>
       <div class="trace-cost-row"><span class="trace-cost-label">After ctx</span><span class="trace-cost-val trace-cost-after">${after}</span></div>
-      <div class="trace-cost-row"><span class="trace-cost-label">Savings</span><span class="trace-cost-val trace-cost-save">${save}</span></div>
+      <div class="trace-cost-row"><span class="trace-cost-label">${filterLabelShort}</span><span class="trace-cost-val${filterValCls}">${filterVal}</span></div>
+      ${compressLine}
     </div>`;
     }
     return `<div class="trace-cost-stack">
     <div class="trace-cost-row"><span class="trace-cost-label">Estimated total cost</span><span class="trace-cost-val">${est}</span></div>
     <div class="trace-cost-row"><span class="trace-cost-label">Total cost (after ctx)</span><span class="trace-cost-val trace-cost-after">${after}</span></div>
-    <div class="trace-cost-row"><span class="trace-cost-label">Savings (ctx)</span><span class="trace-cost-val trace-cost-save">${save}</span></div>
+    <div class="trace-cost-row"><span class="trace-cost-label">${filterLabelLong}</span><span class="trace-cost-val${filterValCls}">${filterVal}</span></div>
+    ${compressLine}
   </div>`;
 }
 
@@ -431,18 +622,6 @@ function buildTracePipelineItems(opts) {
             accent: ga.budget?.accent,
         });
     }
-    if (opts.compressCharsSaved != null) {
-        items.push({
-            type: "node",
-            id: "compress",
-            name: "Bash Compress",
-            fired: opts.compressCharsSaved > 0,
-            desc: opts.compressCharsSaved > 0 ?
-                `${fmtK(opts.compressCharsSaved)} chars compressed` :
-                UI_EMPTY,
-            accent: ga.compress?.accent,
-        });
-    }
 
     items.push({
         type: "node",
@@ -452,10 +631,34 @@ function buildTracePipelineItems(opts) {
         anchor: true,
         desc: opts.sentDesc,
     });
+
+    if (opts.compressEnabled || (opts.compressCharsSaved != null && opts.compressCharsSaved > 0)) {
+        const saved = opts.compressCharsSaved || 0;
+        const count = opts.compressEventCount || 0;
+        const countSuffix =
+            saved > 0 && count > 0 ?
+            ` (${count} tool${count === 1 ? "" : "s"})` :
+            "";
+        items.push({
+            type: "link",
+            kind: "post",
+            text: "after tool output →",
+        });
+        items.push({
+            type: "node",
+            id: "compress",
+            name: "Output Compress",
+            fired: saved > 0,
+            desc: saved > 0 ?
+                `${fmtK(saved)} chars compressed${countSuffix}` :
+                "Armed on PostToolUse",
+            accent: ga.compress?.accent,
+        });
+    }
     return { items, consequence };
 }
 
-function hookTraceRow(ht, i) {
+function hookTraceRow(ht, i, compressEnabled) {
     const ts = fmtTs(ht.ts);
     const profileLabel = ht.profile || "all";
     const pinnedProfile = ht.pinned_profile || profileLabel;
@@ -481,9 +684,9 @@ function hookTraceRow(ht, i) {
     const toolsKept = ht.tools_kept || 0;
     const toolsRemoved = ht.tools_removed || 0;
     const tokensSaved = ht.tokens_saved || 0;
+    const compressChars = ht.compress_chars_saved || 0;
+    const compressCount = ht.compress_event_count || 0;
     const totalTools = toolsKept + toolsRemoved;
-    const pctCut =
-        totalTools > 0 ? Math.round((toolsRemoved / totalTools) * 100) : 0;
     const costTrio = traceCostTrio(tokensSaved, costUsd, ht.enriched);
 
     const pipeline = buildTracePipelineItems({
@@ -503,97 +706,50 @@ function hookTraceRow(ht, i) {
         adaptiveFired: !!ht.adaptive_fired,
         coachKind: ht.coach_kind,
         budgetFired: ht.budget_fired,
+        compressEnabled,
+        compressCharsSaved: compressChars,
+        compressEventCount: compressCount,
     });
 
-    const ctxItems = [];
-    ctxItems.push({
-        line: pipeline.consequence.ctxLine,
-        detail: toolsRemoved > 0 ?
-            `${esc(filterMode)} filter: kept ${toolsKept} tools, stripped ${toolsRemoved} (${pctCut}% cut).` :
-            "All MCP tools allowed for this prompt.",
-    });
-    if (ht.inject_fired) {
-        ctxItems.push({
-            line: "Prepended <strong>system_prefix.md</strong>.",
-            detail: "Static prefix from ~/.ctx/system_prefix.md.",
-        });
-    }
-    if (ht.adaptive_fired) {
-        ctxItems.push({
-            line: "Appended <strong>adaptive_prefix.md</strong>.",
-            detail: "Behavioral profile from indexed sessions.",
-        });
-    }
-    if (ht.coach_kind) {
-        ctxItems.push({
-            line: `Coaching: <strong>${esc(ht.coach_kind)}</strong>.`,
-            detail: "Suggestion injected into additionalContext.",
-        });
-    }
-    if (ht.budget_fired)
-        ctxItems.push({
-            line: "Session cost alert fired.",
-            detail: ""
-        });
-    const ctxBullets = renderCtxBulletList(ctxItems);
+    const ctxActions = [];
+    if (ht.inject_fired) ctxActions.push("Prepended system_prefix.md");
+    if (ht.adaptive_fired) ctxActions.push("Appended adaptive_prefix.md");
+    if (ht.coach_kind) ctxActions.push(`Coaching: ${ht.coach_kind}`);
+    if (ht.budget_fired) ctxActions.push("Session cost alert fired");
 
-    const promptPreview = ht.human_text_prefix ?
-        `<div class="trace-prompt-preview" onclick="event.stopPropagation();this.classList.toggle('expanded')">${esc(ht.human_text_prefix)}</div>` :
-        '<div class="trace-prompt-preview" style="color:var(--t4)">Prompt text available after next ingest.</div>';
     const abBadges = renderAbBadges(ht.ab_group);
+    const metaParts = [];
+    if (ht.working_directory) metaParts.push(`<code>${esc(ht.working_directory)}</code>`);
+    metaParts.push(esc(ts));
 
-    const savingsBar =
-        totalTools > 0 ?
-        `<div class="trace-token-impact">
-      <div class="trace-token-impact-title">Token impact</div>
-      <div class="trace-token-bar">
-        <div class="trace-token-bar-removed" style="width:${((toolsRemoved / totalTools) * 100).toFixed(1)}%"></div>
-        <div class="trace-token-bar-kept" style="width:${((toolsKept / totalTools) * 100).toFixed(1)}%"></div>
-      </div>
-      <div class="trace-token-label">
-        <strong>${totalTools}</strong> tools to <strong>${toolsKept}</strong> tools (${pctCut}% cut)<br>
-        <strong>${fmtK(tokensSaved)}</strong> tokens stripped, saving <strong>${fmtCost(costTrio.ctxSavings)}</strong>/turn
-      </div>
-    </div>` :
-        "";
+    const turnPanel = renderTurnPanel({
+        prompt: ht.human_text_prefix,
+        meta: metaParts.join(" · "),
+        enriched: ht.enriched,
+        model,
+        inputTok,
+        outputTok,
+        cacheRead,
+        totalTools,
+        toolsKept,
+        toolsRemoved,
+        tokensSaved,
+        compressChars,
+        compressCount,
+        costUsd,
+        ctxLine: pipeline.consequence.ctxLine,
+        ctxActions,
+        toolsExpanded: ht.tools_expanded || [],
+        pipelineItems: pipeline.items,
+    });
 
-    let costLine = "";
-    if (ht.enriched) {
-        costLine = `<div class="trace-token-impact">
-      <div class="trace-token-impact-title">Turn cost</div>
-      ${renderTraceCostStack(costTrio, false)}
-      <div class="trace-token-label" style="margin-top:10px">
-        ${model ? `<strong>${esc(model)}</strong> &middot; ` : ""}
-        <strong>${fmtK(inputTok)}</strong> input &middot;
-        <strong>${fmtK(outputTok)}</strong> output &middot;
-        <strong>${fmtK(cacheRead)}</strong> cache read
-      </div>
-    </div>`;
-    } else {
-        costLine = `<div style="font-size:11px;color:var(--t4);margin-top:8px">Turn cost data will appear after the next ingest cycle.</div>`;
-    }
-
-    const storyPanel = `<div class="trace-story">
-    <div class="trace-story-eyebrow">Your interaction</div>
-    <div class="trace-story-context">
-      ${ht.working_directory ? `<code>${esc(ht.working_directory)}</code><br>` : ""}
-      ${ts}
-    </div>
-    ${promptPreview}
-    <div class="trace-ctx-band">
-      <div class="trace-ctx-band-title">What ctx did</div>
-      ${ctxBullets}
-    </div>
-    ${savingsBar}
-    ${costLine}
-  </div>`;
-
-    const flowPanel = renderTraceFlowPanel(pipeline.items);
-
-    const savingsSummary =
-        toolsRemoved > 0 ?
-        `-<strong>${toolsRemoved}</strong> of ${totalTools} tools &middot; <strong>${fmtK(tokensSaved)}</strong> tok &middot; ${pctCut}% cut` :
-        `${totalTools} tools (no filter)`;
+    const savingsSummary = traceSummaryStat({
+        totalTools,
+        toolsRemoved,
+        tokensSaved,
+        compressChars,
+        compressCount,
+    });
 
     return `<div class="trace-row" id="trace-${i}" onclick="toggleTraceReq(${i})">
     <div class="trace-summary">
@@ -604,14 +760,11 @@ function hookTraceRow(ht, i) {
       ${abBadges}
       ${enrichedBadge}
       <div class="trace-stat">${savingsSummary}</div>
-      ${renderTraceCostStack(costTrio, true)}
+      ${renderTraceCostStack(costTrio, true, compressChars)}
       <div class="trace-chevron">▼</div>
     </div>
     <div class="trace-detail">
-      <div class="trace-panels">
-        ${storyPanel}
-        ${flowPanel}
-      </div>
+      ${turnPanel}
     </div>
   </div>`;
 }
@@ -647,7 +800,7 @@ function serverDisplayName(s) {
         .replace(/_/g, " ");
 }
 
-function traceRow(req, i) {
+function traceRow(req, i, compressEnabled) {
     const ts = fmtTs(req.ts);
     const profileLabel = req.profile || "all";
     const autoChip = req.auto_selected ?
@@ -656,8 +809,7 @@ function traceRow(req, i) {
 
     const totalTools = req.tools_removed + (req.tools_sent_count || 0);
     const keptTools = req.tools_sent_count || 0;
-    const pctCut =
-        totalTools > 0 ? Math.round((req.tools_removed / totalTools) * 100) : 0;
+    const compressChars = req.compress_chars_saved || 0;
 
     const costTrio = traceCostTrio(req.tokens_saved || 0, 0, false);
     if (req.cost_saved > 0) costTrio.ctxSavings = req.cost_saved;
@@ -680,97 +832,65 @@ function traceRow(req, i) {
         coachKind: req.coach_kind,
         behaviorKind: req.behavior_kind,
         budgetFired: req.budget_fired,
-        compressCharsSaved: req.compress_chars_saved,
+        compressEnabled,
+        compressCharsSaved: compressChars,
+        compressEventCount: compressChars > 0 ? 1 : 0,
     });
 
-    const ctxItems = [];
-    ctxItems.push({
-        line: pipeline.consequence.ctxLine,
-        detail: req.kept_servers.length ?
-            `Kept: ${req.kept_servers.map((s) => esc(serverDisplayName(s))).join(", ")}. Removed: ${req.removed_servers.map((s) => esc(serverDisplayName(s))).join(", ") || "none"}.` :
-            (req.tools_removed > 0 ? `Stripped ${req.tools_removed} tools.` : "All MCP tools allowed."),
-    });
-    if (req.inject_fired)
-        ctxItems.push({
-            line: "Prepended <strong>system_prefix.md</strong>.",
-            detail: "",
-        });
-    if (req.coach_kind)
-        ctxItems.push({
-            line: `Coaching: <strong>${esc(req.coach_kind)}</strong>.`,
-            detail: "",
-        });
-    if (req.budget_fired)
-        ctxItems.push({
-            line: "Session cost alert fired.",
-            detail: ""
-        });
-    if (req.behavior_kind)
-        ctxItems.push({
-            line: `Behavior guard: <strong>${esc(req.behavior_kind)}</strong>.`,
-            detail: "",
-        });
-    if (req.compress_chars_saved > 0)
-        ctxItems.push({
-            line: `Compressed <strong>${fmtK(req.compress_chars_saved)}</strong> chars of bash output.`,
-            detail: "",
-        });
-    const ctxBullets = renderCtxBulletList(ctxItems);
+    const ctxActions = [];
+    if (req.inject_fired) ctxActions.push("Prepended system_prefix.md");
+    if (req.coach_kind) ctxActions.push(`Coaching: ${req.coach_kind}`);
+    if (req.budget_fired) ctxActions.push("Session cost alert fired");
+    if (req.behavior_kind) ctxActions.push(`Behavior guard: ${req.behavior_kind}`);
 
-    let responseHtml = "";
+    const metaParts = [];
+    if (req.working_directory) metaParts.push(`<code>${esc(req.working_directory)}</code>`);
+    metaParts.push(esc(ts));
+
+    let responseNote = "";
     if (req.mcp_tools_invoked && req.mcp_tools_invoked.length) {
         const names = req.mcp_tools_invoked.map((n) => serverDisplayName(n));
         const unique = [...new Set(names)];
-        responseHtml = `Claude used <strong>${unique.length}</strong> MCP tool${unique.length !== 1 ? "s" : ""}: ${unique.map((n) => esc(n)).join(", ")}`;
+        responseNote = `Claude used ${unique.length} MCP tool${unique.length !== 1 ? "s" : ""}: ${unique.join(", ")}`;
     } else {
-        responseHtml = "Claude responded (streaming; tool use not captured)";
+        responseNote = "Claude responded (streaming; tool use not captured)";
     }
+    ctxActions.push(responseNote);
 
-    const barTotal = Math.max(totalTools, 1);
-    const removedPct = ((req.tools_removed / barTotal) * 100).toFixed(1);
-    const keptPct = ((keptTools / barTotal) * 100).toFixed(1);
+    const turnPanel = renderTurnPanel({
+        prompt: req.human_text_prefix || "",
+        meta: metaParts.join(" · "),
+        enriched: true,
+        totalTools,
+        toolsKept: keptTools,
+        toolsRemoved: req.tools_removed,
+        tokensSaved: req.tokens_saved || 0,
+        compressChars,
+        compressCount: compressChars > 0 ? 1 : 0,
+        costUsd: req.cost_saved > 0 ? req.cost_saved : 0,
+        ctxLine: pipeline.consequence.ctxLine,
+        ctxActions,
+        pipelineItems: pipeline.items,
+    });
 
-    const storyPanel = `<div class="trace-story">
-    <div class="trace-story-eyebrow">Your interaction</div>
-    <div class="trace-story-context">
-      ${req.working_directory ? `<code>${esc(req.working_directory)}</code><br>` : ""}
-      ${ts}
-    </div>
-    <div class="trace-ctx-band">
-      <div class="trace-ctx-band-title">What ctx did</div>
-      ${ctxBullets}
-    </div>
-    <div class="trace-response">${responseHtml}</div>
-    <div class="trace-token-impact">
-      <div class="trace-token-impact-title">Token impact</div>
-      <div class="trace-token-bar">
-        <div class="trace-token-bar-removed" style="width:${removedPct}%"></div>
-        <div class="trace-token-bar-kept" style="width:${keptPct}%"></div>
-      </div>
-      <div class="trace-token-label">
-        <strong>${totalTools}</strong> tools to <strong>${keptTools}</strong> tools (${pctCut}% cut)<br>
-        <strong>${fmtK(req.tokens_saved)}</strong> tokens stripped, saving <strong>${fmtCost(costTrio.ctxSavings)}</strong>
-      </div>
-    </div>
-    ${renderTraceCostStack(costTrio, false)}
-  </div>`;
-
-    const flowPanel = renderTraceFlowPanel(pipeline.items);
+    const savingsSummary = traceSummaryStat({
+        totalTools,
+        toolsRemoved: req.tools_removed,
+        tokensSaved: req.tokens_saved || 0,
+        compressChars,
+    });
 
     return `<div class="trace-row" id="trace-${i}" onclick="toggleTraceReq(${i})">
     <div class="trace-summary">
       <div class="trace-ts">${ts}</div>
       <div class="trace-profile-chip">${profileLabel}</div>
       ${autoChip}
-      <div class="trace-stat">-<strong>${req.tools_removed}</strong> of ${totalTools} tools &middot; <strong>${fmtK(req.tokens_saved)}</strong> tok &middot; ${pctCut}% cut</div>
-      ${renderTraceCostStack(costTrio, true)}
+      <div class="trace-stat">${savingsSummary}</div>
+      ${renderTraceCostStack(costTrio, true, compressChars)}
       <div class="trace-chevron">▼</div>
     </div>
     <div class="trace-detail">
-      <div class="trace-panels">
-        ${storyPanel}
-        ${flowPanel}
-      </div>
+      ${turnPanel}
     </div>
   </div>`;
 }

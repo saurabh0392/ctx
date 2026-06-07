@@ -102,29 +102,26 @@ pub fn hook_sync_profile(
     prompt: &str,
     cwd: &str,
     quiet: bool,
-) -> Result<()> {
+    run_semantic_mix: bool,
+) -> Result<Vec<crate::semantic_tools::ToolExpansionEntry>> {
     let mut cfg = Config::load();
     let prev = cfg.active_profile.clone().unwrap_or_else(|| "all".into());
     if prev == new_slug && cfg.filter_mode != FilterMode::Soft {
-        return Ok(());
+        return Ok(vec![]);
     }
 
-    // Session expansion from prompt keywords
+    let mut expansions = Vec::new();
     if cfg.filter_mode == FilterMode::Soft {
         if let Ok(profile) = crate::profiles::get(new_slug) {
-            let candidates = crate::profiles::detect_expansion_candidates(prompt, cwd, &profile);
-            let mut changed = false;
-            for c in candidates {
-                if !cfg.session_expansion.iter().any(|s| s.eq_ignore_ascii_case(&c)) {
-                    cfg.session_expansion.push(c);
-                    changed = true;
-                }
-            }
-            if changed {
-                cfg.save()?;
-            }
+            expansions.extend(crate::semantic_tools::expand_from_prompt_keywords(
+                prompt, cwd, &profile,
+            )?);
         }
-        let _ = crate::semantic_tools::apply_hook_semantic_tool_mix(new_slug, prompt, cwd);
+        if run_semantic_mix {
+            expansions.extend(crate::semantic_tools::apply_hook_semantic_tool_mix(
+                new_slug, prompt, cwd,
+            )?);
+        }
         cfg = Config::load();
     }
 
@@ -137,7 +134,16 @@ pub fn hook_sync_profile(
     }
 
     if !quiet {
-        eprintln!("[ctx] auto-profile → {new_slug} (soft filter, servers stay connected)");
+        if expansions.is_empty() {
+            eprintln!("[ctx] auto-profile → {new_slug} (soft filter, servers stay connected)");
+        } else {
+            let names: Vec<_> = expansions.iter().map(|e| e.display.as_str()).collect();
+            eprintln!(
+                "[ctx] auto-profile → {new_slug}; un-denied {} for this session ({})",
+                expansions.len(),
+                names.join(", ")
+            );
+        }
     }
-    Ok(())
+    Ok(expansions)
 }

@@ -1,0 +1,99 @@
+<div class="tab-panel active" id="tab-context">
+  <h1 class="page-title">ctx keeps your agent's context honest</h1>
+  <p class="page-sub">It learns what your sessions actually need, earns each tool's trust on your own data before it changes anything, and proves every trim was safe. The full output always stays in your transcript.</p>
+  <div class="statusline" id="ctx-home-status" style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--t2);margin:-6px 0 18px"><span class="live-pip"></span><span id="ctx-home-status-text">Getting your numbers</span></div>
+
+  <div class="preset-bar">
+    <span style="font-size:12px;font-weight:700;color:var(--t4);text-transform:uppercase;letter-spacing:.06em">Compression</span>
+    <button class="preset-btn" data-preset="off" onclick="setContextPreset('off')">Off (collect only)</button>
+    <button class="preset-btn" data-preset="safe" onclick="setContextPreset('safe')">Safe</button>
+    <button class="preset-btn" data-preset="full" onclick="setContextPreset('full')">Full</button>
+    <span id="ctx-preset-note" style="font-size:12px;color:var(--t3)"></span>
+  </div>
+
+  <div class="loop">
+    <div class="loop-step active" data-view="learning" onclick="setContextView(this)">
+      <div class="loop-num">Now</div><div class="loop-name">Learning</div>
+      <div class="loop-desc">Watching and recording, nothing changed yet</div>
+    </div>
+    <div class="loop-step" data-view="earning" onclick="setContextView(this)">
+      <div class="loop-num">Next</div><div class="loop-name">Earning</div>
+      <div class="loop-desc">Tools turn on once your data clears the bar</div>
+    </div>
+    <div class="loop-step" data-view="improving" onclick="setContextView(this)">
+      <div class="loop-num">Ongoing</div><div class="loop-name">Improving</div>
+      <div class="loop-desc">The model sharpens the more you use it</div>
+    </div>
+  </div>
+
+  <!-- HEADLINE PROOF (populated from /api/context/proof) -->
+  <div class="hp-card" id="ctx-home-proof" style="display:none">
+    <div class="hp-eyebrow"><span class="live-pip"></span> <span id="ctx-home-proof-eyebrow">The proof</span></div>
+    <div class="hp-body" id="ctx-home-proof-body"></div>
+    <div class="hp-link" onclick="document.querySelector(&quot;.nav-item[onclick*='proof']&quot;).click()">See the full before and after</div>
+  </div>
+
+  <!-- LEARNING -->
+  <div class="ctx-view active" id="ctxview-learning">
+    <div class="learn-hero">
+      <div class="hero-card">
+        <div class="hero-eyebrow"><span class="live-pip"></span> Learning from your work</div>
+        <div class="hero-number" id="ctx-label-count">0</div>
+        <div class="hero-unit">decisions recorded so far</div>
+        <div class="hero-sub">Every time a tool returns output, ctx works out which lines it would keep and which it would drop, writes that down, then watches the next few turns to see if dropping them would have hurt.</div>
+        <div class="hero-trust">
+          <span class="trust-pill"><b id="ctx-corr-count">0</b> corrections caused</span>
+          <span class="trust-pill"><b id="ctx-judged-count">0</b> judged so far</span>
+          <span class="trust-pill"><b id="ctx-today-count">0</b> recorded today</span>
+        </div>
+      </div>
+      <div class="card feed-card">
+        <div class="feed-head">
+          <div>
+            <div class="section-head">Right now</div>
+            <div class="section-sub" style="margin:0">The last tool results ctx looked at, tool by tool</div>
+          </div>
+          <span class="live-pip"></span>
+        </div>
+        <div class="feed" id="ctx-feed"></div>
+        <div class="feed-foot" id="ctx-feed-foot">ctx only trims tools that earned it. Everything else it just watches, and Claude still gets the full output.</div>
+      </div>
+    </div>
+
+    <div class="section-head" style="margin-top:8px">What ctx is still studying</div>
+    <div class="section-sub">These tools are still in watching mode. ctx records what it would trim and checks it against what you actually needed. When a tool clears the bar it turns on, and moves to <b style="color:var(--primary-lt);cursor:pointer" onclick="setContextView(document.querySelector('#tab-context [data-view=earning]'))">Earning</b>.</div>
+    <div class="row-list" id="ctx-studying"></div>
+    <div class="earned-note" id="ctx-earned-note" style="display:none"></div>
+
+    <div class="explain">
+      <div class="ex-card">
+        <div class="ex-num">Why the wait</div>
+        <div class="ex-title">Trust is earned on your data</div>
+        <div class="ex-body">ctx will not touch your context until your own sessions prove a tool is safe to trim. No tool turns on before it clears the bar.</div>
+      </div>
+      <div class="ex-card">
+        <div class="ex-num">What is different</div>
+        <div class="ex-title">It learns you, not the average</div>
+        <div class="ex-body">The platform compacts for the median user. ctx learns what matters in this repo, for this kind of task, from your own corrections and re-reads.</div>
+      </div>
+      <div class="ex-card">
+        <div class="ex-num">No fake numbers</div>
+        <div class="ex-title">You see only what is real</div>
+        <div class="ex-body">No savings claims during this window. When a tool turns on, you get the count of your own results behind the decision, not an estimate.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- EARNING -->
+  <div class="ctx-view" id="ctxview-earning">
+    <div class="section-head">Tools ctx has turned on</div>
+    <div class="section-sub">Each one earned it on your own runs. Nothing is guessed, and the full output is always kept in your transcript.</div>
+    <div class="row-list" id="ctx-earned"></div>
+    <div class="earned-note" id="ctx-earning-empty" style="display:none"></div>
+  </div>
+
+  <!-- IMPROVING -->
+  <div class="ctx-view" id="ctxview-improving">
+    <div id="ctx-improving-body"></div>
+  </div>
+</div>

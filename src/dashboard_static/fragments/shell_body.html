@@ -9,33 +9,27 @@
     <div class="sb-logo-sub">AI Efficiency</div>
   </div>
 
-  <div class="nav-section">Overview</div>
-  <div class="nav-item active" onclick="showTab('savings',this)">
-    <span class="nav-icon">📈</span> Savings
+  <div class="nav-section">Your context</div>
+  <div class="nav-item active" onclick="showTab('context',this)">
+    <span class="nav-icon">◎</span> Home
   </div>
-
-  <div class="nav-section">Insights</div>
-  <div class="nav-item" onclick="showTab('promptstats',this)">
-    <span class="nav-icon">🧠</span> Prompt Stats
-  </div>
-  <div class="nav-item" onclick="showTab('profiles',this)">
-    <span class="nav-icon">🎛</span> Profiles
+  <div class="nav-item" onclick="showTab('proof',this)">
+    <span class="nav-icon">◆</span> Proof
   </div>
   <div class="nav-item" onclick="showTab('trace',this)">
-    <span class="nav-icon">🔍</span> Request Trace
+    <span class="nav-icon">≡</span> Activity
   </div>
-  <div class="nav-item" onclick="showTab('pipeline',this)">
-    <span class="nav-icon">⚡</span> Pipeline
+
+  <div class="nav-section">Setup</div>
+  <div class="nav-item" onclick="showTab('profiles',this)">
+    <span class="nav-icon">🎛</span> Profiles
   </div>
   <div class="nav-item" onclick="showTab('settings',this)">
     <span class="nav-icon">⚙️</span> Settings
   </div>
   <div class="nav-section" id="nav-dev-section" style="display:none">Dev</div>
   <div class="nav-item" id="nav-dev-experiment" style="display:none" onclick="showTab('experiment',this)">
-    <span class="nav-icon">🧪</span> Experiment
-  </div>
-  <div class="nav-item" id="nav-dev-simulate" style="display:none" onclick="showTab('simulate',this)">
-    <span class="nav-icon">🔬</span> Simulate
+    <span class="nav-icon">🧪</span> Proving
   </div>
 
   <!-- Efficiency score (populated by JS) -->

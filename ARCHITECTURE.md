@@ -31,6 +31,7 @@ flowchart LR
 
   CC_IDE --> Hooks
   CC_CLI --> Hooks
+  Hooks -->|"PostToolUse compress"| DB
   Hooks --> Deny
   Hooks -->|"insert hook_traces"| DB
   Hooks -->|"POST /api/trigger-ingest"| Dashboard
@@ -58,6 +59,7 @@ flowchart LR
 | Setup | `setup.rs`, `host.rs`, `daemon.rs` | Install, host detection, launchd/systemd |
 | Native hooks | `hook.rs`, `filter_control.rs`, `claude_settings.rs`, `profiles.rs` | `UserPromptSubmit`, filter modes, settings merge, deny/allowlist |
 | Gates | `inject.rs`, `adaptive.rs`, `coach.rs`, `budget_guard.rs`, `behavior_guard.rs` | Prefixes, coaching, budget |
+| Compress | `compress/` | PostToolUse output compression (Bash, Read, Grep, Glob, MCP) |
 | A/B | `ab.rs`, `config::AbTestConfig` | Per-feature treatment vs control coin flips |
 | Modes | `modes.rs` | Named presets (profile + toggles) |
 | Tuning | `tuning.rs` | Post-ingest A/B comparison → `ab-results.json` |

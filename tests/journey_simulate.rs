@@ -12,7 +12,7 @@ fn journey_simulate_single_profile() {
     let h = CtxHarness::new();
     h.write_config(
         r#"
-active_profile = "carrier"
+active_profile = "minimal"
 inject_enabled = true
 coaching_enabled = false
 auto_profile_enabled = false
@@ -29,6 +29,45 @@ adaptive_prefix_enabled = true
         "Use typescript.\n",
     )
     .unwrap();
+    {
+        let conn = h.open();
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at, profile, working_directory, turn_count)
+             VALUES ('sim-seed', 'p1', datetime('now'), 'carrier', '/tmp', 1)",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row("SELECT id FROM sessions WHERE external_key='sim-seed'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, human_text_prefix, ts)
+             VALUES (?1, 0, 'user', 'fix the bug', datetime('now'))",
+            [sid],
+        )
+        .unwrap();
+        let tid: i64 = conn
+            .query_row("SELECT id FROM turns WHERE session_id=?1", [sid], |r| r.get(0))
+            .unwrap();
+        for i in 0..20 {
+            conn.execute(
+                "INSERT INTO tool_invocations (session_id, turn_id, tool_name, server_prefix, ts)
+                 VALUES (?1, ?2, ?3, 'mcp__claude_ai_Slack__', datetime('now'))",
+                rusqlite::params![sid, tid, format!("slack_tool_{i}")],
+            )
+            .unwrap();
+        }
+        for i in 0..20 {
+            conn.execute(
+                "INSERT INTO tool_invocations (session_id, turn_id, tool_name, server_prefix, ts)
+                 VALUES (?1, ?2, ?3, 'mcp__claude_ai_Atlassian__', datetime('now'))",
+                rusqlite::params![sid, tid, format!("jira_tool_{i}")],
+            )
+            .unwrap();
+        }
+    }
 
     let bin = option_env!("CARGO_BIN_EXE_ctx").expect("ctx binary");
     let out = Command::new(bin)
@@ -42,7 +81,7 @@ adaptive_prefix_enabled = true
         String::from_utf8_lossy(&out.stderr)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["profile_slug"], "carrier");
+    assert_eq!(v["profile_slug"], "minimal");
     assert!(v["tools_removed"].as_u64().unwrap() > 0);
     assert!(v["inject_fired"].as_bool().unwrap());
     assert!(v["adaptive_fired"].as_bool().unwrap());

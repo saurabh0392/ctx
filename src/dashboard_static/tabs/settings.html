@@ -1,116 +1,354 @@
 <!-- ═══ Tab 6: Settings ═══ -->
 <div class="tab-panel" id="tab-settings">
-  <div class="page-title">Settings</div>
-  <div class="page-sub">Preferences, privacy, and transparency. All changes write to <code>~/.ctx/config.toml</code> on this machine.</div>
-  <div class="section-sub" style="margin-top:-28px;margin-bottom:16px">Adaptive prefix and Reset watermark live below. The dashboard Data bar uses the same watermark for filtered views.</div>
-  <p style="margin:0 0 20px"><button type="button" class="modal-btn secondary" onclick="showOnboardingWizardFromSettings()">Open setup guide</button></p>
 
-  <div class="card" style="margin-bottom:20px">
-    <div class="section-head">General</div>
-    <label style="font-size:12px;color:var(--t3)">Monthly budget (USD)</label>
-    <input type="number" id="set-budget" min="0" step="10" style="width:100%;max-width:280px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
-    <label style="font-size:12px;color:var(--t3)">Actual Anthropic spend (optional)</label>
-    <input type="number" id="set-actual" min="0" step="1" style="width:100%;max-width:280px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
-    <div style="font-size:13px;color:var(--t2)">Dashboard port <strong id="set-dash-port">n/a</strong>, Proxy port <strong id="set-proxy-port">n/a</strong></div>
-    <div style="margin-top:12px"><button type="button" class="modal-btn primary" onclick="saveSettingsGeneral()">Save general</button></div>
+  <div class="set-page-head">
+    <div>
+      <div class="page-title">Settings</div>
+      <div class="page-sub">Turn ctx gates on or off, set privacy boundaries, and tune experiments. Everything saves to <code>~/.ctx/config.toml</code> on this machine.</div>
+    </div>
+    <button type="button" class="modal-btn secondary set-guide-btn" onclick="showOnboardingWizardFromSettings()">Setup guide</button>
   </div>
 
-  <div class="card" style="margin-bottom:20px">
-    <div class="section-head">Privacy</div>
-    <label style="display:flex;align-items:center;gap:10px;margin-bottom:10px;cursor:pointer">
-      <input type="checkbox" id="set-store-prompt"> Store prompt-derived text in SQLite
-    </label>
-    <label style="display:flex;align-items:center;gap:10px;margin-bottom:16px;cursor:pointer">
-      <input type="checkbox" id="set-embed"> Compute embeddings for pattern alerts
-    </label>
-    <div style="display:flex;flex-wrap:wrap;gap:10px">
-      <button type="button" class="modal-btn secondary" onclick="saveSettingsPrivacy()">Save privacy toggles</button>
-      <button type="button" class="modal-btn secondary" onclick="purgePrompts()" style="border-color:#b45309;color:#fdba74">Purge stored prompts</button>
-      <button type="button" class="modal-btn secondary" onclick="exportDb()" style="border-color:var(--primary)">Export ctx.db</button>
-      <button type="button" class="modal-btn secondary" onclick="deleteAllData()" style="border-color:#991b1b;color:#fca5a5">Delete all indexed data</button>
+  <div id="set-hero" class="narrative-card set-hero">
+    <div class="narrative-eyebrow">Current setup</div>
+    <div id="set-hero-body" class="set-hero-body">Loading…</div>
+    <div id="set-hero-pills" class="narrative-pills"></div>
+  </div>
+
+  <!-- ── General ── -->
+  <div class="set-chapter">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">1</div>
+      <div>
+        <div class="set-chapter-title">Budget and ports</div>
+        <p class="set-chapter-sub">Optional spend cap for the dashboard bar. Ports are read-only unless you edit config by hand.</p>
+      </div>
+    </div>
+    <div class="card set-card">
+      <div class="set-field-grid">
+        <div class="set-field">
+          <label class="set-field-label" for="set-budget">Monthly budget (USD)</label>
+          <p class="set-field-hint">Powers the budget guard and the spend bar on Savings. Leave blank if you do not want a cap.</p>
+          <input type="number" id="set-budget" min="0" step="10" class="set-input">
+        </div>
+        <div class="set-field">
+          <label class="set-field-label" for="set-actual">Actual Anthropic spend (optional)</label>
+          <p class="set-field-hint">Paste what billing shows this month. ctx uses it to calibrate the running total against JSONL estimates.</p>
+          <input type="number" id="set-actual" min="0" step="1" class="set-input">
+        </div>
+      </div>
+      <div class="set-meta-row">
+        <span>Dashboard <strong id="set-dash-port">n/a</strong></span>
+        <span>Proxy <strong id="set-proxy-port">n/a</strong></span>
+      </div>
+      <div class="set-actions">
+        <button type="button" class="modal-btn primary" onclick="saveSettingsGeneral()">Save budget</button>
+      </div>
     </div>
   </div>
 
-  <div class="card" style="margin-bottom:20px" id="set-modes-card">
-    <div class="section-head">Context mode</div>
-    <div class="section-sub">A mode bundles your profile, prefix, coaching, and adaptive settings into one switch. Define modes in <code>config.toml</code> under <code>[modes.*]</code>.</div>
-    <label style="font-size:12px;color:var(--t3)">Active mode</label>
-    <select id="set-mode" style="width:100%;max-width:320px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></select>
-    <p id="set-modes-empty" class="section-sub" style="display:none;margin:0">No modes configured. Add a <code>[modes.debug]</code> section to <code>~/.ctx/config.toml</code> to get started.</p>
-    <button type="button" class="modal-btn primary" onclick="saveSettingsMode()">Apply mode</button>
-  </div>
-
-  <div class="card" style="margin-bottom:20px;display:none" id="set-tuning-card">
-    <div class="section-head">Self-tuning recommendations</div>
-    <div class="section-sub">From your A/B experiment data. Run <code>ctx experiment apply</code> to write changes to config.</div>
-    <div id="set-tuning-body"></div>
-    <label style="display:flex;align-items:center;gap:10px;margin-top:12px;cursor:pointer">
-      <input type="checkbox" id="set-auto-apply"> Auto-apply recommendations after each ingest
-    </label>
-    <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
-      <button type="button" class="modal-btn secondary" onclick="applyTuningRecommendations()">Apply recommendations</button>
-      <button type="button" class="modal-btn secondary" onclick="saveAutoApplyTuning()">Save auto-apply</button>
+  <!-- ── Privacy ── -->
+  <div class="set-chapter">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">2</div>
+      <div>
+        <div class="set-chapter-title">Privacy and data</div>
+        <p class="set-chapter-sub">Control what ctx stores locally. Nothing leaves this machine unless you export it.</p>
+      </div>
+    </div>
+    <div class="set-gates-grid set-gates-grid-2">
+      <div class="set-gate-row" id="set-store-prompt-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip set-chip-data">Storage</span>
+            <div class="set-gate-title">Store prompt text</div>
+            <label class="set-switch" title="Store prompt text">
+              <input type="checkbox" id="set-store-prompt">
+              <span class="set-switch-ui" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p class="set-gate-lead">Keeps the start of each user message in SQLite for Trace and similarity.</p>
+          <p class="set-gate-detail">Needed for prompt previews on Trace and adaptive prefix. Turn off if you want metrics only, no message text.</p>
+        </div>
+      </div>
+      <div class="set-gate-row" id="set-embed-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip set-chip-data">Storage</span>
+            <div class="set-gate-title">Session embeddings</div>
+            <label class="set-switch" title="Compute embeddings">
+              <input type="checkbox" id="set-embed">
+              <span class="set-switch-ui" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p class="set-gate-lead">Builds vector fingerprints of sessions for auto-profile and adaptive prefix.</p>
+          <p class="set-gate-detail">Uses local hash embeddings by default. Turn off to skip embedding work and clear stored vectors on next ingest.</p>
+        </div>
+      </div>
+    </div>
+    <div class="card set-card set-danger-zone">
+      <div class="set-danger-title">Data actions</div>
+      <p class="set-field-hint">Destructive actions only touch your local ctx database. Claude Code logs are never deleted.</p>
+      <div class="set-actions set-actions-wrap">
+        <button type="button" class="modal-btn primary" onclick="saveSettingsPrivacy()">Save privacy toggles</button>
+        <button type="button" class="modal-btn secondary set-btn-warn" onclick="purgePrompts()">Purge prompt text</button>
+        <button type="button" class="modal-btn secondary" onclick="exportDb()">Export ctx.db</button>
+        <button type="button" class="modal-btn secondary set-btn-danger" onclick="deleteAllData()">Delete all indexed data</button>
+      </div>
     </div>
   </div>
 
-  <div class="card" style="margin-bottom:20px">
-    <div class="section-head">Filtering</div>
-    <label style="font-size:12px;color:var(--t3)">Active profile</label>
-    <select id="set-profile" style="width:100%;max-width:320px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)"></select>
-    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
-      <input type="checkbox" id="set-auto-prof"> Auto-select profile from working directory
-    </label>
-    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
-      <input type="checkbox" id="set-inject"> Inject system prefix from ~/.ctx/system_prefix.md
-    </label>
-    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
-      <input type="checkbox" id="set-coaching"> Coaching (detect correction patterns and nudge Claude from session JSONL)
-    </label>
-    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer">
-      <input type="checkbox" id="set-adaptive"> Adaptive prefix (append ~/.ctx/adaptive_prefix.md after static prefix)
-    </label>
-    <label style="font-size:12px;color:var(--t3)">Adaptive max chars (optional override, 0 = model default)</label>
-    <input type="number" id="set-adaptive-max" min="0" max="8000" step="50" placeholder="0 = auto" style="width:100%;max-width:200px;margin:6px 0 12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--t1)">
-    <label style="font-size:12px;color:var(--t3)">Adaptive prefix preview (~/.ctx/adaptive_prefix.md)</label>
-    <div id="set-adaptive-meta" style="font-size:12px;color:var(--t2);margin:6px 0 4px">n/a</div>
-    <textarea id="set-adaptive-preview" readonly rows="8" style="width:100%;margin-top:4px;font-family:ui-monospace,monospace;font-size:11px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
-    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">
-      <button type="button" class="modal-btn secondary" onclick="regenerateAdaptivePrefix()">Regenerate adaptive prefix</button>
+  <!-- ── Modes ── -->
+  <div class="set-chapter" id="set-modes-card">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">3</div>
+      <div>
+        <div class="set-chapter-title">Context mode</div>
+        <p class="set-chapter-sub">One switch for a bundled preset: profile, prefix, coaching, and adaptive together.</p>
+      </div>
     </div>
-    <label style="font-size:12px;color:var(--t3)">System prefix (saved to file)</label>
-    <textarea id="set-prefix" rows="10" style="width:100%;margin-top:6px;font-family:ui-monospace,monospace;font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--t1)"></textarea>
-    <div style="margin-top:12px"><button type="button" class="modal-btn primary" onclick="saveSettingsFiltering()">Save filtering</button></div>
-  </div>
-
-  <div class="card" style="margin-bottom:20px">
-    <div class="section-head">Experiments</div>
-    <div class="section-sub">Set any slider below 100% to skip that gate on some requests. Results appear in the Experiment tab (enable dev mode or add <code>?dev=1</code> to the URL).</div>
-    <div id="ab-experiment-banner" class="ab-experiment-banner" style="display:none"></div>
-    <div class="ab-slider-row"><span style="width:100px">Profile</span><input type="range" id="ab-profile-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-profile-val">100%</span></div>
-    <div class="ab-slider-row"><span style="width:100px">Inject</span><input type="range" id="ab-inject-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-inject-val">100%</span></div>
-    <div class="ab-slider-row"><span style="width:100px">Adaptive</span><input type="range" id="ab-adaptive-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-adaptive-val">100%</span></div>
-    <div class="ab-slider-row"><span style="width:100px">Coaching</span><input type="range" id="ab-coaching-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()"><span id="ab-coaching-val">100%</span></div>
-    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px">
-      <button type="button" class="modal-btn secondary" onclick="startAbExperiment5050()">Start 50/50 experiment</button>
-      <button type="button" class="modal-btn secondary" onclick="stopAbExperiment()">Stop experiment</button>
-      <button type="button" class="modal-btn primary" onclick="saveAbExperiment()">Save percentages</button>
+    <div class="card set-card">
+      <label class="set-field-label" for="set-mode">Active mode</label>
+      <p class="set-field-hint">Define presets under <code>[modes.*]</code> in config. Example: debug mode with coaching off.</p>
+      <select id="set-mode" class="set-select"></select>
+      <p id="set-modes-empty" class="set-field-hint" style="display:none;margin-top:10px">No modes yet. Add a <code>[modes.debug]</code> block to <code>~/.ctx/config.toml</code>.</p>
+      <div class="set-actions">
+        <button type="button" class="modal-btn primary" onclick="saveSettingsMode()">Apply mode</button>
+      </div>
     </div>
-    <label style="display:flex;align-items:center;gap:10px;margin-top:14px;cursor:pointer">
-      <input type="checkbox" id="set-dev-mode"> Show Experiment tab in sidebar (dev mode)
-    </label>
   </div>
 
-  <div class="card" style="margin-bottom:20px">
-    <div class="section-head">Install watermark</div>
-    <div class="section-sub">ctx stamps the first proxy or hook event so the dashboard defaults to data from after you turned ctx on. Reset to include older indexed sessions until the next event re-stamps.</div>
-    <p style="font-size:12px;color:var(--t2);margin:0 0 10px">Current stamp: <code id="set-ctx-since-display">n/a</code></p>
-    <button type="button" class="modal-btn secondary" onclick="resetDashboardWatermark()" style="border-color:#b45309;color:#fdba74">Reset watermark</button>
+  <!-- ── Tuning (hidden until data) ── -->
+  <div class="set-chapter" id="set-tuning-card" style="display:none">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">★</div>
+      <div>
+        <div class="set-chapter-title">Self-tuning recommendations</div>
+        <p class="set-chapter-sub">From your A/B results. Review before applying.</p>
+      </div>
+    </div>
+    <div class="card set-card">
+      <div id="set-tuning-body"></div>
+      <div class="set-gate-row" id="set-auto-apply-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip set-chip-exp">Auto</span>
+            <div class="set-gate-title">Auto-apply after ingest</div>
+            <label class="set-switch">
+              <input type="checkbox" id="set-auto-apply">
+              <span class="set-switch-ui" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p class="set-gate-lead">Writes experiment recommendations to config after each ingest without asking.</p>
+          <p class="set-gate-detail">Leave off until you trust the verdicts. Manual apply: <code>ctx experiment apply</code>.</p>
+        </div>
+      </div>
+      <div class="set-actions set-actions-wrap">
+        <button type="button" class="modal-btn secondary" onclick="applyTuningRecommendations()">Apply recommendations</button>
+        <button type="button" class="modal-btn secondary" onclick="saveAutoApplyTuning()">Save auto-apply</button>
+      </div>
+    </div>
   </div>
 
-  <div class="card">
-    <div class="section-head">Your data</div>
-    <div id="set-data-body" style="font-size:13px;color:var(--t2);line-height:1.7">Loading…</div>
+  <!-- ── Gates ── -->
+  <div class="set-chapter">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">4</div>
+      <div>
+        <div class="set-chapter-title">ctx gates</div>
+        <p class="set-chapter-sub">What runs on each prompt in Claude Code. Matches the Pipeline and Trace tabs.</p>
+      </div>
+    </div>
+
+    <div class="set-field set-field-inline">
+      <label class="set-field-label" for="set-profile">Active profile</label>
+      <p class="set-field-hint">Which MCP tool filter preset to use. Personal strips tools you rarely invoke.</p>
+      <select id="set-profile" class="set-select"></select>
+    </div>
+
+    <div class="set-gates-grid">
+      <div class="set-gate-row" id="set-auto-prof-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip gf-chip-auto">Auto</span>
+            <div class="set-gate-title">Auto-profile</div>
+            <label class="set-switch"><input type="checkbox" id="set-auto-prof"><span class="set-switch-ui"></span></label>
+          </div>
+          <p class="set-gate-lead">Picks a profile from your working directory or similar past sessions.</p>
+          <p class="set-gate-detail">When off, the pinned profile above always wins.</p>
+        </div>
+      </div>
+      <div class="set-gate-row" id="set-inject-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip gf-chip-inject">Inject</span>
+            <div class="set-gate-title">System prefix</div>
+            <label class="set-switch"><input type="checkbox" id="set-inject"><span class="set-switch-ui"></span></label>
+          </div>
+          <p class="set-gate-lead">Prepends <code>~/.ctx/system_prefix.md</code> to every prompt.</p>
+          <p class="set-gate-detail">Stable project rules up front. Adds tokens but can reduce back-and-forth turns.</p>
+        </div>
+      </div>
+      <div class="set-gate-row" id="set-adaptive-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip gf-chip-adaptive">Adaptive</span>
+            <div class="set-gate-title">Adaptive prefix</div>
+            <label class="set-switch"><input type="checkbox" id="set-adaptive"><span class="set-switch-ui"></span></label>
+          </div>
+          <p class="set-gate-lead">Appends <code>~/.ctx/adaptive_prefix.md</code> after the static prefix.</p>
+          <p class="set-gate-detail">Built from your session history. Helpful when past work in this repo repeats.</p>
+        </div>
+      </div>
+      <div class="set-gate-row" id="set-coaching-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip gf-chip-coach">Coach</span>
+            <div class="set-gate-title">Coaching</div>
+            <label class="set-switch"><input type="checkbox" id="set-coaching"><span class="set-switch-ui"></span></label>
+          </div>
+          <p class="set-gate-lead">Detects correction spirals and nudges Claude before you burn another turn.</p>
+          <p class="set-gate-detail">Reads recent session JSONL for repeat asks and fatigue patterns.</p>
+        </div>
+      </div>
+      <div class="set-gate-row" id="set-compress-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip gf-chip-compress">Compress</span>
+            <div class="set-gate-title">Output compression</div>
+            <label class="set-switch"><input type="checkbox" id="set-compress"><span class="set-switch-ui"></span></label>
+          </div>
+          <p class="set-gate-lead">Shrinks large Bash, Read, Grep, Glob, and MCP results after tools run.</p>
+          <p class="set-gate-detail">Runs on PostToolUse. Only fires when output exceeds your char budget in config.</p>
+        </div>
+      </div>
+      <div class="set-gate-row set-gate-row-optional" id="set-compress-sgr-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip gf-chip-compress">SGR</span>
+            <div class="set-gate-title">Session-grounded retention</div>
+            <label class="set-switch"><input type="checkbox" id="set-compress-sgr"><span class="set-switch-ui"></span></label>
+          </div>
+          <p class="set-gate-lead">After the format pass, keeps lines that match your current task and corrections.</p>
+          <p class="set-gate-detail">Requires output compression. Experimental: watch correction rate when you turn it on.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card set-card set-advanced">
+      <div class="set-advanced-head">Prefix editors</div>
+      <div class="set-field">
+        <label class="set-field-label" for="set-adaptive-max">Adaptive max chars</label>
+        <p class="set-field-hint">Optional cap on adaptive prefix size. 0 uses the model-based default.</p>
+        <input type="number" id="set-adaptive-max" min="0" max="8000" step="50" placeholder="0 = auto" class="set-input set-input-narrow">
+      </div>
+      <div class="set-field">
+        <label class="set-field-label">Adaptive prefix preview</label>
+        <div id="set-adaptive-meta" class="set-adaptive-meta">n/a</div>
+        <textarea id="set-adaptive-preview" readonly rows="6" class="set-textarea"></textarea>
+        <button type="button" class="modal-btn secondary set-inline-btn" onclick="regenerateAdaptivePrefix()">Regenerate from history</button>
+      </div>
+      <div class="set-field">
+        <label class="set-field-label" for="set-prefix">System prefix file</label>
+        <p class="set-field-hint">Saved to <code>~/.ctx/system_prefix.md</code> when you hit Save gates below.</p>
+        <textarea id="set-prefix" rows="8" class="set-textarea"></textarea>
+      </div>
+      <div class="set-actions">
+        <button type="button" class="modal-btn primary" onclick="saveSettingsFiltering()">Save gates and prefixes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Experiments ── -->
+  <div class="set-chapter">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">5</div>
+      <div>
+        <div class="set-chapter-title">Experiments</div>
+        <p class="set-chapter-sub">Set any slider below 100% to skip that gate on some prompts. Results land in the Experiment tab.</p>
+      </div>
+    </div>
+    <div class="card set-card">
+      <div id="ab-experiment-banner" class="ab-experiment-banner set-exp-banner" style="display:none"></div>
+      <div class="set-exp-sliders">
+        <div class="set-exp-slider">
+          <div class="set-exp-slider-top"><span class="gf-chip gf-chip-filter">Profile</span><span id="ab-profile-val">100%</span></div>
+          <p class="set-exp-slider-hint">Strip unused MCP tool schemas before the model sees them.</p>
+          <input type="range" id="ab-profile-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()">
+        </div>
+        <div class="set-exp-slider">
+          <div class="set-exp-slider-top"><span class="gf-chip gf-chip-inject">Inject</span><span id="ab-inject-val">100%</span></div>
+          <p class="set-exp-slider-hint">Prepend the static system prefix.</p>
+          <input type="range" id="ab-inject-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()">
+        </div>
+        <div class="set-exp-slider">
+          <div class="set-exp-slider-top"><span class="gf-chip gf-chip-adaptive">Adaptive</span><span id="ab-adaptive-val">100%</span></div>
+          <p class="set-exp-slider-hint">Append the adaptive history prefix.</p>
+          <input type="range" id="ab-adaptive-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()">
+        </div>
+        <div class="set-exp-slider">
+          <div class="set-exp-slider-top"><span class="gf-chip gf-chip-coach">Coaching</span><span id="ab-coaching-val">100%</span></div>
+          <p class="set-exp-slider-hint">Correction-pattern nudges.</p>
+          <input type="range" id="ab-coaching-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()">
+        </div>
+        <div class="set-exp-slider">
+          <div class="set-exp-slider-top"><span class="gf-chip gf-chip-compress">Compress</span><span id="ab-compress-val">100%</span></div>
+          <p class="set-exp-slider-hint">PostToolUse output compression.</p>
+          <input type="range" id="ab-compress-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()">
+        </div>
+        <div class="set-exp-slider">
+          <div class="set-exp-slider-top"><span class="gf-chip gf-chip-compress">SGR</span><span id="ab-compress-sgr-val">100%</span></div>
+          <p class="set-exp-slider-hint">Session-grounded line retention vs v1-only compress.</p>
+          <input type="range" id="ab-compress-sgr-pct" min="0" max="100" step="5" oninput="syncAbSliderLabels()">
+        </div>
+      </div>
+      <div class="set-actions set-actions-wrap">
+        <button type="button" class="modal-btn secondary" onclick="startAbExperiment5050()">Start 50/50 on all</button>
+        <button type="button" class="modal-btn secondary" onclick="stopAbExperiment()">Stop experiments</button>
+        <button type="button" class="modal-btn primary" onclick="saveAbExperiment()">Save percentages</button>
+      </div>
+      <div class="set-gate-row set-gate-row-flat" id="set-dev-mode-row">
+        <div class="set-gate-main">
+          <div class="set-gate-head">
+            <span class="set-gate-chip set-chip-exp">Dev</span>
+            <div class="set-gate-title">Show Experiment tab</div>
+            <label class="set-switch"><input type="checkbox" id="set-dev-mode"><span class="set-switch-ui"></span></label>
+          </div>
+          <p class="set-gate-lead">Adds Experiment and Simulate to the sidebar. Or use <code>?dev=1</code> in the URL.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Watermark ── -->
+  <div class="set-chapter">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">6</div>
+      <div>
+        <div class="set-chapter-title">Install watermark</div>
+        <p class="set-chapter-sub">Charts default to data from after you turned ctx on. Reset to include older sessions.</p>
+      </div>
+    </div>
+    <div class="card set-card">
+      <p class="set-field-hint">Current stamp: <code id="set-ctx-since-display">n/a</code></p>
+      <div class="set-actions">
+        <button type="button" class="modal-btn secondary set-btn-warn" onclick="resetDashboardWatermark()">Reset watermark</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Your data ── -->
+  <div class="set-chapter">
+    <div class="set-chapter-head">
+      <div class="set-chapter-num">7</div>
+      <div>
+        <div class="set-chapter-title">Your data</div>
+        <p class="set-chapter-sub">Local storage only. No telemetry.</p>
+      </div>
+    </div>
+    <div class="card set-card">
+      <div id="set-data-body" class="set-data-grid">Loading…</div>
+    </div>
   </div>
 </div>
 </div><!-- main-wrap -->
-

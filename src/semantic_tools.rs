@@ -3,13 +3,42 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-use crate::config::Config;
+use crate::config::{Config, FilterMode};
 use crate::profiles::{self, Profile};
 
 pub const META_TOOL_MIX_LAST: &str = "semantic_tool_mix_last";
 pub const META_ACCESS_FRICTION: &str = "access_friction_counts";
+pub const MAX_PROACTIVE_EXPANSIONS: usize = 6;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpansionReason {
+    Keyword,
+    Semantic,
+    AccessFriction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolExpansionEntry {
+    pub target: String,
+    pub reason: ExpansionReason,
+    pub display: String,
+}
+
+impl ToolExpansionEntry {
+    pub fn new(target: impl Into<String>, reason: ExpansionReason) -> Self {
+        let target = target.into();
+        let display = display_name_for_target(&target);
+        Self {
+            target,
+            reason,
+            display,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMixSummary {
@@ -35,6 +64,18 @@ pub struct AccessFrictionRow {
     pub tool: String,
     pub tool_display: String,
     pub count: u32,
+}
+
+pub fn display_name_for_target(target: &str) -> String {
+    if target.starts_with("mcp__") {
+        target
+            .rsplit("__")
+            .next()
+            .unwrap_or(target)
+            .replace('_', " ")
+    } else {
+        target.replace('_', " ")
+    }
 }
 
 /// Recommend MCP tools to un-deny based on similar past sessions.
@@ -112,6 +153,7 @@ pub fn recommend_tools_from_similar_sessions(
 
     recommended.sort();
     recommended.dedup();
+    recommended.truncate(MAX_PROACTIVE_EXPANSIONS);
     Ok(recommended)
 }
 
@@ -134,31 +176,105 @@ fn persist_tool_mix_summary(conn: &Connection, summary: &ToolMixSummary) -> Resu
     Ok(())
 }
 
-pub fn load_tool_mix_summary(conn: &Connection) -> ToolMixSummary {
-    let Some(json) = crate::db::get_meta(conn, META_TOOL_MIX_LAST) else {
-        return ToolMixSummary::default();
-    };
-    serde_json::from_str(&json).unwrap_or_default()
+fn resync_soft_filter_settings() -> Result<()> {
+    let cfg = Config::load();
+    if cfg.filter_mode != FilterMode::Soft {
+        return Ok(());
+    }
+    let slug = cfg.active_profile.as_deref().unwrap_or("all");
+    let dash = cfg.dashboard_port.unwrap_or(8789);
+    crate::claude_settings::write_native_ctx_to_user_settings(slug, dash)?;
+    Ok(())
 }
 
-/// Hook entry: compute semantic overlay and persist to config + meta.
-pub fn apply_hook_semantic_tool_mix(new_slug: &str, prompt: &str, cwd: &str) -> Result<()> {
+/// Add session expansion targets and resync deny rules when anything new was added.
+pub fn add_session_expansions(
+    targets: impl IntoIterator<Item = (String, ExpansionReason)>,
+) -> Result<Vec<ToolExpansionEntry>> {
+    let mut cfg = Config::load();
+    if cfg.filter_mode != FilterMode::Soft {
+        return Ok(vec![]);
+    }
+
+    let mut added = Vec::new();
+    let mut changed = false;
+
+    for (target, reason) in targets {
+        let key = target.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let already = cfg
+            .session_expansion
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(key))
+            || cfg
+                .session_semantic_tools
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(key));
+        if already {
+            continue;
+        }
+        if reason == ExpansionReason::Semantic {
+            cfg.session_semantic_tools.push(key.to_string());
+        }
+        cfg.session_expansion.push(key.to_string());
+        added.push(ToolExpansionEntry::new(key, reason));
+        changed = true;
+    }
+
+    if changed {
+        cfg.save()?;
+        resync_soft_filter_settings()?;
+    }
+    Ok(added)
+}
+
+/// Proactive keyword expansion from prompt text (Tier 2).
+pub fn expand_from_prompt_keywords(
+    prompt: &str,
+    cwd: &str,
+    profile: &Profile,
+) -> Result<Vec<ToolExpansionEntry>> {
+    if !profile.filtering_enabled() {
+        return Ok(vec![]);
+    }
+    let mut candidates = profiles::detect_expansion_candidates(prompt, cwd, profile);
+    candidates.sort();
+    candidates.dedup();
+    candidates.truncate(MAX_PROACTIVE_EXPANSIONS);
+    add_session_expansions(
+        candidates
+            .into_iter()
+            .map(|t| (t, ExpansionReason::Keyword)),
+    )
+}
+
+/// Hook entry: compute semantic overlay, persist summary, return newly expanded tools.
+pub fn apply_hook_semantic_tool_mix(
+    new_slug: &str,
+    prompt: &str,
+    cwd: &str,
+) -> Result<Vec<ToolExpansionEntry>> {
     let cfg = Config::load();
-    if !cfg.semantic_tool_mix_enabled || cfg.filter_mode != crate::config::FilterMode::Soft {
-        return Ok(());
+    if !cfg.semantic_tool_mix_enabled || cfg.filter_mode != FilterMode::Soft {
+        return Ok(vec![]);
     }
 
     let profile = profiles::get(new_slug)?;
     let Ok(conn) = crate::db::open_db() else {
-        return Ok(());
+        return Ok(vec![]);
     };
     let _ = crate::db::ensure_schema(&conn);
 
-    let tools = recommend_tools_from_similar_sessions(&conn, cwd, prompt, &profile).unwrap_or_default();
-
-    let mut cfg = Config::load();
-    cfg.session_semantic_tools = tools.clone();
-    cfg.save()?;
+    let tools =
+        recommend_tools_from_similar_sessions(&conn, cwd, prompt, &profile).unwrap_or_default();
+    let added = add_session_expansions(
+        tools
+            .iter()
+            .cloned()
+            .map(|t| (t, ExpansionReason::Semantic)),
+    )?;
 
     let summary = if tools.is_empty() {
         ToolMixSummary {
@@ -173,11 +289,19 @@ pub fn apply_hook_semantic_tool_mix(new_slug: &str, prompt: &str, cwd: &str) -> 
             crate::embedder::embed_text(&query_text)
                 .ok()
                 .and_then(|emb| {
-                    crate::embedder::similar_sessions_by_query(&conn, &emb, cfg.semantic_tool_mix_top_k.max(1).min(20), None).ok()
+                    crate::embedder::similar_sessions_by_query(
+                        &conn,
+                        &emb,
+                        cfg.semantic_tool_mix_top_k.max(1).min(20),
+                        None,
+                    )
+                    .ok()
                 })
                 .map(|s| {
                     s.iter()
-                        .filter(|(_, sim)| *sim as f64 >= cfg.semantic_tool_mix_min_similarity as f64)
+                        .filter(|(_, sim)| {
+                            *sim as f64 >= cfg.semantic_tool_mix_min_similarity as f64
+                        })
                         .count()
                 })
                 .unwrap_or(0)
@@ -193,7 +317,7 @@ pub fn apply_hook_semantic_tool_mix(new_slug: &str, prompt: &str, cwd: &str) -> 
     };
 
     let _ = persist_tool_mix_summary(&conn, &summary);
-    Ok(())
+    Ok(added)
 }
 
 const ACCESS_PATTERNS: &[&str] = &[
@@ -240,39 +364,151 @@ fn save_friction_counts(conn: &Connection, counts: &HashMap<String, u32>) -> Res
 }
 
 /// Record access friction and expand session targets immediately.
-pub fn record_access_friction(tools: &[String]) -> Result<()> {
+pub fn record_access_friction(tools: &[String]) -> Result<Vec<ToolExpansionEntry>> {
     if tools.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let Ok(conn) = crate::db::open_db() else {
-        return Ok(());
+        return Ok(vec![]);
     };
     let _ = crate::db::ensure_schema(&conn);
 
     let mut counts = load_friction_counts(&conn);
-    let mut cfg = Config::load();
-    let mut changed = false;
-
     for tool in tools {
         *counts.entry(tool.clone()).or_insert(0) += 1;
-        if !cfg
-            .session_expansion
+    }
+    let _ = save_friction_counts(&conn, &counts);
+
+    add_session_expansions(
+        tools
             .iter()
-            .any(|s| s.eq_ignore_ascii_case(tool))
-        {
-            cfg.session_expansion.push(tool.clone());
-            changed = true;
+            .cloned()
+            .map(|t| (t, ExpansionReason::AccessFriction)),
+    )
+}
+
+fn extract_text_from_content(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| {
+                if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    b.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Pull the latest assistant prose from a Stop/SessionEnd hook payload.
+pub fn extract_assistant_text_from_hook_payload(payload: &Value) -> String {
+    for key in [
+        "assistant_message",
+        "assistantMessage",
+        "last_assistant_message",
+        "lastAssistantMessage",
+    ] {
+        if let Some(v) = payload.get(key) {
+            if let Some(s) = v.as_str() {
+                if !s.trim().is_empty() {
+                    return s.to_string();
+                }
+            }
+            if let Some(msg) = v.get("content") {
+                let text = extract_text_from_content(msg);
+                if !text.trim().is_empty() {
+                    return text;
+                }
+            }
         }
     }
-
-    let _ = save_friction_counts(&conn, &counts);
-    if changed {
-        cfg.save()?;
-        let slug = cfg.active_profile.as_deref().unwrap_or("all");
-        let dash = cfg.dashboard_port.unwrap_or(8789);
-        crate::claude_settings::write_native_ctx_to_user_settings(slug, dash)?;
+    if let Some(msg) = payload.get("message") {
+        if let Some(content) = msg.get("content") {
+            let text = extract_text_from_content(content);
+            if !text.trim().is_empty() {
+                return text;
+            }
+        }
     }
-    Ok(())
+    if let Some(arr) = payload.get("transcript").and_then(|v| v.as_array()) {
+        for row in arr.iter().rev() {
+            let role = row
+                .get("role")
+                .or_else(|| row.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if role == "assistant" {
+                if let Some(content) = row.get("content") {
+                    let text = extract_text_from_content(content);
+                    if !text.trim().is_empty() {
+                        return text;
+                    }
+                }
+                if let Some(msg) = row.get("message").and_then(|m| m.get("content")) {
+                    let text = extract_text_from_content(msg);
+                    if !text.trim().is_empty() {
+                        return text;
+                    }
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Tier 1: on Stop/SessionEnd, un-deny tools Claude said it could not access.
+pub fn process_stop_hook_recovery(payload: &Value) -> Result<Vec<ToolExpansionEntry>> {
+    let cfg = Config::load();
+    if cfg.filter_mode != FilterMode::Soft {
+        return Ok(vec![]);
+    }
+
+    let session_id = payload
+        .get("session_id")
+        .or_else(|| payload.get("sessionId"))
+        .and_then(|v| v.as_str());
+
+    let mut text = extract_assistant_text_from_hook_payload(payload);
+    if text.trim().is_empty() {
+        if let Some(sid) = session_id {
+            text = crate::hook::latest_assistant_text_for_session(sid).unwrap_or_default();
+        }
+    }
+    if text.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let slug = cfg.active_profile.as_deref().unwrap_or("all");
+    let profile = profiles::get(slug)?;
+    let tools = detect_access_friction_tools(&text, &profile);
+    if tools.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let added = record_access_friction(&tools)?;
+    if !added.is_empty() {
+        if let (Some(sid), Ok(conn)) = (session_id, crate::db::open_db()) {
+            let _ = crate::db::ensure_schema(&conn);
+            let _ = crate::db::append_hook_trace_expansions(&conn, sid, &added);
+        }
+        eprintln!(
+            "[ctx] access-friction recovery: un-denied {} tool(s) for next turn",
+            added.len()
+        );
+    }
+    Ok(added)
+}
+
+pub fn load_tool_mix_summary(conn: &Connection) -> ToolMixSummary {
+    let Some(json) = crate::db::get_meta(conn, META_TOOL_MIX_LAST) else {
+        return ToolMixSummary::default();
+    };
+    serde_json::from_str(&json).unwrap_or_default()
 }
 
 pub fn list_access_friction(conn: &Connection, promote_threshold: u32) -> Vec<AccessFrictionRow> {
@@ -281,14 +517,9 @@ pub fn list_access_friction(conn: &Connection, promote_threshold: u32) -> Vec<Ac
         .into_iter()
         .filter(|(_, c)| *c >= 1)
         .map(|(tool, count)| {
-            let tool_display = if tool.starts_with("mcp__") {
-                tool.rsplit("__").next().unwrap_or(tool.as_str()).replace('_', " ")
-            } else {
-                tool.clone()
-            };
             AccessFrictionRow {
-                tool,
-                tool_display,
+                tool: tool.clone(),
+                tool_display: display_name_for_target(&tool),
                 count,
             }
         })
@@ -302,12 +533,9 @@ pub fn list_access_friction(conn: &Connection, promote_threshold: u32) -> Vec<Ac
 pub fn promote_tool_to_profile(tool: &str) -> Result<()> {
     profiles::append_keep_tool_to_active_profile(tool)?;
 
-    let mut cfg = Config::load();
-    if !cfg.session_expansion.iter().any(|s| s.eq_ignore_ascii_case(tool)) {
-        cfg.session_expansion.push(tool.to_string());
-        cfg.save()?;
-    }
+    let _ = add_session_expansions([(tool.to_string(), ExpansionReason::Keyword)]);
 
+    let cfg = Config::load();
     let slug = cfg.active_profile.as_deref().unwrap_or("all");
     let dash = cfg.dashboard_port.unwrap_or(8789);
     crate::claude_settings::write_native_ctx_to_user_settings(slug, dash)?;
@@ -373,6 +601,42 @@ mod tests {
                 "expected Notion tool, got {tools:?}"
             );
             let _ = session_id;
+        });
+    }
+
+    #[test]
+    fn extract_assistant_text_from_transcript() {
+        let payload = serde_json::json!({
+            "transcript": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [{"type": "text", "text": "I don't have access to Figma."}]}
+            ]
+        });
+        let text = extract_assistant_text_from_hook_payload(&payload);
+        assert!(text.contains("don't have access"));
+    }
+
+    #[test]
+    fn add_session_expansions_dedupes() {
+        with_ctx_home(|_tmp| {
+            let mut cfg = Config::load();
+            cfg.filter_mode = FilterMode::Soft;
+            cfg.active_profile = Some("all".into());
+            cfg.save().unwrap();
+
+            let first = add_session_expansions([(
+                "mcp__claude_ai_Figma__use_figma".to_string(),
+                ExpansionReason::Keyword,
+            )])
+            .unwrap();
+            assert_eq!(first.len(), 1);
+
+            let second = add_session_expansions([(
+                "mcp__claude_ai_Figma__use_figma".to_string(),
+                ExpansionReason::AccessFriction,
+            )])
+            .unwrap();
+            assert!(second.is_empty());
         });
     }
 }

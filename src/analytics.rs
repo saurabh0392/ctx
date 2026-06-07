@@ -84,6 +84,32 @@ pub struct TraceInfo {
     pub working_directory: String,
 }
 
+pub fn record_compress(compress_chars_saved: usize, profile: &str, working_directory: &str) {
+    let _ = crate::config::ensure_dir();
+    append(&Record {
+        ts: Utc::now().to_rfc3339(),
+        tools_removed: 0,
+        tokens_saved: 0,
+        compress_chars_saved,
+        profile: profile.to_string(),
+        removed_servers: vec![],
+        kept_servers: vec![],
+        auto_selected: false,
+        auto_trigger: None,
+        inject_fired: false,
+        inject_chars: 0,
+        adaptive_chars: 0,
+        budget_blocked: false,
+        coach_kind: None,
+        budget_fired: false,
+        behavior_kind: None,
+        working_directory: working_directory.to_string(),
+        tools_sent_count: 0,
+        mcp_tools_invoked: vec![],
+        tools_sent_by_server: HashMap::new(),
+    });
+}
+
 pub fn record(tools_removed: usize, tokens_saved: usize, profile: &str, trace: TraceInfo) {
     let _ = crate::config::ensure_dir();
     append(&Record {

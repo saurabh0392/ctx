@@ -4,6 +4,9 @@ const EXP_FEATURE_LABELS = {
     inject: 'System prefix',
     adaptive: 'Adaptive prefix',
     coaching: 'Coaching',
+    compress: 'Output compression',
+    compress_sgr: 'Session-grounded retention (SGR)',
+    tool_mix: 'Semantic tool mix',
 };
 /** One primary success metric per feature A/B test. */
 const EXP_FEATURE_KPI = {
@@ -35,13 +38,53 @@ const EXP_FEATURE_KPI = {
         ctxSection: 'Coaching activity',
         billSection: 'Cost follow-up',
     },
+    compress: {
+        question: 'Does shrinking tool output cut tokens without breaking debugging?',
+        success: 'With compression on, tool results shrink and whole-turn cost stays flat or falls. Correction rate should not rise once you have about 100 prompts per side.',
+        primaryName: 'Output savings',
+        ctxSection: 'Chars removed from tool results',
+        billSection: 'Quality guard (correction rate)',
+    },
+    compress_sgr: {
+        question: 'Does session-grounded retention keep the right lines after the format pass?',
+        success: 'With SGR on, compression keeps task-relevant lines and correction rate should not rise once you have about 100 tool calls per side.',
+        primaryName: 'Output savings',
+        ctxSection: 'Lines kept by task frame',
+        billSection: 'Quality guard (correction rate)',
+    },
+    tool_mix: {
+        question: 'Does the vector engine un-deny the right MCP tools per prompt without raising cost?',
+        success: 'With semantic mix on, similar sessions surface the tools you need, friction stays low, and whole-turn cost stays flat or falls once you have about 100 prompts per side.',
+        primaryName: 'Right tools, then cost',
+        ctxSection: 'Tools un-denied from neighbors',
+        billSection: 'Whole-turn bill check',
+    },
 };
 const EXP_EMPTY = UI_EMPTY;
 const EXP_AB_CODE = {
     P: 'profile',
     I: 'inject',
     A: 'adaptive',
-    C: 'coaching'
+    C: 'coaching',
+    X: 'compress',
+    S: 'compress_sgr',
+    M: 'tool_mix',
+};
+const EXP_PHASE_COPY = {
+    pre_ctx: 'Without ctx. Hooks and filters are off. Ingest still runs so we can measure spend per turn. Reload your IDE after the tick if you have not already.',
+    ctx_warmup: 'ctx fully on. All gates at 100%, profile all. One day to establish ctx-on spend before feature A/B tests.',
+    profile_ab: 'Profile filter is on a 50/50 split. Other gates stay on.',
+    auto_pinned_design: 'Design profile pinned. Auto-profile on.',
+    auto_pinned_personal: 'Personal profile pinned. Auto-profile on.',
+    auto_pinned_all: 'All profile pinned. Auto-profile picks per prompt.',
+    inject_ab: 'System prefix is on a 50/50 split.',
+    adaptive_ab: 'Adaptive prefix is on a 50/50 split.',
+    compress_ab: 'Output compression is on a 50/50 split.',
+    compress_sgr_ab: 'Session-grounded retention (SGR) is on a 50/50 split. Compression stays on for every prompt.',
+    lock_in: 'Digest only. Review numbers and lock config.',
+    baseline: 'Legacy phase name. Re-run ctx experiment plan init for the pre-ctx calendar.',
+    baseline_static: 'Tool-level personal profile on. Semantic tool mix off. One day to baseline static deny.',
+    tool_mix_ab: 'Personal tool-level deny always on. Semantic tool mix is 50/50 (vector neighbors un-deny tools on treatment).',
 };
 const EXP_CTX_SAVINGS_RATE = 0.30;
 let _abDailyRows = [];
@@ -165,6 +208,30 @@ function expLearningInsight(f, t, c) {
         }
         return 'Coaching only fires when ctx spots redirect patterns. We measure correction rate, not prefix size.';
     }
+    if (feature === 'compress' || feature === 'compress_sgr') {
+        const corrUp = t.correction_rate_pct > c.correction_rate_pct + 2;
+        const charsOn = t.avg_compress_chars_saved || 0;
+        const charsOff = c.avg_compress_chars_saved || 0;
+        const parts = [];
+        if (feature === 'compress_sgr') {
+            if (charsOn > charsOff * 1.05 && charsOn > 0) {
+                parts.push('SGR is trimming more tool output chars than heuristic-only on this sample.');
+            } else if (charsOn > 0) {
+                parts.push('Both arms compress tool output. SGR should keep task-relevant lines, not just more chars cut.');
+            }
+        } else if (charsOn > 0) {
+            parts.push(`Compression removes about ${Math.round(charsOn).toLocaleString()} chars per turn when on.`);
+        }
+        if (corrUp) {
+            parts.push('Correction rate is higher with the feature on so far. That is the quality guard for this test.');
+        } else if (c.correction_rate_pct > 0) {
+            parts.push(`Correction rate on ${t.correction_rate_pct.toFixed(0)}% vs off ${c.correction_rate_pct.toFixed(0)}%. Watch this before calling SGR a win.`);
+        }
+        if (!parts.length) {
+            return 'Need about 100 prompts per side. We want similar or lower correction rate with compression on.';
+        }
+        return parts.join(' ');
+    }
     const saved = expPerPromptSavings(t.avg_cost_usd, c.avg_cost_usd);
     if (Math.abs(saved) < 0.005) return 'Whole-turn cost looks similar so far. Keep collecting prompts.';
     if (saved > 0) return 'Feature-on prompts are cheaper on average so far. Still early; confirm at about 100 prompts per side.';
@@ -268,6 +335,34 @@ function expHeroPrimary(feature, t, c) {
             tone: 'neutral',
         };
     }
+    if (feature === 'compress' || feature === 'compress_sgr') {
+        const chars = Math.round(t.avg_compress_chars_saved || 0);
+        const corrDelta = t.correction_rate_pct - c.correction_rate_pct;
+        if (chars > 0 && corrDelta <= 2) {
+            return {
+                title: kpi.primaryName,
+                value: `${chars.toLocaleString()} chars/turn`,
+                sub: feature === 'compress_sgr'
+                    ? `Correction rate ${t.correction_rate_pct.toFixed(0)}% on vs ${c.correction_rate_pct.toFixed(0)}% off. SGR should not raise corrections.`
+                    : `Correction rate ${t.correction_rate_pct.toFixed(0)}% on vs ${c.correction_rate_pct.toFixed(0)}% off.`,
+                tone: corrDelta <= 0 ? 'positive' : 'neutral',
+            };
+        }
+        if (corrDelta > 3) {
+            return {
+                title: kpi.primaryName,
+                value: `+${corrDelta.toFixed(0)}pt corrections`,
+                sub: 'Quality guard tripped. Compression may be dropping lines the agent needed.',
+                tone: 'negative',
+            };
+        }
+        return {
+            title: kpi.primaryName,
+            value: chars > 0 ? `${chars.toLocaleString()} chars/turn` : 'Collecting',
+            sub: 'Compare chars saved and correction rate once both sides have about 100 prompts.',
+            tone: 'neutral',
+        };
+    }
     return {
         title: kpi.primaryName,
         value: EXP_EMPTY,
@@ -294,6 +389,10 @@ function expComparisonPanel(f, t, c) {
     } else if (feature === "coaching") {
         ctxRows.push(expCompareTr("Correction rate", c.correction_rate_pct.toFixed(0) + "%", t.correction_rate_pct.toFixed(0) + "%", expCompareNote(c.correction_rate_pct, t.correction_rate_pct, { lowerIsBetter: true, sameThresholdPct: 0.15 })));
         ctxRows.push(expCompareTr("Coaching nudges / turn", (c.coach_fire_rate_pct || 0).toFixed(0) + "%", (t.coach_fire_rate_pct || 0).toFixed(0) + "%", "fires when redirect patterns detected"));
+        ctxRows.push(expCompareTr("Avg cost / turn", fmtCost(c.avg_cost_usd), fmtCost(t.avg_cost_usd), expCompareNote(c.avg_cost_usd, t.avg_cost_usd, { lowerIsBetter: true, sameThresholdPct: 0.05 })));
+    } else if (feature === "compress" || feature === "compress_sgr") {
+        ctxRows.push(expCompareTr("Chars saved / turn", Math.round(c.avg_compress_chars_saved || 0).toLocaleString(), Math.round(t.avg_compress_chars_saved || 0).toLocaleString(), feature === "compress_sgr" ? "SGR vs heuristic-only" : "tool output trimmed"));
+        ctxRows.push(expCompareTr("Correction rate", c.correction_rate_pct.toFixed(0) + "%", t.correction_rate_pct.toFixed(0) + "%", expCompareNote(c.correction_rate_pct, t.correction_rate_pct, { lowerIsBetter: true, sameThresholdPct: 0.15 })));
         ctxRows.push(expCompareTr("Avg cost / turn", fmtCost(c.avg_cost_usd), fmtCost(t.avg_cost_usd), expCompareNote(c.avg_cost_usd, t.avg_cost_usd, { lowerIsBetter: true, sameThresholdPct: 0.05 })));
     }
     const billRows = feature === "profile" ? [
@@ -391,8 +490,110 @@ function expFeatureVerdict(feature, t, c) {
     };
 }
 
+function expIsAllOnCalendarPhase(plan) {
+    return !!(plan && plan.configured && !plan.phase_ab_feature);
+}
+
+function expAbSplitActive(plan, ab) {
+    if (plan && plan.configured && plan.phase_ab_feature) return true;
+    return expIsTestActive(ab);
+}
+
+function expReportSampleCount(report) {
+    return (report || []).reduce((s, f) => s + f.treatment.count + f.control.count, 0);
+}
+
+function expShouldShowFeatureBody(plan, abSplitActive, hasAbRows) {
+    if (abSplitActive || hasAbRows) return true;
+    return expIsAllOnCalendarPhase(plan);
+}
+
+function expRenderAllOnFeatureCard(featureKey) {
+    const label = EXP_FEATURE_LABELS[featureKey] || featureKey;
+    const kpi = EXP_FEATURE_KPI[featureKey] || EXP_FEATURE_KPI.profile;
+    return `<div class="exp-feature-card exp-card-same">
+      <div class="exp-feature-card-top">
+        <div class="exp-feature-name-row">
+          <div class="exp-feature-name">${esc(label)}</div>
+          <span class="exp-verdict-pill exp-verdict-same">All on</span>
+        </div>
+        <div class="exp-feature-sub">100% on this phase. No on/off coin yet.</div>
+      </div>
+      <p class="exp-insight-short">${esc(kpi.question)}</p>
+      <div class="exp-card-empty">Cards compare on vs off once the calendar hits a 50/50 phase. Right now ctx runs this gate on every prompt to establish ctx-on spend.</div>
+    </div>`;
+}
+
+function expRenderAllOnFeatureGrid() {
+    return ["profile", "inject", "adaptive", "coaching", "compress", "compress_sgr"]
+        .map(expRenderAllOnFeatureCard)
+        .join("");
+}
+
 function expIsTestActive(ab) {
-    return ab.profile_pct < 100 || ab.inject_pct < 100 || ab.adaptive_pct < 100 || ab.coaching_pct < 100;
+    return ab.profile_pct < 100 || ab.inject_pct < 100 || ab.adaptive_pct < 100
+        || ab.coaching_pct < 100 || (ab.compress_pct != null && ab.compress_pct < 100)
+        || (ab.compress_sgr_pct != null && ab.compress_sgr_pct < 100);
+}
+
+function expPhaseLabel(name) {
+    return EXP_PHASE_COPY[name] || name.replace(/_/g, ' ');
+}
+
+function expRenderBaselineCard(plan) {
+    const bc = plan && plan.baseline_comparison;
+    if (!bc) return '';
+    if (!bc.ready && bc.pre_ctx_turns === 0 && bc.ctx_on_turns === 0) {
+        return `<div class="section-sub" style="margin:10px 0 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px">
+          <strong>Product baseline</strong> (pre-ctx vs ctx-on) fills in after days 1–3 have indexed sessions.
+        </div>`;
+    }
+    const preAvg = bc.pre_ctx_avg_cost_usd != null ? expFmtCents(bc.pre_ctx_avg_cost_usd) : EXP_EMPTY;
+    const onAvg = bc.ctx_on_avg_cost_usd != null ? expFmtCents(bc.ctx_on_avg_cost_usd) : EXP_EMPTY;
+    let deltaLine = 'Need turns in both pre-ctx and ctx-warmup windows.';
+    if (bc.delta_cost_pct != null && bc.ready) {
+        const dir = bc.delta_cost_pct <= 0 ? 'lower' : 'higher';
+        deltaLine = `ctx-on avg is ${Math.abs(Math.round(bc.delta_cost_pct))}% ${dir} per turn than pre-ctx (${bc.pre_ctx_turns} vs ${bc.ctx_on_turns} turns indexed). Not invoice-verified.`;
+    }
+    return `<div style="margin:10px 0 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px">
+      <div class="section-head" style="margin-bottom:6px">Product baseline</div>
+      <p class="section-sub" style="margin:0 0 6px">Without ctx (days 1–2): <strong>${preAvg}</strong>/turn · ctx on (day 3): <strong>${onAvg}</strong>/turn</p>
+      <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.5">${esc(deltaLine)}</p>
+    </div>`;
+}
+
+function expRenderPlanCard(plan) {
+    const el = document.getElementById('exp-plan-card');
+    if (!el) return;
+    if (!plan || !plan.configured) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+    }
+    el.style.display = 'block';
+    const feat = plan.phase_ab_feature
+        ? (EXP_FEATURE_LABELS[plan.phase_ab_feature] || plan.phase_ab_feature)
+        : null;
+    const nextLine = plan.next_phase && plan.next_phase_starts_day
+        ? `<p class="section-sub" style="margin:8px 0 0">Next: <strong>${esc(plan.next_phase.replace(/_/g, ' '))}</strong> on day ${plan.next_phase_starts_day}.</p>`
+        : '';
+    const gate = (plan.sample_gates || [])[0];
+    const gateLine = gate && gate.feature
+        ? `<p class="section-sub" style="margin:8px 0 0">Samples: ${esc(gate.feature)} ${gate.treatment_count} on / ${gate.control_count} off (need ${gate.min_per_arm} per side).</p>`
+        : '';
+    const hooksLine = plan.hooks_enabled === false
+        ? `<p class="section-sub" style="margin:8px 0 0;color:var(--warn)"><strong>Hooks off.</strong> Claude Code is running without ctx intervention this phase.</p>`
+        : '';
+    el.innerHTML = `<div class="section-head">${plan.total_days || 16}-day calendar</div>
+      <p class="section-sub" style="margin-bottom:8px">Day <strong>${plan.day}</strong> of ${plan.total_days} · phase <strong>${esc(plan.phase.replace(/_/g, ' '))}</strong> · ${plan.phase_days_remaining} day(s) left in phase</p>
+      <p style="font-size:13px;color:var(--t2);line-height:1.55;margin:0">${esc(expPhaseLabel(plan.phase))}</p>
+      ${hooksLine}
+      ${feat ? `<p class="section-sub" style="margin:8px 0 0">Active split: <strong>${esc(feat)}</strong></p>` : ''}
+      ${nextLine}
+      ${gateLine}
+      ${expRenderBaselineCard(plan)}
+      <p class="section-sub" style="margin:10px 0 0">Corpus: <code>${esc(plan.corpus_path)}</code> · started ${esc(plan.started_at)}</p>
+      <p class="section-sub" style="margin:6px 0 0">${esc(plan.one_liner || '')}</p>`;
 }
 
 function expFmtTimeShort(ts) {
@@ -404,7 +605,7 @@ function expFmtTimeShort(ts) {
 }
 
 function expParseAbEntry(code) {
-    const m = String(code).match(/^([PIAC]):([TC])$/);
+    const m = String(code).match(/^([PIACXS]):([TC])$/);
     if (!m) return null;
     return {
         feature: EXP_AB_CODE[m[1]] || m[1],
@@ -422,7 +623,34 @@ function expPrimaryAbEntry(abGroup) {
     return null;
 }
 
-function expBuildHero(report, ab, active, enrichedCount) {
+function expBuildHero(report, ab, active, enrichedCount, plan) {
+    if (plan && plan.configured && plan.phase === 'pre_ctx') {
+        return {
+            headline: `Day ${plan.day}: without-ctx baseline`,
+            body: expPhaseLabel(plan.phase),
+            action: plan.hooks_enabled === false
+                ? 'Work normally in Claude Code. ctx is only observing via ingest until day 3.'
+                : 'Reload your IDE so hook changes take effect.',
+        };
+    }
+    if (plan && plan.configured && plan.phase === 'ctx_warmup') {
+        return {
+            headline: `Day ${plan.day}: ctx fully on`,
+            body: expPhaseLabel(plan.phase),
+            action: 'Compare spend per turn to days 1–2 in the baseline card below once ingest catches up.',
+        };
+    }
+    if (plan && plan.configured && !active && enrichedCount === 0) {
+        return {
+            headline: `Day ${plan.day} of ${plan.total_days}: ${plan.phase.replace(/_/g, ' ')}`,
+            body: expPhaseLabel(plan.phase),
+            action: plan.phase_ab_feature
+                ? 'Feature cards below fill in once ingest enriches A/B prompts for this phase.'
+                : (plan.next_phase
+                    ? `No 50/50 split yet. ${plan.next_phase.replace(/_/g, ' ')} starts day ${plan.next_phase_starts_day}.`
+                    : 'Calendar plan is in its final phase.'),
+        };
+    }
     if (!active && enrichedCount === 0) {
         return {
             headline: 'Find out which ctx features actually save you money',
@@ -442,6 +670,8 @@ function expBuildHero(report, ab, active, enrichedCount) {
         if (ab.inject_pct < 100) activeNames.push('Inject');
         if (ab.adaptive_pct < 100) activeNames.push('Adaptive');
         if (ab.coaching_pct < 100) activeNames.push('Coaching');
+        if (ab.compress_pct != null && ab.compress_pct < 100) activeNames.push('Compress');
+        if (ab.compress_sgr_pct != null && ab.compress_sgr_pct < 100) activeNames.push('SGR');
         const testing = activeNames.length ? activeNames.join(', ') : 'features';
         return {
             headline: 'Still learning. Keep using Claude normally',
@@ -480,11 +710,29 @@ function expRenderHero(hero) {
     el.innerHTML = ` <div class="narrative-eyebrow">Bottom line</div> <div class="narrative-body" style="margin-bottom:12px"><strong>${esc(hero.headline)}</strong></div> <div class="section-sub" style="margin-bottom:8px;line-height:1.55">${esc(hero.body)}</div> <div class="section-sub" style="margin-bottom:0;color:var(--t3)">${esc(hero.action)}</div>`;
 }
 
-function expRenderQuickActions(active) {
+function expRenderQuickActions(active, plan) {
     const startBtn = document.getElementById('exp-btn-start');
     const stopBtn = document.getElementById('exp-btn-stop');
-    if (startBtn) startBtn.disabled = !!active;
-    if (stopBtn) stopBtn.disabled = !active;
+    const calendarOn = !!(plan && plan.configured);
+    if (calendarOn) {
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.title = 'The calendar plan controls phases. Wait for the daily tick or run ctx experiment tick.';
+        }
+        if (stopBtn) {
+            stopBtn.disabled = true;
+            stopBtn.title = 'The calendar plan controls phases.';
+        }
+        return;
+    }
+    if (startBtn) {
+        startBtn.disabled = !!active;
+        startBtn.title = '';
+    }
+    if (stopBtn) {
+        stopBtn.disabled = !active;
+        stopBtn.title = '';
+    }
 }
 
 function expRenderFeatureCard(f) {
@@ -545,9 +793,13 @@ function expRenderFeatureCard(f) {
     </div>`;
 }
 
-function expRenderRecentPrompts(traces) {
+function expRenderRecentPrompts(traces, abSplitActive) {
     const el = document.getElementById('exp-recent-prompts');
     if (!el) return;
+    if (!abSplitActive) {
+        el.innerHTML = '<div class="empty" style="padding:24px">No 50/50 split this phase. A/B prompts show up during feature test days (profile test starts day 4).</div>';
+        return;
+    }
     const expTraces = (traces || []).filter(h => h.ab_group);
     if (!expTraces.length) {
         el.innerHTML = '<div class="empty" style="padding:24px">No prompts in the test yet. Send Claude Code traffic while a test is running.</div>';
@@ -692,7 +944,9 @@ async function expStopTest() {
                 profile_pct: 100,
                 inject_pct: 100,
                 adaptive_pct: 100,
-                coaching_pct: 100
+                coaching_pct: 100,
+                compress_pct: 100,
+                compress_sgr_pct: 100,
             },
         }),
     });
@@ -711,26 +965,58 @@ async function loadExperimentTab() {
         if (status) status.style.display = 'none';
         const settings = await fetch('/api/settings').then(r => r.json());
         const ab = settings.ab_test || {};
-        _expAbActive = expIsTestActive(ab);
-        expRenderQuickActions(_expAbActive);
+        const plan = await fetch('/api/experiment/plan').then(r => r.json()).catch(() => ({ configured: false }));
+        expRenderPlanCard(plan);
+        const abSplitActive = expAbSplitActive(plan, ab);
+        _expAbActive = abSplitActive;
+        expRenderQuickActions(_expAbActive, plan);
         const report = await fetch(appendSince('/api/ab-report')).then(r => r.json());
         _abDailyRows = await fetch(appendSince('/api/ab-daily')).then(r => r.json());
-        const enrichedCount = report.reduce((s, f) => s + f.treatment.count + f.control.count, 0);
-        const hasAbRows = enrichedCount > 0;
-        const hero = expBuildHero(report, ab, _expAbActive, enrichedCount);
+        const enrichedCount = abSplitActive ? expReportSampleCount(report) : 0;
+        const hasAbRows = abSplitActive && enrichedCount > 0;
+        const hero = expBuildHero(report, ab, _expAbActive, enrichedCount, plan);
         expRenderHero(hero);
-        if (!_expAbActive && !hasAbRows) {
-            if (idle) idle.style.display = 'block';
+        const allOnPhase = expIsAllOnCalendarPhase(plan);
+        const showBody = expShouldShowFeatureBody(plan, abSplitActive, hasAbRows);
+        if (!showBody) {
+            if (idle) idle.style.display = plan.configured ? 'none' : 'block';
             if (body) body.style.display = 'none';
             return;
         }
         if (idle) idle.style.display = 'none';
         if (body) body.style.display = 'block';
+        const sectionHead = document.querySelector('#exp-body .section-head');
+        if (sectionHead) {
+            sectionHead.textContent = allOnPhase && !hasAbRows
+                ? 'Gate status (all on)'
+                : 'Feature breakdown';
+        }
         const grid = document.getElementById('exp-feature-grid');
-        if (grid) grid.innerHTML = report.map(expRenderFeatureCard).join('');
-        renderAbTrendChart();
+        if (grid) {
+            grid.innerHTML = hasAbRows
+                ? report.map(expRenderFeatureCard).join('')
+                : expRenderAllOnFeatureGrid();
+        }
+        if (allOnPhase && !hasAbRows) {
+            const daily = document.getElementById('exp-daily-table');
+            const chart = document.getElementById('exp-trend-chart');
+            if (daily) daily.innerHTML = '<div class="empty" style="padding:16px">Daily on/off breakdown starts when the calendar enters a 50/50 phase (profile test on day 4).</div>';
+            if (chart && _abTrendChart) {
+                _abTrendChart.destroy();
+                _abTrendChart = null;
+            }
+        } else if (abSplitActive) {
+            renderAbTrendChart();
+        } else {
+            const daily = document.getElementById('exp-daily-table');
+            if (daily) daily.innerHTML = '<div class="empty" style="padding:16px">No daily breakdown yet.</div>';
+            if (_abTrendChart) {
+                _abTrendChart.destroy();
+                _abTrendChart = null;
+            }
+        }
         const traces = await fetch(appendSince('/api/hook-traces?limit=50')).then(r => r.json());
-        expRenderRecentPrompts(traces);
+        expRenderRecentPrompts(traces, abSplitActive);
     } catch (e) {
         if (status) {
             status.style.display = 'block';

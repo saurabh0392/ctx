@@ -1,0 +1,133 @@
+# 16-day ctx dogfood - work on the ctx repo itself.
+# Initialized by: ctx experiment plan init --corpus ~/Projects/ctx --template ctx
+
+started_at = "__STARTED_AT__"
+corpus_path = "__CORPUS__"
+mode = "stress_test"
+apply_recommendations_on_final_day = false
+
+[[phases]]
+name = "pre_ctx"
+until_day = 2
+
+[phases.config]
+active_profile = "all"
+hooks_enabled = false
+auto_profile_enabled = false
+
+[[phases]]
+name = "ctx_warmup"
+until_day = 3
+
+[phases.config]
+active_profile = "all"
+hooks_enabled = true
+auto_profile_enabled = false
+
+[phases.config.ab_test]
+profile_pct = 100
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 100
+
+[[phases]]
+name = "profile_ab"
+until_day = 7
+
+[phases.config]
+hooks_enabled = true
+
+[phases.config.ab_test]
+profile_pct = 50
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 100
+
+[[phases]]
+name = "auto_pinned_personal"
+until_day = 8
+
+[phases.config]
+active_profile = "personal"
+auto_profile_enabled = true
+hooks_enabled = true
+
+[[phases]]
+name = "auto_pinned_all"
+until_day = 10
+
+[phases.config]
+active_profile = "all"
+auto_profile_enabled = true
+hooks_enabled = true
+
+[[phases]]
+name = "inject_ab"
+until_day = 12
+
+[phases.config]
+hooks_enabled = true
+
+[phases.config.ab_test]
+profile_pct = 100
+inject_pct = 50
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 100
+
+[[phases]]
+name = "adaptive_ab"
+until_day = 13
+
+[phases.config]
+hooks_enabled = true
+
+[phases.config.ab_test]
+profile_pct = 100
+inject_pct = 100
+adaptive_pct = 50
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 100
+
+[[phases]]
+name = "compress_ab"
+until_day = 14
+
+[phases.config]
+hooks_enabled = true
+
+[phases.config.ab_test]
+profile_pct = 100
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 50
+compress_sgr_pct = 100
+
+[[phases]]
+name = "compress_sgr_ab"
+until_day = 15
+
+[phases.config]
+hooks_enabled = true
+
+[phases.config.ab_test]
+profile_pct = 100
+inject_pct = 100
+adaptive_pct = 100
+coaching_pct = 100
+compress_pct = 100
+compress_sgr_pct = 50
+
+[[phases]]
+name = "lock_in"
+until_day = 16
+
+[phases.config]
+hooks_enabled = true

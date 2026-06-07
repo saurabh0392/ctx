@@ -16,9 +16,10 @@ fn div_balance(section: &str) -> i32 {
 
 /// Each tab-panel section between consecutive tabs must fully close its divs.
 fn assert_tab_sections_balanced(html: &str) {
+    // New IA (ADR 0003): Home (context), Proof, Activity (trace) plus setup and dev tabs.
     let tab_ids = [
-        "tab-savings",
-        "tab-promptstats",
+        "tab-context",
+        "tab-proof",
         "tab-profiles",
         "tab-trace",
         "tab-pipeline",
@@ -43,19 +44,15 @@ fn assert_tab_sections_balanced(html: &str) {
     }
 }
 
-/// tab-promptstats must not appear inside tab-savings (regression: missing savings_tail close).
+/// tab-proof must not be nested inside tab-context (regression: a tab failing to close).
 fn assert_tab_panels_are_siblings(html: &str) {
-    let savings = html
-        .find("id=\"tab-savings\"")
-        .expect("tab-savings");
-    let prompt = html
-        .find("id=\"tab-promptstats\"")
-        .expect("tab-promptstats");
-    let between = &html[savings..prompt];
+    let context = html.find("id=\"tab-context\"").expect("tab-context");
+    let proof = html.find("id=\"tab-proof\"").expect("tab-proof");
+    let between = &html[context..proof];
     assert_eq!(
         div_balance(between),
         0,
-        "tab-savings is not closed before tab-promptstats; all other tabs break"
+        "tab-context is not closed before tab-proof; all other tabs break"
     );
 }
 
@@ -67,11 +64,10 @@ fn stitched_dashboard_contains_required_dom_ids() {
         "onboarding-wrap",
         "wiz-step-1",
         "wiz-step-5",
-        "tab-savings",
-        "savings-story",
-        "story-chapter-4",
-        "story-meters",
-        "tab-promptstats",
+        "tab-context",
+        "ctx-home-proof",
+        "tab-proof",
+        "proof-list",
         "tab-profiles",
         "tab-trace",
         "tab-pipeline",
@@ -82,8 +78,8 @@ fn stitched_dashboard_contains_required_dom_ids() {
         assert!(html.contains(&format!("id=\"{id}\"")), "missing id={id}");
     }
     for sym in [
-        "function buildSavingsStory(",
-        "function renderSavingsStory(",
+        "function loadProof(",
+        "function renderProofList(",
         "function wizNext(",
         "function finishOnboardingWizard(",
         "function loadExperimentTab(",
@@ -92,15 +88,19 @@ fn stitched_dashboard_contains_required_dom_ids() {
     ] {
         assert!(html.contains(sym), "missing symbol {sym}");
     }
-    let story_pos = html.find("<article id=\"savings-story\"").expect("savings-story");
-    let wrap_pos = html.find("id=\"onboarding-wrap\"").expect("onboarding-wrap");
+    // Retirement of cost/budget pages (CTX-4) must hold: these are gone for good.
+    for gone in [
+        "id=\"tab-savings\"",
+        "id=\"tab-promptstats\"",
+        "id=\"budget-modal\"",
+        "function loadSavings(",
+        "function loadPromptStats(",
+    ] {
+        assert!(!html.contains(gone), "retired artifact still present: {gone}");
+    }
     assert!(
-        story_pos < wrap_pos,
-        "savings-story must appear before onboarding-wrap (story was nested inside display:none)"
-    );
-    assert!(
-        html.contains(".story-meter-bar-track"),
-        "missing savings story meter CSS in stitched dashboard"
+        html.contains(".proof-tool"),
+        "missing Proof page CSS in stitched dashboard"
     );
     assert!(
         html.contains(".exp-table"),
@@ -130,7 +130,7 @@ fn stitched_dashboard_contains_required_dom_ids() {
     assert_tab_sections_balanced(&html);
     let lines = html.lines().count();
     assert!(
-        lines > 3000 && lines < 6000,
+        lines > 3000 && lines < 8000,
         "unexpected stitched line count: {lines}"
     );
 }

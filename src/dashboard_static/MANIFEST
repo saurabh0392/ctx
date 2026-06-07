@@ -4,12 +4,11 @@ styles:styles/dashboard_part1.css
 styles:styles/onboarding.css
 styles:styles/dashboard_part2.css
 fragments/shell_body.html
-tabs/savings_head.html
-tabs/savings_story.html
-tabs/savings_onboarding_wrap_open.html
+fragments/onboarding_wrap_open.html
 include:fragments/onboarding.fragment.html
-tabs/savings_tail.html
-tabs/promptstats.html
+fragments/onboarding_wrap_close.html
+tabs/context.html
+tabs/proof.html
 tabs/profiles.html
 tabs/trace.html
 tabs/pipeline.html
@@ -21,8 +20,8 @@ script:js/core.js
 script:js/onboarding.js
 script:js/settings.js
 script:js/navigation.js
-script:js/savings.js
-script:js/promptstats.js
+script:js/context.js
+script:js/proof.js
 script:js/profiles.js
 script:js/trace.js
 script:js/pipeline.js

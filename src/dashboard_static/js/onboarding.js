@@ -58,12 +58,6 @@ function showOnboardingWizardFromSettings() {
     w.style.display = "block";
     wizPrepareFromServer();
     wizShowStep(1);
-    const navSavings = [...document.querySelectorAll(".nav-item")].find((x) =>
-        (x.textContent || "").includes("Savings"),
-    );
-    if (navSavings) {
-        showTab("savings", navSavings);
-    }
     w.scrollIntoView({
         behavior: "smooth"
     });

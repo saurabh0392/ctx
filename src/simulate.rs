@@ -442,7 +442,11 @@ mod tests {
 
     #[test]
     fn simulate_all_profile_has_zero_removed() {
-        std::env::set_var("CTX_HOME", "/tmp/ctx-sim-test-nonexist");
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
         let r = simulate_pipeline("/tmp", "test", None, None, Some("all")).unwrap();
         assert_eq!(r.tools_removed, 0);
         assert_eq!(r.tools_kept, 0);

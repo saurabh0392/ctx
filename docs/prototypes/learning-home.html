@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ctx Learning home prototype</title>
+<style>
+:root {
+  --bg:#111c20; --surface:#182428; --surface2:#1f2e33; --surface3:#263840;
+  --border:#2e4048; --border2:#3d5560;
+  --t1:#f0f5f0; --t2:#9dbea8; --t3:#7aab90; --t4:#638c78;
+  --primary:#93c043; --primary-lt:#b0d46a; --primary-glow:rgba(147,192,67,.13); --primary-border:rgba(147,192,67,.28);
+  --green:#93c043; --red:#f87171; --amber:#fbbf24; --blue:#60a5fa; --purple:#c4b5fd; --orange:#fb923c; --cyan:#22d3ee;
+  --sidebar:224px;
+}
+[data-theme="light"] {
+  --bg:#f3f6f1; --surface:#fff; --surface2:#edf2e9; --surface3:#e2eadc;
+  --border:#cad8c2; --border2:#afc4a4;
+  --t1:#1a2a1c; --t2:#3a5240; --t3:#728c70; --t4:#b4cbb0;
+  --primary:#5c8520; --primary-lt:#4a6e18; --primary-glow:rgba(92,133,32,.10); --primary-border:rgba(92,133,32,.28);
+  --green:#5c8520; --red:#c0392b; --amber:#b5860a; --blue:#2563eb; --purple:#7c3aed;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+html { scroll-behavior:smooth; }
+body { font-family:"Inter",-apple-system,"SF Pro Text","Segoe UI",sans-serif; background:var(--bg); color:var(--t1); min-height:100vh; display:flex; font-size:14px; line-height:1.5; }
+
+/* sidebar */
+.sidebar { width:var(--sidebar); background:#182428; border-right:1px solid #2e4048; padding:24px 0; flex-shrink:0; display:flex; flex-direction:column; position:fixed; inset:0 auto 0 0; z-index:10; }
+[data-theme="light"] .sidebar { background:#1f2e33; border-right-color:#2e4048; }
+.sb-logo { padding:0 20px 24px; border-bottom:1px solid #2e4048; margin-bottom:8px; }
+.sb-logo-mark { font-size:20px; font-weight:800; letter-spacing:-.8px; color:#f0f5f0; }
+.sb-logo-mark span { color:#b0d46a; }
+.sb-logo-sub { font-size:11px; color:#7aab90; margin-top:2px; letter-spacing:.05em; text-transform:uppercase; }
+.nav-section { padding:8px 14px 4px; font-size:10px; font-weight:600; color:#3d5560; letter-spacing:.09em; text-transform:uppercase; margin-top:8px; }
+.nav-item { display:flex; align-items:center; gap:10px; padding:9px 12px; margin:1px 8px; border-radius:8px; font-size:13px; font-weight:500; color:#8aaa90; cursor:pointer; transition:all .15s; border:1px solid transparent; }
+.nav-item:hover { background:#263840; color:#b0d46a; }
+.nav-item.active { background:rgba(147,192,67,.18); color:#b0d46a; border-color:rgba(147,192,67,.35); }
+.nav-icon { font-size:15px; opacity:.85; }
+.nav-item.dim { opacity:.4; cursor:default; }
+.nav-item.dim:hover { background:transparent; color:#8aaa90; }
+.sb-proxy { margin-top:auto; padding:14px 20px; border-top:1px solid #2e4048; font-size:12px; color:#7aab90; }
+.status-dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:6px; }
+.status-dot.on { background:var(--green); box-shadow:0 0 6px rgba(147,192,67,.5); }
+
+/* main */
+.main-wrap { margin-left:var(--sidebar); flex:1; }
+.tab-panel { padding:36px 48px 64px; min-height:100vh; }
+.page-title { font-size:26px; font-weight:700; color:var(--t1); letter-spacing:-.5px; margin-bottom:6px; }
+.page-sub { font-size:14px; color:var(--t3); margin-bottom:28px; max-width:640px; }
+.section-head { font-size:16px; font-weight:600; color:var(--t1); margin-bottom:4px; }
+.section-sub { font-size:12px; color:var(--t3); margin-bottom:18px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:24px; transition:border-color .2s; }
+.card:hover { border-color:var(--border2); }
+.card-sm { padding:18px 20px; }
+.muted { color:var(--t3); }
+.notyet { color:var(--t4); font-style:normal; }
+
+/* loop stepper */
+.loop { display:flex; gap:0; margin-bottom:30px; border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+.loop-step { flex:1; padding:14px 18px; cursor:pointer; background:var(--surface); border-right:1px solid var(--border); transition:background .15s; position:relative; }
+.loop-step:last-child { border-right:none; }
+.loop-step:hover { background:var(--surface2); }
+.loop-step.active { background:var(--primary-glow); }
+.loop-step.active::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:var(--primary); }
+.loop-num { font-size:10px; font-weight:700; color:var(--t4); letter-spacing:.08em; text-transform:uppercase; }
+.loop-step.active .loop-num { color:var(--primary-lt); }
+.loop-name { font-size:14px; font-weight:700; color:var(--t1); margin-top:4px; }
+.loop-desc { font-size:11px; color:var(--t3); margin-top:2px; line-height:1.4; }
+
+.view { display:none; }
+.view.active { display:block; animation:fade .25s ease; }
+@keyframes fade { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+
+/* learning hero */
+.learn-hero { display:grid; grid-template-columns:1.1fr .9fr; gap:20px; margin-bottom:22px; }
+.hero-card { background:linear-gradient(135deg,var(--surface2) 0%,var(--surface) 100%); border:1px solid var(--border); border-radius:16px; padding:30px 32px; position:relative; overflow:hidden; }
+.hero-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg,var(--primary),var(--primary-lt)); }
+.hero-eyebrow { font-size:11px; font-weight:600; color:var(--t4); text-transform:uppercase; letter-spacing:.09em; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
+.live-pip { width:7px; height:7px; border-radius:50%; background:var(--primary); box-shadow:0 0 0 0 rgba(147,192,67,.5); animation:pulse 2s infinite; }
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(147,192,67,.45);} 70%{box-shadow:0 0 0 8px rgba(147,192,67,0);} 100%{box-shadow:0 0 0 0 rgba(147,192,67,0);} }
+.hero-number { font-size:64px; font-weight:800; line-height:1; letter-spacing:-2px; background:linear-gradient(135deg,var(--t1) 55%,var(--primary-lt)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; font-variant-numeric:tabular-nums; }
+.hero-unit { font-size:16px; font-weight:600; color:var(--t3); margin-top:8px; }
+.hero-sub { font-size:13px; color:var(--t3); margin-top:16px; line-height:1.6; }
+.hero-trust { display:flex; gap:10px; margin-top:18px; flex-wrap:wrap; }
+.trust-pill { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; background:var(--surface3); border:1px solid var(--border); border-radius:20px; font-size:12px; font-weight:600; color:var(--t2); }
+.trust-pill b { color:var(--primary-lt); }
+
+/* live feed */
+.feed-card { display:flex; flex-direction:column; }
+.feed-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+.feed { flex:1; overflow:hidden; display:flex; flex-direction:column; gap:10px; min-height:300px; }
+.feed-row { display:flex; gap:11px; align-items:flex-start; padding:12px 13px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; animation:slidein .35s ease; }
+@keyframes slidein { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+.feed-tool { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:2px 8px; border-radius:8px; flex-shrink:0; margin-top:2px; }
+.ft-git { background:rgba(147,192,67,.12); color:var(--green); }
+.ft-test { background:rgba(96,165,250,.12); color:var(--blue); }
+.ft-grep { background:rgba(196,181,253,.12); color:var(--purple); }
+.ft-read { background:rgba(251,191,36,.12); color:var(--amber); }
+.ft-mcp { background:rgba(34,211,238,.12); color:var(--cyan); }
+.feed-text { flex:1; }
+.feed-title { font-size:13px; color:var(--t1); line-height:1.5; }
+.feed-title .keep { color:var(--primary-lt); font-weight:600; }
+.feed-title .drop { color:var(--t3); font-weight:600; }
+.feed-why { font-size:11.5px; color:var(--t3); line-height:1.55; margin-top:4px; }
+.feed-mode { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:1px 7px; border-radius:7px; white-space:nowrap; vertical-align:middle; }
+.mode-on { background:rgba(147,192,67,.16); color:var(--primary-lt); }
+.mode-watch { background:var(--surface3); color:var(--t3); }
+.feed-foot { font-size:11px; color:var(--t4); margin-top:14px; }
+
+/* ── Shared row component (used by every list on every view) ── */
+.row-list { display:flex; flex-direction:column; gap:12px; }
+.drow { display:grid; gap:32px; align-items:center; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:22px 26px; transition:border-color .2s; }
+.drow:hover { border-color:var(--border2); }
+.drow.study { grid-template-columns:172px 1fr 280px; }
+.drow.earn  { grid-template-columns:172px 1fr 168px; }
+.drow.ver   { grid-template-columns:172px 1fr 120px; }
+.drow-id { display:flex; flex-direction:column; align-items:flex-start; gap:9px; }
+.drow-name { font-size:16px; font-weight:700; color:var(--t1); }
+.drow-desc { font-size:13px; color:var(--t2); line-height:1.65; }
+.drow-when { font-size:12px; color:var(--t3); text-align:right; }
+/* shared badge */
+.badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:3px 10px; border-radius:10px; }
+.st-shadow { background:var(--surface3); color:var(--t3); }
+.st-almost { background:rgba(251,191,36,.12); color:var(--amber); }
+.st-active { background:rgba(147,192,67,.14); color:var(--primary-lt); }
+/* shared right-hand stat */
+.row-stat-num { font-size:22px; font-weight:800; color:var(--t1); line-height:1; }
+.row-stat-num.green { color:var(--primary-lt); }
+.row-stat-cap { font-size:11.5px; color:var(--t3); margin-top:6px; line-height:1.45; }
+/* shared progress */
+.prog-top { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
+.prog-count { font-size:13px; color:var(--t2); }
+.prog-count b { color:var(--t1); font-size:18px; font-weight:800; }
+.prog-pct { font-size:13px; font-weight:700; color:var(--t3); }
+.bar-track { background:var(--surface2); border-radius:6px; height:9px; overflow:hidden; }
+.bar-fill { height:100%; border-radius:6px; background:var(--primary); transition:width 1s cubic-bezier(.34,1.1,.64,1); }
+.bar-fill.amber { background:var(--amber); }
+/* shared callout (highlighted moment) */
+.callout { background:linear-gradient(135deg,var(--primary-glow),var(--surface)); border:1px solid var(--primary-border); border-radius:16px; padding:24px 28px; margin-bottom:24px; }
+.callout-eyebrow { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--primary-lt); margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+.callout-body { font-size:15px; color:var(--t1); line-height:1.7; }
+.callout-body b { color:var(--primary-lt); }
+@media (max-width:880px){ .drow.study, .drow.earn, .drow.ver { grid-template-columns:1fr; gap:16px; } .drow-when { text-align:left; } }
+
+.earned-note { margin-top:14px; padding:11px 15px; background:var(--primary-glow); border:1px solid var(--primary-border); border-radius:10px; font-size:12.5px; color:var(--t2); line-height:1.5; }
+.earned-note .ok { color:var(--primary-lt); font-weight:700; margin-right:6px; }
+.earned-note b { color:var(--primary-lt); cursor:pointer; }
+
+/* explain strip */
+.explain { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:22px; }
+.ex-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px 20px; }
+.ex-num { font-size:11px; font-weight:700; color:var(--t4); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+.ex-title { font-size:14px; font-weight:600; color:var(--t1); margin-bottom:6px; }
+.ex-body { font-size:12px; color:var(--t3); line-height:1.6; }
+
+/* proving */
+.bench-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:22px; }
+.bench-kpi { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:22px; }
+.bk-label { font-size:11px; font-weight:600; color:var(--t3); text-transform:uppercase; letter-spacing:.07em; margin-bottom:10px; }
+.bk-val { font-size:30px; font-weight:800; color:var(--t1); letter-spacing:-1px; line-height:1; }
+.bk-val.green { color:var(--green); }
+.bk-delta { font-size:12px; font-weight:600; margin-top:8px; display:inline-block; }
+.bk-delta.good { color:var(--green); }
+.armrow { display:flex; align-items:center; gap:14px; padding:13px 0; border-bottom:1px solid var(--border); }
+.armrow:last-child { border-bottom:none; }
+.arm-name { width:170px; font-size:13px; color:var(--t2); flex-shrink:0; }
+.arm-name.you { color:var(--primary-lt); font-weight:700; }
+.arm-track { flex:1; background:var(--surface2); border-radius:5px; height:9px; overflow:hidden; }
+.arm-bar { height:100%; border-radius:5px; }
+.arm-val { width:64px; text-align:right; font-size:12px; font-weight:600; color:var(--t2); flex-shrink:0; }
+
+/* main tabs (top-level nav) */
+.mtab { display:none; }
+.mtab.active { display:block; }
+
+/* trace tab (built from the shared kit) */
+.drow.trace { grid-template-columns:120px 1fr 150px 22px; gap:24px; cursor:pointer; }
+.drow-chev { font-size:11px; color:var(--t4); transition:transform .2s; text-align:center; }
+.trace-item.open .drow { border-color:var(--primary-border); border-radius:14px 14px 0 0; }
+.trace-item.open .drow-chev { transform:rotate(180deg); }
+.trace-detail { display:none; border:1px solid var(--primary-border); border-top:none; border-radius:0 0 14px 14px; padding:24px 26px; background:var(--surface); }
+.trace-item.open .trace-detail { display:block; }
+.trace-cols { display:grid; grid-template-columns:1fr 300px; gap:36px; }
+.flow-eyebrow { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--t3); margin-bottom:16px; }
+.flow-node { display:flex; flex-direction:column; padding:0 0 18px 20px; position:relative; }
+.flow-node:not(:last-child)::after { content:''; position:absolute; left:4px; top:13px; bottom:0; width:2px; background:var(--border); }
+.flow-node::before { content:''; position:absolute; left:0; top:3px; width:10px; height:10px; border-radius:50%; border:2px solid var(--border); background:var(--surface); }
+.flow-node.fired::before { border-color:var(--primary); background:var(--primary); }
+.flow-name { font-size:12.5px; font-weight:700; color:var(--t1); }
+.flow-node.fired .flow-name { color:var(--primary-lt); }
+.flow-node.dim { opacity:.4; }
+.flow-desc { font-size:11.5px; color:var(--t3); line-height:1.5; margin-top:3px; }
+.impact-box { background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:20px; }
+.impact-bar { display:flex; height:10px; border-radius:5px; overflow:hidden; margin:14px 0 12px; }
+.impact-kept { background:var(--primary); }
+.impact-cut { background:rgba(248,113,113,.55); }
+.impact-legend { font-size:11.5px; color:var(--t3); line-height:1.75; }
+.impact-legend b { color:var(--t1); }
+@media (max-width:880px){ .trace-cols { grid-template-columns:1fr; gap:22px; } .drow.trace { grid-template-columns:1fr; } }
+
+.proto-note { margin:0 48px 28px; padding:11px 16px; background:rgba(251,191,36,.10); border:1px solid rgba(251,191,36,.3); border-radius:10px; font-size:12px; color:var(--amber); }
+.theme-btn { margin:14px 12px 0; padding:8px 12px; background:transparent; border:1px solid #2e4048; border-radius:8px; color:#8aaa90; font-size:12px; font-weight:500; cursor:pointer; width:calc(100% - 24px); }
+</style>
+</head>
+<body>
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-mark">ct<span>x</span></div>
+    <div class="sb-logo-sub">context controller</div>
+  </div>
+  <div class="nav-section">Your context</div>
+  <div class="nav-item active" data-tab="context" onclick="showMainTab(this)"><span class="nav-icon">&#9678;</span> Context</div>
+  <div class="nav-item" data-tab="proving" onclick="showMainTab(this)"><span class="nav-icon">&#9878;</span> Proving</div>
+  <div class="nav-item" data-tab="trace" onclick="showMainTab(this)"><span class="nav-icon">&#9776;</span> Request Trace</div>
+  <div class="nav-item" data-tab="savings" onclick="showMainTab(this)"><span class="nav-icon">&#9650;</span> Savings</div>
+  <div class="nav-section">Setup</div>
+  <div class="nav-item dim" title="Prototype: not built here"><span class="nav-icon">&#9636;</span> Profiles</div>
+  <div class="nav-item dim" title="Prototype: not built here"><span class="nav-icon">&#9881;</span> Settings</div>
+  <button class="theme-btn" onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Toggle theme</button>
+  <div class="sb-proxy"><span class="status-dot on"></span> proxy on . collecting</div>
+</aside>
+
+<div class="main-wrap">
+  <div class="proto-note">Prototype. Numbers are simulated. The sidebar tabs (Context, Proving, Request Trace) are live. Inside Context, click the loop steps.</div>
+
+  <!-- ════════ CONTEXT (home, the loop) ════════ -->
+  <div class="tab-panel mtab active" id="tab-context">
+    <h1 class="page-title">Your context</h1>
+    <p class="page-sub">ctx learns what your sessions need, earns each tool's trust on your own data before it changes anything, and gets sharper the more you use it.</p>
+
+    <div class="loop">
+      <div class="loop-step active" data-view="learning" onclick="setView(this)">
+        <div class="loop-num">Now</div><div class="loop-name">Learning</div>
+        <div class="loop-desc">Watching and recording, nothing changed yet</div>
+      </div>
+      <div class="loop-step" data-view="earning" onclick="setView(this)">
+        <div class="loop-num">Next</div><div class="loop-name">Earning</div>
+        <div class="loop-desc">Tools turn on once your data clears the bar</div>
+      </div>
+      <div class="loop-step" data-view="improving" onclick="setView(this)">
+        <div class="loop-num">Ongoing</div><div class="loop-name">Improving</div>
+        <div class="loop-desc">The model sharpens the more you use it</div>
+      </div>
+    </div>
+
+    <!-- LEARNING -->
+    <div class="view active" id="view-learning">
+      <div class="learn-hero">
+        <div class="hero-card">
+          <div class="hero-eyebrow"><span class="live-pip"></span> Learning from your work</div>
+          <div class="hero-number" id="labelCount">1,284</div>
+          <div class="hero-unit">decisions recorded so far</div>
+          <div class="hero-sub">Every time a tool returns output, ctx works out which lines it would keep and which it would drop, writes that down, then watches the next few turns to see if dropping them would have hurt. Most tools are still only being watched. A couple have earned their turn.</div>
+          <div class="hero-trust">
+            <span class="trust-pill"><b id="corrCount">0</b> corrections caused</span>
+            <span class="trust-pill"><b id="reReadCount">0</b> re-reads caused</span>
+            <span class="trust-pill">collecting for <b id="daysCount">6</b> days</span>
+          </div>
+        </div>
+        <div class="card feed-card">
+          <div class="feed-head">
+            <div>
+              <div class="section-head">Right now</div>
+              <div class="section-sub" style="margin:0">What ctx is doing this session, tool by tool</div>
+            </div>
+            <span class="live-pip"></span>
+          </div>
+          <div class="feed" id="feed"></div>
+          <div class="feed-foot">ctx only trims tools that earned it (git, test). Everything else it just watches, and Claude still gets the full output.</div>
+        </div>
+      </div>
+
+      <div class="section-head" style="margin-top:8px">What ctx is still studying</div>
+      <div class="section-sub">These tools are still in watching mode. ctx records what it would trim and checks it against what you actually needed. When a tool clears the bar it turns on, and moves to <b style="color:var(--primary-lt);cursor:pointer" onclick="setView(document.querySelector('[data-view=earning]'))">Earning</b>.</div>
+      <div class="row-list" id="actGrid"></div>
+      <div class="earned-note" id="earnedNote"></div>
+
+      <div class="explain">
+        <div class="ex-card">
+          <div class="ex-num">Why the wait</div>
+          <div class="ex-title">Trust is earned on your data</div>
+          <div class="ex-body">You turned compression off once because it broke things. ctx will not touch your context again until your sessions prove a tool is safe to trim.</div>
+        </div>
+        <div class="ex-card">
+          <div class="ex-num">What is different</div>
+          <div class="ex-title">It learns you, not the average</div>
+          <div class="ex-body">The platform compacts for the median user. ctx learns what matters in this repo, for this kind of task, from your own corrections and re-reads.</div>
+        </div>
+        <div class="ex-card">
+          <div class="ex-num">No fake numbers</div>
+          <div class="ex-title">You see only what is real</div>
+          <div class="ex-body">No savings claims during this window. When a tool turns on, you get the count of your own results behind the decision, not an estimate.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- EARNING -->
+    <div class="view" id="view-earning">
+      <div class="callout">
+        <div class="callout-eyebrow"><span class="ok">&#10003;</span> git just turned on</div>
+        <div class="callout-body">ctx now trims git output before Claude sees it, based on <b>312 of your own git runs</b> where dropping the noise never caused a re-read or a correction. The full output is still saved in your transcript if you ever need it.</div>
+      </div>
+      <div class="section-head">Tools ctx has turned on</div>
+      <div class="section-sub">Each one earned it on your own runs. Nothing is guessed, and the full output is always kept in your transcript.</div>
+      <div class="row-list" id="earnList"></div>
+      <div class="earned-note">Still being studied: grep, Read, and Linear. Watch them climb toward turning on in <b onclick="setView(document.querySelector('[data-view=learning]'))">Learning</b>.</div>
+    </div>
+
+    <!-- IMPROVING -->
+    <div class="view" id="view-improving">
+      <div class="hero-card" style="margin-bottom:24px">
+        <div class="hero-eyebrow">Model for this repo</div>
+        <div class="hero-number" style="font-size:52px">v7</div>
+        <div class="hero-unit">re-trained on your last 38 sessions</div>
+        <div class="hero-sub">The longer you use ctx, the better it gets at knowing what your sessions need. This value lives in your data. A generic trimmer cannot copy it, and starting over elsewhere means starting from zero.</div>
+        <div class="hero-trust">
+          <span class="trust-pill">correction rate <b>9%</b>, down from <b>15%</b> at v1</span>
+        </div>
+      </div>
+      <div class="section-head">How it sharpened</div>
+      <div class="section-sub">Each retrain learns from the corrections and re-reads in your newest sessions.</div>
+      <div class="row-list">
+        <div class="drow ver"><div class="drow-id"><span class="drow-name">v7</span><span class="badge st-active">latest</span></div><div class="drow-desc">Learned that test stack traces matter even past turn 10.</div><div class="drow-when">today</div></div>
+        <div class="drow ver"><div class="drow-id"><span class="drow-name">v5</span></div><div class="drow-desc">Stopped dropping Linear ticket descriptions on planning sessions.</div><div class="drow-when">4 days ago</div></div>
+        <div class="drow ver"><div class="drow-id"><span class="drow-name">v3</span></div><div class="drow-desc">Got more aggressive on git status noise in this repo.</div><div class="drow-when">last week</div></div>
+        <div class="drow ver"><div class="drow-id"><span class="drow-name">v1</span></div><div class="drow-desc">Started from the safe heuristic.</div><div class="drow-when">first activation</div></div>
+      </div>
+    </div>
+  </div><!-- /tab-context -->
+
+  <!-- ════════ PROVING ════════ -->
+  <div class="tab-panel mtab" id="tab-proving">
+    <h1 class="page-title">Proving it</h1>
+    <p class="page-sub">The honest scoreboard. ctx is measured against doing nothing, against generic trimmers, and against the platform's own compaction, on your real sessions.</p>
+    <div class="bench-grid">
+      <div class="bench-kpi"><div class="bk-label">Cost per successful task</div><div class="bk-val green">$0.41</div><div class="bk-delta good">23% lower than off</div></div>
+      <div class="bench-kpi"><div class="bk-label">Correction spiral rate</div><div class="bk-val">9%</div><div class="bk-delta good">vs 14% on native compaction</div></div>
+      <div class="bench-kpi"><div class="bk-label">Re-reads per session</div><div class="bk-val">0.6</div><div class="bk-delta good">vs 1.9 with generic trim</div></div>
+    </div>
+    <div class="card">
+      <div class="section-head">Correction spiral rate, lower is better</div>
+      <div class="section-sub">Run on your own session corpus. Reproducible with <code>ctx bench run</code>. Raw numbers, not a marketing chart.</div>
+      <div class="armrow"><div class="arm-name">No context tool</div><div class="arm-track"><div class="arm-bar" style="width:80%;background:var(--t4)"></div></div><div class="arm-val">16%</div></div>
+      <div class="armrow"><div class="arm-name">Generic trimmer</div><div class="arm-track"><div class="arm-bar" style="width:90%;background:var(--orange)"></div></div><div class="arm-val">18%</div></div>
+      <div class="armrow"><div class="arm-name">Native compaction</div><div class="arm-track"><div class="arm-bar" style="width:70%;background:var(--blue)"></div></div><div class="arm-val">14%</div></div>
+      <div class="armrow"><div class="arm-name you">ctx learned</div><div class="arm-track"><div class="arm-bar" style="width:45%;background:var(--primary)"></div></div><div class="arm-val">9%</div></div>
+      <div class="feed-foot" style="margin-top:16px">N = 142 turns per arm. Last run today. Methodology and raw data are published, mixed results included.</div>
+    </div>
+  </div><!-- /tab-proving -->
+
+  <!-- ════════ REQUEST TRACE ════════ -->
+  <div class="tab-panel mtab" id="tab-trace">
+    <h1 class="page-title">Request trace</h1>
+    <p class="page-sub">Every request ctx touched, and exactly what it did before Claude saw it. Click a row to see the step by step.</p>
+    <div class="row-list" id="traceList"></div>
+  </div><!-- /tab-trace -->
+
+  <!-- ════════ SAVINGS (reframed to outcomes) ════════ -->
+  <div class="tab-panel mtab" id="tab-savings">
+    <h1 class="page-title">Savings</h1>
+    <p class="page-sub">The honest money story. What you spend, what each finished task costs, and where it goes. Tokens saved is not the point. Cost per task you actually complete is.</p>
+
+    <div class="bench-grid">
+      <div class="bench-kpi"><div class="bk-label">Spend this month</div><div class="bk-val">$48.20</div><div class="bk-delta good">under last month so far</div></div>
+      <div class="bench-kpi"><div class="bk-label">Cost per successful task</div><div class="bk-val green">$0.41</div><div class="bk-delta good">down 18% since git and test turned on</div></div>
+      <div class="bench-kpi"><div class="bk-label">Sessions tracked</div><div class="bk-val">214</div><div class="bk-delta good">last 30 days</div></div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-eyebrow"><span class="ok">&#10003;</span> early days, honest numbers</div>
+      <div class="callout-body">ctx has been trimming <b>git and test</b> for 2 days. Most of your tools are still being studied, so this gets better as more earn their turn. The full comparison against doing nothing and against the platform lives in <b onclick="showMainTab(document.querySelector('[data-tab=proving]'))">Proving</b>.</div>
+    </div>
+
+    <div class="section-head">Where your spend goes</div>
+    <div class="section-sub">Grouped by the project you were working in.</div>
+    <div class="row-list">
+      <div class="drow earn">
+        <div class="drow-id"><span class="drow-name">ctx</span><span class="badge st-active">trimming on</span></div>
+        <div class="drow-desc">128 sessions, 1,902 requests. git and test output trimmed before each turn.</div>
+        <div class="row-stat"><div class="row-stat-num">$31.40</div><div class="row-stat-cap">this month<br>~$0.38 per task</div></div>
+      </div>
+      <div class="drow earn">
+        <div class="drow-id"><span class="drow-name">gaffer</span><span class="badge st-active">trimming on</span></div>
+        <div class="drow-desc">61 sessions, 884 requests. git and test on, Linear still being studied.</div>
+        <div class="row-stat"><div class="row-stat-num">$12.10</div><div class="row-stat-cap">this month<br>~$0.45 per task</div></div>
+      </div>
+      <div class="drow earn">
+        <div class="drow-id"><span class="drow-name">docs-site</span><span class="badge st-shadow">watching</span></div>
+        <div class="drow-desc">25 sessions, 240 requests. Mostly Read, still in watching mode, nothing trimmed yet.</div>
+        <div class="row-stat"><div class="row-stat-num">$4.70</div><div class="row-stat-cap">this month<br>~$0.52 per task</div></div>
+      </div>
+    </div>
+  </div><!-- /tab-savings -->
+
+</div>
+
+<script>
+/* top-level nav tabs */
+function showMainTab(el){
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.querySelectorAll('.mtab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-'+el.dataset.tab).classList.add('active');
+  window.scrollTo(0,0);
+}
+
+/* loop stepper inside Context */
+function setView(el){
+  document.querySelectorAll('.loop-step').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('#tab-context .view').forEach(v=>v.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('view-'+el.dataset.view).classList.add('active');
+}
+
+/* activation cards (Learning view) */
+const tools = [
+  {name:'git', cls:'st-active', state:'On', have:312, need:300,
+    sub:'ctx now trims git output for you. The files you changed and your diffs are always kept.',
+    meta:'Proven safe across <b>312</b> of your runs, 0 problems caused.'},
+  {name:'test runner', cls:'st-active', state:'On', have:207, need:200,
+    sub:'ctx now trims test output for you. Failures and stack traces are never dropped.',
+    meta:'Proven safe across <b>207</b> of your runs, 0 problems caused.'},
+  {name:'grep', cls:'st-almost', state:'Almost ready', have:168, need:200,
+    sub:'A few more clean runs and ctx will start trimming your searches.'},
+  {name:'Read', cls:'st-shadow', state:'Watching', have:94, need:250,
+    sub:'Reading files is riskier to trim, so ctx watches longer before it acts.'},
+  {name:'Linear (MCP)', cls:'st-shadow', state:'Watching', have:41, need:250,
+    sub:'Learning the shape of your tickets before it touches them.'},
+];
+const grid = document.getElementById('actGrid');
+const studying = tools.filter(t=>t.cls!=='st-active');
+const earned = tools.filter(t=>t.cls==='st-active');
+grid.innerHTML = studying.map(t=>{
+  const pct = Math.min(100, Math.round(t.have/t.need*100));
+  const amber = t.cls==='st-almost' ? ' amber' : '';
+  return `<div class="drow study">
+    <div class="drow-id">
+      <span class="drow-name">${t.name}</span>
+      <span class="badge ${t.cls}">${t.state}</span>
+    </div>
+    <div class="drow-desc">${t.sub}</div>
+    <div class="prog">
+      <div class="prog-top">
+        <span class="prog-count"><b>${t.have}</b> of ${t.need} runs watched</span>
+        <span class="prog-pct">${pct}%</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill${amber}" style="width:${pct}%"></div></div>
+    </div>
+  </div>`;
+}).join('');
+document.getElementById('earnedNote').innerHTML = earned.length
+  ? `<span class="ok">&#10003;</span> ${earned.map(t=>t.name).join(' and ')} have already earned their turn and are trimming now. See the proof in <b onclick="setView(document.querySelector('[data-view=earning]'))">Earning</b>.`
+  : '';
+
+/* Earning view: same row component */
+const earnMeta = {
+  'git':  {desc:'Trimming git output now. The files you changed and your diffs are always kept.', num:312, when:'2 days ago'},
+  'test runner': {desc:'Trimming test output now. Failures and stack traces are never dropped.', num:207, when:'yesterday'},
+};
+const earnEl = document.getElementById('earnList');
+if (earnEl) {
+  earnEl.innerHTML = earned.map(t=>{
+    const m = earnMeta[t.name] || {desc:t.sub, num:t.have, when:'recently'};
+    return `<div class="drow earn">
+      <div class="drow-id"><span class="drow-name">${t.name}</span><span class="badge st-active">On</span></div>
+      <div class="drow-desc">${m.desc}</div>
+      <div class="row-stat">
+        <div class="row-stat-num green">${m.num}</div>
+        <div class="row-stat-cap">clean runs proved it<br>0 problems caused</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* live feed sim. mode 'on' = tool is active and actually trimmed; 'watch' = still studying, nothing changed */
+const samples = [
+  {t:'git', c:'ft-git', mode:'on',
+    title:'You checked your changes with git. ctx <span class="keep">kept the 4 files you actually edited</span> and <span class="drop">trimmed 22 lines</span> of files you have not touched.',
+    why:'git is on, so this was trimmed for real. The full output is still saved in your transcript.'},
+  {t:'test', c:'ft-test', mode:'on',
+    title:'Your tests ran. ctx <span class="keep">kept the 2 that failed</span> and <span class="drop">trimmed the 180 that passed</span>.',
+    why:'tests are on, so this was trimmed for real. Failures are never dropped.'},
+  {t:'grep', c:'ft-grep', mode:'watch',
+    title:'You searched the code for "AbTest". ctx would <span class="keep">keep the 9 matches in files you are working in</span> and <span class="drop">set aside 31 from elsewhere</span>.',
+    why:'Still only watching grep. Nothing changed. It is close to turning on.'},
+  {t:'read', c:'ft-read', mode:'watch',
+    title:'You opened config.rs. ctx would <span class="keep">keep the part you are editing</span> and <span class="drop">skip the list of imports</span> at the top.',
+    why:'Still only watching Read. Nothing changed. ctx learns which parts you scroll back to first.'},
+  {t:'mcp', c:'ft-mcp', mode:'watch',
+    title:'You pulled your Linear tickets. ctx would <span class="keep">keep each ticket title, status, and link</span> and <span class="drop">drop the raw fields</span> around them.',
+    why:'Still only watching Linear. Nothing changed. It is learning the shape of your tickets.'},
+  {t:'git', c:'ft-git', mode:'on',
+    title:'You looked at a diff. ctx <span class="keep">kept the change in the file you are editing</span> and <span class="drop">trimmed the lockfile churn</span>.',
+    why:'git is on, so this was trimmed for real. Lockfile noise has not mattered to your recent turns.'},
+];
+const feed = document.getElementById('feed');
+let fi = 0;
+function pushFeed(){
+  const s = samples[fi % samples.length]; fi++;
+  const tag = s.mode === 'on'
+    ? '<span class="feed-mode mode-on">trimmed</span>'
+    : '<span class="feed-mode mode-watch">watching</span>';
+  const row = document.createElement('div');
+  row.className = 'feed-row';
+  row.innerHTML = `<span class="feed-tool ${s.c}">${s.t}</span><span class="feed-text"><div class="feed-title">${s.title} ${tag}</div><div class="feed-why">${s.why}</div></span>`;
+  feed.prepend(row);
+  while (feed.children.length > 4) feed.removeChild(feed.lastChild);
+}
+for (let i=0;i<3;i++) pushFeed();
+setInterval(pushFeed, 3400);
+
+/* ticking counter so the quiet window feels alive */
+let labels = 1284;
+const lc = document.getElementById('labelCount');
+setInterval(()=>{ labels += Math.floor(Math.random()*3)+1; lc.textContent = labels.toLocaleString(); }, 2600);
+
+/* ── Request Trace (built from the kit, absorbs the old Pipeline detail) ── */
+const traces = [
+  { time:'10:42', profile:'personal', summary:'Stripped 4 unused tools, then trimmed git and test output before this request.',
+    cost:'$0.18', toks:'24k in', saved:'3.1k saved',
+    flow:[
+      {n:'Filter', on:true, d:'Removed 4 tools you have not used in this repo.'},
+      {n:'Auto profile', on:true, d:'Matched this prompt to your "personal" profile.'},
+      {n:'Compress git', on:true, d:'Kept 4 changed files, trimmed 22 lines of untracked noise.'},
+      {n:'Compress test', on:true, d:'Kept the 2 failures, trimmed 180 passing lines.'},
+      {n:'Compress Read', on:false, d:'Read is still in watching mode. Nothing trimmed.'},
+    ],
+    kept:78, cut:22, keptLabel:'21k tokens kept', cutLabel:'3.1k tokens trimmed' },
+  { time:'10:39', profile:'personal', summary:'Trimmed a large test run. No tools stripped this turn.',
+    cost:'$0.22', toks:'29k in', saved:'4.4k saved',
+    flow:[
+      {n:'Filter', on:false, d:'No unused tools to remove this turn.'},
+      {n:'Auto profile', on:true, d:'Stayed on "personal".'},
+      {n:'Compress test', on:true, d:'Kept the failing assertion and its stack trace, trimmed the rest.'},
+      {n:'Compress git', on:false, d:'No git output in this request.'},
+    ],
+    kept:85, cut:15, keptLabel:'24.6k tokens kept', cutLabel:'4.4k tokens trimmed' },
+  { time:'10:31', profile:'docs', summary:'Watching only. ctx recorded what it would do but changed nothing.',
+    cost:'$0.15', toks:'19k in', saved:'0 saved',
+    flow:[
+      {n:'Filter', on:false, d:'No unused tools to remove.'},
+      {n:'Auto profile', on:true, d:'Switched to "docs" for this prompt.'},
+      {n:'Compress', on:false, d:'Only Read and Linear ran, both still in watching mode.'},
+    ],
+    kept:100, cut:0, keptLabel:'19k tokens kept', cutLabel:'nothing trimmed yet' },
+];
+const tEl = document.getElementById('traceList');
+if (tEl) {
+  tEl.innerHTML = traces.map((r,i)=>`
+    <div class="trace-item ${i===0?'open':''}">
+      <div class="drow trace" onclick="this.parentNode.classList.toggle('open')">
+        <div class="drow-id"><span class="drow-name">${r.time}</span><span class="badge st-shadow">${r.profile}</span></div>
+        <div class="drow-desc">${r.summary}</div>
+        <div class="row-stat"><div class="row-stat-num green">${r.cost}</div><div class="row-stat-cap">${r.toks}<br>${r.saved}</div></div>
+        <div class="drow-chev">&#9662;</div>
+      </div>
+      <div class="trace-detail">
+        <div class="trace-cols">
+          <div>
+            <div class="flow-eyebrow">What ctx did, step by step</div>
+            ${r.flow.map(f=>`<div class="flow-node ${f.on?'fired':'dim'}"><div class="flow-name">${f.n}</div><div class="flow-desc">${f.d}</div></div>`).join('')}
+          </div>
+          <div>
+            <div class="flow-eyebrow">Token impact</div>
+            <div class="impact-box">
+              <div class="impact-bar"><div class="impact-kept" style="width:${r.kept}%"></div><div class="impact-cut" style="width:${r.cut}%"></div></div>
+              <div class="impact-legend"><b>${r.keptLabel}</b> went to Claude.<br><b>${r.cutLabel}</b>. The full output stays in your transcript.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+</script>
+</body>
+</html>

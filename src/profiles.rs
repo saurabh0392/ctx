@@ -122,11 +122,29 @@ fn observed_tools_with_lookback(lookback_days: u32) -> Vec<crate::db::ObservedTo
 }
 
 fn tools_for_personal(lookback_days: u32, min_invocations: u32) -> Vec<String> {
-    observed_tools_with_lookback(lookback_days)
-        .into_iter()
+    let observed = observed_tools_with_lookback(lookback_days);
+    let mut keep: HashSet<String> = observed
+        .iter()
         .filter(|r| r.count >= min_invocations as u64)
-        .map(|r| r.tool_name)
-        .collect()
+        .map(|r| r.tool_name.clone())
+        .collect();
+
+    let rule_signals = crate::rule_signals::collect_mcp_signals();
+    for tool in rule_signals.tool_names {
+        keep.insert(tool);
+    }
+    for prefix in rule_signals.server_prefixes {
+        keep.insert(prefix.clone());
+        for row in &observed {
+            if row.tool_name.starts_with(&prefix) || row.server_prefix.starts_with(&prefix) {
+                keep.insert(row.tool_name.clone());
+            }
+        }
+    }
+
+    let mut out: Vec<String> = keep.into_iter().collect();
+    out.sort();
+    out
 }
 
 fn tools_for_prefixes(prefixes: &[String], lookback_days: u32, min_invocations: u32) -> Vec<String> {
@@ -148,6 +166,54 @@ fn tool_count_for_prefix(prefix: &str) -> usize {
         .find(|(k, _)| k.starts_with(prefix) || prefix.starts_with(*k))
         .map(|(_, c)| *c)
         .unwrap_or(3)
+}
+
+/// Estimated kept / removed / token savings for a profile slug (hook + dashboard estimates).
+pub fn filter_impact_for_slug(slug: &str) -> (usize, usize, usize) {
+    let all = load_all();
+    let total = dynamic_total_tools();
+    if total == 0 {
+        return (0, 0, 0);
+    }
+    if let Some(p) = all.get(slug) {
+        let kept = p.tool_count();
+        (kept, total.saturating_sub(kept), p.savings_vs_all())
+    } else {
+        (total, 0, 0)
+    }
+}
+
+/// Approximate tool schema count offered per MCP server prefix for a profile.
+pub fn tools_sent_by_server_prefix(slug: &str) -> HashMap<String, usize> {
+    let all = load_all();
+    let Some(p) = all.get(slug) else {
+        return HashMap::new();
+    };
+    let lookback = Config::load().profile_thresholds.lookback_days;
+    let cutoff = lookback_cutoff(lookback);
+    let mut out = HashMap::new();
+    if p.uses_tool_level() {
+        for tool in &p.keep_tools {
+            if let Some(prefix) = crate::filter::server_prefix_from_tool(tool) {
+                *out.entry(prefix).or_default() += 1;
+            }
+        }
+        return out;
+    }
+    for prefix in &p.keep {
+        let n = if let Ok(conn) = crate::db::open_db() {
+            crate::db::tools_under_prefix(&conn, prefix, &cutoff)
+                .map(|t| t.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let n = if n > 0 { n } else { tool_count_for_prefix(prefix) };
+        if n > 0 {
+            out.insert(prefix.clone(), n);
+        }
+    }
+    out
 }
 
 /// Total distinct MCP tool schemas from indexed usage (0 until ingest records tool names).
@@ -316,7 +382,7 @@ pub fn upsert_personal_from_usage(force: bool) -> Result<bool> {
         Profile {
             display: "Personal".into(),
             description: format!(
-                "Auto-built from MCP tool usage (last {} days, ≥{} invocations/tool)",
+                "Auto-built from MCP usage and standing instructions (last {} days, ≥{} invocations/tool unless rules mention the server)",
                 lookback, t.min_tool_invocations_per_tool
             ),
             keep: vec![],
@@ -1134,9 +1200,12 @@ pub fn detect_expansion_candidates(prompt: &str, cwd: &str, profile: &Profile) -
                 .next()
                 .unwrap_or("")
                 .replace('_', " ");
-            if hay.contains(&display)
-                || hay.contains(&row.tool_name.to_lowercase())
-                || (!tool_tail.is_empty() && hay.contains(&tool_tail.to_lowercase()))
+            let tool_lower = row.tool_name.to_lowercase();
+            if hay.contains(&tool_lower)
+                || hay.contains(&display)
+                || (!tool_tail.is_empty()
+                    && tool_tail.len() >= 4
+                    && hay.contains(&tool_tail.to_lowercase()))
             {
                 out.push(row.tool_name.clone());
             }
@@ -1961,6 +2030,16 @@ pub enum ProfileBootstrap {
 pub fn bootstrap_from_history(quiet: bool) -> Result<ProfileBootstrap> {
     crate::config::ensure_dir()?;
 
+    if let Some(pin) = crate::experiment_plan::experiment_active_profile_pin() {
+        let _ = upsert_personal_from_usage(false);
+        let cfg = Config::load();
+        let active = cfg.active_profile.as_deref().unwrap_or("all");
+        if active != pin {
+            switch(&pin, true)?;
+        }
+        return Ok(ProfileBootstrap::Existing);
+    }
+
     if upsert_personal_from_usage(false)? {
         let cfg = Config::load();
         let active = cfg.active_profile.as_deref().unwrap_or("all");
@@ -2060,6 +2139,14 @@ pub fn bootstrap_from_history(quiet: bool) -> Result<ProfileBootstrap> {
 pub fn after_ingest_profile_sync() -> Result<()> {
     let cfg = Config::load();
     let active = cfg.active_profile.as_deref().unwrap_or("all");
+
+    if let Some(pin) = crate::experiment_plan::experiment_active_profile_pin() {
+        let _ = upsert_personal_from_usage(false);
+        if active != pin {
+            switch(&pin, true)?;
+        }
+        return Ok(());
+    }
 
     if upsert_personal_from_usage(false)? && active == "all" {
         switch("personal", true)?;
@@ -2336,7 +2423,16 @@ mod tests {
         let _guard = CTX_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CTX_HOME", tmp.path());
+        // Isolate HOME too: rule-signal scanning reads ~/.cursor/rules and ~/.claude via
+        // dirs::home_dir(), so without this a developer's real global rules leak into unit
+        // tests (e.g. a rule that mentions "Notion" would flip rule-mention assertions).
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
         f(&tmp);
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
         std::env::remove_var("CTX_HOME");
     }
 
@@ -2529,6 +2625,73 @@ mod tests {
             }
             assert!(!upsert_personal_from_usage(false).unwrap());
             assert!(!tmp.path().join("profiles.toml").exists());
+        });
+    }
+
+    #[test]
+    fn personal_profile_keeps_rule_mentioned_tool_below_usage_threshold() {
+        with_ctx_home(|tmp| {
+            std::fs::write(
+                tmp.path().join("config.toml"),
+                "[profile_thresholds]\nmin_tool_invocations = 5\nmin_distinct_servers = 2\nmin_sessions_with_mcp = 1\nmin_tool_invocations_per_tool = 3\n",
+            )
+            .unwrap();
+
+            let proj = tempfile::tempdir().unwrap();
+            std::fs::write(
+                proj.path().join("CLAUDE.md"),
+                "Use mcp__claude_ai_Linear__create_issue for every bug fix.",
+            )
+            .unwrap();
+
+            let conn = crate::db::open_db().unwrap();
+            crate::db::ensure_schema(&conn).unwrap();
+            for (key, wd) in [("s1", proj.path()), ("s2", proj.path())] {
+                conn.execute(
+                    "INSERT INTO sessions (external_key, project, started_at, profile, working_directory, turn_count)
+                     VALUES (?1, 'p', datetime('now'), 'all', ?2, 1)",
+                    rusqlite::params![key, wd.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            }
+            let sid1: i64 = conn
+                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| r.get(0))
+                .unwrap();
+            let sid2: i64 = conn
+                .query_row("SELECT id FROM sessions WHERE external_key='s2'", [], |r| r.get(0))
+                .unwrap();
+
+            for _ in 0..5 {
+                conn.execute(
+                    "INSERT INTO tool_invocations (session_id, tool_name, server_prefix, ts)
+                     VALUES (?1, 'mcp__claude_ai_Slack__send', 'mcp__claude_ai_Slack__', datetime('now'))",
+                    [sid1],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO tool_invocations (session_id, tool_name, server_prefix, ts)
+                 VALUES (?1, 'mcp__claude_ai_Notion__search', 'mcp__claude_ai_Notion__', datetime('now'))",
+                [sid1],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tool_invocations (session_id, tool_name, server_prefix, ts)
+                 VALUES (?1, 'mcp__claude_ai_Linear__create_issue', 'mcp__claude_ai_Linear__', datetime('now'))",
+                [sid2],
+            )
+            .unwrap();
+
+            assert!(upsert_personal_from_usage(false).unwrap());
+            let p = get("personal").unwrap();
+            assert!(p
+                .keep_tools
+                .iter()
+                .any(|t| t.contains("Linear__create_issue") || t.contains("Linear__")));
+            assert!(
+                !p.keep_tools.iter().any(|t| t.contains("Notion__search")),
+                "Notion only invoked once and not mentioned in rules"
+            );
         });
     }
 

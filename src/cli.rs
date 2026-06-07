@@ -122,6 +122,76 @@ pub enum Commands {
         #[command(subcommand)]
         command: FilterCommand,
     },
+    /// Self-learning context controller: collection status, presets, training, activation
+    Context {
+        #[command(subcommand)]
+        command: ContextCommand,
+    },
+    /// Reproducible agent-context benchmark (Act 2)
+    Bench {
+        #[command(subcommand)]
+        command: BenchCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ContextCommand {
+    /// Show the collection window: labels collected, corrections caused, per-tool progress
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set the compression preset: off (collect only), safe (git/test/grep), full
+    Preset { value: String },
+    /// Turn on safe user-facing compression (alias for `preset safe`)
+    On,
+    /// Turn off user-facing compression, keep shadow collection (alias for `preset off`)
+    Off,
+    /// Train the local outcome model from collected labels and print the honesty gate
+    Learn {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Honest causal before/after: correction/re-read rate when a tool is trimmed vs not, with confidence intervals
+    Proof {
+        /// Only show the before/after for this exact tool name (e.g. Bash)
+        #[arg(long)]
+        tool: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start or stop a deliberate trim trial for one tool: trims it live (even with preset off)
+    /// so ctx can collect the trimmed "after" arm for the before/after proof. One tool at a time.
+    Trial {
+        /// Exact tool name to trial (e.g. Read, Bash). Omit with --off to clear all trials.
+        tool: Option<String>,
+        /// Start trimming this tool live to gather the after arm.
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Stop trimming this tool (or all tools if no name is given) and return to shadow only.
+        #[arg(long)]
+        off: bool,
+    },
+    /// Audit positive labels: show the correction/re-read evidence behind each, to judge precision by hand
+    Labels {
+        /// Only show labels for this exact tool name (e.g. Bash, Read)
+        #[arg(long)]
+        tool: Option<String>,
+        /// How many of the most recent positive labels to show
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BenchCommand {
+    /// Replay collected decisions through the arms and report outcome-first metrics
+    Run {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -152,6 +222,44 @@ pub enum ExperimentCommand {
     Apply,
     /// Clear ab-results.json
     Reset,
+    /// Daily driver: apply phase config, ingest, digest, notify
+    Tick {
+        /// Show actions without writing config or journal
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Print experiment digest (human or JSON)
+    Digest {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install daily experiment tick (launchd on macOS, instructions elsewhere)
+    InstallSchedule,
+    /// Manage the 15-day experiment plan file
+    Plan {
+        #[command(subcommand)]
+        command: ExperimentPlanCommand,
+    },
+    /// Analyze historical MCP tool usage (vector mix readiness)
+    Analyze {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ExperimentPlanCommand {
+    /// Create ~/.ctx/experiment-plan.toml from a template
+    Init {
+        /// Project path to filter hook traces (corpus)
+        #[arg(long)]
+        corpus: String,
+        /// Template: gaffer (16-day), tool-mix (vector tool filtering A/B), or ctx (dogfood)
+        #[arg(long, default_value = "gaffer")]
+        template: String,
+    },
+    /// Show current plan day, phase, and last tick
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -190,6 +298,8 @@ pub enum ProfileCommand {
 pub enum HookCommand {
     /// Blocking hook: auto-profile, budget gate, system prefix injection
     UserPromptSubmit,
+    /// PostToolUse: compress tool output via updatedToolOutput
+    PostToolUse,
 }
 
 #[derive(Subcommand)]

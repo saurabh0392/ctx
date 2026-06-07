@@ -146,8 +146,6 @@ function onCtxRangeChange() {
 
 function applyDashboardSinceReload() {
     syncCtxRangeRadios();
-    loadSavings().catch(console.error);
-    if (window._psLoaded) loadPromptStats().catch(console.error);
     if (window._traceLoaded) loadTrace().catch(console.error);
     const exp = document.getElementById("tab-experiment");
     if (exp && exp.classList.contains("active"))

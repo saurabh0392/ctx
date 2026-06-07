@@ -12,9 +12,10 @@ fetch("/api/user-profile")
     })
     .catch(() => {});
 initDevModeNav();
-loadSavings().catch((e) => {
-    console.error("loadSavings failed:", e);
-    const kicker = document.getElementById("story-kicker");
-    if (kicker) kicker.textContent = "Could not load savings data.";
-});
-setInterval(() => loadSavings().catch(console.error), 30_000);
+loadContext().catch((e) => console.error("loadContext failed:", e));
+setInterval(() => {
+    const ctxTab = document.getElementById("tab-context");
+    if (ctxTab && ctxTab.classList.contains("active")) {
+        loadContext().catch(console.error);
+    }
+}, 15_000);

@@ -53,6 +53,8 @@ fn compute_cost(
 pub struct TurnDetail {
     pub turn_index: usize,
     pub human_text: String,
+    #[serde(default)]
+    pub user_ts: Option<String>,
     pub input_tokens: usize,
     pub output_tokens: usize,
     #[serde(default)]
@@ -332,12 +334,22 @@ fn detect_flags(
     is_pre_compact: bool,
 ) -> Vec<String> {
     let mut flags = Vec::new();
-    // Correction: user's message is shorter than their personal P25 baseline
-    // AND Claude just produced a substantial response (not just a tool call).
-    // This is the most reliable cross-user signal without pattern matching.
-    let trimmed_len = human_text.trim().len();
-    if trimmed_len < profile.correction_threshold && prev_output_tokens > 150 {
-        flags.push("correction".to_string());
+    // Correction signal, scored through the shared lexical guard so go-aheads and menu
+    // picks ("lets do 1") are not mislabeled as harm (SAU-148 audit). Two confidence tiers:
+    //   - Explicit: the turn carried complaint language ("wrong", "revert", "undo"). High
+    //     confidence, so it flags even after a short assistant reply.
+    //   - Terse: a short non-complaint follow-up after substantial work. Low confidence,
+    //     kept for the fail-safe gate but tagged so training can down-weight it.
+    let substantial_prior = prev_output_tokens > 150;
+    match crate::outcome_signals::classify_correction(human_text, profile.correction_threshold) {
+        crate::outcome_signals::CorrectionClass::Explicit => {
+            flags.push("correction".to_string());
+            flags.push("correction_explicit".to_string());
+        }
+        crate::outcome_signals::CorrectionClass::Terse if substantial_prior => {
+            flags.push("correction".to_string());
+        }
+        _ => {}
     }
 
     if prev_output_tokens > 0 && prev_output_tokens < 400 {
@@ -454,7 +466,7 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
 
     let mut prev_output_tokens: usize = 0;
     let mut prev_output_text: Option<String> = None;
-    let mut pending_human: Option<(usize, String)> = None;
+    let mut pending_human: Option<(usize, String, Option<String>)> = None;
 
     for (i, row) in raw_rows.iter().enumerate() {
         match row {
@@ -463,7 +475,29 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                     if started_at.is_none() {
                         started_at = u.timestamp.clone();
                     }
-                    pending_human = Some((i, text.clone()));
+                    if crate::outcome_signals::is_user_interrupt(text) {
+                        // The user hit ESC to stop the agent. Emit this as its own turn now:
+                        // the standard path waits for a following assistant reply, but the
+                        // next real prompt overwrites this row, so the signal would be lost.
+                        // Flagged "aborted" (a distinct high-precision signal type) plus
+                        // "correction" so the existing windowed outcome join attributes it.
+                        corrections += 1;
+                        turns.push(TurnDetail {
+                            turn_index: turns.len(),
+                            human_text: text.clone(),
+                            user_ts: u.timestamp.clone(),
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_creation_tokens: 0,
+                            model: String::new(),
+                            cost_usd: 0.0,
+                            flags: vec!["aborted".to_string(), "correction".to_string()],
+                            tip: String::new(),
+                        });
+                    } else {
+                        pending_human = Some((i, text.clone(), u.timestamp.clone()));
+                    }
                 }
             }
             Row::Assistant(a) if canonical.contains(&i) => {
@@ -475,7 +509,7 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                 total_cost += cost;
                 models.insert(model_short(&a.model));
 
-                if let Some((human_row_idx, human_text)) = pending_human.take() {
+                if let Some((human_row_idx, human_text, user_ts)) = pending_human.take() {
                     if first_user_message.is_empty() {
                         first_user_message = human_text.chars().take(2000).collect();
                     }
@@ -500,6 +534,7 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                     turns.push(TurnDetail {
                         turn_index: turns.len(),
                         human_text,
+                        user_ts,
                         input_tokens: a.input_tokens,
                         output_tokens: a.output_tokens,
                         cache_read_tokens: a.cache_read,
@@ -887,6 +922,11 @@ fn ingest_one_jsonl_session(
         } else {
             String::new()
         };
+        let turn_ts = t
+            .user_ts
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(Some(parsed.session.started_at.as_str()));
         let _tid = crate::db::insert_turn(
             &*tx,
             sid,
@@ -900,7 +940,7 @@ fn ingest_one_jsonl_session(
             &t.model,
             &flags_json,
             &prefix,
-            Some(parsed.session.started_at.as_str()),
+            turn_ts,
         )?;
     }
     for (tool_name, server_prefix, ts) in &tool_uses {
@@ -1022,7 +1062,19 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     tx.commit()?;
 
     let _ = crate::db::enrich_hook_traces(&conn);
+    // Act 0: back-fill outcome labels (correction / re-read) onto shadow decision rows
+    // now that downstream turns and tool calls for those sessions have landed.
+    let _ = crate::db::join_compress_outcomes(&conn);
+    // Act 3 (cross-surface): join outcomes for agents whose transcripts carry no
+    // timestamps (Cursor) using the ordinal/fingerprint timeline. Disjoint from the
+    // Claude join above; runs before training so fresh labels are included.
+    let _ = crate::surface::ingest::join_transcript_outcomes(&conn, &home);
+    // Act 1: re-train the local outcome model on the freshly labeled data (online
+    // improvement). No-op until enough labels accrue; never fails ingest.
+    let _ = crate::learn::train();
     let _ = crate::tuning::run_tuning_after_ingest(&conn);
+    let _ = crate::experiment_plan::ensure_pending_phase_applied();
+    let _ = crate::claude_settings::sync_experiment_hooks_from_config();
 
     if crate::config::Config::load().adaptive_prefix_enabled {
         let _ = crate::adaptive::refresh_adaptive_prefix();
@@ -1058,6 +1110,10 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     }
 
     let _ = crate::profiles::after_ingest_profile_sync();
+
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::maybe_reset_stale_install_watermark(&conn);
+    }
 
     Ok(count)
 }

@@ -12,7 +12,7 @@ const PIPE_GATE_META = {
   coach:    { label: 'Coaching', ab: 'coaching' },
   budget:   { label: 'Budget guard', ab: null },
   behavior: { label: 'Behavior guard', ab: null },
-  compress: { label: 'Bash compress', ab: null },
+  compress: { label: 'Output compress', ab: 'compress' },
 };
 
 const PIPE_VERDICT_LABELS = {
@@ -124,7 +124,7 @@ function pipeActivityLine(g, activeProfile) {
   if (id === 'coach') return count > 0 ? count + ' coaching signal' + (count === 1 ? '' : 's') + ' today' : 'Monitoring correction patterns';
   if (id === 'budget') return count > 0 ? 'Threshold crossed ' + count + '× today' : 'Watching session cost';
   if (id === 'behavior') return count > 0 ? 'Fired ' + count + '× today' : (g.enabled === false ? 'Proxy only' : 'Idle · monitoring');
-  if (id === 'compress') return 'Not active';
+  if (id === 'compress') return count > 0 ? 'Compressed output on ' + count + ' tool call' + (count === 1 ? '' : 's') + ' today' : (g.enabled ? 'Ready for large tool output' : 'Disabled');
   return count > 0 ? count + ' events today' : 'Idle today';
 }
 
@@ -197,9 +197,17 @@ function pipeGateCard(g, readiness, stats, hookOnly, activeProfile, abByFeature)
         : { kind: 'early', label: 'Too early', detail: 'Send MCP prompts — activity shows after use.' };
     }
   } else if (id === 'compress') {
-    impactKind = 'none';
-    impactPrimary = 'Coming soon — not shipped yet';
-    verdict = { kind: 'neutral', label: 'Unavailable', detail: 'Bash output compression is on the roadmap.' };
+    impactKind = 'cost';
+    if (count > 0) {
+      impactPrimary = 'Saved ~' + pipeFmtTok((tokens || 0) * 4) + ' chars from tool output today';
+      verdict = { kind: 'saving', label: 'Active', detail: 'PostToolUse compression trims large tool results. SGR keeps lines that match your current task when enabled.' };
+    } else if (enabled) {
+      impactPrimary = 'Ready for large tool output';
+      verdict = { kind: 'early', label: 'Armed', detail: 'Compression runs when a tool returns more text than your budget.' };
+    } else {
+      impactPrimary = 'Disabled in config';
+      verdict = { kind: 'neutral', label: 'Off', detail: 'Set compress_enabled = true in ~/.ctx/config.toml.' };
+    }
   } else if (id === 'behavior' && hookOnly) {
     impactKind = 'quality';
     impactPrimary = 'Not available on hook-only installs';

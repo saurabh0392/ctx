@@ -252,7 +252,7 @@ mod tests {
         let mut cfg = Config::load();
         cfg.monthly_budget_usd = Some(100.0);
         cfg.save().unwrap();
-        let big = "z".repeat(12_000_000);
+        let big = "z".repeat(35_000_000);
         assert!(hard_block_reason_for_prompt(&big).is_some());
         match prev {
             Some(v) => std::env::set_var("CTX_HOME", v),

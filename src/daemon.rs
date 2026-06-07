@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub const PROXY_LABEL: &str = "com.ctx.proxy";
 pub const DASHBOARD_LABEL: &str = "com.ctx.dashboard";
 pub const INGEST_LABEL: &str = "com.ctx.ingest";
+pub const EXPERIMENT_TICK_LABEL: &str = "com.ctx.experiment-tick";
 
 fn ctx_binary() -> String {
     // Use the path of the currently-running binary so plist entries stay correct
@@ -213,6 +214,20 @@ pub fn bootstrap_ingest() -> Result<()> {
     return linux::daemon_reload_and_enable(&["ctx-ingest.timer"]);
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
+        Ok(())
+    }
+}
+
+pub fn install_experiment_tick() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    return macos::write_experiment_tick_plist();
+    #[cfg(not(target_os = "macos"))]
+    {
+        println!(
+            "  {} Daily experiment tick is not auto-installed on this OS.",
+            "i".yellow()
+        );
+        println!("  Add a cron job: 0 9 * * * $(which ctx) experiment tick");
         Ok(())
     }
 }
@@ -469,6 +484,75 @@ mod macos {
         Ok(())
     }
 
+    pub fn write_experiment_tick_plist() -> Result<()> {
+        let bin = ctx_binary();
+        let log_dir = crate::config::ctx_dir();
+        std::fs::create_dir_all(&log_dir)?;
+        let stdout_log = log_dir.join("experiment-tick.stdout.log");
+        let stderr_log = log_dir.join("experiment-tick.stderr.log");
+
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{EXPERIMENT_TICK_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bin}</string>
+        <string>experiment</string>
+        <string>tick</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{stdout}</string>
+    <key>StandardErrorPath</key>
+    <string>{stderr}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{home}</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cargo_bin}</string>
+    </dict>
+</dict>
+</plist>"#,
+            stdout = stdout_log.display(),
+            stderr = stderr_log.display(),
+            home = home_display(),
+            cargo_bin = cargo_bin_display(),
+        );
+
+        let p = plist_path(EXPERIMENT_TICK_LABEL);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&p, &plist)?;
+        println!("  Written {}", p.display());
+
+        let domain = format!("gui/{}", uid());
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &domain, p.to_str().unwrap_or("")])
+            .status();
+        let status = std::process::Command::new("launchctl")
+            .args(["bootstrap", &domain, p.to_str().unwrap_or("")])
+            .status()
+            .context("launchctl bootstrap failed for experiment tick")?;
+        if !status.success() {
+            eprintln!("  Warning: experiment tick launchd failed to load. Run `ctx experiment tick` manually.");
+        } else {
+            println!("  ✓ Daily experiment tick scheduled for 09:00");
+        }
+        Ok(())
+    }
+
     fn bootout_bootstrap(label: &str, friendly: &str) -> Result<()> {
         let p = plist_path(label);
         let domain = format!("gui/{}", uid());
@@ -555,6 +639,7 @@ mod macos {
             (PROXY_LABEL, "proxy"),
             (DASHBOARD_LABEL, "dashboard"),
             (INGEST_LABEL, "ingest"),
+            (EXPERIMENT_TICK_LABEL, "experiment-tick"),
         ] {
             let p = plist_path(label);
             if p.exists() {

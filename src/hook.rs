@@ -44,7 +44,7 @@ fn spawn_dashboard_push(dashboard_port: u16, kind: &str) {
     });
 }
 
-fn find_claude_session_jsonl(session_id: &str) -> Option<std::path::PathBuf> {
+pub fn find_claude_session_jsonl(session_id: &str) -> Option<std::path::PathBuf> {
     let home = dirs::home_dir()?;
     let projects = home.join(".claude").join("projects");
     let rd = std::fs::read_dir(&projects).ok()?;
@@ -66,7 +66,7 @@ fn find_claude_session_jsonl(session_id: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-fn human_text_from_user_json_line(v: &Value) -> Option<String> {
+pub fn human_text_from_user_json_line(v: &Value) -> Option<String> {
     if v.get("type").and_then(|x| x.as_str()) != Some("user") {
         return None;
     }
@@ -124,6 +124,58 @@ fn tail_user_texts_from_jsonl(path: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// Last assistant prose line from a session JSONL tail scan (for Stop-hook recovery).
+pub fn latest_assistant_text_for_session(session_id: &str) -> Option<String> {
+    let path = find_claude_session_jsonl(session_id)?;
+    tail_assistant_text_from_jsonl(&path)
+}
+
+fn tail_assistant_text_from_jsonl(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let len = meta.len();
+    let mut f = std::fs::File::open(path).ok()?;
+    let start = len.saturating_sub(JSONL_TAIL_BYTES);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return None;
+    }
+    let mut buf = String::new();
+    if f.read_to_string(&mut buf).is_err() {
+        return None;
+    }
+    let mut lines: Vec<&str> = buf.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let mut last_text: Option<String> = None;
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let type_ = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if type_ != "assistant" {
+            continue;
+        }
+        let Some(msg) = v.get("message") else { continue };
+        let Some(content) = msg.get("content") else { continue };
+        if let Some(arr) = content.as_array() {
+            for item in arr {
+                if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(txt) = item.get("text").and_then(|t| t.as_str()) {
+                        if !txt.trim().is_empty() {
+                            last_text = Some(txt.to_string());
+                        }
+                    }
+                }
+            }
+        } else if let Some(s) = content.as_str() {
+            if !s.trim().is_empty() {
+                last_text = Some(s.to_string());
+            }
+        }
+    }
+    last_text
 }
 
 /// Prior user rows from session JSONL (tail scan), plus the in-flight prompt as the last turn.
@@ -196,7 +248,11 @@ fn record_hook_trace(
     budget_blocked: bool,
     pinned_profile: Option<&str>,
     effective_profile: Option<&str>,
+    prompt: &str,
+    tools_expanded: &[crate::semantic_tools::ToolExpansionEntry],
 ) {
+    let expansions_json =
+        serde_json::to_string(tools_expanded).unwrap_or_else(|_| "[]".to_string());
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
         let _ = crate::db::insert_hook_trace(
@@ -221,6 +277,8 @@ fn record_hook_trace(
             budget_blocked,
             pinned_profile,
             effective_profile,
+            Some(prompt),
+            Some(&expansions_json),
         );
         let port = crate::config::Config::load().dashboard_port.unwrap_or(8789);
         spawn_dashboard_push(port, "hook_trace");
@@ -253,6 +311,9 @@ pub fn user_prompt_submit() -> Result<()> {
                 inject: true,
                 adaptive: true,
                 coaching: true,
+                compress: true,
+                compress_sgr: true,
+                tool_mix: true,
             },
             None,
         )
@@ -282,10 +343,18 @@ pub fn user_prompt_submit() -> Result<()> {
         "all"
     };
     let mut trace_profile = filter_profile.to_string();
+    let mut trace_expansions: Vec<crate::semantic_tools::ToolExpansionEntry> = Vec::new();
 
     if cfg.filter_mode == crate::config::FilterMode::Soft {
         if ab.profile {
-            crate::filter_control::hook_sync_profile(filter_profile, prompt, cwd, true)?;
+            let run_semantic_mix = cfg.semantic_tool_mix_enabled && ab.tool_mix;
+            trace_expansions = crate::filter_control::hook_sync_profile(
+                filter_profile,
+                prompt,
+                cwd,
+                true,
+                run_semantic_mix,
+            )?;
             cfg = crate::config::Config::load();
             trace_profile = cfg.active_profile.as_deref().unwrap_or("all").to_string();
         } else {
@@ -328,6 +397,8 @@ pub fn user_prompt_submit() -> Result<()> {
             true,
             Some(active.as_str()),
             trace_effective,
+            prompt,
+            &trace_expansions,
         );
         let out = json!({
             "decision": "block",
@@ -372,6 +443,8 @@ pub fn user_prompt_submit() -> Result<()> {
                 false,
                 Some(active.as_str()),
                 trace_effective,
+                prompt,
+                &trace_expansions,
             );
             let out = json!({
                 "decision": "block",
@@ -466,6 +539,8 @@ pub fn user_prompt_submit() -> Result<()> {
         budget_blocked,
         Some(active.as_str()),
         trace_effective,
+        prompt,
+        &trace_expansions,
     );
 
     if extra.trim().is_empty() {

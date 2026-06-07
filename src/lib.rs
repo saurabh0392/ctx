@@ -1,38 +1,49 @@
 //! ctx library surface for integration tests and the `ctx` binary.
 
 pub mod ab;
+pub mod agent;
 pub mod allowance;
 pub mod analytics;
 pub mod adaptive;
+pub mod bench;
 pub mod ca;
 pub mod behavior_guard;
 pub mod budget_guard;
 pub mod claude_settings;
 pub mod cli;
 pub mod coach;
+pub mod compress;
 pub mod config;
+pub mod context_ctl;
 pub mod conversations;
 pub mod dashboard;
 pub mod dashboard_push;
 pub mod daemon;
 pub mod db;
 pub mod embedder;
+pub mod experiment_plan;
 pub mod filter;
 pub mod filter_control;
 pub mod filter_hook;
 pub mod host;
 pub mod hook;
 pub mod inject;
+pub mod learn;
 pub mod profiles;
 pub mod semantic_tools;
 pub mod proxy;
 pub mod quality_guard;
+pub mod rule_signals;
 pub mod setup;
+pub mod surface;
 pub mod test_lock;
 pub mod mcp;
 pub mod modes;
+pub mod outcome_signals;
 pub mod simulate;
 pub mod socket;
+pub mod stats;
+pub mod tool_usage_analysis;
 pub mod tuning;
 pub mod user_profile;
 
@@ -48,8 +59,8 @@ pub fn ensure_tls_crypto_provider() {
 use anyhow::Result;
 use clap::Parser;
 use cli::{
-    Cli, Commands, ExperimentCommand, FilterCommand, HookCommand, InjectCommand, ModeCommand,
-    ProfileCommand, ProxyCommand,
+    BenchCommand, Cli, Commands, ContextCommand, ExperimentCommand, ExperimentPlanCommand,
+    FilterCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand, ProxyCommand,
 };
 
 pub async fn run() -> Result<()> {
@@ -123,6 +134,7 @@ pub async fn run() -> Result<()> {
         Commands::Dashboard { port, no_open } => dashboard::serve(port, no_open).await?,
         Commands::Hook { command } => match command {
             HookCommand::UserPromptSubmit => hook::user_prompt_submit()?,
+            HookCommand::PostToolUse => compress::post_tool_use()?,
         },
         Commands::Mcp => mcp::serve_stdio()?,
         Commands::Mode { name, command } => match command {
@@ -211,6 +223,25 @@ pub async fn run() -> Result<()> {
             ExperimentCommand::Status => tuning::print_experiment_status()?,
             ExperimentCommand::Apply => tuning::apply_recommendations()?,
             ExperimentCommand::Reset => tuning::reset_experiment()?,
+            ExperimentCommand::Tick { dry_run } => experiment_plan::run_tick(dry_run)?,
+            ExperimentCommand::Digest { json } => experiment_plan::run_digest(json)?,
+            ExperimentCommand::InstallSchedule => experiment_plan::install_schedule()?,
+            ExperimentCommand::Analyze { json } => {
+                let conn = crate::db::open_db()?;
+                crate::db::ensure_schema(&conn)?;
+                let analysis = crate::tool_usage_analysis::run(&conn)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&analysis)?);
+                } else {
+                    crate::tool_usage_analysis::print_human(&analysis);
+                }
+            }
+            ExperimentCommand::Plan { command } => match command {
+                ExperimentPlanCommand::Init { corpus, template } => {
+                    experiment_plan::plan_init(&corpus, &template)?
+                }
+                ExperimentPlanCommand::Status => experiment_plan::plan_status()?,
+            },
         },
         Commands::Filter { command } => match command {
             FilterCommand::Mode { mode } => {
@@ -221,6 +252,23 @@ pub async fn run() -> Result<()> {
             }
             FilterCommand::Expand { target } => filter_control::expand_session_target(&target)?,
             FilterCommand::ClearExpansion => filter_control::clear_session_expansion()?,
+        },
+        Commands::Context { command } => match command {
+            ContextCommand::Status { json } => context_ctl::status(json)?,
+            ContextCommand::Preset { value } => context_ctl::set_preset(&value)?,
+            ContextCommand::On => context_ctl::set_preset("safe")?,
+            ContextCommand::Off => context_ctl::set_preset("off")?,
+            ContextCommand::Learn { json } => learn::run(json)?,
+            ContextCommand::Labels { tool, limit, json } => {
+                context_ctl::labels(tool.as_deref(), limit, json)?
+            }
+            ContextCommand::Proof { tool, json } => context_ctl::proof(tool.as_deref(), json)?,
+            ContextCommand::Trial { tool, on, off } => {
+                context_ctl::trial(tool.as_deref(), on, off)?
+            }
+        },
+        Commands::Bench { command } => match command {
+            BenchCommand::Run { json } => bench::run(json)?,
         },
     }
 

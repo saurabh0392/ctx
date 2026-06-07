@@ -5,6 +5,115 @@ function fmtBytes(n) {
     return n + " B";
 }
 
+function bindSettingGateRows() {
+    document.querySelectorAll(".set-gate-row").forEach((row) => {
+        const input = row.querySelector('input[type="checkbox"]');
+        if (!input) return;
+        const sync = () => row.classList.toggle("is-on", input.checked);
+        input.addEventListener("change", sync);
+        sync();
+    });
+    const compress = document.getElementById("set-compress");
+    if (compress) compress.addEventListener("change", syncCompressSgrState);
+    syncCompressSgrState();
+}
+
+function syncCompressSgrState() {
+    const compress = document.getElementById("set-compress");
+    const sgrRow = document.getElementById("set-compress-sgr-row");
+    const sgr = document.getElementById("set-compress-sgr");
+    if (!compress || !sgrRow) return;
+    sgrRow.classList.toggle("is-disabled", !compress.checked);
+    if (!compress.checked && sgr) {
+        sgr.checked = false;
+        sgrRow.classList.remove("is-on");
+    }
+}
+
+function countGatesOn(s) {
+    let n = 0;
+    if (s.auto_profile_enabled) n++;
+    if (s.inject_enabled !== false) n++;
+    if (s.coaching_enabled !== false) n++;
+    if (s.adaptive_prefix_enabled !== false) n++;
+    if (s.compress_enabled !== false) n++;
+    if (s.compress_sgr_enabled) n++;
+    return n;
+}
+
+function renderSettingsHero(s, activeProfileName) {
+    const body = document.getElementById("set-hero-body");
+    const pills = document.getElementById("set-hero-pills");
+    if (!body || !pills) return;
+    const prof = activeProfileName || s.active_profile || "all";
+    const gates = countGatesOn(s);
+    const compressOn = s.compress_enabled !== false;
+    const ab = s.ab_test || {};
+    const expActive =
+        ab.profile_pct < 100 ||
+        ab.inject_pct < 100 ||
+        ab.adaptive_pct < 100 ||
+        ab.coaching_pct < 100 ||
+        (ab.compress_pct != null && ab.compress_pct < 100) ||
+        (ab.compress_sgr_pct != null && ab.compress_sgr_pct < 100);
+    body.innerHTML =
+        `Profile <strong>${esc(prof)}</strong>. ` +
+        `<strong>${gates}</strong> gate${gates === 1 ? "" : "s"} on. ` +
+        (compressOn ?
+            "Output compression armed for large tool results." :
+            "Output compression off.") +
+        (expActive ?
+            " An experiment is splitting traffic on some prompts." :
+            "");
+    const pillData = [
+        ["Profile", prof],
+        ["Gates on", String(gates)],
+        ["Compress", compressOn ? "on" : "off"],
+        ["SGR", s.compress_sgr_enabled ? "on" : "off"],
+        ["Experiment", expActive ? "active" : "off"],
+        ["Prompt storage", s.store_prompt_text ? "on" : "off"],
+    ];
+    pills.innerHTML = pillData
+        .map(
+            ([label, val]) =>
+            `<span class="narrative-pill">${esc(label)} <span>${esc(val)}</span></span>`,
+        )
+        .join("");
+}
+
+function renderSettingsDataGrid(s, rc, files) {
+    const box = document.getElementById("set-data-body");
+    if (!box) return;
+    const fileList =
+        files ||
+        `<li>(empty)</li>`;
+    box.innerHTML = `
+    <div class="set-data-stat">
+      <div class="set-data-stat-label">ctx home</div>
+      <div class="set-data-stat-val"><code>${esc(s.ctx_home)}</code></div>
+    </div>
+    <div class="set-data-stat">
+      <div class="set-data-stat-label">Database</div>
+      <div class="set-data-stat-val">${fmtBytes(s.db_size_bytes || 0)}</div>
+      <div class="set-data-stat-sub">Last ingest ${esc(s.last_ingest_at || "never")}</div>
+    </div>
+    <div class="set-data-stat">
+      <div class="set-data-stat-label">Indexed rows</div>
+      <div class="set-data-stat-val">${(rc.sessions || 0).toLocaleString()} sessions</div>
+      <div class="set-data-stat-sub">${(rc.turns || 0).toLocaleString()} turns, ${(rc.tool_invocations || 0).toLocaleString()} tools, ${(rc.requests || 0).toLocaleString()} requests</div>
+    </div>
+    <div class="set-data-stat">
+      <div class="set-data-stat-label">Privacy</div>
+      <div class="set-data-stat-val">${s.store_prompt_text ? "Prompts stored" : "Prompts not stored"}</div>
+      <div class="set-data-stat-sub">${s.embeddings_enabled !== false ? "Embeddings on" : "Embeddings off"}</div>
+    </div>
+    <div class="set-data-stat set-data-wide">
+      <div class="set-data-stat-label">Files under ctx home</div>
+      <ul class="set-data-files">${fileList}</ul>
+      <div class="set-data-stat-sub" style="margin-top:10px">Reads <code>~/.claude/projects/**/*.jsonl</code>. No telemetry. Chart.js loads from a CDN for charts only.</div>
+    </div>`;
+}
+
 async function loadSettingsTab() {
     const box = document.getElementById("set-data-body");
     if (box) box.textContent = "Loading…";
@@ -26,6 +135,10 @@ async function loadSettingsTab() {
         if (setCoach) setCoach.checked = s.coaching_enabled !== false;
         const setAdapt = document.getElementById("set-adaptive");
         if (setAdapt) setAdapt.checked = s.adaptive_prefix_enabled !== false;
+        const setCompress = document.getElementById("set-compress");
+        if (setCompress) setCompress.checked = s.compress_enabled !== false;
+        const setCompressSgr = document.getElementById("set-compress-sgr");
+        if (setCompressSgr) setCompressSgr.checked = !!s.compress_sgr_enabled;
         const setAdaptMax = document.getElementById("set-adaptive-max");
         if (setAdaptMax)
             setAdaptMax.value =
@@ -62,6 +175,8 @@ async function loadSettingsTab() {
         setPct("ab-inject-pct", ab.inject_pct);
         setPct("ab-adaptive-pct", ab.adaptive_pct);
         setPct("ab-coaching-pct", ab.coaching_pct);
+        setPct("ab-compress-pct", ab.compress_pct != null ? ab.compress_pct : 100);
+        setPct("ab-compress-sgr-pct", ab.compress_sgr_pct != null ? ab.compress_sgr_pct : 100);
         syncAbSliderLabels();
         const devCk = document.getElementById("set-dev-mode");
         if (devCk) devCk.checked = !!s.dev_mode;
@@ -92,28 +207,26 @@ async function loadSettingsTab() {
         document.getElementById("set-prefix").value = s.system_prefix_preview || "";
         const profs = await fetch("/api/profiles").then((r) => r.json());
         const sel = document.getElementById("set-profile");
+        const activeProf = (profs || []).find((p) => p.active);
         sel.innerHTML = (profs || [])
             .map(
                 (p) =>
                 `<option value="${esc(p.slug)}"${p.active ? " selected" : ""}>${esc(p.display || p.slug)}</option>`,
             )
             .join("");
+        renderSettingsHero(
+            s,
+            activeProf ? activeProf.display || activeProf.slug : s.active_profile,
+        );
         const rc = s.row_counts || {};
         const files = (s.files_under_ctx || [])
             .map(
                 (f) =>
-                `<li><code>${esc(f.name)}</code>. ${fmtBytes(f.size_bytes)}</li>`,
+                `<li><code>${esc(f.name)}</code> ${fmtBytes(f.size_bytes)}</li>`,
             )
             .join("");
-        box.innerHTML = `
-      <p><strong>ctx home:</strong> <code>${esc(s.ctx_home)}</code></p>
-      <p><strong>Database:</strong> ${fmtBytes(s.db_size_bytes || 0)}</p>
-      <p><strong>Last ingest:</strong> ${esc(s.last_ingest_at || "never")}</p>
-      <p><strong>Rows:</strong> sessions ${rc.sessions || 0}, turns ${rc.turns || 0}, tools ${rc.tool_invocations || 0}, embeddings ${rc.session_embeddings || 0}, requests ${rc.requests || 0}</p>
-      <p><strong>Prompt text stored:</strong> ${s.store_prompt_text ? "yes" : "no"}</p>
-      <p><strong>Reads:</strong> <code>~/.claude/projects/**/*.jsonl</code> (Claude Code logs)</p>
-      <p><strong>Files under ctx home:</strong></p><ul style="margin:6px 0;padding-left:20px">${files || "<li>(empty)</li>"}</ul>
-      <p><strong>Network:</strong> no telemetry from ctx. Chart.js loads from a CDN for charts only.</p>`;
+        renderSettingsDataGrid(s, rc, files || "<li>(empty)</li>");
+        bindSettingGateRows();
     } catch (e) {
         if (box) box.textContent = "Could not load settings: " + e;
     }
@@ -160,6 +273,8 @@ async function saveSettingsFiltering() {
         inject_enabled: document.getElementById("set-inject").checked,
         coaching_enabled: document.getElementById("set-coaching").checked,
         adaptive_prefix_enabled: document.getElementById("set-adaptive").checked,
+        compress_enabled: document.getElementById("set-compress").checked,
+        compress_sgr_enabled: document.getElementById("set-compress-sgr")?.checked ?? false,
         adaptive_prefix_max_chars: parseInt(document.getElementById("set-adaptive-max").value, 10) || 0,
         system_prefix: document.getElementById("set-prefix").value,
     };
@@ -242,6 +357,8 @@ function readAbTestFromSliders() {
         inject_pct: v("ab-inject-pct"),
         adaptive_pct: v("ab-adaptive-pct"),
         coaching_pct: v("ab-coaching-pct"),
+        compress_pct: v("ab-compress-pct"),
+        compress_sgr_pct: v("ab-compress-sgr-pct"),
     };
 }
 
@@ -251,6 +368,8 @@ function syncAbSliderLabels() {
         ["ab-inject-pct", "ab-inject-val"],
         ["ab-adaptive-pct", "ab-adaptive-val"],
         ["ab-coaching-pct", "ab-coaching-val"],
+        ["ab-compress-pct", "ab-compress-val"],
+        ["ab-compress-sgr-pct", "ab-compress-sgr-val"],
     ];
     const ab = readAbTestFromSliders();
     pairs.forEach(([sid, lid]) => {
@@ -264,7 +383,9 @@ function syncAbSliderLabels() {
         ab.profile_pct < 100 ||
         ab.inject_pct < 100 ||
         ab.adaptive_pct < 100 ||
-        ab.coaching_pct < 100;
+        ab.coaching_pct < 100 ||
+        ab.compress_pct < 100 ||
+        ab.compress_sgr_pct < 100;
     if (active) {
         banner.style.display = "block";
         banner.textContent =
@@ -298,6 +419,8 @@ async function startAbExperiment5050() {
         "ab-inject-pct",
         "ab-adaptive-pct",
         "ab-coaching-pct",
+        "ab-compress-pct",
+        "ab-compress-sgr-pct",
     ].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = "50";
@@ -312,6 +435,8 @@ async function stopAbExperiment() {
         "ab-inject-pct",
         "ab-adaptive-pct",
         "ab-coaching-pct",
+        "ab-compress-pct",
+        "ab-compress-sgr-pct",
     ].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = "100";

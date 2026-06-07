@@ -144,6 +144,22 @@ pub fn run(
 
     crate::ensure_tls_crypto_provider();
     crate::config::ensure_dir()?;
+    if crate::experiment_plan::restore_experiment_state_if_missing()? {
+        println!(
+            "{} Restored experiment plan from persistent backup (survives rm -rf ~/.ctx)",
+            "✓".green()
+        );
+        match crate::experiment_plan::ensure_pending_phase_applied() {
+            Ok(true) => println!(
+                "  Applied pending experiment phase from calendar (run `ctx experiment plan status`)"
+            ),
+            Ok(false) => {}
+            Err(e) => println!(
+                "  {} Could not apply experiment phase: {e}",
+                "!".yellow()
+            ),
+        }
+    }
     crate::filter_hook::write_filter_js()?;
 
     // Ensure soft filter mode default on fresh installs.
@@ -153,6 +169,7 @@ pub fn run(
             let mut cfg = crate::config::Config::load();
             cfg.filter_mode = crate::config::FilterMode::Soft;
             cfg.dashboard_port = Some(DASHBOARD_PORT);
+            cfg.experiment_hooks_enabled = true;
             let _ = cfg.save();
         }
     }
@@ -199,6 +216,15 @@ pub fn run(
             Ok(n) if n > 0 => println!("  Ingested {n} session file(s)"),
             Ok(_) => {}
             Err(e) => println!("  {} Ingest skipped: {e}", "!".yellow()),
+        }
+    }
+
+    if let Ok(conn) = crate::db::open_db() {
+        if crate::db::maybe_reset_stale_install_watermark(&conn).unwrap_or(false) {
+            println!(
+                "{} Cleared stale install watermark (indexed sessions predate reinstall)",
+                "✓".green()
+            );
         }
     }
 
@@ -249,6 +275,7 @@ pub fn run(
         let slug = cfg.active_profile.as_deref().unwrap_or("all");
         crate::config::install_statusline_script(DASHBOARD_PORT)?;
         crate::claude_settings::write_native_ctx_to_user_settings(slug, DASHBOARD_PORT)?;
+        let _ = crate::claude_settings::sync_experiment_hooks_from_config();
         println!();
         println!("  Filter:     soft (permissions.deny — MCP servers stay connected)");
         println!("  Hooks:      UserPromptSubmit + dashboard telemetry");
@@ -315,6 +342,19 @@ pub fn run(
 }
 
 pub fn uninstall() -> Result<()> {
+    if let Err(e) = crate::experiment_plan::backup_experiment_state() {
+        println!(
+            "{} Experiment backup skipped: {e}",
+            "!".yellow()
+        );
+    } else if crate::experiment_plan::plan_path().is_file() {
+        println!(
+            "{} Experiment plan backed up to {}",
+            "✓".green(),
+            crate::experiment_plan::persistent_experiment_dir().display()
+        );
+    }
+
     // Restore settings.json first so Claude Code is never left pointing at a dead proxy
     crate::proxy::uninstall()?;
 

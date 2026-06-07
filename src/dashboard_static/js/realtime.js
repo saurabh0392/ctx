@@ -12,9 +12,11 @@ function scheduleTraceRefresh() {
 
 function handleDashboardPush(ev) {
     if (!ev || !ev.kind) return;
-    loadSavings().catch(console.error);
     scheduleTraceRefresh();
-    if (window._psLoaded) loadPromptStats().catch(console.error);
+    const ctxTab = document.getElementById("tab-context");
+    if (ctxTab && ctxTab.classList.contains("active")) loadContext().catch(console.error);
+    const proofTab = document.getElementById("tab-proof");
+    if (proofTab && proofTab.classList.contains("active")) loadProof().catch(console.error);
     const pipeline = document.getElementById("tab-pipeline");
     if (pipeline && pipeline.classList.contains("active")) loadPipeline().catch(console.error);
     const profiles = document.getElementById("tab-profiles");
