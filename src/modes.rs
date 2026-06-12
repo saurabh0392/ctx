@@ -48,7 +48,10 @@ pub fn switch_mode(name: &str) -> Result<()> {
 
 pub fn save_current_as_mode(name: &str) -> Result<()> {
     let mut cfg = Config::load();
-    let profile = cfg.active_profile.clone().unwrap_or_else(|| "all".to_string());
+    let profile = cfg
+        .active_profile
+        .clone()
+        .unwrap_or_else(|| "all".to_string());
     cfg.modes.insert(
         name.to_string(),
         ModeConfig {

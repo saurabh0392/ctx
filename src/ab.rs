@@ -8,12 +8,7 @@ const AB_SALT: &str = "ctx-ab-v1";
 
 /// Stable per-request key for coin flips (survives hook subprocess restarts).
 pub fn request_key(session_id: Option<&str>, cwd: &str, prompt: &str) -> String {
-    format!(
-        "{}|{}|{}",
-        session_id.unwrap_or(""),
-        cwd,
-        prompt
-    )
+    format!("{}|{}|{}", session_id.unwrap_or(""), cwd, prompt)
 }
 
 /// Returns `true` for treatment (feature active), `false` for control (feature skipped).

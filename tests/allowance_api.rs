@@ -6,7 +6,13 @@ use harness::CtxHarness;
 use serial_test::serial;
 use std::time::Duration;
 
-fn seed_window(conn: &rusqlite::Connection, start: &str, count: usize, step_mins: i64, step_pct: f64) {
+fn seed_window(
+    conn: &rusqlite::Connection,
+    start: &str,
+    count: usize,
+    step_mins: i64,
+    step_pct: f64,
+) {
     let start_dt: chrono::DateTime<chrono::Utc> = start.parse().unwrap();
     for i in 0..count {
         let ts = (start_dt + chrono::Duration::minutes(step_mins * i as i64)).to_rfc3339();
@@ -71,8 +77,16 @@ async fn allowance_snapshot_post_and_current() {
         .await
         .expect("json");
     assert_eq!(cur["configured"], true);
-    assert_eq!(cur["windows"]["seven_day"]["used_pct"].as_f64().unwrap(), 34.0);
-    assert_eq!(cur["windows"]["seven_day"]["remaining_pct"].as_f64().unwrap(), 66.0);
+    assert_eq!(
+        cur["windows"]["seven_day"]["used_pct"].as_f64().unwrap(),
+        34.0
+    );
+    assert_eq!(
+        cur["windows"]["seven_day"]["remaining_pct"]
+            .as_f64()
+            .unwrap(),
+        66.0
+    );
 }
 
 #[test]

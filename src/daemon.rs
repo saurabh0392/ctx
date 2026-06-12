@@ -45,20 +45,21 @@ pub fn dashboard_ingest_summary(dashboard_port: u16, periodic_ingest: bool) -> S
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        format!(
-            "Install launchd/systemd: ctx dashboard (:{dashboard_port}){ingest_tail}"
-        )
+        format!("Install launchd/systemd: ctx dashboard (:{dashboard_port}){ingest_tail}")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        format!(
-            "Start ctx dashboard (:{dashboard_port}) in the background{ingest_tail}"
-        )
+        format!("Start ctx dashboard (:{dashboard_port}) in the background{ingest_tail}")
     }
 }
 
 /// Human-readable description for `ctx setup` preview lines.
-pub fn background_services_summary(port: u16, upstream: &str, dashboard_port: u16, periodic_ingest: bool) -> String {
+pub fn background_services_summary(
+    port: u16,
+    upstream: &str,
+    dashboard_port: u16,
+    periodic_ingest: bool,
+) -> String {
     let ingest_tail = if periodic_ingest {
         ", periodic ingest (every 5 min)"
     } else {
@@ -281,12 +282,7 @@ fn try_spawn_proxy(port: u16, upstream: &str) -> Result<()> {
 fn try_spawn_dashboard(port: u16) -> Result<()> {
     let bin = ctx_binary();
     let _ = std::process::Command::new(&bin)
-        .args([
-            "dashboard",
-            "--port",
-            &port.to_string(),
-            "--no-open",
-        ])
+        .args(["dashboard", "--port", &port.to_string(), "--no-open"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -610,7 +606,9 @@ mod macos {
         if status.success() {
             println!("  launchd dashboard bootstrapped ({DASHBOARD_LABEL})");
         } else {
-            eprintln!("  Warning: dashboard launchd failed to start. Run `ctx dashboard` manually.");
+            eprintln!(
+                "  Warning: dashboard launchd failed to start. Run `ctx dashboard` manually."
+            );
         }
         Ok(())
     }

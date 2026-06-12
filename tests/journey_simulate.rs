@@ -24,11 +24,7 @@ adaptive_prefix_enabled = true
         "You are a helpful assistant.\n",
     )
     .unwrap();
-    std::fs::write(
-        h.tmp.path().join("adaptive_prefix.md"),
-        "Use typescript.\n",
-    )
-    .unwrap();
+    std::fs::write(h.tmp.path().join("adaptive_prefix.md"), "Use typescript.\n").unwrap();
     {
         let conn = h.open();
         conn.execute(
@@ -38,9 +34,11 @@ adaptive_prefix_enabled = true
         )
         .unwrap();
         let sid: i64 = conn
-            .query_row("SELECT id FROM sessions WHERE external_key='sim-seed'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='sim-seed'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         conn.execute(
             "INSERT INTO turns (session_id, turn_index, role, human_text_prefix, ts)
@@ -49,7 +47,9 @@ adaptive_prefix_enabled = true
         )
         .unwrap();
         let tid: i64 = conn
-            .query_row("SELECT id FROM turns WHERE session_id=?1", [sid], |r| r.get(0))
+            .query_row("SELECT id FROM turns WHERE session_id=?1", [sid], |r| {
+                r.get(0)
+            })
             .unwrap();
         for i in 0..20 {
             conn.execute(
@@ -71,7 +71,14 @@ adaptive_prefix_enabled = true
 
     let bin = option_env!("CARGO_BIN_EXE_ctx").expect("ctx binary");
     let out = Command::new(bin)
-        .args(["simulate", "--prompt", "fix the bug", "--cwd", "/tmp", "--json"])
+        .args([
+            "simulate",
+            "--prompt",
+            "fix the bug",
+            "--cwd",
+            "/tmp",
+            "--json",
+        ])
         .env("CTX_HOME", h.tmp.path())
         .output()
         .unwrap();
@@ -115,7 +122,10 @@ fn journey_simulate_all_profiles() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let arr = v.as_array().expect("array of profiles");
     assert!(arr.len() >= 2);
-    let all_entry = arr.iter().find(|r| r["profile_slug"] == "all").expect("all profile");
+    let all_entry = arr
+        .iter()
+        .find(|r| r["profile_slug"] == "all")
+        .expect("all profile");
     assert_eq!(all_entry["tools_removed"].as_u64().unwrap(), 0);
 }
 

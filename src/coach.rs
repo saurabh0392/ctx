@@ -5,24 +5,38 @@
 /// No LLM calls -- purely rule-based over conversation structure.
 
 const CORRECTION_PHRASES: &[&str] = &[
-    "no,", "no that", "no -", "nope", "that's wrong", "thats wrong",
-    "not that", "actually,", "wait,", "stop,", "that is wrong",
-    "incorrect", "you misunderstood", "wrong,", "thats not right",
-    "that's not right", "not what i", "not what I", "that's not what",
-    "thats not what", "you're wrong", "youre wrong",
+    "no,",
+    "no that",
+    "no -",
+    "nope",
+    "that's wrong",
+    "thats wrong",
+    "not that",
+    "actually,",
+    "wait,",
+    "stop,",
+    "that is wrong",
+    "incorrect",
+    "you misunderstood",
+    "wrong,",
+    "thats not right",
+    "that's not right",
+    "not what i",
+    "not what I",
+    "that's not what",
+    "thats not what",
+    "you're wrong",
+    "youre wrong",
 ];
 
 const STOP_WORDS: &[&str] = &[
-    "the", "a", "an", "and", "or", "but", "is", "are", "was", "were",
-    "be", "been", "being", "have", "has", "had", "do", "does", "did",
-    "will", "would", "could", "should", "may", "might", "shall", "can",
-    "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-    "into", "through", "during", "before", "after", "above", "below",
-    "i", "you", "it", "this", "that", "they", "we", "he", "she",
-    "my", "your", "its", "their", "our", "me", "him", "her", "us",
-    "what", "how", "why", "when", "where", "which", "who",
-    "just", "also", "now", "up", "out", "so", "if", "then",
-    "please", "ok", "okay", "yes", "no", "not", "don't", "cant",
+    "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might",
+    "shall", "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into",
+    "through", "during", "before", "after", "above", "below", "i", "you", "it", "this", "that",
+    "they", "we", "he", "she", "my", "your", "its", "their", "our", "me", "him", "her", "us",
+    "what", "how", "why", "when", "where", "which", "who", "just", "also", "now", "up", "out",
+    "so", "if", "then", "please", "ok", "okay", "yes", "no", "not", "don't", "cant",
 ];
 
 pub struct CoachSignal {
@@ -47,8 +61,7 @@ pub fn detect(messages: &[serde_json::Value]) -> Option<CoachSignal> {
         .map(|m| extract_text(m))
         .collect();
 
-    detect_correction_cascade(&user_texts)
-        .or_else(|| detect_reask(&user_texts))
+    detect_correction_cascade(&user_texts).or_else(|| detect_reask(&user_texts))
 }
 
 /// Parse the `messages` array from a raw Anthropic request body and call detect().
@@ -83,10 +96,7 @@ pub fn severe_correction_fatigue_reason(user_texts: &[String]) -> Option<String>
 
 fn detect_correction_cascade(user_texts: &[String]) -> Option<CoachSignal> {
     let window: Vec<&String> = user_texts.iter().rev().take(6).collect();
-    let count = window
-        .iter()
-        .filter(|t| has_correction_phrase(t))
-        .count();
+    let count = window.iter().filter(|t| has_correction_phrase(t)).count();
 
     if count >= 2 {
         Some(CoachSignal {
@@ -180,7 +190,9 @@ fn extract_text(message: &serde_json::Value) -> String {
             .iter()
             .filter_map(|b| {
                 if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                    b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                    b.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
                 } else {
                     None
                 }
@@ -301,7 +313,10 @@ mod tests {
             "Can you explain how the carrier integration factory handles errors for label generation?".to_string(),
         ];
         let result = detect_reask(&texts);
-        assert!(result.is_some(), "expected reask signal for high-overlap rephrasing");
+        assert!(
+            result.is_some(),
+            "expected reask signal for high-overlap rephrasing"
+        );
     }
 
     #[test]
@@ -367,23 +382,33 @@ mod tests {
 
     #[test]
     fn jaccard_identical_sets() {
-        let a: std::collections::HashSet<String> =
-            ["carrier", "integration", "factory"].iter().map(|s| s.to_string()).collect();
+        let a: std::collections::HashSet<String> = ["carrier", "integration", "factory"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let b = a.clone();
         assert!((jaccard(&a, &b) - 1.0).abs() < 0.001);
     }
 
     #[test]
     fn jaccard_disjoint_sets() {
-        let a: std::collections::HashSet<String> = ["foo", "bar"].iter().map(|s| s.to_string()).collect();
-        let b: std::collections::HashSet<String> = ["baz", "qux"].iter().map(|s| s.to_string()).collect();
+        let a: std::collections::HashSet<String> =
+            ["foo", "bar"].iter().map(|s| s.to_string()).collect();
+        let b: std::collections::HashSet<String> =
+            ["baz", "qux"].iter().map(|s| s.to_string()).collect();
         assert!((jaccard(&a, &b) - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn jaccard_partial_overlap() {
-        let a: std::collections::HashSet<String> = ["carrier", "label", "error"].iter().map(|s| s.to_string()).collect();
-        let b: std::collections::HashSet<String> = ["carrier", "label", "retry"].iter().map(|s| s.to_string()).collect();
+        let a: std::collections::HashSet<String> = ["carrier", "label", "error"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let b: std::collections::HashSet<String> = ["carrier", "label", "retry"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         // intersection=2, union=4 => 0.5
         let sim = jaccard(&a, &b);
         assert!(sim > 0.49 && sim < 0.51, "expected ~0.5, got {sim}");

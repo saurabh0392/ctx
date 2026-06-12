@@ -107,7 +107,10 @@ impl HostAdapter for IdeHost {
         };
         match self.kind {
             IdeKind::Cursor => vec![home.join(".cursor").join("mcp.json")],
-            IdeKind::Windsurf => vec![home.join(".codeium").join("windsurf").join("mcp_config.json")],
+            IdeKind::Windsurf => vec![home
+                .join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json")],
             IdeKind::VsCode | IdeKind::Generic => Vec::new(),
         }
     }
@@ -246,7 +249,12 @@ mod tests {
     #[test]
     #[serial]
     fn detect_desktop_standalone_when_desktop_dir_and_no_settings() {
-        let _env = ClearHostEnv::new(&["CURSOR_TRACE_ID", "VSCODE_PID", "WINDSURF_SESSION", "TERM_PROGRAM"]);
+        let _env = ClearHostEnv::new(&[
+            "CURSOR_TRACE_ID",
+            "VSCODE_PID",
+            "WINDSURF_SESSION",
+            "TERM_PROGRAM",
+        ]);
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         #[cfg(target_os = "macos")]
@@ -272,7 +280,12 @@ mod tests {
     #[test]
     #[serial]
     fn detect_terminal_when_desktop_and_cli_settings_exist() {
-        let _env = ClearHostEnv::new(&["CURSOR_TRACE_ID", "VSCODE_PID", "WINDSURF_SESSION", "TERM_PROGRAM"]);
+        let _env = ClearHostEnv::new(&[
+            "CURSOR_TRACE_ID",
+            "VSCODE_PID",
+            "WINDSURF_SESSION",
+            "TERM_PROGRAM",
+        ]);
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         #[cfg(target_os = "macos")]

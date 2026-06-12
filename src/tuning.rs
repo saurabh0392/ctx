@@ -84,7 +84,12 @@ fn cohort_metrics(
     ))
 }
 
-fn build_verdict(feature: &str, _letter: char, t: (u64, f64, f64), c: (u64, f64, f64)) -> FeatureVerdict {
+fn build_verdict(
+    feature: &str,
+    _letter: char,
+    t: (u64, f64, f64),
+    c: (u64, f64, f64),
+) -> FeatureVerdict {
     let label = feature_label(feature);
     let delta = if c.1 > 0.0 {
         Some(((t.1 - c.1) / c.1) * 100.0)

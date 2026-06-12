@@ -430,7 +430,10 @@ impl CompressPreset {
     pub fn allows_kind(self, kind: &str) -> bool {
         match self {
             Self::Off => false,
-            Self::Safe => matches!(kind, "git-status" | "git-diff" | "git-log" | "test" | "grep"),
+            Self::Safe => matches!(
+                kind,
+                "git-status" | "git-diff" | "git-log" | "test" | "grep"
+            ),
             Self::Full => true,
         }
     }
@@ -595,6 +598,22 @@ pub struct Config {
     /// turning it off is an experiment knob to measure how much harm the guard prevents.
     #[serde(default = "default_true")]
     pub compress_read_edit_guard: bool,
+    /// Thinking-intent signal for Read (ADR 0004 / CTX-11). When on, the controller reads the
+    /// agent's most recent extended-thinking from the session transcript and protects a Read the
+    /// static guard would trim if that thinking shows edit-intent for the file. Claude Code only;
+    /// purely protective (it never trims more). The signal is also recorded in shadow features so
+    /// its real-world prevalence can be measured before it is relied on.
+    #[serde(default = "default_true")]
+    pub compress_intent_log: bool,
+    /// Randomized exploration rate for Phase 2 per-decision proof (ADR 0009 / CTX-15). On each
+    /// trim-eligible decision (a tool that would actually drop lines under a trial or after
+    /// activation), with this probability ctx leaves the output untrimmed and tags it as a control
+    /// sample. The rest are tagged treatment. Comparing the two arms gives an unbiased, per-tool
+    /// causal estimate of trimming on the user's own work, which is the only honest way to let the
+    /// model earn slices later. Cost is forgone savings on the control fraction, never added risk.
+    /// 0.0 disables exploration. Default 0.20.
+    #[serde(default = "default_explore_rate")]
+    pub compress_explore_rate: f64,
     /// Session-grounded retention (v2): score lines by task frame after v1 format pass.
     #[serde(default)]
     pub compress_sgr_enabled: bool,
@@ -730,16 +749,18 @@ fn default_compress_target_chars() -> usize {
 }
 
 fn default_compress_tools() -> Vec<String> {
-    vec![
-        "Bash".into(),
-        "Read".into(),
-        "Grep".into(),
-        "Glob".into(),
-    ]
+    vec!["Bash".into(), "Read".into(), "Grep".into(), "Glob".into()]
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Default randomized-exploration rate for Phase 2 (ADR 0009). The fraction of trim-eligible
+/// decisions ctx deliberately leaves untrimmed to build an unbiased control arm. Only forgone
+/// savings, never added risk, and only fires where a tool would already trim.
+fn default_explore_rate() -> f64 {
+    0.20
 }
 
 impl Default for AbTestConfig {
@@ -803,6 +824,11 @@ impl Config {
                 compress_shadow_enabled: true,
                 // Safety guard on by default (ADR 0001): never trim a Read the agent may edit.
                 compress_read_edit_guard: true,
+                // Thinking-intent signal on by default (ADR 0004): protective and self-measuring.
+                compress_intent_log: true,
+                // Phase 2 randomized exploration on by default (ADR 0009). Harmless until a tool
+                // actually trims; then it forgoes savings on a fraction to earn unbiased proof.
+                compress_explore_rate: default_explore_rate(),
                 experiment_hooks_enabled: true,
                 ..Default::default()
             }
@@ -818,6 +844,8 @@ impl Config {
                     compress_enabled: true,
                     compress_shadow_enabled: true,
                     compress_read_edit_guard: true,
+                    compress_intent_log: true,
+                    compress_explore_rate: default_explore_rate(),
                     experiment_hooks_enabled: true,
                     ..Default::default()
                 })

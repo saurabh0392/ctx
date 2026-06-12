@@ -29,7 +29,11 @@ fn autorun_summary(periodic_ingest: bool) -> String {
     #[cfg(target_os = "macos")]
     {
         if periodic_ingest {
-            format!("{}, {}", crate::daemon::DASHBOARD_LABEL, crate::daemon::INGEST_LABEL)
+            format!(
+                "{}, {}",
+                crate::daemon::DASHBOARD_LABEL,
+                crate::daemon::INGEST_LABEL
+            )
         } else {
             crate::daemon::DASHBOARD_LABEL.to_string()
         }
@@ -180,7 +184,10 @@ pub fn run(
         "i".cyan()
     );
     // Step 1: create default system_prefix.md if missing
-    println!("{} Step 1/4: Creating default system_prefix.md...", "->".cyan());
+    println!(
+        "{} Step 1/4: Creating default system_prefix.md...",
+        "->".cyan()
+    );
     let prefix_path = crate::config::system_prefix_path();
     if !prefix_path.exists() {
         std::fs::write(&prefix_path, DEFAULT_PREFIX)?;
@@ -192,19 +199,38 @@ pub fn run(
     // Step 1b: download MiniLM model files (onnx feature only, non-blocking)
     #[cfg(feature = "onnx")]
     {
-        if !crate::config::minilm_onnx_path().exists() || !crate::config::minilm_tokenizer_path().exists() {
-            println!("{} Downloading MiniLM embedding model (~30 MB)...", "->".cyan());
+        if !crate::config::minilm_onnx_path().exists()
+            || !crate::config::minilm_tokenizer_path().exists()
+        {
+            println!(
+                "{} Downloading MiniLM embedding model (~30 MB)...",
+                "->".cyan()
+            );
             match download_minilm_model() {
-                Ok(()) => println!("  {} Model files saved to {}", "✓".green(), crate::config::models_dir().display()),
-                Err(e) => println!("  {} Model download failed (similarity will use hash fallback): {e}", "!".yellow()),
+                Ok(()) => println!(
+                    "  {} Model files saved to {}",
+                    "✓".green(),
+                    crate::config::models_dir().display()
+                ),
+                Err(e) => println!(
+                    "  {} Model download failed (similarity will use hash fallback): {e}",
+                    "!".yellow()
+                ),
             }
         } else {
-            println!("{} MiniLM model already present at {}", "✓".green(), crate::config::models_dir().display());
+            println!(
+                "{} MiniLM model already present at {}",
+                "✓".green(),
+                crate::config::models_dir().display()
+            );
         }
     }
 
     // Step 2: ingest session history, generate profiles from MCP usage, pick default
-    println!("{} Step 2/4: Indexing history and building MCP profiles...", "->".cyan());
+    println!(
+        "{} Step 2/4: Indexing history and building MCP profiles...",
+        "->".cyan()
+    );
 
     let _ = crate::db::open_db().and_then(|c| {
         crate::db::ensure_schema(&c)?;
@@ -257,20 +283,29 @@ pub fn run(
     }
 
     println!();
-    println!("{} ctx dashboard running at http://127.0.0.1:{DASHBOARD_PORT}", "✓".green().bold());
+    println!(
+        "{} ctx dashboard running at http://127.0.0.1:{DASHBOARD_PORT}",
+        "✓".green().bold()
+    );
     if periodic_ingest {
         println!("{} ctx ingest running every 5 min", "✓".green().bold());
     }
     println!();
 
     if no_install {
-        println!("{} Skipped writing ~/.claude/settings.json (--no-install)", "i".yellow());
+        println!(
+            "{} Skipped writing ~/.claude/settings.json (--no-install)",
+            "i".yellow()
+        );
         println!();
         println!("Run:");
         println!("  ctx use <profile>");
         println!("Then reload Claude Code so hooks and filter rules apply.");
     } else if host.supports_node_options() {
-        println!("{} Wiring Claude Code (soft filter + hooks)...", "->".cyan());
+        println!(
+            "{} Wiring Claude Code (soft filter + hooks)...",
+            "->".cyan()
+        );
         let cfg = crate::config::Config::load();
         let slug = cfg.active_profile.as_deref().unwrap_or("all");
         crate::config::install_statusline_script(DASHBOARD_PORT)?;
@@ -286,13 +321,20 @@ pub fn run(
         println!();
         println!("Dashboard: open http://127.0.0.1:{DASHBOARD_PORT} to see spend, insights, and session similarity.");
     } else {
-        println!("{} Claude Desktop wiring (analytics + MCP only)...", "->".cyan());
+        println!(
+            "{} Claude Desktop wiring (analytics + MCP only)...",
+            "->".cyan()
+        );
         println!();
-        println!("  MCP tools:  registered in claude_desktop_config.json (quit + reopen to activate)");
+        println!(
+            "  MCP tools:  registered in claude_desktop_config.json (quit + reopen to activate)"
+        );
         println!("  Dashboard:  http://127.0.0.1:{DASHBOARD_PORT}");
         println!("  Autorun:    {}", autorun_summary(periodic_ingest));
         println!();
-        println!("  MCP filtering requires Claude Code (CLI or IDE). Desktop gets ingest + dashboard.");
+        println!(
+            "  MCP filtering requires Claude Code (CLI or IDE). Desktop gets ingest + dashboard."
+        );
         println!("  Install Claude Code and re-run `ctx setup` for soft filter + hooks.");
     }
 
@@ -317,7 +359,10 @@ pub fn run(
 
     let dashboard_url = format!("http://127.0.0.1:{DASHBOARD_PORT}");
     println!();
-    print!("{} Setup complete. Waiting for dashboard...", "✓".green().bold());
+    print!(
+        "{} Setup complete. Waiting for dashboard...",
+        "✓".green().bold()
+    );
     let _ = stdout().flush();
     let mut dashboard_ready = false;
     for _ in 0..20 {
@@ -343,10 +388,7 @@ pub fn run(
 
 pub fn uninstall() -> Result<()> {
     if let Err(e) = crate::experiment_plan::backup_experiment_state() {
-        println!(
-            "{} Experiment backup skipped: {e}",
-            "!".yellow()
-        );
+        println!("{} Experiment backup skipped: {e}", "!".yellow());
     } else if crate::experiment_plan::plan_path().is_file() {
         println!(
             "{} Experiment plan backed up to {}",
@@ -365,7 +407,10 @@ pub fn uninstall() -> Result<()> {
     strip_claude_settings_hooks_if_present()?;
 
     match crate::config::remove_user_ctx_from_cursor_known_mcp_ids() {
-        Ok(true) => println!("{} Cleared stale ctx entry from Cursor MCP cache", "✓".green()),
+        Ok(true) => println!(
+            "{} Cleared stale ctx entry from Cursor MCP cache",
+            "✓".green()
+        ),
         Ok(false) => {}
         Err(e) => println!(
             "{} Cursor MCP cache cleanup skipped (close Cursor and retry if needed): {}",
@@ -414,7 +459,11 @@ fn unwire_mcp_server() {
             if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
                 if crate::config::remove_ctx_from_mcp_servers(&mut doc) {
                     let _ = crate::config::write_json_atomic(&settings_path, &doc);
-                    println!("{} Removed ctx MCP server from {}", "✓".green(), settings_path.display());
+                    println!(
+                        "{} Removed ctx MCP server from {}",
+                        "✓".green(),
+                        settings_path.display()
+                    );
                 }
             }
         }
@@ -434,7 +483,11 @@ fn unwire_mcp_server() {
                 if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
                     if crate::config::remove_ctx_from_mcp_servers(&mut doc) {
                         let _ = crate::config::write_json_atomic(&mcp_path, &doc);
-                        println!("{} Removed ctx MCP server from {}", "✓".green(), mcp_path.display());
+                        println!(
+                            "{} Removed ctx MCP server from {}",
+                            "✓".green(),
+                            mcp_path.display()
+                        );
                     }
                 }
             }
@@ -446,7 +499,11 @@ fn unwire_mcp_server() {
                 if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
                     if crate::config::remove_ctx_from_mcp_servers(&mut doc) {
                         let _ = crate::config::write_json_atomic(&desktop_cfg, &doc);
-                        println!("{} Removed ctx MCP server from {}", "✓".green(), desktop_cfg.display());
+                        println!(
+                            "{} Removed ctx MCP server from {}",
+                            "✓".green(),
+                            desktop_cfg.display()
+                        );
                     }
                 }
             }
@@ -460,10 +517,15 @@ fn wire_mcp_server(host: &dyn crate::host::HostAdapter) -> Result<()> {
     let settings_path = crate::config::claude_settings_path();
     if settings_path.exists() {
         let text = std::fs::read_to_string(&settings_path).unwrap_or_default();
-        let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::json!({}));
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or(serde_json::json!({}));
         crate::config::merge_ctx_into_mcp_servers(&mut doc, &bin)?;
         crate::config::write_json_atomic(&settings_path, &doc)?;
-        println!("{} Registered ctx MCP server in {}", "✓".green(), settings_path.display());
+        println!(
+            "{} Registered ctx MCP server in {}",
+            "✓".green(),
+            settings_path.display()
+        );
     }
 
     for extra in host.mcp_extra_config_paths() {
@@ -478,7 +540,11 @@ fn wire_mcp_server(host: &dyn crate::host::HostAdapter) -> Result<()> {
             let _ = std::fs::create_dir_all(parent);
         }
         crate::config::write_json_atomic(&extra, &doc)?;
-        println!("{} Registered ctx MCP server in {}", "✓".green(), extra.display());
+        println!(
+            "{} Registered ctx MCP server in {}",
+            "✓".green(),
+            extra.display()
+        );
     }
 
     if crate::config::claude_desktop_installed() {
@@ -494,7 +560,11 @@ fn wire_mcp_server(host: &dyn crate::host::HostAdapter) -> Result<()> {
                 let _ = std::fs::create_dir_all(parent);
             }
             crate::config::write_json_atomic(&desktop_cfg, &doc)?;
-            println!("{} Registered ctx MCP server in {}", "✓".green(), desktop_cfg.display());
+            println!(
+                "{} Registered ctx MCP server in {}",
+                "✓".green(),
+                desktop_cfg.display()
+            );
         }
     }
 
@@ -510,7 +580,8 @@ fn download_minilm_model() -> Result<()> {
     let tok_path = crate::config::minilm_tokenizer_path();
 
     let onnx_url = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
-    let tok_url = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
+    let tok_url =
+        "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
 
     if !onnx_path.exists() {
         download_file(onnx_url, &onnx_path)?;

@@ -82,8 +82,10 @@ fn sessions_cost_in_day_span(
 pub fn baseline_comparison(plan: &ExperimentPlan) -> Option<BaselineComparison> {
     let (pre_start, pre_end) = phase_day_span(plan, "pre_ctx")?;
     let (on_start, on_end) = phase_day_span(plan, "ctx_warmup")?;
-    let (pre_turns, pre_spend) = sessions_cost_in_day_span(plan, &plan.corpus_path, pre_start, pre_end).ok()?;
-    let (on_turns, on_spend) = sessions_cost_in_day_span(plan, &plan.corpus_path, on_start, on_end).ok()?;
+    let (pre_turns, pre_spend) =
+        sessions_cost_in_day_span(plan, &plan.corpus_path, pre_start, pre_end).ok()?;
+    let (on_turns, on_spend) =
+        sessions_cost_in_day_span(plan, &plan.corpus_path, on_start, on_end).ok()?;
     let pre_avg = if pre_turns > 0 {
         Some(pre_spend / pre_turns as f64)
     } else {
@@ -286,9 +288,14 @@ pub fn restore_experiment_state_if_missing() -> Result<bool> {
 
 pub fn load_plan() -> Result<ExperimentPlan> {
     let path = plan_path();
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("read {} (run `ctx experiment plan init` first)", path.display()))?;
-    let mut plan: ExperimentPlan = toml::from_str(&content).context("parse experiment-plan.toml")?;
+    let content = std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "read {} (run `ctx experiment plan init` first)",
+            path.display()
+        )
+    })?;
+    let mut plan: ExperimentPlan =
+        toml::from_str(&content).context("parse experiment-plan.toml")?;
     if migrate_legacy_plan(&mut plan) {
         save_plan(&plan)?;
     }
@@ -422,10 +429,9 @@ pub fn plan_init(corpus: &str, template: &str) -> Result<()> {
         "tool-mix" => include_str!("../docs/experiment-plan.tool-mix.toml"),
         _ => include_str!("../docs/experiment-plan.gaffer.toml"),
     };
-    let content = raw.replace("__CORPUS__", corpus).replace(
-        "__STARTED_AT__",
-        &today.format("%Y-%m-%d").to_string(),
-    );
+    let content = raw
+        .replace("__CORPUS__", corpus)
+        .replace("__STARTED_AT__", &today.format("%Y-%m-%d").to_string());
     std::fs::write(plan_path(), &content)?;
     let plan: ExperimentPlan = toml::from_str(&content)?;
     save_plan(&plan)?;
@@ -457,7 +463,10 @@ pub fn plan_status() -> Result<()> {
     );
     println!("  started_at:  {}", plan.started_at);
     println!("  corpus:      {}", plan.corpus_path);
-    println!("  last phase:  {}", state.last_applied_phase.as_deref().unwrap_or("(none)"));
+    println!(
+        "  last phase:  {}",
+        state.last_applied_phase.as_deref().unwrap_or("(none)")
+    );
     if state.last_applied_phase.as_deref() != Some(phase.name.as_str()) {
         println!(
             "  ⚠ pending:   calendar is {} but config still on {} — run `ctx experiment tick`",
@@ -567,9 +576,13 @@ pub fn run_tick(dry_run: bool) -> Result<()> {
             let body = if phase.name == "pre_ctx" {
                 "Hooks off. Work normally — ingest records your without-ctx baseline. Reload your IDE.".to_string()
             } else if phase.name == "ctx_warmup" {
-                "Hooks back on. ctx is fully active before feature A/B tests. Reload your IDE.".to_string()
+                "Hooks back on. ctx is fully active before feature A/B tests. Reload your IDE."
+                    .to_string()
             } else if reload {
-                format!("Day {day}: entered phase {}. Reload your IDE if hooks changed.", phase.name)
+                format!(
+                    "Day {day}: entered phase {}. Reload your IDE if hooks changed.",
+                    phase.name
+                )
             } else {
                 format!("Day {day}: entered phase {}", phase.name)
             };
@@ -726,7 +739,11 @@ pub fn plan_for_dashboard() -> ExperimentPlanDashboard {
     let cfg = crate::config::Config::load();
     let hooks_enabled = cfg.experiment_hooks_enabled;
     let phase_applied = state.last_applied_phase.as_deref() == Some(phase.name.as_str());
-    let baseline_comparison = if day > phase_day_span(&plan, "pre_ctx").map(|(_, e)| e).unwrap_or(0) {
+    let baseline_comparison = if day
+        > phase_day_span(&plan, "pre_ctx")
+            .map(|(_, e)| e)
+            .unwrap_or(0)
+    {
         baseline_comparison(&plan)
     } else {
         None
@@ -799,7 +816,13 @@ fn build_digest_from(
     } else {
         None
     };
-    let one_liner = format_one_liner(day, phase, &sample_gates, stress.as_ref(), auto_profile.as_ref());
+    let one_liner = format_one_liner(
+        day,
+        phase,
+        &sample_gates,
+        stress.as_ref(),
+        auto_profile.as_ref(),
+    );
     Ok(ExperimentDigest {
         day,
         total_days: total,
@@ -857,7 +880,8 @@ fn sample_gates_for_phase(phase: &ExperimentPhase, verdicts: &[FeatureVerdict]) 
             treatment_count: f.treatment_count,
             control_count: f.control_count,
             min_per_arm: MIN_SAMPLES,
-            decisive: f.treatment_count >= MIN_SAMPLES as u64 && f.control_count >= MIN_SAMPLES as u64,
+            decisive: f.treatment_count >= MIN_SAMPLES as u64
+                && f.control_count >= MIN_SAMPLES as u64,
         }],
         None => vec![SampleGate {
             feature: name.to_string(),
@@ -985,7 +1009,9 @@ fn auto_profile_kpi(corpus_path: &str) -> Result<AutoProfileKpi> {
     let hook_params = rusqlite::params![likes.full, likes.basename, likes.basename_spaced];
 
     let total: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM hook_traces WHERE ts >= datetime('now', '-3 days') AND {wd}"),
+        &format!(
+            "SELECT COUNT(*) FROM hook_traces WHERE ts >= datetime('now', '-3 days') AND {wd}"
+        ),
         hook_params,
         |r| r.get(0),
     )?;
@@ -1044,8 +1070,7 @@ pub fn apply_phase_patch(patch: &PhaseConfigPatch) -> Result<()> {
     }
     if let Some(v) = patch.semantic_tool_mix_enabled {
         cfg.semantic_tool_mix_enabled = v;
-        if v
-            && cfg.semantic_tool_mix_min_similarity <= 0.0
+        if v && cfg.semantic_tool_mix_min_similarity <= 0.0
             && cfg.semantic_tool_mix_min_neighbor_fraction <= 0.0
             && cfg.semantic_tool_mix_top_k == 0
         {
@@ -1093,7 +1118,11 @@ fn print_digest(d: &ExperimentDigest) {
         );
     }
     for g in &d.sample_gates {
-        let status = if g.decisive { "decisive" } else { "need more samples" };
+        let status = if g.decisive {
+            "decisive"
+        } else {
+            "need more samples"
+        };
         println!(
             "  {} A/B: {}T / {}C — {}",
             g.feature, g.treatment_count, g.control_count, status
@@ -1186,7 +1215,10 @@ mod tests {
     #[test]
     fn current_day_and_phase_resolution() {
         let plan = sample_plan();
-        assert_eq!(current_day(&plan, NaiveDate::from_ymd_opt(2026, 5, 1).unwrap()), 1);
+        assert_eq!(
+            current_day(&plan, NaiveDate::from_ymd_opt(2026, 5, 1).unwrap()),
+            1
+        );
         assert_eq!(resolve_phase(&plan, 1).name, "pre_ctx");
         assert_eq!(resolve_phase(&plan, 3).name, "ctx_warmup");
         assert_eq!(resolve_phase(&plan, 5).name, "profile_ab");
@@ -1303,10 +1335,7 @@ mod tests {
             .find(|p| p.name == "compress_sgr_ab")
             .unwrap();
         assert_eq!(sgr.until_day, 15);
-        assert_eq!(
-            sgr.config.ab_test.as_ref().unwrap().compress_sgr_pct,
-            50
-        );
+        assert_eq!(sgr.config.ab_test.as_ref().unwrap().compress_sgr_pct, 50);
         let lock = plan.phases.iter().find(|p| p.name == "lock_in").unwrap();
         assert_eq!(lock.until_day, 16);
     }

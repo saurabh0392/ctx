@@ -103,8 +103,14 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         let reread = ordinals
             .iter()
             .any(|&o| o > call_ordinal && o <= window_end);
-        if crate::db::set_decision_outcome(conn, d.id, correction, reread, parsed.session.surface.as_str())
-            .is_ok()
+        if crate::db::set_decision_outcome(
+            conn,
+            d.id,
+            correction,
+            reread,
+            parsed.session.surface.as_str(),
+        )
+        .is_ok()
         {
             newly += 1;
         }

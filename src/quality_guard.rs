@@ -225,7 +225,9 @@ pub fn quality_alerts() -> Result<Vec<QualityAlert>> {
         "SELECT id, ts, from_profile, to_profile, servers_removed FROM profile_changes ORDER BY id DESC LIMIT 12",
     )?;
     let changes: Vec<(i64, String, String, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
         .collect::<Result<_, _>>()?;
 
     for (id, _ts, from_p, to_p, removed_json) in changes {

@@ -96,11 +96,18 @@ pub fn status(json: bool) -> Result<()> {
     }
 
     println!("ctx context controller");
-    println!("  preset: {}  (shadow collection: {})", s.preset, if s.shadow_enabled { "on" } else { "off" });
+    println!(
+        "  preset: {}  (shadow collection: {})",
+        s.preset,
+        if s.shadow_enabled { "on" } else { "off" }
+    );
     if s.trial_tools.is_empty() {
         println!("  live trim trial: none (no tool is being trimmed for the before/after)");
     } else {
-        println!("  live trim trial: {} (being trimmed live to collect the after arm)", s.trial_tools.join(", "));
+        println!(
+            "  live trim trial: {} (being trimmed live to collect the after arm)",
+            s.trial_tools.join(", ")
+        );
     }
     println!();
     println!("Learning");
@@ -163,7 +170,9 @@ pub fn proof(tool: Option<&str>, json: bool) -> Result<()> {
     }
 
     println!("Causal before/after for {scope}");
-    println!("We look only at runs where ctx wanted to trim. Baseline is when we left the output alone.");
+    println!(
+        "We look only at runs where ctx wanted to trim. Baseline is when we left the output alone."
+    );
     println!("Trimmed is when we actually cut it. A correction or re-read soon after is the cost of cutting.");
     println!("Trimming is safe for a tool only when the trimmed rate is not higher than baseline.");
     println!();
@@ -177,7 +186,13 @@ pub fn proof(tool: Option<&str>, json: bool) -> Result<()> {
             let br = r.baseline_rereads as f64 / r.baseline_n as f64;
             println!(
                 "  baseline (left alone)  n={:<4}  corrections {} [{}, {}]   re-reads {} [{}, {}]",
-                r.baseline_n, pct(bc), pct(bc_lo), pct(bc_hi), pct(br), pct(br_lo), pct(br_hi)
+                r.baseline_n,
+                pct(bc),
+                pct(bc_lo),
+                pct(bc_hi),
+                pct(br),
+                pct(br_lo),
+                pct(br_hi)
             );
         } else {
             println!("  baseline (left alone)  n=0     not yet");
@@ -190,13 +205,25 @@ pub fn proof(tool: Option<&str>, json: bool) -> Result<()> {
             let (tr_lo, tr_hi) = wilson_interval(r.trimmed_rereads, r.trimmed_n);
             println!(
                 "  trimmed (cut)          n={:<4}  corrections {} [{}, {}]   re-reads {} [{}, {}]",
-                r.trimmed_n, pct(tc), pct(tc_lo), pct(tc_hi), pct(tr), pct(tr_lo), pct(tr_hi)
+                r.trimmed_n,
+                pct(tc),
+                pct(tc_lo),
+                pct(tc_hi),
+                pct(tr),
+                pct(tr_lo),
+                pct(tr_hi)
             );
             let (dc, dc_lo, dc_hi) = newcombe_diff(
-                r.trimmed_corrections, r.trimmed_n, r.baseline_corrections, r.baseline_n,
+                r.trimmed_corrections,
+                r.trimmed_n,
+                r.baseline_corrections,
+                r.baseline_n,
             );
             let (dr, dr_lo, dr_hi) = newcombe_diff(
-                r.trimmed_rereads, r.trimmed_n, r.baseline_rereads, r.baseline_n,
+                r.trimmed_rereads,
+                r.trimmed_n,
+                r.baseline_rereads,
+                r.baseline_n,
             );
             let verdict = |lo: f64, hi: f64| -> &'static str {
                 if hi <= 0.0 {
@@ -209,15 +236,25 @@ pub fn proof(tool: Option<&str>, json: bool) -> Result<()> {
             };
             println!(
                 "  correction delta (trimmed minus baseline): {} [{}, {}]  {}",
-                signed_pct(dc), signed_pct(dc_lo), signed_pct(dc_hi), verdict(dc_lo, dc_hi)
+                signed_pct(dc),
+                signed_pct(dc_lo),
+                signed_pct(dc_hi),
+                verdict(dc_lo, dc_hi)
             );
             println!(
                 "  re-read delta:                              {} [{}, {}]  {}",
-                signed_pct(dr), signed_pct(dr_lo), signed_pct(dr_hi), verdict(dr_lo, dr_hi)
+                signed_pct(dr),
+                signed_pct(dr_lo),
+                signed_pct(dr_hi),
+                verdict(dr_lo, dr_hi)
             );
         } else {
-            println!("  trimmed (cut)          n=0     not yet. Nothing has been trimmed for this tool.");
-            println!("  We cannot show an honest after until ctx actually trims it during real use.");
+            println!(
+                "  trimmed (cut)          n=0     not yet. Nothing has been trimmed for this tool."
+            );
+            println!(
+                "  We cannot show an honest after until ctx actually trims it during real use."
+            );
         }
         println!();
     }
@@ -248,28 +285,52 @@ pub fn labels(tool: Option<&str>, limit: usize, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("Label audit for {scope}  (showing {} of the most recent positive labels)", rows.len());
-    println!("Each label is what ctx would score as harm. Read the evidence and judge if it really is.");
+    println!(
+        "Label audit for {scope}  (showing {} of the most recent positive labels)",
+        rows.len()
+    );
+    println!(
+        "Each label is what ctx would score as harm. Read the evidence and judge if it really is."
+    );
     println!();
 
     for (i, r) in rows.iter().enumerate() {
         let mut kinds = Vec::new();
-        if r.correction { kinds.push("correction"); }
-        if r.reread { kinds.push("re-read"); }
+        if r.correction {
+            kinds.push("correction");
+        }
+        if r.reread {
+            kinds.push("re-read");
+        }
         let label = kinds.join(" + ");
         let when = local_short(&r.ts);
-        let target = r.command_or_path.as_deref().filter(|s| !s.is_empty()).unwrap_or("(none)");
-        let surface = r.surface.as_deref().filter(|s| !s.is_empty()).unwrap_or("claude-code");
+        let target = r
+            .command_or_path
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("(none)");
+        let surface = r
+            .surface
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("claude-code");
         println!("{}. [{}] {} on {}", i + 1, label, r.tool_name, target);
         println!("   when: {when}   surface: {surface}   kind: {}", r.kind);
 
         for ev in &r.correction_evidence {
             let snippet = one_line(&ev.text, 160);
-            let body = if snippet.is_empty() { "(no prompt text stored)".to_string() } else { snippet };
+            let body = if snippet.is_empty() {
+                "(no prompt text stored)".to_string()
+            } else {
+                snippet
+            };
             println!("   correction +{:.0} min: {}", ev.minutes_after, body);
         }
         for ev in &r.reread_evidence {
-            println!("   re-read   +{:.0} min: {} hit the same target again", ev.minutes_after, ev.tool_name);
+            println!(
+                "   re-read   +{:.0} min: {} hit the same target again",
+                ev.minutes_after, ev.tool_name
+            );
         }
         println!();
     }
@@ -318,7 +379,10 @@ pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
                 if had.is_empty() {
                     println!("No trim trial was running. Nothing changed.");
                 } else {
-                    println!("Stopped all trim trials ({}). Everything is back to shadow only.", had.join(", "));
+                    println!(
+                        "Stopped all trim trials ({}). Everything is back to shadow only.",
+                        had.join(", ")
+                    );
                 }
             }
         }
@@ -334,7 +398,10 @@ pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
         }
         // One tool at a time. Replace any prior trial so the before/after stays clean.
         if !cfg.compress_trial_tools.is_empty() && cfg.compress_trial_tools != vec![t.to_string()] {
-            println!("Replacing the previous trial ({}).", cfg.compress_trial_tools.join(", "));
+            println!(
+                "Replacing the previous trial ({}).",
+                cfg.compress_trial_tools.join(", ")
+            );
         }
         cfg.compress_trial_tools = vec![t.to_string()];
         cfg.save()?;
@@ -348,8 +415,13 @@ pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
     if cfg.compress_trial_tools.is_empty() {
         println!("No trim trial is running. Start one with `ctx context trial <Tool> --on`.");
     } else {
-        println!("Trim trial running for: {}", cfg.compress_trial_tools.join(", "));
-        println!("Stop with `ctx context trial <Tool> --off`, or see results with `ctx context proof`.");
+        println!(
+            "Trim trial running for: {}",
+            cfg.compress_trial_tools.join(", ")
+        );
+        println!(
+            "Stop with `ctx context trial <Tool> --off`, or see results with `ctx context proof`."
+        );
     }
     Ok(())
 }

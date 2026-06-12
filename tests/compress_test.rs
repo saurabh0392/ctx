@@ -12,12 +12,7 @@ fn test_cfg() -> Config {
         compress_enabled: true,
         compress_max_output_chars: 12_000,
         compress_target_chars: 400,
-        compress_tools: vec![
-            "Bash".into(),
-            "Read".into(),
-            "Grep".into(),
-            "Glob".into(),
-        ],
+        compress_tools: vec!["Bash".into(), "Read".into(), "Grep".into(), "Glob".into()],
         compress_redact_secrets: true,
         compress_preserve_errors: true,
         ..Default::default()
@@ -160,8 +155,8 @@ fn redacts_secrets_in_generic_output() {
 
 #[test]
 fn hook_payload_contract() {
-    let payload: Value =
-        serde_json::from_str(include_str!("fixtures/compress/hook_payload.json")).expect("fixture json");
+    let payload: Value = serde_json::from_str(include_str!("fixtures/compress/hook_payload.json"))
+        .expect("fixture json");
     let response = tool_response_value(&payload).expect("tool_response");
     let raw = extract_tool_output(&payload);
     assert!(raw.contains("On branch"));
@@ -195,9 +190,15 @@ fn hook_payload_contract() {
         }
     });
     let hso = out.get("hookSpecificOutput").expect("hookSpecificOutput");
-    assert_eq!(hso.get("hookEventName").and_then(|v| v.as_str()), Some("PostToolUse"));
+    assert_eq!(
+        hso.get("hookEventName").and_then(|v| v.as_str()),
+        Some("PostToolUse")
+    );
     let uto = hso.get("updatedToolOutput").expect("updatedToolOutput");
-    assert!(uto.is_object(), "Bash updatedToolOutput must stay an object");
+    assert!(
+        uto.is_object(),
+        "Bash updatedToolOutput must stay an object"
+    );
     assert!(
         uto.get("stdout")
             .and_then(|v| v.as_str())
@@ -205,7 +206,11 @@ fn hook_payload_contract() {
             .len()
             < raw.len()
     );
-    assert!(hso.get("additionalContext").and_then(|v| v.as_str()).unwrap_or("").contains("compressed"));
+    assert!(hso
+        .get("additionalContext")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .contains("compressed"));
 }
 
 #[test]

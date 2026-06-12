@@ -147,13 +147,18 @@ fn tools_for_personal(lookback_days: u32, min_invocations: u32) -> Vec<String> {
     out
 }
 
-fn tools_for_prefixes(prefixes: &[String], lookback_days: u32, min_invocations: u32) -> Vec<String> {
+fn tools_for_prefixes(
+    prefixes: &[String],
+    lookback_days: u32,
+    min_invocations: u32,
+) -> Vec<String> {
     observed_tools_with_lookback(lookback_days)
         .into_iter()
         .filter(|r| {
             r.count >= min_invocations as u64
                 && prefixes.iter().any(|p| {
-                    r.server_prefix.starts_with(p.as_str()) || p.starts_with(r.server_prefix.as_str())
+                    r.server_prefix.starts_with(p.as_str())
+                        || p.starts_with(r.server_prefix.as_str())
                 })
         })
         .map(|r| r.tool_name)
@@ -208,7 +213,11 @@ pub fn tools_sent_by_server_prefix(slug: &str) -> HashMap<String, usize> {
         } else {
             0
         };
-        let n = if n > 0 { n } else { tool_count_for_prefix(prefix) };
+        let n = if n > 0 {
+            n
+        } else {
+            tool_count_for_prefix(prefix)
+        };
         if n > 0 {
             out.insert(prefix.clone(), n);
         }
@@ -231,10 +240,7 @@ pub fn dynamic_total_tools() -> usize {
     if prefixes.is_empty() {
         return 0;
     }
-    prefixes
-        .iter()
-        .map(|p| tool_count_for_prefix(p))
-        .sum()
+    prefixes.iter().map(|p| tool_count_for_prefix(p)).sum()
 }
 
 /// True when tool/token estimates are based on indexed MCP usage, not placeholders.
@@ -269,8 +275,7 @@ pub fn usage_stats_with_lookback(lookback_days: u32) -> UsageStats {
         return stats;
     };
     let _ = crate::db::ensure_schema(&conn);
-    let cutoff =
-        (chrono::Utc::now() - chrono::Duration::days(lookback_days as i64)).to_rfc3339();
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(lookback_days as i64)).to_rfc3339();
 
     if let Ok(n) = conn.query_row(
         "SELECT COUNT(*) FROM tool_invocations WHERE ts >= ?1",
@@ -330,7 +335,10 @@ pub fn personal_ready_with_thresholds(stats: &UsageStats, t: &ProfileThresholds)
 }
 
 pub fn categories_ready(stats: &UsageStats) -> bool {
-    stats.tool_invocations >= Config::load().profile_thresholds.min_tool_invocations_categories
+    stats.tool_invocations
+        >= Config::load()
+            .profile_thresholds
+            .min_tool_invocations_categories
 }
 
 pub fn personal_readiness_json() -> serde_json::Value {
@@ -458,7 +466,10 @@ impl Profile {
                 return total;
             }
         }
-        self.keep.iter().map(|prefix| tool_count_for_prefix(prefix)).sum()
+        self.keep
+            .iter()
+            .map(|prefix| tool_count_for_prefix(prefix))
+            .sum()
     }
 
     pub fn server_count(&self) -> usize {
@@ -508,7 +519,9 @@ impl Profile {
             return false;
         }
         let lower = cwd.to_lowercase();
-        self.path_patterns.iter().any(|p| lower.contains(p.as_str()))
+        self.path_patterns
+            .iter()
+            .any(|p| lower.contains(p.as_str()))
     }
 
     pub fn matches_system_prompt(&self, system: &str) -> bool {
@@ -578,11 +591,7 @@ fn defaults() -> HashMap<String, Profile> {
                 "figma".into(),
                 "marketing".into(),
             ],
-            triggers: vec![
-                "figma".into(),
-                "design system".into(),
-                "wireframe".into(),
-            ],
+            triggers: vec!["figma".into(), "design system".into(), "wireframe".into()],
             ..Default::default()
         },
     );
@@ -732,9 +741,8 @@ pub fn select_by_similarity(cwd: &str, prompt: &str, active_slug: &str) -> Optio
     }
 
     let (best_profile, (best_score, based_on, sim_sum)) = scores.into_iter().max_by(|a, b| {
-        a.1
-            .0
-            .partial_cmp(&b.1.0)
+        a.1 .0
+            .partial_cmp(&b.1 .0)
             .unwrap_or(std::cmp::Ordering::Equal)
     })?;
 
@@ -971,9 +979,7 @@ fn deny_universe_tools(profile: &Profile) -> Vec<String> {
     if profile.filtering_enabled() {
         return SERVER_COUNTS
             .iter()
-            .flat_map(|(prefix, count)| {
-                (0..*count).map(move |i| format!("{prefix}tool_{i}"))
-            })
+            .flat_map(|(prefix, count)| (0..*count).map(move |i| format!("{prefix}tool_{i}")))
             .collect();
     }
     Vec::new()
@@ -1017,7 +1023,10 @@ fn deny_universe_prefixes(profile: &Profile) -> Vec<String> {
         return Vec::new();
     }
     // Built-in / manual profile before any MCP usage indexed: use catalog as deny universe.
-    SERVER_COUNTS.iter().map(|(k, _)| (*k).to_string()).collect()
+    SERVER_COUNTS
+        .iter()
+        .map(|(k, _)| (*k).to_string())
+        .collect()
 }
 
 /// MCP tool deny rules for tools outside the profile keep-list (soft filter mode).
@@ -1167,10 +1176,7 @@ pub fn generated_profile_sort_key(slug: &str) -> usize {
 /// Local MCP server names from settings `mcpServers` — never add deny rules for these.
 pub fn local_mcp_server_names(settings: &serde_json::Value) -> Vec<String> {
     let mut names = vec!["ctx".to_string()];
-    if let Some(obj) = settings
-        .get("mcpServers")
-        .and_then(|v| v.as_object())
-    {
+    if let Some(obj) = settings.get("mcpServers").and_then(|v| v.as_object()) {
         for key in obj.keys() {
             names.push(key.clone());
         }
@@ -1220,7 +1226,9 @@ pub fn detect_expansion_candidates(prompt: &str, cwd: &str, profile: &Profile) -
             continue;
         }
         let display = mcp_prefix_to_server_display(&prefix).to_lowercase();
-        let id = mcp_prefix_to_server_id(&prefix).to_lowercase().replace('_', " ");
+        let id = mcp_prefix_to_server_id(&prefix)
+            .to_lowercase()
+            .replace('_', " ");
         if hay.contains(&display) || (!id.is_empty() && hay.contains(&id)) {
             out.push(mcp_prefix_to_server_id(&prefix));
         }
@@ -1244,7 +1252,10 @@ fn effective_keep_prefixes(slug: &str) -> Result<HashSet<String>> {
 
 pub fn apply_profile(slug: &str, force: bool, quiet: bool) -> Result<()> {
     let mut config = Config::load();
-    let from_slug = config.active_profile.clone().unwrap_or_else(|| "all".into());
+    let from_slug = config
+        .active_profile
+        .clone()
+        .unwrap_or_else(|| "all".into());
     let profile = get(slug)?;
 
     if from_slug != slug {
@@ -1306,12 +1317,8 @@ pub fn apply_profile(slug: &str, force: bool, quiet: bool) -> Result<()> {
             fmt_k(profile.token_cost()),
             fmt_k(profile.savings_vs_all()),
         );
-        let deny_n = deny_patterns_for_profile(
-            &profile,
-            &Config::load().session_expansion,
-            &[],
-        )
-        .len();
+        let deny_n =
+            deny_patterns_for_profile(&profile, &Config::load().session_expansion, &[]).len();
         match mode {
             crate::config::FilterMode::Soft => {
                 println!(
@@ -1490,11 +1497,7 @@ pub fn list() -> Result<()> {
         };
         println!(
             "{} {:<11} {:<6} {:<11} {}",
-            marker,
-            slug,
-            tools_col,
-            tokens_col,
-            p.description
+            marker, slug, tools_col, tokens_col, p.description
         );
     }
     println!("\n* = active");
@@ -1547,7 +1550,11 @@ pub fn show(slug: &str) -> Result<()> {
     if !p.filtering_enabled() {
         println!("Keep:     all servers (no filtering)");
     } else if p.uses_tool_level() {
-        println!("Keep tools: {} tool(s) across {} server(s)", p.tool_count(), p.server_count());
+        println!(
+            "Keep tools: {} tool(s) across {} server(s)",
+            p.tool_count(),
+            p.server_count()
+        );
         for t in &p.keep_tools {
             println!("  {t}");
         }
@@ -1565,7 +1572,11 @@ pub fn append_keep_tool_to_active_profile(tool: &str) -> Result<()> {
     let cfg = Config::load();
     let slug = cfg.active_profile.clone().unwrap_or_else(|| "all".into());
     let mut profile = get(&slug)?;
-    if profile.keep_tools.iter().any(|t| t.eq_ignore_ascii_case(tool)) {
+    if profile
+        .keep_tools
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(tool))
+    {
         return Ok(());
     }
     profile.keep_tools.push(tool.to_string());
@@ -1687,7 +1698,10 @@ pub fn migrate_tools(slug: Option<&str>, force: bool) -> Result<()> {
         if s == "personal" {
             let p = existing.get("personal").cloned().unwrap_or_default();
             if p.uses_tool_level() && !force {
-                eprintln!("{} Skipping `personal` — already uses keep_tools", "i".dimmed());
+                eprintln!(
+                    "{} Skipping `personal` — already uses keep_tools",
+                    "i".dimmed()
+                );
                 continue;
             }
             if p.keep.is_empty() {
@@ -1717,7 +1731,13 @@ pub fn migrate_tools(slug: Option<&str>, force: bool) -> Result<()> {
                 },
             );
             migrated += 1;
-            print_migration_line("personal", before, tools.len(), min_n, before.saturating_sub(tools.len()));
+            print_migration_line(
+                "personal",
+                before,
+                tools.len(),
+                min_n,
+                before.saturating_sub(tools.len()),
+            );
             continue;
         }
 
@@ -1727,7 +1747,10 @@ pub fn migrate_tools(slug: Option<&str>, force: bool) -> Result<()> {
             continue;
         }
         if p.keep.is_empty() {
-            eprintln!("{} `{s}`: no server-prefix keep list to migrate", "i".dimmed());
+            eprintln!(
+                "{} `{s}`: no server-prefix keep list to migrate",
+                "i".dimmed()
+            );
             continue;
         }
         let tools = tools_for_prefixes(&p.keep, lookback, min_n);
@@ -1782,7 +1805,13 @@ pub fn observed_tool_catalog() -> Vec<(String, String, u64)> {
     let lookback = Config::load().profile_thresholds.lookback_days;
     observed_tools_with_lookback(lookback)
         .into_iter()
-        .map(|r| (r.tool_name, mcp_prefix_to_server_display(&r.server_prefix), r.count))
+        .map(|r| {
+            (
+                r.tool_name,
+                mcp_prefix_to_server_display(&r.server_prefix),
+                r.count,
+            )
+        })
         .collect()
 }
 
@@ -1906,38 +1935,36 @@ pub fn collect_observed_prefixes() -> Vec<String> {
                         ))
                     })
                     .map(|rows| {
-                        rows.flatten().for_each(|(kept, removed, invoked, by_server)| {
-                            for json in [kept, removed].into_iter().flatten() {
-                                if let Ok(names) = serde_json::from_str::<Vec<String>>(&json) {
-                                    for name in names {
-                                        seen.insert(display_name_to_prefix(&name));
-                                    }
-                                }
-                            }
-                            if let Some(json) = invoked {
-                                if let Ok(tools) =
-                                    serde_json::from_str::<Vec<String>>(&json)
-                                {
-                                    for tool in tools {
-                                        if let Some(prefix) =
-                                            crate::filter::server_prefix_from_tool(&tool)
-                                        {
-                                            seen.insert(prefix);
+                        rows.flatten()
+                            .for_each(|(kept, removed, invoked, by_server)| {
+                                for json in [kept, removed].into_iter().flatten() {
+                                    if let Ok(names) = serde_json::from_str::<Vec<String>>(&json) {
+                                        for name in names {
+                                            seen.insert(display_name_to_prefix(&name));
                                         }
                                     }
                                 }
-                            }
-                            if let Some(json) = by_server {
-                                if let Ok(map) = serde_json::from_str::<
-                                    HashMap<String, usize>,
-                                >(&json)
-                                {
-                                    for display in map.keys() {
-                                        seen.insert(display_name_to_prefix(display));
+                                if let Some(json) = invoked {
+                                    if let Ok(tools) = serde_json::from_str::<Vec<String>>(&json) {
+                                        for tool in tools {
+                                            if let Some(prefix) =
+                                                crate::filter::server_prefix_from_tool(&tool)
+                                            {
+                                                seen.insert(prefix);
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        });
+                                if let Some(json) = by_server {
+                                    if let Ok(map) =
+                                        serde_json::from_str::<HashMap<String, usize>>(&json)
+                                    {
+                                        for display in map.keys() {
+                                            seen.insert(display_name_to_prefix(display));
+                                        }
+                                    }
+                                }
+                            });
                     });
             }
         }
@@ -1954,14 +1981,30 @@ fn display_name_to_prefix(display: &str) -> String {
 
 fn default_path_patterns(cat: &str) -> Vec<String> {
     let patterns: &[&str] = match cat {
-        "data"    => &["databricks", "dbt", "analytics", "warehouse", "notebook", "jupyter", "sql"],
-        "design"  => &["figma", "design", "ui", "ux", "sketch"],
-        "work"    => &["jira", "linear", "confluence", "notion", "asana", "trello"],
-        "comms"   => &["slack", "gmail", "email", "mail"],
+        "data" => &[
+            "databricks",
+            "dbt",
+            "analytics",
+            "warehouse",
+            "notebook",
+            "jupyter",
+            "sql",
+        ],
+        "design" => &["figma", "design", "ui", "ux", "sketch"],
+        "work" => &["jira", "linear", "confluence", "notion", "asana", "trello"],
+        "comms" => &["slack", "gmail", "email", "mail"],
         "finance" => &["netsuite", "ramp", "stripe", "billing", "finance"],
-        "files"   => &["gdrive", "drive", "dropbox", "sharepoint"],
-        "infra"   => &["terraform", "kubernetes", "k8s", "docker", "aws", "cloudflare", "devops"],
-        _         => &[],
+        "files" => &["gdrive", "drive", "dropbox", "sharepoint"],
+        "infra" => &[
+            "terraform",
+            "kubernetes",
+            "k8s",
+            "docker",
+            "aws",
+            "cloudflare",
+            "devops",
+        ],
+        _ => &[],
     };
     patterns.iter().map(|s| s.to_string()).collect()
 }
@@ -2210,7 +2253,10 @@ pub fn generate_from_config(force: bool) -> Result<()> {
     for prefix in &prefixes {
         let display = mcp_prefix_to_server_display(prefix);
         if let Some(cat) = cat_map.get(display.as_str()) {
-            by_category.entry(cat.to_string()).or_default().push(prefix.clone());
+            by_category
+                .entry(cat.to_string())
+                .or_default()
+                .push(prefix.clone());
         } else {
             uncategorized.push(prefix.clone());
         }
@@ -2231,11 +2277,17 @@ pub fn generate_from_config(force: bool) -> Result<()> {
     all_cats.sort();
     for cat in &all_cats {
         let servers = &by_category[*cat];
-        let names: Vec<String> = servers.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
+        let names: Vec<String> = servers
+            .iter()
+            .map(|p| mcp_prefix_to_server_display(p))
+            .collect();
         println!("  {:<10}  {}", cat, names.join(", "));
     }
     if !uncategorized.is_empty() {
-        let names: Vec<String> = uncategorized.iter().map(|p| mcp_prefix_to_server_display(p)).collect();
+        let names: Vec<String> = uncategorized
+            .iter()
+            .map(|p| mcp_prefix_to_server_display(p))
+            .collect();
         println!("  {:<10}  {}", "other", names.join(", "));
     }
 
@@ -2381,7 +2433,11 @@ pub fn generate_from_config(force: bool) -> Result<()> {
 
     std::fs::write(&custom_path, toml::to_string_pretty(&existing)?)?;
 
-    println!("\nGenerated {} profile{}:\n", generated.len(), if generated.len() == 1 { "" } else { "s" });
+    println!(
+        "\nGenerated {} profile{}:\n",
+        generated.len(),
+        if generated.len() == 1 { "" } else { "s" }
+    );
     for (slug, tools, pct) in &generated {
         println!(
             "  {:<10}  ~{} tools   {:.0}% savings vs unfiltered",
@@ -2440,7 +2496,8 @@ mod tests {
 
     #[test]
     fn extract_cwd_from_primary_working_directory_prefix() {
-        let system = "Primary working directory: /Users/alice/Documents/carrier-integrations-platform";
+        let system =
+            "Primary working directory: /Users/alice/Documents/carrier-integrations-platform";
         assert_eq!(
             extract_working_directory_from_system(system),
             Some("/users/alice/documents/carrier-integrations-platform".to_string())
@@ -2459,7 +2516,10 @@ mod tests {
     #[test]
     fn extract_cwd_from_cwd_prefix() {
         let system = "cwd: /tmp/shippo-databricks-mcp";
-        assert_eq!(extract_working_directory_from_system(system), Some("/tmp/shippo-databricks-mcp".to_string()));
+        assert_eq!(
+            extract_working_directory_from_system(system),
+            Some("/tmp/shippo-databricks-mcp".to_string())
+        );
     }
 
     #[test]
@@ -2540,18 +2600,17 @@ mod tests {
         with_ctx_home(|_tmp| {
             let cwd = "/Users/alice/Documents/shippo-databricks-mcp";
             let result = auto_select(cwd, "", "all");
-            assert!(result.is_none(), "built-in data profile must not match when hidden");
+            assert!(
+                result.is_none(),
+                "built-in data profile must not match when hidden"
+            );
         });
     }
 
     #[test]
     fn auto_select_returns_none_for_unrecognised_cwd() {
         with_ctx_home(|_tmp| {
-            let result = auto_select(
-                "/Users/alice/Documents/some-random-project",
-                "",
-                "all",
-            );
+            let result = auto_select("/Users/alice/Documents/some-random-project", "", "all");
             assert!(result.is_none());
         });
     }
@@ -2613,7 +2672,9 @@ mod tests {
             )
             .unwrap();
             let sid: i64 = conn
-                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| r.get(0))
+                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             for _ in 0..5 {
                 conn.execute(
@@ -2655,10 +2716,14 @@ mod tests {
                 .unwrap();
             }
             let sid1: i64 = conn
-                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| r.get(0))
+                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             let sid2: i64 = conn
-                .query_row("SELECT id FROM sessions WHERE external_key='s2'", [], |r| r.get(0))
+                .query_row("SELECT id FROM sessions WHERE external_key='s2'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
 
             for _ in 0..5 {
@@ -2707,7 +2772,9 @@ mod tests {
             )
             .unwrap();
             let sid: i64 = conn
-                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| r.get(0))
+                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             for _ in 0..3 {
                 conn.execute(
@@ -2744,7 +2811,9 @@ mod tests {
             )
             .unwrap();
             let sid: i64 = conn
-                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| r.get(0))
+                .query_row("SELECT id FROM sessions WHERE external_key='s1'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             for _ in 0..3 {
                 conn.execute(
@@ -2792,9 +2861,11 @@ mod tests {
                 )
                 .unwrap();
                 let sid: i64 = conn
-                    .query_row("SELECT id FROM sessions WHERE external_key=?1", [ext], |r| {
-                        r.get(0)
-                    })
+                    .query_row(
+                        "SELECT id FROM sessions WHERE external_key=?1",
+                        [ext],
+                        |r| r.get(0),
+                    )
                     .unwrap();
                 let emb = crate::embedder::embed_text(shared_embed).unwrap();
                 crate::db::set_session_embedding_blob(
@@ -2811,8 +2882,12 @@ mod tests {
                 .unwrap();
             }
 
-            let m = select_by_similarity("/tmp/data-project", "fix the databricks data pipeline job", "all")
-                .expect("similarity should match");
+            let m = select_by_similarity(
+                "/tmp/data-project",
+                "fix the databricks data pipeline job",
+                "all",
+            )
+            .expect("similarity should match");
             assert_eq!(m.slug, "personal");
             assert!(m.based_on >= 2);
             assert!(m.avg_match > 0.0 && m.avg_match <= 1.0);
@@ -2830,7 +2905,10 @@ mod tests {
             avg_match: 0.87,
         };
         assert_eq!(similarity_auto_trigger(&m, false), "similarity:0.87·4");
-        assert_eq!(similarity_auto_trigger(&m, true), "similarity:0.87·4:confirmed");
+        assert_eq!(
+            similarity_auto_trigger(&m, true),
+            "similarity:0.87·4:confirmed"
+        );
     }
 
     #[test]
@@ -2866,9 +2944,11 @@ mod tests {
                 )
                 .unwrap();
                 let sid: i64 = conn
-                    .query_row("SELECT id FROM sessions WHERE external_key=?1", [ext], |r| {
-                        r.get(0)
-                    })
+                    .query_row(
+                        "SELECT id FROM sessions WHERE external_key=?1",
+                        [ext],
+                        |r| r.get(0),
+                    )
                     .unwrap();
                 let emb = crate::embedder::embed_text(etext).unwrap();
                 crate::db::set_session_embedding_blob(
@@ -2886,12 +2966,8 @@ mod tests {
             }
 
             assert!(
-                select_by_similarity(
-                    "/tmp/the-gaffer",
-                    "continue the gaffer figma screen",
-                    "all",
-                )
-                .is_none(),
+                select_by_similarity("/tmp/the-gaffer", "continue the gaffer figma screen", "all",)
+                    .is_none(),
                 "weak mixed neighbors should fail avg_match gate"
             );
         });
@@ -2920,7 +2996,10 @@ mod tests {
             crate::db::ensure_schema(&conn).unwrap();
             let shared_embed = "the gaffer figma screen layout";
 
-            for uuid in ["9b23efef-5d3f-4166-96ea-d71bc966332d", "d7a91ab4-77b3-44db-88eb-58f8ff7b4393"] {
+            for uuid in [
+                "9b23efef-5d3f-4166-96ea-d71bc966332d",
+                "d7a91ab4-77b3-44db-88eb-58f8ff7b4393",
+            ] {
                 let ext = format!(
                     "/Users/alice/.claude/projects/-Users-alice-Documents-the-gaffer/{uuid}.jsonl"
                 );
@@ -2931,9 +3010,11 @@ mod tests {
                 )
                 .unwrap();
                 let sid: i64 = conn
-                    .query_row("SELECT id FROM sessions WHERE external_key=?1", [&ext], |r| {
-                        r.get(0)
-                    })
+                    .query_row(
+                        "SELECT id FROM sessions WHERE external_key=?1",
+                        [&ext],
+                        |r| r.get(0),
+                    )
                     .unwrap();
                 let emb = crate::embedder::embed_text(shared_embed).unwrap();
                 crate::db::set_session_embedding_blob(
@@ -2968,10 +3049,23 @@ mod tests {
 
         let p = get("data").unwrap();
         let names = allowed_server_names_for_profile(&p);
-        assert!(names.iter().any(|n| n == "Data_Shippo"), "expected Data_Shippo, got {:?}", names);
-        assert!(names.iter().any(|n| n == "Slack"), "expected Slack, got {:?}", names);
-        assert!(names.iter().all(|n| n.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')),
-            "serverName must match [a-zA-Z0-9_-], got {:?}", names);
+        assert!(
+            names.iter().any(|n| n == "Data_Shippo"),
+            "expected Data_Shippo, got {:?}",
+            names
+        );
+        assert!(
+            names.iter().any(|n| n == "Slack"),
+            "expected Slack, got {:?}",
+            names
+        );
+        assert!(
+            names.iter().all(|n| n
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')),
+            "serverName must match [a-zA-Z0-9_-], got {:?}",
+            names
+        );
 
         std::env::remove_var("CTX_HOME");
     }
@@ -3018,7 +3112,9 @@ mod tests {
 
     #[test]
     fn is_ctx_managed_deny_pattern_matches_tool_and_wildcard() {
-        assert!(is_ctx_managed_deny_pattern("mcp__claude_ai_Figma__get_file"));
+        assert!(is_ctx_managed_deny_pattern(
+            "mcp__claude_ai_Figma__get_file"
+        ));
         assert!(is_ctx_managed_deny_pattern("mcp__claude_ai_Figma__*"));
         assert!(!is_ctx_managed_deny_pattern("Read"));
     }

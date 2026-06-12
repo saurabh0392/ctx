@@ -44,7 +44,11 @@ pub fn expand_session_target(target: &str) -> Result<()> {
     if key.is_empty() {
         bail!("usage: ctx filter expand <server-or-tool>");
     }
-    if !cfg.session_expansion.iter().any(|s| s.eq_ignore_ascii_case(key)) {
+    if !cfg
+        .session_expansion
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(key))
+    {
         cfg.session_expansion.push(key.to_string());
         cfg.save()?;
     }
@@ -53,7 +57,11 @@ pub fn expand_session_target(target: &str) -> Result<()> {
     let dash = cfg.dashboard_port.unwrap_or(8789);
     crate::claude_settings::write_native_ctx_to_user_settings(slug, dash)?;
 
-    let kind = if key.starts_with("mcp__") { "tool" } else { "server" };
+    let kind = if key.starts_with("mcp__") {
+        "tool"
+    } else {
+        "server"
+    };
     println!(
         "{} Session expansion: {} ({kind}; un-denied until config reset or `ctx filter clear-expansion`)",
         "✓".green().bold(),

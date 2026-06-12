@@ -42,15 +42,30 @@ pub fn server_prefix_from_tool(name: &str) -> Option<String> {
 /// Partition tools using a profile and return full trace info.
 pub fn filter_with_trace(body: &[u8], profile: &Profile) -> FilterResult {
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return FilterResult { body: body.to_vec(), tools_removed: 0, removed_servers: vec![], kept_servers: vec![] };
+        return FilterResult {
+            body: body.to_vec(),
+            tools_removed: 0,
+            removed_servers: vec![],
+            kept_servers: vec![],
+        };
     };
 
     let Some(tools) = value.get_mut("tools").and_then(|t| t.as_array_mut()) else {
-        return FilterResult { body: body.to_vec(), tools_removed: 0, removed_servers: vec![], kept_servers: vec![] };
+        return FilterResult {
+            body: body.to_vec(),
+            tools_removed: 0,
+            removed_servers: vec![],
+            kept_servers: vec![],
+        };
     };
 
     if !profile.filtering_enabled() {
-        return FilterResult { body: body.to_vec(), tools_removed: 0, removed_servers: vec![], kept_servers: vec![] };
+        return FilterResult {
+            body: body.to_vec(),
+            tools_removed: 0,
+            removed_servers: vec![],
+            kept_servers: vec![],
+        };
     }
 
     let mut removed_servers: std::collections::HashMap<String, ()> = Default::default();
@@ -72,7 +87,12 @@ pub fn filter_with_trace(body: &[u8], profile: &Profile) -> FilterResult {
     let tools_removed = before - tools.len();
 
     if tools_removed == 0 {
-        return FilterResult { body: body.to_vec(), tools_removed: 0, removed_servers: vec![], kept_servers: vec![] };
+        return FilterResult {
+            body: body.to_vec(),
+            tools_removed: 0,
+            removed_servers: vec![],
+            kept_servers: vec![],
+        };
     }
 
     let body = serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec());
@@ -81,7 +101,12 @@ pub fn filter_with_trace(body: &[u8], profile: &Profile) -> FilterResult {
     removed_servers.sort();
     kept_servers.sort();
 
-    FilterResult { body, tools_removed, removed_servers, kept_servers }
+    FilterResult {
+        body,
+        tools_removed,
+        removed_servers,
+        kept_servers,
+    }
 }
 
 /// Strip MCP tool definitions from an Anthropic API request body based on active profile.

@@ -52,10 +52,7 @@ pub fn record_output_fingerprint(
     );
 }
 
-pub fn load_prior_line_hashes(
-    conn: &rusqlite::Connection,
-    session_id: Option<&str>,
-) -> Vec<u64> {
+pub fn load_prior_line_hashes(conn: &rusqlite::Connection, session_id: Option<&str>) -> Vec<u64> {
     let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
         return Vec::new();
     };
@@ -70,11 +67,7 @@ pub fn load_prior_line_hashes(
     rows.filter_map(|r| r.ok().map(|h| h as u64)).collect()
 }
 
-pub fn record_line_fingerprints(
-    conn: &rusqlite::Connection,
-    session_id: Option<&str>,
-    text: &str,
-) {
+pub fn record_line_fingerprints(conn: &rusqlite::Connection, session_id: Option<&str>, text: &str) {
     let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
         return;
     };

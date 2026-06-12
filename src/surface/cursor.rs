@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{
-    fingerprint_tool_input, CanonicalSession, CanonicalToolResult, CanonicalTurn,
-    ParsedTranscript, SurfaceId, SurfaceTranscriptAdapter, TurnFlag, TurnRole,
+    fingerprint_tool_input, CanonicalSession, CanonicalToolResult, CanonicalTurn, ParsedTranscript,
+    SurfaceId, SurfaceTranscriptAdapter, TurnFlag, TurnRole,
 };
 
 /// The previous assistant turn must have produced at least this much text (or any tool
@@ -266,12 +266,18 @@ fn project_label_from_path(path: &Path) -> String {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let parts: Vec<&str> = encoded.split('-').filter(|s| !s.is_empty()).collect();
-    if let Some(idx) = parts.iter().rposition(|&s| s == "Projects" || s == "Documents") {
+    if let Some(idx) = parts
+        .iter()
+        .rposition(|&s| s == "Projects" || s == "Documents")
+    {
         if idx + 1 < parts.len() {
             return parts[idx + 1..].join(" ");
         }
     }
-    parts.last().map(|s| s.to_string()).unwrap_or_else(|| "cursor".to_string())
+    parts
+        .last()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "cursor".to_string())
 }
 
 #[cfg(test)]
@@ -347,9 +353,7 @@ mod tests {
     #[test]
     fn malformed_lines_are_skipped_not_fatal() {
         let tmp = tempfile::tempdir().unwrap();
-        let proj = tmp
-            .path()
-            .join(".cursor/projects/p/agent-transcripts/s");
+        let proj = tmp.path().join(".cursor/projects/p/agent-transcripts/s");
         std::fs::create_dir_all(&proj).unwrap();
         let file = proj.join("s.jsonl");
         std::fs::write(
@@ -357,14 +361,18 @@ mod tests {
             "not json\n{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n{bad",
         )
         .unwrap();
-        let parsed = CursorTranscript.parse_session(&file).expect("parse survives junk");
+        let parsed = CursorTranscript
+            .parse_session(&file)
+            .expect("parse survives junk");
         assert_eq!(parsed.turns.len(), 1);
     }
 
     #[test]
     fn empty_or_missing_transcript_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(CursorTranscript.parse_session(&tmp.path().join("nope.jsonl")).is_none());
+        assert!(CursorTranscript
+            .parse_session(&tmp.path().join("nope.jsonl"))
+            .is_none());
         let empty = tmp.path().join("empty.jsonl");
         std::fs::write(&empty, "").unwrap();
         assert!(CursorTranscript.parse_session(&empty).is_none());

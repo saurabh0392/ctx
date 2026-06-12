@@ -104,7 +104,8 @@ impl CertAuthority {
             .map_err(|e| anyhow::anyhow!("sign leaf: {e}"))?;
         let cert_der = CertificateDer::from(leaf_cert.der().as_ref().to_vec());
         let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
-        let provider = rustls::crypto::CryptoProvider::get_default().context("rustls CryptoProvider not installed")?;
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .context("rustls CryptoProvider not installed")?;
         let ck = CertifiedKey::from_der(vec![cert_der], key_der, provider.as_ref())
             .map_err(|e| anyhow::anyhow!("CertifiedKey::from_der: {e}"))?;
         let arc = Arc::new(ck);

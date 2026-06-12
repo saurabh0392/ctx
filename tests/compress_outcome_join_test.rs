@@ -55,11 +55,18 @@ fn seed_decision(conn: &rusqlite::Connection, session_id: &str, ts: &str, comman
         features_json: "{}",
         command_or_path: command,
         applied: false,
+        explore_arm: None,
     };
     ctx::db::insert_compress_decision(conn, &d).expect("insert decision");
 }
 
-fn seed_turn(conn: &rusqlite::Connection, session_id: i64, turn_index: i64, flags_json: &str, ts: &str) {
+fn seed_turn(
+    conn: &rusqlite::Connection,
+    session_id: i64,
+    turn_index: i64,
+    flags_json: &str,
+    ts: &str,
+) {
     // Mirror real ingest: role is "turn", corrections live in the flags column.
     ctx::db::insert_turn(
         conn,
@@ -98,14 +105,26 @@ fn correction_within_window_joins_as_correction() {
     let session_row = seed_session(&conn, &format!("/path/{sid}.jsonl"));
     seed_decision(&conn, sid, "2026-06-06T10:00:00+00:00", "git status");
     // A correction five minutes later, well inside the window, stored with role "turn".
-    seed_turn(&conn, session_row, 1, r#"["correction","opus"]"#, "2026-06-06T10:05:00+00:00");
+    seed_turn(
+        &conn,
+        session_row,
+        1,
+        r#"["correction","opus"]"#,
+        "2026-06-06T10:05:00+00:00",
+    );
 
     let joined = ctx::db::join_compress_outcomes(&conn).expect("join");
     assert_eq!(joined, 1, "the one eligible decision should join");
 
     let (joined_flag, correction) = read_outcome(&conn, sid);
-    assert_eq!(joined_flag, 1, "a correction inside the window joins immediately");
-    assert_eq!(correction, 1, "a correction-flagged turn inside the window is a correction");
+    assert_eq!(
+        joined_flag, 1,
+        "a correction inside the window joins immediately"
+    );
+    assert_eq!(
+        correction, 1,
+        "a correction-flagged turn inside the window is a correction"
+    );
 }
 
 #[test]
@@ -118,14 +137,23 @@ fn clean_turn_after_window_joins_without_correction() {
     let session_row = seed_session(&conn, &format!("/path/{sid}.jsonl"));
     seed_decision(&conn, sid, "2026-06-06T10:00:00+00:00", "ls -la");
     // A clean turn past the window closes it and confirms a clean run.
-    seed_turn(&conn, session_row, 1, r#"["opus"]"#, "2026-06-06T10:30:00+00:00");
+    seed_turn(
+        &conn,
+        session_row,
+        1,
+        r#"["opus"]"#,
+        "2026-06-06T10:30:00+00:00",
+    );
 
     let joined = ctx::db::join_compress_outcomes(&conn).expect("join");
     assert_eq!(joined, 1);
 
     let (joined_flag, correction) = read_outcome(&conn, sid);
     assert_eq!(joined_flag, 1, "the closed window lets the row join");
-    assert_eq!(correction, 0, "a clean run inside the window is not a correction");
+    assert_eq!(
+        correction, 0,
+        "a clean run inside the window is not a correction"
+    );
 }
 
 #[test]
@@ -139,10 +167,19 @@ fn correction_outside_window_does_not_count() {
     seed_decision(&conn, sid, "2026-06-06T10:00:00+00:00", "cargo test");
     // A correction a full hour later: the user moved on, this is not caused by the tool.
     // The turn is past the window, so it closes the window and confirms a clean run.
-    seed_turn(&conn, session_row, 1, r#"["correction","opus"]"#, "2026-06-06T11:00:00+00:00");
+    seed_turn(
+        &conn,
+        session_row,
+        1,
+        r#"["correction","opus"]"#,
+        "2026-06-06T11:00:00+00:00",
+    );
 
     let joined = ctx::db::join_compress_outcomes(&conn).expect("join");
-    assert_eq!(joined, 1, "a turn past the window closes it, so the row joins");
+    assert_eq!(
+        joined, 1,
+        "a turn past the window closes it, so the row joins"
+    );
 
     let (joined_flag, correction) = read_outcome(&conn, sid);
     assert_eq!(joined_flag, 1);
@@ -165,10 +202,19 @@ fn correction_attributes_only_to_nearest_preceding_decision() {
     seed_decision(&conn, sid, "2026-06-06T10:00:00+00:00", "first cmd");
     seed_decision(&conn, sid, "2026-06-06T10:03:00+00:00", "second cmd");
     // One correction four minutes after the second decision (in window for both).
-    seed_turn(&conn, session_row, 1, r#"["correction"]"#, "2026-06-06T10:07:00+00:00");
+    seed_turn(
+        &conn,
+        session_row,
+        1,
+        r#"["correction"]"#,
+        "2026-06-06T10:07:00+00:00",
+    );
 
     let joined = ctx::db::join_compress_outcomes(&conn).expect("join");
-    assert_eq!(joined, 2, "both decisions join (the in-window correction closes them)");
+    assert_eq!(
+        joined, 2,
+        "both decisions join (the in-window correction closes them)"
+    );
 
     let read_by_cmd = |cmd: &str| -> i64 {
         conn.query_row(
@@ -178,7 +224,11 @@ fn correction_attributes_only_to_nearest_preceding_decision() {
         )
         .expect("read row")
     };
-    assert_eq!(read_by_cmd("second cmd"), 1, "the nearest decision owns the correction");
+    assert_eq!(
+        read_by_cmd("second cmd"),
+        1,
+        "the nearest decision owns the correction"
+    );
     assert_eq!(
         read_by_cmd("first cmd"),
         0,
@@ -196,11 +246,23 @@ fn decision_without_later_evidence_stays_unjoined() {
     let session_row = seed_session(&conn, &format!("/path/{sid}.jsonl"));
     seed_decision(&conn, sid, "2026-06-06T11:00:00+00:00", "cargo build");
     // Only an earlier turn exists; the window has not closed and no correction is in it.
-    seed_turn(&conn, session_row, 1, r#"["correction"]"#, "2026-06-06T10:00:00+00:00");
+    seed_turn(
+        &conn,
+        session_row,
+        1,
+        r#"["correction"]"#,
+        "2026-06-06T10:00:00+00:00",
+    );
 
     let joined = ctx::db::join_compress_outcomes(&conn).expect("join");
-    assert_eq!(joined, 0, "an open window with no in-window correction stays unjoined");
+    assert_eq!(
+        joined, 0,
+        "an open window with no in-window correction stays unjoined"
+    );
 
     let (joined_flag, _) = read_outcome(&conn, sid);
-    assert_eq!(joined_flag, 0, "a decision is never scored before its window closes");
+    assert_eq!(
+        joined_flag, 0,
+        "a decision is never scored before its window closes"
+    );
 }

@@ -30,4 +30,4 @@ Bad:  "Profile filtering — tools stripped & token savings"
 Good: "Profile filtering strips tools and saves schema tokens before each API call."
 ```
 
-Apply when editing `src/dashboard_static/**`, embedded `src/dashboard.html`, and any dashboard-facing Rust error strings.
+Apply when editing the dashboard (`src/dashboard.html`) and any dashboard-facing Rust error strings.

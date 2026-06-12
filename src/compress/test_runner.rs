@@ -17,7 +17,11 @@ const FAILURE_MARKERS: &[&str] = &[
     "not ok ",
 ];
 
-pub fn compress_test_output(input: &str, opts: &CompressOptions, ctx: &CompressContext) -> CompressResult {
+pub fn compress_test_output(
+    input: &str,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> CompressResult {
     let chars_in = input.chars().count();
     if chars_in <= opts.target_chars {
         return CompressResult {
@@ -80,7 +84,10 @@ pub fn compress_test_output(input: &str, opts: &CompressOptions, ctx: &CompressC
             parts.push(block.clone());
         }
         if failure_blocks.len() > 8 {
-            parts.push(format!("… {} more failure blocks omitted", failure_blocks.len() - 8));
+            parts.push(format!(
+                "… {} more failure blocks omitted",
+                failure_blocks.len() - 8
+            ));
         }
         for s in summary_lines {
             parts.push(s);

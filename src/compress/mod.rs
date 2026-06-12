@@ -8,6 +8,7 @@ mod generic;
 mod git;
 mod grep;
 mod hook_io;
+pub mod intent;
 mod mcp;
 mod read;
 mod retain;
@@ -52,9 +53,7 @@ pub fn compress_tool_output(
         return None;
     }
 
-    let command = tool_input
-        .get("command")
-        .and_then(|v| v.as_str());
+    let command = tool_input.get("command").and_then(|v| v.as_str());
     let file_path = tool_input
         .get("file_path")
         .or_else(|| tool_input.get("path"))
@@ -82,12 +81,9 @@ pub fn compress_tool_output(
         CompressKind::GitLog => compress_git_log(raw_output, &opts, &ctx),
         CompressKind::TestRunner => compress_test_output(raw_output, &opts, &ctx),
         CompressKind::Grep => compress_grep_output(raw_output, &opts, &ctx),
-        CompressKind::Read => compress_read_output(
-            raw_output,
-            file_path.unwrap_or("unknown"),
-            &opts,
-            &ctx,
-        ),
+        CompressKind::Read => {
+            compress_read_output(raw_output, file_path.unwrap_or("unknown"), &opts, &ctx)
+        }
         CompressKind::Mcp => compress_mcp_output(raw_output, &opts, &ctx),
         CompressKind::Generic | CompressKind::Passthrough => {
             generic::compress_generic(raw_output, &opts, &ctx, "generic")
@@ -99,7 +95,9 @@ pub fn compress_tool_output(
     }
 
     if cfg.compress_sgr_enabled && sgr_arm {
-        result = apply_sgr(result, cfg, session_id, cwd, tool_name, tool_input, raw_output);
+        result = apply_sgr(
+            result, cfg, session_id, cwd, tool_name, tool_input, raw_output,
+        );
     }
 
     if result.chars_saved() == 0 {
@@ -120,9 +118,12 @@ fn apply_sgr(
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
         if cfg.compress_sgr_dedup {
-            if let Some(pointer) =
-                session_dedup::duplicate_output_pointer(&conn, session_id, raw_v1_input, result.chars_in)
-            {
+            if let Some(pointer) = session_dedup::duplicate_output_pointer(
+                &conn,
+                session_id,
+                raw_v1_input,
+                result.chars_in,
+            ) {
                 let chars_out = pointer.chars().count();
                 return CompressResult {
                     text: pointer,
@@ -143,7 +144,11 @@ fn apply_sgr(
         profile,
         cfg.compress_sgr_dedup,
     );
-    let target = adaptive_target_chars(cfg.compress_target_chars, &frame, cfg.compress_adaptive_budget);
+    let target = adaptive_target_chars(
+        cfg.compress_target_chars,
+        &frame,
+        cfg.compress_adaptive_budget,
+    );
     let opts = CompressOptions {
         target_chars: target,
         max_input_chars: cfg.compress_max_output_chars,
@@ -186,12 +191,7 @@ mod tests {
             compress_enabled: true,
             compress_max_output_chars: 12_000,
             compress_target_chars: 800,
-            compress_tools: vec![
-                "Bash".into(),
-                "Read".into(),
-                "Grep".into(),
-                "Glob".into(),
-            ],
+            compress_tools: vec!["Bash".into(), "Read".into(), "Grep".into(), "Glob".into()],
             compress_redact_secrets: true,
             compress_preserve_errors: true,
             ..Default::default()

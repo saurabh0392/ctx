@@ -32,13 +32,7 @@ const REFERENCE_DIRS: &[&str] = &[
 ];
 
 /// Filename suffixes that mark generated / lock / minified artifacts. Safe to trim.
-const REFERENCE_SUFFIXES: &[&str] = &[
-    ".lock",
-    ".min.js",
-    ".min.css",
-    ".map",
-    ".sum",
-];
+const REFERENCE_SUFFIXES: &[&str] = &[".lock", ".min.js", ".min.css", ".map", ".sum"];
 
 /// Exact filenames (lowercased) that are lockfiles. Safe to trim.
 const REFERENCE_FILES: &[&str] = &[
@@ -69,7 +63,10 @@ pub fn read_is_trim_eligible(file_path: Option<&str>, cwd: &str) -> bool {
     if REFERENCE_DIRS.iter().any(|d| lower_slashed.contains(d)) {
         return true;
     }
-    if REFERENCE_SUFFIXES.iter().any(|s| lower_slashed.ends_with(s)) {
+    if REFERENCE_SUFFIXES
+        .iter()
+        .any(|s| lower_slashed.ends_with(s))
+    {
         return true;
     }
     if let Some(name) = lower_slashed.rsplit('/').next() {
@@ -100,12 +97,18 @@ mod tests {
     #[test]
     fn project_source_is_protected() {
         assert!(!read_is_trim_eligible(Some("src/foo.rs"), CWD));
-        assert!(!read_is_trim_eligible(Some("/Users/me/proj/src/foo.rs"), CWD));
+        assert!(!read_is_trim_eligible(
+            Some("/Users/me/proj/src/foo.rs"),
+            CWD
+        ));
         assert!(!read_is_trim_eligible(
             Some("/Users/me/proj/web/components/FullConversation.tsx"),
             CWD
         ));
-        assert!(!read_is_trim_eligible(Some("components/FullConversation.tsx"), CWD));
+        assert!(!read_is_trim_eligible(
+            Some("components/FullConversation.tsx"),
+            CWD
+        ));
     }
 
     #[test]
@@ -121,14 +124,26 @@ mod tests {
             Some("/Users/me/proj/node_modules/react/index.js"),
             CWD
         ));
-        assert!(read_is_trim_eligible(Some("/Users/me/proj/target/debug/build.rs"), CWD));
-        assert!(read_is_trim_eligible(Some("web/.next/server/chunk.js"), CWD));
-        assert!(read_is_trim_eligible(Some("/Users/me/proj/dist/app.js"), CWD));
+        assert!(read_is_trim_eligible(
+            Some("/Users/me/proj/target/debug/build.rs"),
+            CWD
+        ));
+        assert!(read_is_trim_eligible(
+            Some("web/.next/server/chunk.js"),
+            CWD
+        ));
+        assert!(read_is_trim_eligible(
+            Some("/Users/me/proj/dist/app.js"),
+            CWD
+        ));
     }
 
     #[test]
     fn lockfiles_minified_and_maps_are_eligible() {
-        assert!(read_is_trim_eligible(Some("/Users/me/proj/package-lock.json"), CWD));
+        assert!(read_is_trim_eligible(
+            Some("/Users/me/proj/package-lock.json"),
+            CWD
+        ));
         assert!(read_is_trim_eligible(Some("Cargo.lock"), CWD));
         assert!(read_is_trim_eligible(Some("web/static/app.min.js"), CWD));
         assert!(read_is_trim_eligible(Some("web/static/app.js.map"), CWD));
@@ -140,7 +155,10 @@ mod tests {
             Some("/usr/local/lib/python3.11/json/__init__.py"),
             CWD
         ));
-        assert!(read_is_trim_eligible(Some("/Users/me/other-repo/src/lib.rs"), CWD));
+        assert!(read_is_trim_eligible(
+            Some("/Users/me/other-repo/src/lib.rs"),
+            CWD
+        ));
     }
 
     #[test]

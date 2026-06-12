@@ -124,14 +124,20 @@ fn http_hook_event_entry(dashboard_port: u16) -> Value {
 /// Merge ctx v2 `UserPromptSubmit` command hook and async HTTP analytics hooks.
 /// Removes prior ctx-managed entries for the same events, then appends fresh ones.
 pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Result<()> {
-    if !settings.get("hooks").map(|h| h.is_object()).unwrap_or(false) {
+    if !settings
+        .get("hooks")
+        .map(|h| h.is_object())
+        .unwrap_or(false)
+    {
         settings["hooks"] = json!({});
     }
     strip_ctx_native_hooks_from_settings(settings);
     let hooks = settings
         .get_mut("hooks")
         .and_then(|h| h.as_object_mut())
-        .ok_or_else(|| anyhow::anyhow!("settings.hooks must be an object (create empty hooks first)"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("settings.hooks must be an object (create empty hooks first)")
+        })?;
 
     let cmd = resolve_ctx_command_for_hooks();
     let ups_entry = json!({
@@ -178,8 +184,7 @@ pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Resu
 }
 
 fn statusline_command_is_ctx_managed(cmd: &str) -> bool {
-    cmd.contains(CTX_STATUSLINE_SCRIPT_NAME)
-        || cmd.contains(".ctx/bin/ctx-statusline")
+    cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline")
 }
 
 /// Remove ctx-managed `statusLine` entry. Returns true if modified.
@@ -270,7 +275,10 @@ pub fn strip_ctx_filter_from_node_options_in_settings(settings: &mut Value) -> b
 
 /// Remove ctx-managed `permissions.deny` MCP rules. Returns true if modified.
 pub fn strip_ctx_deny_rules(settings: &mut Value) -> bool {
-    let Some(perms) = settings.get_mut("permissions").and_then(|p| p.as_object_mut()) else {
+    let Some(perms) = settings
+        .get_mut("permissions")
+        .and_then(|p| p.as_object_mut())
+    else {
         return false;
     };
     let Some(deny) = perms.get_mut("deny").and_then(|d| d.as_array_mut()) else {
@@ -294,7 +302,11 @@ pub fn merge_profile_deny_rules(settings: &mut Value, slug: &str) -> Result<()> 
     let local_names = crate::profiles::local_mcp_server_names(settings);
     let patterns = crate::profiles::deny_patterns_for_profile(&profile, &expansion, &local_names);
 
-    if !settings.get("permissions").map(|p| p.is_object()).unwrap_or(false) {
+    if !settings
+        .get("permissions")
+        .map(|p| p.is_object())
+        .unwrap_or(false)
+    {
         settings["permissions"] = json!({});
     }
     let perms = settings
@@ -365,7 +377,11 @@ pub fn apply_native_ctx_to_settings_doc(
     strip_ctx_filter_from_node_options_in_settings(settings);
     let mode = crate::config::Config::load().filter_mode;
     merge_profile_filter(settings, active_slug, mode)?;
-    if !settings.get("hooks").map(|h| h.is_object()).unwrap_or(false) {
+    if !settings
+        .get("hooks")
+        .map(|h| h.is_object())
+        .unwrap_or(false)
+    {
         settings["hooks"] = json!({});
     }
     merge_ctx_native_hooks(settings, dashboard_port)?;
@@ -385,7 +401,9 @@ pub fn ctx_statusline_wired_in_settings() -> bool {
     doc.get("statusLine")
         .and_then(|sl| sl.get("command"))
         .and_then(|c| c.as_str())
-        .map(|cmd| cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline"))
+        .map(|cmd| {
+            cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline")
+        })
         .unwrap_or(false)
 }
 
@@ -394,7 +412,11 @@ pub fn ctx_statusline_wired_in_settings() -> bool {
 pub fn apply_observation_only_to_settings_doc(settings: &mut Value) -> Result<()> {
     strip_ctx_filter_from_node_options_in_settings(settings);
     merge_profile_filter(settings, "all", FilterMode::Off)?;
-    if settings.get("hooks").map(|h| h.is_object()).unwrap_or(false) {
+    if settings
+        .get("hooks")
+        .map(|h| h.is_object())
+        .unwrap_or(false)
+    {
         strip_ctx_native_hooks_from_settings(settings);
     }
     strip_allowed_mcp_servers(settings);
@@ -406,8 +428,8 @@ pub fn apply_observation_only_to_settings_doc(settings: &mut Value) -> Result<()
 pub fn write_observation_only_to_user_settings() -> Result<()> {
     let path = crate::config::claude_settings_path();
     let mut doc = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
     } else {
         if let Some(parent) = path.parent() {
@@ -440,8 +462,8 @@ pub fn write_native_ctx_to_user_settings(active_slug: &str, dashboard_port: u16)
     }
     let path = crate::config::claude_settings_path();
     let mut doc = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
     } else {
         if let Some(parent) = path.parent() {
@@ -474,7 +496,9 @@ mod tests {
                 .map(|s| s.starts_with("mcp__claude_ai_") && s.ends_with("__*"))
                 .unwrap_or(false)
         }));
-        assert!(!deny.iter().any(|v| v.as_str() == Some("mcp__claude_ai_Data_Shippo__*")));
+        assert!(!deny
+            .iter()
+            .any(|v| v.as_str() == Some("mcp__claude_ai_Data_Shippo__*")));
     }
 
     #[test]

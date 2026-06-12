@@ -26,9 +26,7 @@ pub fn db_exists() -> bool {
 }
 
 fn migrate_hook_traces_adaptive_fired(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
@@ -44,13 +42,14 @@ fn migrate_hook_traces_adaptive_fired(conn: &Connection) {
 }
 
 fn migrate_hook_traces_power_columns(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
-    if conn.prepare("SELECT mode FROM hook_traces LIMIT 0").is_err() {
+    if conn
+        .prepare("SELECT mode FROM hook_traces LIMIT 0")
+        .is_err()
+    {
         let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN mode TEXT", []);
     }
     if conn
@@ -65,13 +64,14 @@ fn migrate_hook_traces_power_columns(conn: &Connection) {
 }
 
 fn migrate_hook_traces_ab_columns(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
-    if conn.prepare("SELECT ab_group FROM hook_traces LIMIT 0").is_err() {
+    if conn
+        .prepare("SELECT ab_group FROM hook_traces LIMIT 0")
+        .is_err()
+    {
         let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN ab_group TEXT", []);
     }
     if conn
@@ -86,9 +86,7 @@ fn migrate_hook_traces_ab_columns(conn: &Connection) {
 }
 
 fn migrate_hook_traces_savings_columns(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
@@ -96,32 +94,52 @@ fn migrate_hook_traces_savings_columns(conn: &Connection) {
         .prepare("SELECT tools_kept FROM hook_traces LIMIT 0")
         .is_ok();
     if !has_tools_kept {
-        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN tools_kept INTEGER DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN tools_removed INTEGER DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN tokens_saved INTEGER DEFAULT 0", []);
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN tools_kept INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN tools_removed INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN tokens_saved INTEGER DEFAULT 0",
+            [],
+        );
     }
 }
 
 fn migrate_hook_traces_prefix_and_budget_columns(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
-    if conn.prepare("SELECT inject_chars FROM hook_traces LIMIT 0").is_err() {
-        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN inject_chars INTEGER DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN adaptive_chars INTEGER DEFAULT 0", []);
+    if conn
+        .prepare("SELECT inject_chars FROM hook_traces LIMIT 0")
+        .is_err()
+    {
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN inject_chars INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN adaptive_chars INTEGER DEFAULT 0",
+            [],
+        );
     }
-    if conn.prepare("SELECT budget_blocked FROM hook_traces LIMIT 0").is_err() {
-        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN budget_blocked INTEGER DEFAULT 0", []);
+    if conn
+        .prepare("SELECT budget_blocked FROM hook_traces LIMIT 0")
+        .is_err()
+    {
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN budget_blocked INTEGER DEFAULT 0",
+            [],
+        );
     }
 }
 
 fn migrate_hook_traces_pinned_profile(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
@@ -135,14 +153,15 @@ fn migrate_hook_traces_pinned_profile(conn: &Connection) {
         .prepare("SELECT effective_profile FROM hook_traces LIMIT 0")
         .is_err()
     {
-        let _ = conn.execute("ALTER TABLE hook_traces ADD COLUMN effective_profile TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE hook_traces ADD COLUMN effective_profile TEXT",
+            [],
+        );
     }
 }
 
 fn migrate_hook_traces_expansion_column(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
@@ -158,9 +177,7 @@ fn migrate_hook_traces_expansion_column(conn: &Connection) {
 }
 
 fn migrate_hook_traces_compress_columns(conn: &Connection) {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM hook_traces LIMIT 0")
-        .is_ok();
+    let table_exists: bool = conn.prepare("SELECT 1 FROM hook_traces LIMIT 0").is_ok();
     if !table_exists {
         return;
     }
@@ -189,10 +206,22 @@ fn migrate_requests_prefix_and_budget_columns(conn: &Connection) {
     if !table_exists {
         return;
     }
-    if conn.prepare("SELECT inject_chars FROM requests LIMIT 0").is_err() {
-        let _ = conn.execute("ALTER TABLE requests ADD COLUMN inject_chars INTEGER DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE requests ADD COLUMN adaptive_chars INTEGER DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE requests ADD COLUMN budget_blocked INTEGER DEFAULT 0", []);
+    if conn
+        .prepare("SELECT inject_chars FROM requests LIMIT 0")
+        .is_err()
+    {
+        let _ = conn.execute(
+            "ALTER TABLE requests ADD COLUMN inject_chars INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE requests ADD COLUMN adaptive_chars INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE requests ADD COLUMN budget_blocked INTEGER DEFAULT 0",
+            [],
+        );
     }
 }
 
@@ -286,6 +315,14 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     // stamps which agent surface produced a decision so training can exclude the
     // lower-confidence (transcript-derived) labels until their precision is proven.
     let _ = conn.execute("ALTER TABLE compress_decisions ADD COLUMN surface TEXT", []);
+    // Phase 2 randomized exploration arm (ADR 0009): "treatment" (trimmed) or "control"
+    // (deliberately kept) for rows that entered the experiment; NULL for every prior and
+    // non-experiment decision. Kept separate from `applied` because a randomized control and an
+    // ordinary shadow row are both applied=0 but mean very different things.
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN explore_arm TEXT",
+        [],
+    );
 }
 
 /// One shadow/active retention decision recorded for forward label collection.
@@ -305,6 +342,9 @@ pub struct CompressDecision<'a> {
     pub features_json: &'a str,
     pub command_or_path: &'a str,
     pub applied: bool,
+    /// Phase 2 exploration arm (ADR 0009): Some("treatment"|"control") when the decision was part
+    /// of the randomized experiment, None otherwise.
+    pub explore_arm: Option<&'a str>,
 }
 
 pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> Result<()> {
@@ -312,8 +352,8 @@ pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> 
         r#"INSERT INTO compress_decisions
             (ts, session_id, tool_name, server_prefix, kind, task_mode,
              lines_total, lines_keep, lines_drop, chars_in, would_chars_out,
-             features_json, command_or_path, applied)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
+             features_json, command_or_path, applied, explore_arm)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
         params![
             d.ts,
             d.session_id,
@@ -329,6 +369,7 @@ pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> 
             d.features_json,
             d.command_or_path,
             if d.applied { 1 } else { 0 },
+            d.explore_arm,
         ],
     )?;
     Ok(())
@@ -432,18 +473,26 @@ pub struct CompressDecisionFeedRow {
     pub would_chars_out: i64,
     pub command_or_path: Option<String>,
     pub applied: bool,
+    /// True when the Read edit-intent guard deliberately kept this read in full (CTX-8/CTX-11),
+    /// so the feed can show a "protected" state instead of conflating it with "watching".
+    pub protected: bool,
 }
 
 pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDecisionFeedRow> {
     let mut stmt = match conn.prepare(
         "SELECT ts, tool_name, kind, task_mode, lines_total, lines_keep, lines_drop,
-                chars_in, would_chars_out, command_or_path, applied
+                chars_in, would_chars_out, command_or_path, applied, features_json
          FROM compress_decisions ORDER BY id DESC LIMIT ?1",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
     let rows = stmt.query_map(params![limit as i64], |r| {
+        let features_json: String = r.get::<_, Option<String>>(11)?.unwrap_or_default();
+        let protected = serde_json::from_str::<serde_json::Value>(&features_json)
+            .ok()
+            .and_then(|v| v.get("read_protected").and_then(|p| p.as_bool()))
+            .unwrap_or(false);
         Ok(CompressDecisionFeedRow {
             ts: r.get(0)?,
             tool_name: r.get(1)?,
@@ -456,12 +505,97 @@ pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDe
             would_chars_out: r.get(8)?,
             command_or_path: r.get(9)?,
             applied: r.get::<_, i64>(10)? == 1,
+            protected,
         })
     });
     match rows {
         Ok(it) => it.filter_map(|x| x.ok()).collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// Applied compression savings per tool, drawn only from decisions ctx actually trimmed.
+/// `chars_saved` is characters removed from what the model saw (chars_in - would_chars_out,
+/// floored at 0). Shadow-only decisions (applied = 0) contribute nothing, so this never counts
+/// trims that were not really made. Bucketing into "earned" vs "still testing" happens upstream
+/// by joining tool_name to the causal verdict.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CompressToolSavings {
+    pub tool_name: String,
+    pub applied_count: i64,
+    pub chars_saved: i64,
+}
+
+pub fn compress_savings_by_tool(conn: &Connection) -> Vec<CompressToolSavings> {
+    let mut stmt = match conn.prepare(
+        "SELECT tool_name,
+                COALESCE(SUM(CASE WHEN applied = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN applied = 1 AND chars_in > would_chars_out
+                                  THEN chars_in - would_chars_out ELSE 0 END), 0)
+         FROM compress_decisions
+         GROUP BY tool_name",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(CompressToolSavings {
+            tool_name: r.get(0)?,
+            applied_count: r.get(1)?,
+            chars_saved: r.get(2)?,
+        })
+    });
+    match rows {
+        Ok(it) => it.filter_map(|x| x.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// How far the per-decision model's shadow logging has progressed (ADR 0007 / CTX-16). Counts
+/// decisions the served model actually scored (`model_score` present in features_json), how many of
+/// those have been judged by an outcome, and how many distinct repos they span. These are the
+/// "data accruing" half of Phase 2 readiness; the "does the model beat the rules" half comes from
+/// the benchmark arms.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ModelShadowProgress {
+    pub scored_total: i64,
+    pub scored_joined: i64,
+    pub distinct_repos: i64,
+}
+
+pub fn model_shadow_progress(conn: &Connection) -> ModelShadowProgress {
+    let mut out = ModelShadowProgress::default();
+    let mut repos = std::collections::HashSet::new();
+    let mut stmt =
+        match conn.prepare("SELECT features_json, outcome_joined FROM compress_decisions") {
+            Ok(s) => s,
+            Err(_) => return out,
+        };
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            r.get::<_, i64>(1)?,
+        ))
+    });
+    let rows = match rows {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    for (features_json, joined) in rows.flatten() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&features_json) {
+            if v.get("model_score").is_some() {
+                out.scored_total += 1;
+                if joined == 1 {
+                    out.scored_joined += 1;
+                }
+            }
+            if let Some(repo) = v.get("repo_key").and_then(|x| x.as_str()) {
+                repos.insert(repo.to_string());
+            }
+        }
+    }
+    out.distinct_repos = repos.len() as i64;
+    out
 }
 
 /// Back-fill outcome labels onto shadow decision rows once downstream turns land.
@@ -572,7 +706,10 @@ pub struct UnjoinedDecision {
 /// Unjoined decisions for one surface session, keyed by the surface's own session id
 /// (the UUID the hook recorded). Used by the ordinal/fingerprint outcome join for agents
 /// whose transcripts carry no timestamps (Cursor).
-pub fn unjoined_decisions_for_session(conn: &Connection, session_id: &str) -> Vec<UnjoinedDecision> {
+pub fn unjoined_decisions_for_session(
+    conn: &Connection,
+    session_id: &str,
+) -> Vec<UnjoinedDecision> {
     let mut stmt = match conn.prepare(
         "SELECT id, command_or_path FROM compress_decisions
          WHERE session_id = ?1 AND outcome_joined = 0 AND command_or_path IS NOT NULL",
@@ -740,7 +877,9 @@ pub fn audit_labeled_decisions(
     };
 
     for row in &mut rows {
-        let Some(sid) = row.session_id.clone() else { continue };
+        let Some(sid) = row.session_id.clone() else {
+            continue;
+        };
         let sid_like = format!("%{sid}%");
         if row.correction {
             if let Ok(mut s) = conn.prepare(
@@ -782,16 +921,15 @@ pub fn audit_labeled_decisions(
                        AND julianday(d2.ts) <= julianday(?2) + ?3
                      ORDER BY d2.ts",
                 ) {
-                    if let Ok(it) = s.query_map(
-                        params![sid, row.ts, window_days, cmd, row.id],
-                        |r| {
+                    if let Ok(it) =
+                        s.query_map(params![sid, row.ts, window_days, cmd, row.id], |r| {
                             Ok(RereadEvidence {
                                 ts: r.get(0)?,
                                 minutes_after: r.get(1)?,
                                 tool_name: r.get(2)?,
                             })
-                        },
-                    ) {
+                        })
+                    {
                         row.reread_evidence = it.filter_map(|x| x.ok()).collect();
                     }
                 }
@@ -819,7 +957,10 @@ pub struct CausalToolOutcome {
 
 /// Per-tool causal before/after outcome counts over joined decisions. `tool_filter` is an
 /// exact `tool_name` match (None = all tools, ordered by total decided volume).
-pub fn causal_tool_outcomes(conn: &Connection, tool_filter: Option<&str>) -> Vec<CausalToolOutcome> {
+pub fn causal_tool_outcomes(
+    conn: &Connection,
+    tool_filter: Option<&str>,
+) -> Vec<CausalToolOutcome> {
     let base = "SELECT tool_name,
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
@@ -850,6 +991,72 @@ pub fn causal_tool_outcomes(conn: &Connection, tool_filter: Option<&str>) -> Vec
             trimmed_n: r.get(4)?,
             trimmed_corrections: r.get(5)?,
             trimmed_rereads: r.get(6)?,
+        })
+    };
+    let rows = match tool_filter {
+        Some(t) => stmt.query_map(params![t], map),
+        None => stmt.query_map([], map),
+    };
+    match rows {
+        Ok(it) => it.filter_map(|x| x.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Phase 2 randomized per-tool outcome counts (ADR 0009). Unlike `causal_tool_outcomes`, which
+/// compares observational shadow vs applied rows, this compares only rows that entered the
+/// randomized experiment (`explore_arm` set): control (deliberately kept) vs treatment (trimmed).
+/// Because assignment is random within the trim-eligible pool, the gap between the arms is an
+/// unbiased estimate of what trimming does on the user's own work. `*_collected` counts every
+/// explored row so the UI can show momentum; `*_n` and the rate counts only joined rows, since an
+/// outcome is unknown until the label join lands.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ExploreToolOutcome {
+    pub tool_name: String,
+    pub control_collected: i64,
+    pub control_n: i64,
+    pub control_corrections: i64,
+    pub control_rereads: i64,
+    pub treatment_collected: i64,
+    pub treatment_n: i64,
+    pub treatment_corrections: i64,
+    pub treatment_rereads: i64,
+}
+
+pub fn explore_tool_outcomes(
+    conn: &Connection,
+    tool_filter: Option<&str>,
+) -> Vec<ExploreToolOutcome> {
+    let base = "SELECT tool_name,
+            COALESCE(SUM(CASE WHEN explore_arm='control' THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='treatment' THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0)
+         FROM compress_decisions
+         WHERE explore_arm IS NOT NULL";
+    let sql = match tool_filter {
+        Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
+        None => format!("{base} GROUP BY tool_name ORDER BY COUNT(*) DESC"),
+    };
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let map = |r: &rusqlite::Row<'_>| {
+        Ok(ExploreToolOutcome {
+            tool_name: r.get(0)?,
+            control_collected: r.get(1)?,
+            control_n: r.get(2)?,
+            control_corrections: r.get(3)?,
+            control_rereads: r.get(4)?,
+            treatment_collected: r.get(5)?,
+            treatment_n: r.get(6)?,
+            treatment_corrections: r.get(7)?,
+            treatment_rereads: r.get(8)?,
         })
     };
     let rows = match tool_filter {
@@ -941,7 +1148,11 @@ pub struct CompressSummaryRow {
     pub chars_saved: i64,
 }
 
-pub fn compress_summary_today(conn: &Connection, today: &str, since: Option<&str>) -> Result<Vec<CompressSummaryRow>> {
+pub fn compress_summary_today(
+    conn: &Connection,
+    today: &str,
+    since: Option<&str>,
+) -> Result<Vec<CompressSummaryRow>> {
     let map_row = |r: &rusqlite::Row<'_>| {
         Ok(CompressSummaryRow {
             strategy: r.get(0)?,
@@ -986,7 +1197,11 @@ pub fn compress_summary_all(conn: &Connection) -> Result<Vec<CompressSummaryRow>
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-pub fn compress_totals_today(conn: &Connection, today: &str, since: Option<&str>) -> (usize, usize) {
+pub fn compress_totals_today(
+    conn: &Connection,
+    today: &str,
+    since: Option<&str>,
+) -> (usize, usize) {
     let sql = if since.is_some() {
         "SELECT COUNT(*), COALESCE(SUM(chars_in - chars_out), 0)
          FROM compress_events WHERE substr(ts, 1, 10) = ?1 AND ts >= ?2"
@@ -1343,7 +1558,10 @@ pub fn append_hook_trace_expansions(
     let mut merged: Vec<crate::semantic_tools::ToolExpansionEntry> =
         serde_json::from_str(&existing_json).unwrap_or_default();
     for entry in added {
-        if !merged.iter().any(|e| e.target.eq_ignore_ascii_case(&entry.target)) {
+        if !merged
+            .iter()
+            .any(|e| e.target.eq_ignore_ascii_case(&entry.target))
+        {
             merged.push(entry.clone());
         }
     }
@@ -1628,30 +1846,29 @@ pub fn enrich_hook_traces(conn: &Connection) -> Result<usize> {
             };
 
         let matched = matched.or_else(|| {
-            conn
-                .query_row(
-                    r#"SELECT input_tokens, output_tokens, cache_read_tokens,
+            conn.query_row(
+                r#"SELECT input_tokens, output_tokens, cache_read_tokens,
                               cache_creation_tokens, cost_usd, model, human_text_prefix
                        FROM turns
                        WHERE ts IS NOT NULL
                        ORDER BY ABS(julianday(ts) - julianday(?1))
                        LIMIT 1"#,
-                    params![trace_ts],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                            r.get(5)?,
-                            r.get(6)?,
-                        ))
-                    },
-                )
-                .optional()
-                .ok()
-                .flatten()
+                params![trace_ts],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
         });
 
         if let Some((inp, outp, cr, cc, cost, model, turn_prefix)) = matched {
@@ -1730,13 +1947,7 @@ pub fn load_task_costs(conn: &Connection) -> Result<Vec<TaskCostGroup>> {
     )?;
     let rows: Vec<(String, Option<String>, String, f64, i64)> = stmt
         .query_map([], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-            ))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
         .filter_map(|x| x.ok())
         .collect();
@@ -1774,12 +1985,14 @@ pub fn load_task_costs(conn: &Connection) -> Result<Vec<TaskCostGroup>> {
             let children: Vec<TaskCostChild> = agg
                 .children
                 .into_iter()
-                .map(|(session_id, (cost_usd, requests, tokens_saved))| TaskCostChild {
-                    session_id,
-                    cost_usd,
-                    requests,
-                    tokens_saved,
-                })
+                .map(
+                    |(session_id, (cost_usd, requests, tokens_saved))| TaskCostChild {
+                        session_id,
+                        cost_usd,
+                        requests,
+                        tokens_saved,
+                    },
+                )
                 .collect();
             TaskCostGroup {
                 parent_session,
@@ -1802,7 +2015,9 @@ pub fn load_task_costs(conn: &Connection) -> Result<Vec<TaskCostGroup>> {
 /// Writes only once; subsequent calls are no-ops.
 pub fn stamp_ctx_active_since(conn: &Connection) {
     let existing: Option<String> = conn
-        .query_row("SELECT v FROM meta WHERE k = 'ctx_active_since'", [], |r| r.get(0))
+        .query_row("SELECT v FROM meta WHERE k = 'ctx_active_since'", [], |r| {
+            r.get(0)
+        })
         .optional()
         .ok()
         .flatten();
@@ -1817,17 +2032,21 @@ pub fn stamp_ctx_active_since(conn: &Connection) {
 }
 
 pub fn get_ctx_active_since(conn: &Connection) -> Option<String> {
-    conn.query_row("SELECT v FROM meta WHERE k = 'ctx_active_since'", [], |r| r.get(0))
-        .optional()
-        .ok()
-        .flatten()
+    conn.query_row("SELECT v FROM meta WHERE k = 'ctx_active_since'", [], |r| {
+        r.get(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
 }
 
 pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row("SELECT v FROM meta WHERE k = ?1", params![key], |r| r.get(0))
-        .optional()
-        .ok()
-        .flatten()
+    conn.query_row("SELECT v FROM meta WHERE k = ?1", params![key], |r| {
+        r.get(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
 }
 
 /// Clear the install watermark so the dashboard shows all historical rows again until the next hook or request stamps it.
@@ -2142,7 +2361,10 @@ pub fn replace_session_turns(conn: &Connection, session_id: i64) -> Result<()> {
         "DELETE FROM tool_invocations WHERE session_id = ?1",
         params![session_id],
     )?;
-    conn.execute("DELETE FROM turns WHERE session_id = ?1", params![session_id])?;
+    conn.execute(
+        "DELETE FROM turns WHERE session_id = ?1",
+        params![session_id],
+    )?;
     Ok(())
 }
 
@@ -2210,9 +2432,7 @@ pub fn set_session_embedding_blob(conn: &Connection, session_id: i64, blob: &[u8
     Ok(())
 }
 
-pub fn list_embedding_rows(
-    conn: &Connection,
-) -> Result<Vec<(i64, Vec<u8>)>> {
+pub fn list_embedding_rows(conn: &Connection) -> Result<Vec<(i64, Vec<u8>)>> {
     ensure_schema(conn)?;
     let mut stmt = conn.prepare("SELECT session_id, embedding FROM session_embeddings")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
@@ -2342,7 +2562,9 @@ pub fn zero_usage_servers(conn: &Connection, lookback_days: u32) -> Result<Vec<S
                 "mcp__claude_ai_{}__",
                 name.replace(' ', "_").replace('-', "_")
             );
-            !invoked.iter().any(|p| p.starts_with(&prefix) || prefix.starts_with(p.as_str()))
+            !invoked
+                .iter()
+                .any(|p| p.starts_with(&prefix) || prefix.starts_with(p.as_str()))
         })
         .collect();
     unused.sort();
@@ -2503,6 +2725,7 @@ mod compress_decision_tests {
             features_json: "{}",
             command_or_path: cmd,
             applied: false,
+            explore_arm: None,
         }
     }
 
@@ -2522,7 +2745,11 @@ mod compress_decision_tests {
         )
         .unwrap();
         let sid: i64 = conn
-            .query_row("SELECT id FROM sessions WHERE external_key='proj-sess-x'", [], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-x'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         // A correction turn lands after the decision.
         conn.execute(
@@ -2531,7 +2758,11 @@ mod compress_decision_tests {
         )
         .unwrap();
 
-        insert_compress_decision(&conn, &decision("2026-05-31T10:01:00+00:00", "sess-x", "Read", "a.rs")).unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:01:00+00:00", "sess-x", "Read", "a.rs"),
+        )
+        .unwrap();
 
         let n = join_compress_outcomes(&conn).unwrap();
         assert_eq!(n, 1);
@@ -2562,7 +2793,11 @@ mod compress_decision_tests {
         )
         .unwrap();
         let sid: i64 = conn
-            .query_row("SELECT id FROM sessions WHERE external_key='proj-sess-y'", [], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-y'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         // A non-correction turn past the correction window closes it and confirms a
         // clean run (a turn inside the window would not be enough: the window must close).
@@ -2572,7 +2807,11 @@ mod compress_decision_tests {
         )
         .unwrap();
 
-        insert_compress_decision(&conn, &decision("2026-05-31T10:01:00+00:00", "sess-y", "Grep", "pat")).unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:01:00+00:00", "sess-y", "Grep", "pat"),
+        )
+        .unwrap();
         let n = join_compress_outcomes(&conn).unwrap();
         assert_eq!(n, 1);
         let progress = compress_tool_progress(&conn);
@@ -2592,11 +2831,70 @@ mod compress_decision_tests {
         ensure_schema(&conn).unwrap();
 
         // No session/turn rows yet: decision must stay unjoined (never scored clean prematurely).
-        insert_compress_decision(&conn, &decision("2026-05-31T10:01:00+00:00", "sess-z", "Read", "a.rs")).unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:01:00+00:00", "sess-z", "Read", "a.rs"),
+        )
+        .unwrap();
         let n = join_compress_outcomes(&conn).unwrap();
         assert_eq!(n, 0);
         let stats = compress_decision_stats(&conn);
         assert_eq!(stats.joined, 0);
+    }
+
+    #[test]
+    fn explore_tool_outcomes_separates_arms_and_ignores_non_experiment_rows() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let row = |arm: Option<&'static str>, applied: bool| CompressDecision {
+            ts: "2026-05-31T10:01:00+00:00",
+            session_id: Some("s"),
+            tool_name: "Read",
+            server_prefix: None,
+            kind: "read",
+            task_mode: "scan",
+            lines_total: 100,
+            lines_keep: 60,
+            lines_drop: 40,
+            chars_in: 5000,
+            would_chars_out: 2000,
+            features_json: "{}",
+            command_or_path: "a.rs",
+            applied,
+            explore_arm: arm,
+        };
+        // 2 treatment, 2 control, and 1 ordinary (non-experiment) row that must be excluded even
+        // though it is the same tool and applied=0 like a control.
+        insert_compress_decision(&conn, &row(Some("treatment"), true)).unwrap();
+        insert_compress_decision(&conn, &row(Some("treatment"), true)).unwrap();
+        insert_compress_decision(&conn, &row(Some("control"), false)).unwrap();
+        insert_compress_decision(&conn, &row(Some("control"), false)).unwrap();
+        insert_compress_decision(&conn, &row(None, false)).unwrap();
+
+        // Everything judged; one treatment row precedes a correction.
+        conn.execute("UPDATE compress_decisions SET outcome_joined=1", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_correction=1
+             WHERE id=(SELECT MIN(id) FROM compress_decisions WHERE explore_arm='treatment')",
+            [],
+        )
+        .unwrap();
+
+        let out = explore_tool_outcomes(&conn, None);
+        let read = out.iter().find(|e| e.tool_name == "Read").unwrap();
+        assert_eq!(read.treatment_collected, 2);
+        assert_eq!(read.control_collected, 2);
+        assert_eq!(read.treatment_n, 2);
+        assert_eq!(read.control_n, 2);
+        assert_eq!(read.treatment_corrections, 1, "one treatment correction");
+        assert_eq!(read.control_corrections, 0, "control had no corrections");
     }
 }
 

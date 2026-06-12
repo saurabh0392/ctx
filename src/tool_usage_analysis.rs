@@ -34,11 +34,8 @@ pub fn run(conn: &Connection) -> Result<ToolUsageAnalysis> {
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
 
-    let tool_invocations: u64 = conn.query_row(
-        "SELECT COUNT(*) FROM tool_invocations",
-        [],
-        |r| r.get(0),
-    )?;
+    let tool_invocations: u64 =
+        conn.query_row("SELECT COUNT(*) FROM tool_invocations", [], |r| r.get(0))?;
 
     let distinct_tools: u64 = conn.query_row(
         "SELECT COUNT(DISTINCT tool_name) FROM tool_invocations",

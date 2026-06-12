@@ -54,6 +54,40 @@ pub struct ShadowFeatures {
     /// Dropped lines that carried a failure marker. Should stay ~0 (errors are pinned);
     /// a non-zero value is an early warning the heuristic is throwing away signal.
     pub risky_drops: usize,
+    /// Intent signal from the agent's narration (ADR 0004 / CTX-11). `Some(..)` when the signal ran
+    /// for a Read decision; `None` when it does not apply (non-Read kind or signal disabled). The
+    /// three components are recorded separately so coverage (`has_text`) is measurable apart from
+    /// the intent rate. Set by the controller, which is where the transcript is read;
+    /// compute_shadow_decision leaves it None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent: Option<crate::compress::intent::IntentSignal>,
+    /// `Some(true)` when the Read edit-intent guard (CTX-8) deliberately kept a read in full
+    /// because the file looks editable, so the trim never happened on purpose. `None` when the
+    /// guard did not apply (non-Read kind, guard off, or read was trim-eligible). This lets the
+    /// activity feed tell a *protected* read apart from one that is merely still being watched.
+    /// Set by the controller in `agent::decide`; compute_shadow_decision leaves it None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_protected: Option<bool>,
+    // --- Per-decision model groundwork (ADR 0007 / CTX-16). All set by the controller in
+    // `agent::decide`; compute_shadow_decision leaves them None. These are logged only and never
+    // change what gets trimmed in this phase; they are the data the per-decision model needs.
+    /// Stable key for the repo this decision happened in (git root path, else cwd), so the model can
+    /// later be trained and reported per repo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_key: Option<String>,
+    /// Lowercased file extension for read decisions (`rs`, `md`, ...), a cheap personal/contextual
+    /// signal absent from today's trim-shape-only feature set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_ext: Option<String>,
+    /// What the served retention model *would* have predicted for this decision (P(correction)).
+    /// `None` when no trustworthy model is being served. Logged for forward measurement only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_score: Option<f64>,
+    /// Whether the model's score clears the conservative act threshold, i.e. the model *would* have
+    /// chosen to trim. `None` when there is no model. The real `apply` decision ignores this entirely
+    /// in this phase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub would_model_apply: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +223,12 @@ pub fn compute_shadow_decision(
             keep,
             drop,
             risky_drops,
+            intent: None,
+            read_protected: None,
+            repo_key: None,
+            file_ext: None,
+            model_score: None,
+            would_model_apply: None,
         },
     })
 }

@@ -7,13 +7,33 @@ use super::context::{SgrMode, TaskFrame};
 use super::types::CompressOptions;
 
 const FAILURE_MARKERS: &[&str] = &[
-    "error", "Error", "ERROR", "failed", "FAILED", "failure", "Failure", "panic", "Panic",
-    "assertion", "Assertion", "exception", "Exception", "not found", "No such file",
+    "error",
+    "Error",
+    "ERROR",
+    "failed",
+    "FAILED",
+    "failure",
+    "Failure",
+    "panic",
+    "Panic",
+    "assertion",
+    "Assertion",
+    "exception",
+    "Exception",
+    "not found",
+    "No such file",
 ];
 
 const BOILERPLATE_MARKERS: &[&str] = &[
-    "Compiling ", "Downloading ", "Finished ", "Building ", "Installing ", "Updating ",
-    "   Compiling", "    Finished", "cargo: ",
+    "Compiling ",
+    "Downloading ",
+    "Finished ",
+    "Building ",
+    "Installing ",
+    "Updating ",
+    "   Compiling",
+    "    Finished",
+    "cargo: ",
 ];
 
 pub struct RetentionOutput {
@@ -104,7 +124,10 @@ pub fn plan_retention(input: &str, frame: &TaskFrame, opts: &CompressOptions) ->
     }
 
     if kept.is_empty() {
-        let fallback: String = input.chars().take(opts.target_chars.saturating_sub(1)).collect();
+        let fallback: String = input
+            .chars()
+            .take(opts.target_chars.saturating_sub(1))
+            .collect();
         let text = format!("{fallback}…");
         return RetentionPlan {
             lines_total,
@@ -134,7 +157,11 @@ pub fn plan_retention(input: &str, frame: &TaskFrame, opts: &CompressOptions) ->
     }
 }
 
-pub fn apply_line_retention(input: &str, frame: &TaskFrame, opts: &CompressOptions) -> RetentionOutput {
+pub fn apply_line_retention(
+    input: &str,
+    frame: &TaskFrame,
+    opts: &CompressOptions,
+) -> RetentionOutput {
     let plan = plan_retention(input, frame, opts);
     RetentionOutput {
         text: plan.text,

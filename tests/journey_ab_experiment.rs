@@ -72,7 +72,11 @@ coaching_pct = 100
             sin.write_all(stdin_json.as_bytes()).unwrap();
         }
         let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "hook failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "hook failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     let conn = h.open();
@@ -90,7 +94,10 @@ coaching_pct = 100
             |r| r.get(0),
         )
         .unwrap();
-    assert!(p_t > 0 && p_c > 0, "expected both profile treatment and control, got T={p_t} C={p_c}");
+    assert!(
+        p_t > 0 && p_c > 0,
+        "expected both profile treatment and control, got T={p_t} C={p_c}"
+    );
 
     ctx::db::enrich_hook_traces(&conn).unwrap();
     let enriched: i64 = conn

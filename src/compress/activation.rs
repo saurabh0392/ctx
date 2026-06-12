@@ -83,10 +83,7 @@ pub fn tool_activated(cfg: &Config, tool_name: &str, _kind_label: &str) -> bool 
 /// Pure causal decision over a tool's before/after outcome. Extracted so the live gate, the
 /// `ctx context status` label, and tests share one definition of "earned". Fails closed
 /// whenever either arm is too small to make an honest claim.
-pub fn causal_clears_bar(
-    o: &crate::db::CausalToolOutcome,
-    th: &CausalThresholds,
-) -> bool {
+pub fn causal_clears_bar(o: &crate::db::CausalToolOutcome, th: &CausalThresholds) -> bool {
     if o.baseline_n < th.min_baseline || o.trimmed_n < th.min_trimmed {
         return false;
     }
@@ -139,17 +136,26 @@ mod tests {
 
     #[test]
     fn not_enough_evidence_fails_closed() {
-        assert!(!activation_clears_bar(&prog(10, 0, 0), &ActivationThresholds::default()));
+        assert!(!activation_clears_bar(
+            &prog(10, 0, 0),
+            &ActivationThresholds::default()
+        ));
     }
 
     #[test]
     fn clean_high_volume_activates() {
-        assert!(activation_clears_bar(&prog(200, 1, 2), &ActivationThresholds::default()));
+        assert!(activation_clears_bar(
+            &prog(200, 1, 2),
+            &ActivationThresholds::default()
+        ));
     }
 
     #[test]
     fn too_many_corrections_blocks() {
-        assert!(!activation_clears_bar(&prog(200, 50, 0), &ActivationThresholds::default()));
+        assert!(!activation_clears_bar(
+            &prog(200, 50, 0),
+            &ActivationThresholds::default()
+        ));
     }
 
     fn outcome(

@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use super::generic::{compress_generic, truncate_to_budget};
 use super::types::{CompressContext, CompressOptions, CompressResult};
 
-pub fn compress_grep_output(input: &str, opts: &CompressOptions, ctx: &CompressContext) -> CompressResult {
+pub fn compress_grep_output(
+    input: &str,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> CompressResult {
     let chars_in = input.chars().count();
     if chars_in <= opts.target_chars {
         return CompressResult {

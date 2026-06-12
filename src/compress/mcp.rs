@@ -1,7 +1,11 @@
 use super::generic::{compress_generic, truncate_to_budget};
 use super::types::{CompressContext, CompressOptions, CompressResult};
 
-pub fn compress_mcp_output(input: &str, opts: &CompressOptions, ctx: &CompressContext) -> CompressResult {
+pub fn compress_mcp_output(
+    input: &str,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> CompressResult {
     let chars_in = input.chars().count();
     if chars_in <= opts.target_chars {
         return CompressResult {
@@ -18,7 +22,8 @@ pub fn compress_mcp_output(input: &str, opts: &CompressOptions, ctx: &CompressCo
     {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
             let compact = trim_json_value(&v, 0, 4);
-            let text = serde_json::to_string_pretty(&compact).unwrap_or_else(|_| trimmed.to_string());
+            let text =
+                serde_json::to_string_pretty(&compact).unwrap_or_else(|_| trimmed.to_string());
             if text.chars().count() < chars_in && text.chars().count() <= opts.target_chars {
                 return CompressResult {
                     chars_in,
@@ -65,7 +70,10 @@ fn trim_json_value(v: &serde_json::Value, depth: usize, max_array: usize) -> ser
                     .take(max_array)
                     .map(|x| trim_json_value(x, depth + 1, max_array))
                     .collect();
-                kept.push(serde_json::json!(format!("… {} more items", arr.len() - max_array)));
+                kept.push(serde_json::json!(format!(
+                    "… {} more items",
+                    arr.len() - max_array
+                )));
                 serde_json::Value::Array(kept)
             }
         }

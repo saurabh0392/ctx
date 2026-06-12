@@ -270,10 +270,7 @@ mod tests {
             fingerprint_tool_input("Read", &json!({"file_path": "/a/b.rs"})),
             "/a/b.rs"
         );
-        assert_eq!(
-            fingerprint_tool_input("Grep", &json!({"path": "/c"})),
-            "/c"
-        );
+        assert_eq!(fingerprint_tool_input("Grep", &json!({"path": "/c"})), "/c");
         assert_eq!(
             fingerprint_tool_input("ListMcpResources", &json!({})),
             "ListMcpResources"

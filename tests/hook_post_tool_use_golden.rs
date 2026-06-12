@@ -31,6 +31,7 @@ compress_max_output_chars = 12000
 compress_target_chars = 400
 compress_redact_secrets = true
 compress_preserve_errors = true
+compress_explore_rate = 0.0
 "#,
     );
 

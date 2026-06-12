@@ -44,7 +44,10 @@ mod tests {
     #[test]
     fn wilson_brackets_point_estimate() {
         let (lo, hi) = wilson_interval(5, 100);
-        assert!(lo < 0.05 && 0.05 < hi, "interval {lo}..{hi} must bracket 0.05");
+        assert!(
+            lo < 0.05 && 0.05 < hi,
+            "interval {lo}..{hi} must bracket 0.05"
+        );
         assert!(lo >= 0.0 && hi <= 1.0);
     }
 

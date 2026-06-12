@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ctx Improving page prototype</title>
+<style>
+:root {
+  --bg:#111c20; --surface:#182428; --surface2:#1f2e33; --surface3:#263840;
+  --border:#2e4048; --border2:#3d5560;
+  --t1:#f0f5f0; --t2:#9dbea8; --t3:#7aab90; --t4:#638c78;
+  --primary:#93c043; --primary-lt:#b0d46a; --primary-glow:rgba(147,192,67,.13); --primary-border:rgba(147,192,67,.28);
+  --green:#93c043; --red:#f87171; --amber:#fbbf24; --blue:#60a5fa; --purple:#c4b5fd; --orange:#fb923c; --cyan:#22d3ee;
+  --sidebar:224px;
+}
+[data-theme="light"] {
+  --bg:#f3f6f1; --surface:#fff; --surface2:#edf2e9; --surface3:#e2eadc;
+  --border:#cad8c2; --border2:#afc4a4;
+  --t1:#1a2a1c; --t2:#3a5240; --t3:#728c70; --t4:#9bb494;
+  --primary:#5c8520; --primary-lt:#4a6e18; --primary-glow:rgba(92,133,32,.10); --primary-border:rgba(92,133,32,.28);
+  --green:#5c8520; --red:#c0392b; --amber:#b5860a; --blue:#2563eb; --purple:#7c3aed;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:"Inter",-apple-system,"SF Pro Text","Segoe UI",sans-serif; background:var(--bg); color:var(--t1); min-height:100vh; display:flex; font-size:14px; line-height:1.5; }
+
+.sidebar { width:var(--sidebar); background:#182428; border-right:1px solid #2e4048; padding:24px 0; flex-shrink:0; display:flex; flex-direction:column; position:fixed; inset:0 auto 0 0; z-index:10; }
+[data-theme="light"] .sidebar { background:#fff; border-right-color:#cad8c2; }
+.sb-logo { padding:0 20px 24px; border-bottom:1px solid #2e4048; margin-bottom:8px; }
+.sb-logo-mark { font-size:20px; font-weight:800; letter-spacing:-.8px; color:var(--t1); }
+.sb-logo-mark span { color:var(--primary-lt); }
+.sb-logo-sub { font-size:11px; color:var(--t3); margin-top:2px; letter-spacing:.05em; text-transform:uppercase; }
+.nav-section { padding:8px 14px 4px; font-size:10px; font-weight:600; color:#3d5560; letter-spacing:.09em; text-transform:uppercase; margin-top:8px; }
+.nav-item { display:flex; align-items:center; gap:10px; padding:9px 12px; margin:1px 8px; border-radius:8px; font-size:13px; font-weight:500; color:var(--t2); cursor:pointer; transition:all .15s; border:1px solid transparent; }
+.nav-item:hover { background:var(--surface3); color:var(--primary-lt); }
+.nav-item.active { background:rgba(147,192,67,.18); color:var(--primary-lt); border-color:rgba(147,192,67,.35); }
+.nav-icon { font-size:15px; opacity:.85; width:18px; text-align:center; }
+.nav-sub { font-size:12px; padding:7px 12px 7px 40px; margin:1px 8px; border-radius:8px; color:var(--t3); cursor:pointer; }
+.nav-sub:hover { background:var(--surface3); color:var(--primary-lt); }
+.nav-sub.active { color:var(--primary-lt); font-weight:600; }
+.theme-btn { margin:auto 12px 0; padding:8px 12px; background:transparent; border:1px solid var(--border); border-radius:8px; color:var(--t2); font-size:12px; font-weight:500; cursor:pointer; width:calc(100% - 24px); }
+
+.main-wrap { margin-left:var(--sidebar); flex:1; }
+.tab-panel { padding:32px 48px 64px; min-height:100vh; }
+.page-title { font-size:26px; font-weight:700; color:var(--t1); letter-spacing:-.5px; margin-bottom:6px; }
+.page-sub { font-size:14px; color:var(--t3); margin-bottom:22px; max-width:720px; line-height:1.6; }
+
+.proto-note { margin:0 0 18px; padding:11px 16px; background:rgba(251,191,36,.10); border:1px solid rgba(251,191,36,.3); border-radius:10px; font-size:12px; color:var(--amber); }
+
+/* prototype state switcher */
+.state-switch { display:flex; gap:8px; margin-bottom:22px; }
+.ss-btn { padding:7px 13px; background:var(--surface); border:1px solid var(--border); border-radius:20px; font-size:12px; color:var(--t2); cursor:pointer; }
+.ss-btn.active { background:rgba(147,192,67,.16); border-color:var(--primary-border); color:var(--primary-lt); font-weight:600; }
+
+/* repo chip */
+.repo-chip { display:inline-flex; align-items:center; gap:8px; padding:5px 12px; background:var(--surface); border:1px solid var(--border); border-radius:20px; font-size:12px; color:var(--t2); margin-bottom:14px; }
+.repo-chip b { color:var(--t1); font-family:"SF Mono",ui-monospace,monospace; }
+.live-pip { width:7px; height:7px; border-radius:50%; background:var(--primary); box-shadow:0 0 0 3px var(--primary-glow); }
+
+/* hero + payoff top row */
+.top-row { display:flex; gap:16px; align-items:stretch; flex-wrap:wrap; margin-bottom:8px; }
+.top-row .hero { flex:1.7 1 420px; margin-bottom:0; }
+.top-row .save-card { flex:1 1 280px; margin-top:0; display:flex; flex-direction:column; justify-content:center; }
+.hero { background:linear-gradient(135deg,var(--surface),var(--surface2)); border:1px solid var(--primary-border); border-radius:16px; padding:24px 26px; margin-bottom:20px; }
+.hero-eyebrow { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--primary-lt); display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+.hero-claim { font-size:22px; font-weight:800; color:var(--t1); letter-spacing:-.4px; line-height:1.35; margin-bottom:10px; }
+.hero-claim b { color:var(--primary-lt); }
+.hero-sub { font-size:13.5px; color:var(--t2); line-height:1.6; max-width:660px; }
+.hero-sub b { color:var(--t1); }
+.hero-sub .good { color:var(--primary-lt); font-weight:600; }
+
+.section-head { font-size:13px; font-weight:700; color:var(--t4); text-transform:uppercase; letter-spacing:.06em; margin:26px 0 6px; }
+.section-sub { font-size:12.5px; color:var(--t3); margin-bottom:12px; max-width:660px; line-height:1.55; }
+
+/* learned list (gated interpretation) */
+.learned { background:var(--surface); border:1px solid var(--border); border-radius:13px; padding:6px 18px; }
+.learned-item { display:flex; gap:13px; padding:14px 0; border-top:1px solid var(--border); align-items:flex-start; }
+.learned-item:first-child { border-top:none; }
+.li-dot { width:9px; height:9px; border-radius:50%; background:var(--primary); margin-top:5px; flex-shrink:0; box-shadow:0 0 0 3px var(--primary-glow); }
+.li-text { font-size:13.5px; color:var(--t2); line-height:1.55; }
+.li-text b { color:var(--t1); }
+.li-tag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--primary-lt); margin-left:7px; }
+.forming { font-size:12.5px; color:var(--t4); padding:14px 0 16px; border-top:1px solid var(--border); line-height:1.55; }
+
+/* proof grid */
+.ba-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.ba-col { background:var(--surface2); border:1px solid var(--border); border-radius:11px; padding:14px 16px; }
+.ba-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--t4); margin-bottom:3px; }
+.ba-n { font-size:12px; color:var(--t3); margin-bottom:12px; }
+.ba-metric { display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-top:1px solid var(--border); }
+.ba-mname { font-size:12.5px; color:var(--t2); }
+.ba-mval { font-size:15px; font-weight:700; color:var(--t1); font-variant-numeric:tabular-nums; text-align:right; }
+.ba-ci { font-size:10.5px; color:var(--t4); text-align:right; }
+.nums-note { font-size:11.5px; color:var(--t4); margin-top:10px; line-height:1.5; }
+.verdict-line { font-size:13.5px; color:var(--t2); line-height:1.6; margin-top:12px; padding:12px 14px; background:rgba(147,192,67,.08); border:1px solid var(--primary-border); border-radius:11px; }
+.verdict-line b { color:var(--primary-lt); }
+
+/* steering coverage */
+.steer { background:var(--surface); border:1px solid var(--border); border-radius:13px; padding:8px 18px; }
+.steer-row { display:flex; align-items:center; gap:14px; padding:13px 0; border-top:1px solid var(--border); }
+.steer-row:first-child { border-top:none; }
+.steer-name { font-size:14px; font-weight:700; color:var(--t1); font-family:"SF Mono",ui-monospace,monospace; min-width:54px; }
+.steer-bar { flex:1; height:8px; background:var(--surface3); border-radius:6px; overflow:hidden; }
+.steer-fill { height:100%; background:var(--primary); border-radius:6px; }
+.steer-pct { font-size:13px; font-weight:700; color:var(--t1); font-variant-numeric:tabular-nums; min-width:42px; text-align:right; }
+.steer-foot { font-size:12px; color:var(--t4); margin-top:12px; line-height:1.55; }
+.steer-foot a { color:var(--primary-lt); cursor:pointer; }
+
+/* savings tie-in */
+.save-card { background:var(--surface); border:1px solid var(--primary-border); border-radius:13px; padding:18px 20px; margin-top:8px; }
+.save-eyebrow { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--t4); margin-bottom:6px; }
+.save-num { font-size:30px; font-weight:800; color:var(--t1); letter-spacing:-.5px; }
+.save-num span { font-size:14px; font-weight:600; color:var(--t3); margin-left:6px; }
+.save-sub { font-size:12.5px; color:var(--t3); margin-top:6px; line-height:1.55; }
+
+/* learning / dayone */
+.prog-wrap { background:var(--surface); border:1px solid var(--border); border-radius:13px; padding:20px 22px; }
+.prog-num { font-size:30px; font-weight:800; color:var(--t1); letter-spacing:-.5px; }
+.prog-num span { font-size:14px; font-weight:600; color:var(--t3); }
+.prog-bar { height:9px; background:var(--surface3); border-radius:6px; overflow:hidden; margin:16px 0 8px; }
+.prog-fill { height:100%; background:var(--primary); border-radius:6px; }
+.prog-foot { font-size:12.5px; color:var(--t3); line-height:1.55; }
+
+.empty { padding:36px; text-align:center; color:var(--t3); font-size:13px; background:var(--surface); border:1px dashed var(--border2); border-radius:13px; line-height:1.6; }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-mark">ctx<span>.</span></div>
+    <div class="sb-logo-sub">Context safety layer</div>
+  </div>
+  <div class="nav-section">Your context</div>
+  <div class="nav-item active"><span class="nav-icon">&#9678;</span> Home</div>
+  <div class="nav-sub active">Improving</div>
+  <div class="nav-item"><span class="nav-icon">&#9670;</span> Tools</div>
+  <div class="nav-item"><span class="nav-icon">&#8801;</span> Activity</div>
+  <div class="nav-section">Setup</div>
+  <div class="nav-item"><span class="nav-icon">&#127899;</span> Profiles</div>
+  <div class="nav-item"><span class="nav-icon">&#9881;</span> Settings</div>
+  <button class="theme-btn" onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</aside>
+
+<div class="main-wrap">
+<div class="tab-panel">
+  <div class="proto-note">Concept prototype with mock data. This is the north-star for the Improving page once the model actually steers trims and has earned it on your data. It is not the current product. Use the buttons to see each state.</div>
+
+  <div class="state-switch">
+    <button class="ss-btn" data-s="dayone" onclick="setState('dayone')">Day one</button>
+    <button class="ss-btn" data-s="learning" onclick="setState('learning')">Still learning</button>
+    <button class="ss-btn active" data-s="proven" onclick="setState('proven')">Proven and steering</button>
+  </div>
+
+  <h1 class="page-title">Improving</h1>
+  <p class="page-sub" id="page-sub"></p>
+
+  <div class="repo-chip"><span class="live-pip"></span> This repo: <b>ctx</b></div>
+
+  <div id="body"></div>
+</div>
+</div>
+
+<script>
+// All numbers are mock. The real page reads them per repo from the model proof API.
+const SUBS = {
+  dayone: "ctx is learning a model from how you work on this repo, so it can decide trims for you instead of using fixed rules. Here is where that stands.",
+  learning: "ctx is learning a model from how you work on this repo, so it can decide trims for you instead of using fixed rules. Here is where that stands.",
+  proven: "ctx has learned a model from how you work on this repo and now makes some trim calls itself. It only does that on tools where your own sessions proved it does not cost you."
+};
+
+function dayone() {
+  return `<div class="empty">
+    Not enough of your work on this repo yet.<br>
+    ctx is watching what it would trim and what you needed next. Nothing it learns changes your trims until it has earned that on your own runs.
+  </div>`;
+}
+
+function learning() {
+  return `<div class="prog-wrap">
+    <div class="prog-num">1,240 <span>of your decisions learned so far</span></div>
+    <div class="prog-bar"><div class="prog-fill" style="width:62%"></div></div>
+    <div class="prog-foot">
+      The model is not steering any trims yet. It will only start once it can show, on your own runs, that letting it decide does not make you re-read or fix things more often. Until then your trims come from the standard safety gate you see on the Tools page.
+    </div>
+  </div>
+  <div class="section-head">What it is starting to notice</div>
+  <div class="section-sub">ctx will only spell out a pattern here once it holds steady across enough of your sessions. Right now the patterns are still forming, so there is nothing it is sure enough about to act on.</div>`;
+}
+
+function proven() {
+  return `<div class="top-row">
+    <div class="hero">
+      <div class="hero-eyebrow"><span class="live-pip"></span> Tuned to this repo</div>
+      <div class="hero-claim">On <b>ctx</b>, the model now makes the call on <b>about 2 in 5 trims</b>, across git, test and grep.</div>
+      <div class="hero-sub">On every run where it decided, your fix and re-read rates stayed <span class="good">flat or better</span> than when the old fixed rules decided. The rest of your trims still go through the standard safety gate, and the full output always lands in your transcript.</div>
+    </div>
+    <div class="save-card">
+      <div class="save-eyebrow">What that bought you, on earned tools</div>
+      <div class="save-num">47.2K <span>tokens this month</span></div>
+      <div class="save-sub">Context room the model's calls kept out of your window. It compounds: a trimmed result stays out on every later turn, not just once. About $0.014 as a one-off at a conservative rate.</div>
+    </div>
+  </div>
+
+  <div class="section-head">What it learned here</div>
+  <div class="section-sub">These are patterns ctx picked up from your own sessions on this repo, not settings you chose. It only lists ones that have held steady long enough to trust.</div>
+  <div class="learned">
+    <div class="learned-item">
+      <span class="li-dot"></span>
+      <div class="li-text">When your recent messages look like a <b>debugging run</b>, it keeps test failures in full instead of trimming them, because that is when you scroll back to them.<span class="li-tag">clear pattern</span></div>
+    </div>
+    <div class="learned-item">
+      <span class="li-dot"></span>
+      <div class="li-text">On <b>large grep results</b> it trims the routine matches harder, because you rarely re-read past the first few.<span class="li-tag">clear pattern</span></div>
+    </div>
+    <div class="forming">It is still forming a view on 4 more patterns on this repo. They will show up here once they hold steady, not before.</div>
+  </div>
+
+  <div class="section-head">How we know it is safe</div>
+  <div class="section-sub">ctx compares the runs where the model decided against matched runs where the old rules decided. The match is by tool, file kind and size, and it includes the occasional spot-check where ctx deliberately decides the other way, so the comparison stays honest and not just the cases the model felt sure about.</div>
+  <div class="ba-grid">
+    <div class="ba-col">
+      <div class="ba-label">When the model decided</div>
+      <div class="ba-n">120 runs</div>
+      <div class="ba-metric"><span class="ba-mname">You had to fix it</span><span><div class="ba-mval">7.5%</div><div class="ba-ci">3.6% to 14.2%</div></span></div>
+      <div class="ba-metric"><span class="ba-mname">You re-read it</span><span><div class="ba-mval">9.2%</div><div class="ba-ci">4.9% to 16.1%</div></span></div>
+    </div>
+    <div class="ba-col">
+      <div class="ba-label">Matched runs, old rules decided</div>
+      <div class="ba-n">120 runs</div>
+      <div class="ba-metric"><span class="ba-mname">You had to fix it</span><span><div class="ba-mval">8.1%</div><div class="ba-ci">4.1% to 14.9%</div></span></div>
+      <div class="ba-metric"><span class="ba-mname">You re-read it</span><span><div class="ba-mval">9.8%</div><div class="ba-ci">5.4% to 16.8%</div></span></div>
+    </div>
+  </div>
+  <div class="nums-note">The small range after each number is how sure ctx is (95% of the time the true rate sits in there).</div>
+  <div class="verdict-line">Letting the model decide moved fixes <b>-0.6 points</b> and re-reads <b>-0.6 points</b>. Both sit at or below zero, so it is not making things worse. That is what lets it keep deciding.</div>
+
+  <div class="section-head">Where it is steering</div>
+  <div class="section-sub">How much of each earned tool the model now decides on its own. The rest still use the fixed rules.</div>
+  <div class="steer">
+    <div class="steer-row"><span class="steer-name">git</span><div class="steer-bar"><div class="steer-fill" style="width:41%"></div></div><span class="steer-pct">41%</span></div>
+    <div class="steer-row"><span class="steer-name">test</span><div class="steer-bar"><div class="steer-fill" style="width:35%"></div></div><span class="steer-pct">35%</span></div>
+    <div class="steer-row"><span class="steer-name">grep</span><div class="steer-bar"><div class="steer-fill" style="width:18%"></div></div><span class="steer-pct">18%</span></div>
+    <div class="steer-foot">Want the full before-and-after for one tool? Open it on the <a onclick="alert('stub: jump to Tools page, that tool, model section of the drawer')">Tools page</a>. Each tool carries its own model coverage and proof there.</div>
+  </div>`;
+}
+
+const RENDER = { dayone, learning, proven };
+
+function setState(s) {
+  document.querySelectorAll(".ss-btn").forEach(b => b.classList.toggle("active", b.dataset.s === s));
+  document.getElementById("page-sub").textContent = SUBS[s];
+  document.getElementById("body").innerHTML = RENDER[s]();
+}
+
+setState("proven");
+</script>
+</body>
+</html>

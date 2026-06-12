@@ -38,7 +38,11 @@ fn is_test_command(lower: &str) -> bool {
         || lower.starts_with("ruff ")
 }
 
-pub fn classify_tool(tool_name: &str, command: Option<&str>, file_path: Option<&str>) -> CompressKind {
+pub fn classify_tool(
+    tool_name: &str,
+    command: Option<&str>,
+    file_path: Option<&str>,
+) -> CompressKind {
     let name = tool_name.trim();
     if name.eq_ignore_ascii_case("bash") {
         return classify_bash_command(command.unwrap_or(""));

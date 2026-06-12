@@ -1,9 +1,9 @@
 //! Dry-run pipeline simulation. Mirrors `hook::user_prompt_submit()` without side effects.
 
-use anyhow::Result;
-use serde::Serialize;
 use crate::analytics::{CACHE_READ_RATE_PER_MTOK, WORST_CASE_INPUT_RATE_PER_MTOK};
 use crate::profiles::{self};
+use anyhow::Result;
+use serde::Serialize;
 
 const TOKENS_PER_TOOL: f64 = 600.0;
 
@@ -187,7 +187,13 @@ pub fn simulate_all_profiles(
     }
     let mut results = Vec::new();
     for name in &names {
-        results.push(simulate_pipeline(cwd, prompt, session_id, model_hint, Some(name))?);
+        results.push(simulate_pipeline(
+            cwd,
+            prompt,
+            session_id,
+            model_hint,
+            Some(name),
+        )?);
     }
     results.sort_by(|a, b| {
         b.savings_pct
@@ -336,7 +342,12 @@ pub fn format_result(r: &SimulateResult) -> String {
         },
     );
     if r.fatigue_blocked {
-        gate_line(&mut out, "Fatigue", true, "session would be blocked".to_string());
+        gate_line(
+            &mut out,
+            "Fatigue",
+            true,
+            "session would be blocked".to_string(),
+        );
     }
     out.push('\n');
 
@@ -350,9 +361,18 @@ pub fn format_result(r: &SimulateResult) -> String {
     }
 
     out.push_str("COST ESTIMATE (per request)\n");
-    out.push_str(&format!("  Without ctx:  ${:.3}\n", r.estimated_cost_without_ctx));
-    out.push_str(&format!("  With ctx:     ${:.3}\n", r.estimated_cost_with_ctx));
-    out.push_str(&format!("  Savings:      ${:.3}  ({:.0}%)\n", r.savings_usd, r.savings_pct));
+    out.push_str(&format!(
+        "  Without ctx:  ${:.3}\n",
+        r.estimated_cost_without_ctx
+    ));
+    out.push_str(&format!(
+        "  With ctx:     ${:.3}\n",
+        r.estimated_cost_with_ctx
+    ));
+    out.push_str(&format!(
+        "  Savings:      ${:.3}  ({:.0}%)\n",
+        r.savings_usd, r.savings_pct
+    ));
     out
 }
 
@@ -362,7 +382,9 @@ pub fn format_all_profiles(results: &[SimulateResult], cwd: &str, prompt: &str) 
     out.push_str(&"-".repeat(50));
     out.push('\n');
     let prompt_preview: String = prompt.chars().take(60).collect();
-    out.push_str(&format!("\nPROMPT  \"{prompt_preview}\"\nCWD     {cwd}\n\n"));
+    out.push_str(&format!(
+        "\nPROMPT  \"{prompt_preview}\"\nCWD     {cwd}\n\n"
+    ));
     out.push_str(&format!(
         "  {:12} {:>6} {:>9} {:>13} {:>10} {:>8}\n",
         "Profile", "Tools", "Stripped", "Tokens Saved", "Est. Cost", "Savings"
@@ -468,7 +490,11 @@ mod tests {
         )
         .unwrap();
         let sid: i64 = conn
-            .query_row("SELECT id FROM sessions WHERE external_key='sim'", [], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='sim'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         for prefix in [
             "mcp__claude_ai_Atlassian__",

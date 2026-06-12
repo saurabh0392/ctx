@@ -21,7 +21,9 @@ pub fn compress_read_output(
     let total = lines.len();
 
     let mut outline: Vec<String> = Vec::new();
-    outline.push(format!("File: {file_path} ({total} lines, compressed for context budget)"));
+    outline.push(format!(
+        "File: {file_path} ({total} lines, compressed for context budget)"
+    ));
     if !ctx.cwd.is_empty() && !file_path.starts_with('/') {
         outline.push(format!("Working dir: {}", ctx.cwd.trim_end_matches('/')));
     }
@@ -46,7 +48,11 @@ pub fn compress_read_output(
     }
 
     if !ctx.prompt_keywords.is_empty() {
-        let lower_kw: Vec<String> = ctx.prompt_keywords.iter().map(|k| k.to_lowercase()).collect();
+        let lower_kw: Vec<String> = ctx
+            .prompt_keywords
+            .iter()
+            .map(|k| k.to_lowercase())
+            .collect();
         for (i, line) in lines.iter().enumerate() {
             let ll = line.to_lowercase();
             if lower_kw.iter().any(|k| !k.is_empty() && ll.contains(k)) {

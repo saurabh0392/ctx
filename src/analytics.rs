@@ -164,11 +164,20 @@ pub fn group_into_sessions(records: &[Record]) -> Vec<Session> {
         .unwrap_or(30) as i64;
     let gap = chrono::Duration::minutes(gap_mins);
     let mut sessions: Vec<Session> = Vec::new();
-    let mut current: Option<(DateTime<Utc>, DateTime<Utc>, usize, usize, usize, String, String)> =
-        None;
+    let mut current: Option<(
+        DateTime<Utc>,
+        DateTime<Utc>,
+        usize,
+        usize,
+        usize,
+        String,
+        String,
+    )> = None;
 
     for rec in records.iter().filter(|r| record_belongs_to_session(r)) {
-        let Ok(ts) = rec.ts.parse::<DateTime<Utc>>() else { continue };
+        let Ok(ts) = rec.ts.parse::<DateTime<Utc>>() else {
+            continue;
+        };
         let wd = rec.working_directory.clone();
         match current {
             None => {

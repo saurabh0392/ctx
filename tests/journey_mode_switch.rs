@@ -40,7 +40,11 @@ adaptive_prefix_enabled = true
         .env("CTX_HOME", h.tmp.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let cfg = std::fs::read_to_string(h.tmp.path().join("config.toml")).unwrap();
     assert!(cfg.contains("active_mode = \"debug\""));

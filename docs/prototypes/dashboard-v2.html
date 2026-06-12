@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ctx dashboard v2 prototype: one simple story</title>
+<style>
+  :root {
+    --bg: #0a0e16;
+    --surface: #121826;
+    --surface2: #0f1420;
+    --border: #1c2536;
+    --t1: #f3f6fc;
+    --t2: #c4cdde;
+    --t3: #8a96ad;
+    --t4: #56627a;
+    --primary: #34d399;
+    --primary-lt: #6ee7b7;
+    --amber: #fbbf24;
+    --danger: #f87171;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: radial-gradient(1200px 600px at 70% -10%, #14243a 0%, var(--bg) 55%);
+    color: var(--t1);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding-bottom: 120px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 28px; }
+
+  /* top bar */
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 22px 0 8px; }
+  .logo { font-size: 20px; font-weight: 800; letter-spacing: -.5px; }
+  .logo span { color: var(--primary); }
+  .topnav { display: flex; gap: 4px; align-items: center; }
+  .topnav a { color: var(--t3); font-size: 13px; text-decoration: none; padding: 7px 12px; border-radius: 9px; transition: .15s; }
+  .topnav a:hover { color: var(--t1); background: var(--surface); }
+
+  /* prototype state switcher (not part of product) */
+  .proto-switch { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 50;
+    background: rgba(18,24,38,.92); backdrop-filter: blur(12px); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px; display: flex; gap: 4px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  .proto-switch button { border: 0; background: transparent; color: var(--t3); font-size: 12.5px; font-weight: 600;
+    padding: 8px 16px; border-radius: 999px; cursor: pointer; transition: .15s; }
+  .proto-switch button.on { background: var(--primary); color: #04231a; }
+  .proto-tag { position: fixed; bottom: 22px; left: 22px; z-index: 50; font-size: 11px; color: var(--t4); }
+
+  /* beat 1 hero */
+  .hero { padding: 30px 0 8px; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .12em; color: var(--primary-lt); margin-bottom: 18px; }
+  .pip { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 0 rgba(52,211,153,.6); animation: pulse 2.2s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.5);} 70% { box-shadow: 0 0 0 9px rgba(52,211,153,0);} 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0);} }
+  h1 { font-size: 40px; line-height: 1.1; font-weight: 800; letter-spacing: -1.2px; max-width: 16ch; }
+  .lede { font-size: 16.5px; color: var(--t2); margin-top: 18px; max-width: 60ch; }
+
+  .status { margin-top: 26px; padding: 18px 20px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); display: flex; gap: 14px; align-items: flex-start; }
+  .status .dot { margin-top: 5px; flex-shrink: 0; }
+  .status .big { font-size: 16px; color: var(--t1); font-weight: 600; }
+  .status .big b { color: var(--primary-lt); }
+
+  /* section heads */
+  .sec { margin-top: 52px; }
+  .sec-eyebrow { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--t4); margin-bottom: 16px; }
+
+  /* beat 2 pillars */
+  .pillars { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  .pillar { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; display: flex; gap: 16px; align-items: flex-start; }
+  .pillar .pn { font-size: 13px; font-weight: 800; color: var(--primary); width: 22px; flex-shrink: 0; }
+  .pillar .pt { font-size: 15px; font-weight: 700; color: var(--t1); }
+  .pillar .pb { font-size: 13.5px; color: var(--t3); margin-top: 3px; }
+
+  /* beat 3 stat strip */
+  .stats { display: flex; gap: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+  .stat { flex: 1; padding: 18px 20px; border-right: 1px solid var(--border); }
+  .stat:last-child { border-right: 0; }
+  .stat .v { font-size: 26px; font-weight: 800; letter-spacing: -.5px; }
+  .stat .l { font-size: 12.5px; color: var(--t3); margin-top: 2px; }
+  .experiment-line { margin-top: 14px; font-size: 13.5px; color: var(--t3); padding-left: 2px; }
+  .experiment-line b { color: var(--t2); }
+
+  /* per-tool compact list */
+  .tools { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+  .tool { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    display: flex; align-items: center; gap: 14px; cursor: pointer; transition: .15s; }
+  .tool:hover { border-color: #2a3650; }
+  .tool .tn { font-size: 14px; font-weight: 700; width: 64px; flex-shrink: 0; }
+  .tool .tm { font-size: 13px; color: var(--t3); flex: 1; }
+  .stagepill { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+  .s-watch { background: #1a2336; color: #8aa0c6; }
+  .s-test { background: #2a2410; color: var(--amber); }
+  .s-earned { background: #0f2c22; color: var(--primary-lt); }
+  .s-off { background: #2c1417; color: var(--danger); }
+
+  /* beat 4 payoff */
+  .payoff { background: linear-gradient(135deg, #0f2920 0%, var(--surface) 70%); border: 1px solid #1e3b30; border-radius: var(--radius); padding: 28px; }
+  .payoff.empty { background: var(--surface); border-color: var(--border); }
+  .payoff .pe { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--primary-lt); }
+  .payoff.empty .pe { color: var(--t4); }
+  .payoff .pv { font-size: 38px; font-weight: 800; letter-spacing: -1px; margin-top: 8px; }
+  .payoff.empty .pv { color: var(--t3); font-size: 22px; }
+  .payoff .pu { font-size: 14px; color: var(--t2); margin-top: 8px; max-width: 56ch; }
+
+  .links { margin-top: 48px; display: flex; gap: 18px; border-top: 1px solid var(--border); padding-top: 22px; }
+  .links a { color: var(--t3); font-size: 13.5px; text-decoration: none; }
+  .links a:hover { color: var(--primary-lt); }
+  .hide { display: none !important; }
+  .autoline { margin-top: 18px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--t3); }
+  .autoline a { color: var(--primary-lt); text-decoration: none; }
+  .autoline a:hover { text-decoration: underline; }
+  .autodot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
+  .optin { margin-top: 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .optin .cta { background: var(--primary); color: #04231a; border: 0; font-size: 14px; font-weight: 700;
+    padding: 12px 22px; border-radius: 12px; cursor: pointer; }
+  .optin .cta:hover { background: var(--primary-lt); }
+  .optin .sub { font-size: 13px; color: var(--t3); max-width: 42ch; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="logo">ctx<span>.</span></div>
+      <nav class="topnav">
+        <a href="#" onclick="return false">Tools</a>
+        <a href="#" onclick="return false">Activity</a>
+        <a href="#" onclick="return false">Settings</a>
+      </nav>
+    </div>
+
+    <!-- BEAT 1 -->
+    <section class="hero">
+      <div class="eyebrow"><span class="pip"></span> Context truth and safety layer</div>
+      <h1>ctx makes your agent leaner without losing the thread.</h1>
+      <p class="lede">It watches your AI coding agent, learns what your work actually needs, and only trims context after it proves, on your own sessions, that trimming is safe. The full output always stays in your transcript.</p>
+
+      <div class="status">
+        <span class="pip dot"></span>
+        <div class="big" id="status-text"></div>
+      </div>
+
+      <div id="control"></div>
+    </section>
+
+    <!-- BEAT 2 -->
+    <section class="sec">
+      <div class="sec-eyebrow">Why you can trust it</div>
+      <div class="pillars">
+        <div class="pillar"><div class="pn">1</div><div><div class="pt">Learns you, not the average</div><div class="pb">The platform compacts for the median user. ctx learns what matters in your repos, for your kind of work, from your own corrections and re-reads.</div></div></div>
+        <div class="pillar"><div class="pn">2</div><div><div class="pt">Proves before it acts</div><div class="pb">A tool only trims after your own sessions show that trimming it did not make you re-read or correct more. Until then, ctx just watches.</div></div></div>
+        <div class="pillar"><div class="pn">3</div><div><div class="pt">Never hides anything</div><div class="pb">Even when it trims, the full output stays in your transcript. ctx changes what the model has to re-read, never what you can see.</div></div></div>
+      </div>
+    </section>
+
+    <!-- BEAT 3 -->
+    <section class="sec">
+      <div class="sec-eyebrow">What it is doing for you right now</div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="st-watched">0</div><div class="l">decisions watched</div></div>
+        <div class="stat"><div class="v" id="st-judged">0</div><div class="l">judged by what you did next</div></div>
+        <div class="stat"><div class="v" id="st-today">0</div><div class="l">recorded today</div></div>
+      </div>
+      <div class="experiment-line" id="experiment-line"></div>
+      <div class="tools" id="tools"></div>
+    </section>
+
+    <!-- BEAT 4 -->
+    <section class="sec">
+      <div class="sec-eyebrow">The payoff</div>
+      <div id="payoff"></div>
+    </section>
+
+    <div class="links">
+      <a href="#" onclick="return false">See the full receipts, tool by tool</a>
+      <a href="#" onclick="return false">Activity</a>
+      <a href="#" onclick="return false">Settings</a>
+    </div>
+  </div>
+
+  <div class="proto-tag">prototype - not wired to data</div>
+  <div class="proto-switch">
+    <button data-state="empty" class="on">Day one (empty)</button>
+    <button data-state="testing">Proving (in progress)</button>
+    <button data-state="earned">Earned</button>
+  </div>
+
+<script>
+  const STATES = {
+    empty: {
+      status: 'Right now ctx is <b>watching</b> your work. It has not changed a single thing yet, because nothing has earned it. That is the point.',
+      autopilot: false,
+      watched: 0, judged: 0, today: 0,
+      experiment: '',
+      tools: [],
+      payoff: { empty: true, eyebrow: 'Savings', value: 'none yet',
+        unit: 'No tool has earned trimming yet, so there is nothing to bank. The moment a tool clears its proof, your savings show up here in tokens and dollars, and they compound, because a trimmed result stays out of context on every later turn too.' },
+    },
+    testing: {
+      status: 'Right now ctx is watching <b>1,686 decisions</b> on your work and running a safe background test to learn what is safe to trim. It still has not changed your context, because nothing has earned it yet.',
+      autopilot: true,
+      watched: '1,686', judged: '1,643', today: '54',
+      experiment: 'To learn safely, ctx leaves a small fraction of trimmable output <b>untouched at random</b> and compares what happens. That is how it proves a trim never costs you a re-read, before it ever relies on it.',
+      tools: [
+        { name: 'Bash', stage: 'test', msg: 'On trial. Trimmed 12 times, left whole 9. A few more runs and it can give a straight answer.' },
+        { name: 'Grep', stage: 'test', msg: 'On trial. Collecting the before-and-after on your own runs.' },
+        { name: 'Read', stage: 'off', msg: 'Tested and it backfired on files you edit, so ctx keeps it off.' },
+        { name: 'git', stage: 'watch', msg: 'Still watching. 40 of about 60 runs judged so far.' },
+      ],
+      payoff: { empty: true, eyebrow: 'Savings', value: 'none yet',
+        unit: 'Still proving. ctx has trimmed some output while testing, but it does not count a single character as savings until the proof clears. No fake numbers.' },
+    },
+    earned: {
+      status: 'Right now ctx is trimming <b>Bash and Grep</b> on your work, proven safe on your own sessions, and keeping context out of your window without touching anything you can see. It turned each one on by itself, the moment it earned it.',
+      autopilot: true,
+      watched: '4,920', judged: '4,710', today: '120',
+      experiment: 'ctx keeps proving as you work: it still leaves a fraction of trims untouched at random, so an earned tool has to keep clearing the bar, not just clear it once.',
+      tools: [
+        { name: 'Bash', stage: 'earned', msg: 'Earned it. Across 320 runs, trimming did not make you re-read or correct more.' },
+        { name: 'Grep', stage: 'earned', msg: 'Earned it. Cleared the bar on your data and trims now.' },
+        { name: 'Read', stage: 'off', msg: 'Kept off. Trimming it cost you re-reads, so ctx leaves it whole.' },
+        { name: 'test', stage: 'test', msg: 'On trial. Almost enough runs to call it.' },
+      ],
+      payoff: { empty: false, eyebrow: 'Savings, only what earned it', value: '~118K tokens',
+        unit: 'of context kept out of your window so far, about $0.42 and counting. A conservative estimate that compounds: a trimmed result stays out of context on every later turn too.' },
+    },
+  };
+
+  const STAGE = {
+    watch: ['s-watch', 'Watching'],
+    test: ['s-test', 'Testing'],
+    earned: ['s-earned', 'Earned'],
+    off: ['s-off', 'Kept off'],
+  };
+
+  function render(key) {
+    const s = STATES[key];
+    document.getElementById('status-text').innerHTML = s.status;
+    document.getElementById('control').innerHTML = s.autopilot
+      ? `<div class="autoline"><span class="autodot"></span><span>Autopilot is on. ctx turns on each tool by itself, the moment it proves safe on your work, and never before. You can pause it any time in <a href="#" onclick="return false">Settings</a>.</span></div>`
+      : `<div class="optin"><button class="cta">Turn on autopilot</button><span class="sub">One yes, then it is hands-off. ctx will only ever trim a tool after your own work proves it is safe, and the full output always stays in your transcript.</span></div>`;
+    document.getElementById('st-watched').textContent = s.watched;
+    document.getElementById('st-judged').textContent = s.judged;
+    document.getElementById('st-today').textContent = s.today;
+    const exp = document.getElementById('experiment-line');
+    exp.innerHTML = s.experiment; exp.classList.toggle('hide', !s.experiment);
+    document.getElementById('tools').innerHTML = s.tools.map(t => {
+      const [cls, label] = STAGE[t.stage];
+      return `<div class="tool"><span class="tn">${t.name}</span><span class="stagepill ${cls}">${label}</span><span class="tm">${t.msg}</span></div>`;
+    }).join('') || '<div class="experiment-line">No tools yet. As your agent returns output, each tool appears here and starts its climb from watching toward earning the right to trim.</div>';
+    const p = s.payoff;
+    document.getElementById('payoff').innerHTML =
+      `<div class="payoff ${p.empty ? 'empty' : ''}"><div class="pe">${p.eyebrow}</div><div class="pv">${p.value}</div><div class="pu">${p.unit}</div></div>`;
+  }
+
+  document.querySelectorAll('.proto-switch button').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('.proto-switch button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      render(b.dataset.state);
+    };
+  });
+  render('empty');
+</script>
+</body>
+</html>

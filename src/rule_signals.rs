@@ -156,7 +156,9 @@ pub fn mcp_signals_from_text(text: &str) -> RuleMcpSignals {
             continue;
         }
         let display = mcp_prefix_to_server_display(prefix).to_lowercase();
-        let id_spaced = mcp_prefix_to_server_id(prefix).to_lowercase().replace('_', " ");
+        let id_spaced = mcp_prefix_to_server_id(prefix)
+            .to_lowercase()
+            .replace('_', " ");
         if hay.contains(&display)
             || hay.contains(&id_spaced)
             || hay.contains(&format!("{display} mcp"))
@@ -172,7 +174,8 @@ pub fn mcp_signals_from_text(text: &str) -> RuleMcpSignals {
                 for key in obj.keys() {
                     let kl = key.to_lowercase();
                     if hay.contains(&kl) || hay.contains(&format!("{kl} mcp")) {
-                        server_prefixes.insert(format!("mcp__claude_ai_{}__", sanitize_server_key(key)));
+                        server_prefixes
+                            .insert(format!("mcp__claude_ai_{}__", sanitize_server_key(key)));
                     }
                 }
             }
@@ -191,7 +194,13 @@ pub fn mcp_signals_from_text(text: &str) -> RuleMcpSignals {
 
 fn sanitize_server_key(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -289,10 +298,7 @@ mod tests {
         .unwrap();
 
         let signals = collect_mcp_signals();
-        assert!(signals
-            .tool_names
-            .iter()
-            .any(|t| t.contains("Slack__send")));
+        assert!(signals.tool_names.iter().any(|t| t.contains("Slack__send")));
 
         std::env::remove_var("CTX_HOME");
     }

@@ -1,7 +1,11 @@
 use super::generic::{compress_generic, truncate_to_budget};
 use super::types::{CompressContext, CompressOptions, CompressResult};
 
-pub fn compress_git_status(input: &str, opts: &CompressOptions, ctx: &CompressContext) -> CompressResult {
+pub fn compress_git_status(
+    input: &str,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> CompressResult {
     let chars_in = input.chars().count();
     if chars_in <= opts.target_chars {
         return CompressResult {
@@ -55,7 +59,11 @@ pub fn compress_git_status(input: &str, opts: &CompressOptions, ctx: &CompressCo
         parts.push(format!("Staged ({}): {}", staged.len(), staged.join(", ")));
     }
     if !unstaged.is_empty() {
-        parts.push(format!("Modified ({}): {}", unstaged.len(), unstaged.join(", ")));
+        parts.push(format!(
+            "Modified ({}): {}",
+            unstaged.len(),
+            unstaged.join(", ")
+        ));
     }
     if !untracked.is_empty() {
         let show: Vec<_> = untracked.iter().take(8).cloned().collect();
@@ -85,7 +93,11 @@ pub fn compress_git_status(input: &str, opts: &CompressOptions, ctx: &CompressCo
     }
 }
 
-pub fn compress_git_diff(input: &str, opts: &CompressOptions, ctx: &CompressContext) -> CompressResult {
+pub fn compress_git_diff(
+    input: &str,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> CompressResult {
     let chars_in = input.chars().count();
     if chars_in <= opts.target_chars {
         return CompressResult {
@@ -108,7 +120,10 @@ pub fn compress_git_diff(input: &str, opts: &CompressOptions, ctx: &CompressCont
             if line.starts_with("+++ b/") {
                 current_file = Some(line.trim_start_matches("+++ b/").to_string());
             } else if line.starts_with("diff --git") {
-                current_file = line.split_whitespace().nth(3).map(|s| s.trim_start_matches("b/").to_string());
+                current_file = line
+                    .split_whitespace()
+                    .nth(3)
+                    .map(|s| s.trim_start_matches("b/").to_string());
             }
             out.push(line.to_string());
             continue;
@@ -152,15 +167,28 @@ fn flush_hunk(out: &mut Vec<String>, file: &str, hunk: &mut Vec<String>, opts: &
     }
     let max = if opts.preserve_errors { 24 } else { 12 };
     if hunk.len() > max {
-        let kept: Vec<_> = hunk.iter().take(max / 2).chain(hunk.iter().skip(hunk.len().saturating_sub(max / 2))).cloned().collect();
-        out.push(format!("… {file}: {} diff lines, showing {} …", hunk.len(), kept.len()));
+        let kept: Vec<_> = hunk
+            .iter()
+            .take(max / 2)
+            .chain(hunk.iter().skip(hunk.len().saturating_sub(max / 2)))
+            .cloned()
+            .collect();
+        out.push(format!(
+            "… {file}: {} diff lines, showing {} …",
+            hunk.len(),
+            kept.len()
+        ));
         out.extend(kept);
     } else {
         out.extend(hunk.drain(..));
     }
 }
 
-pub fn compress_git_log(input: &str, opts: &CompressOptions, ctx: &CompressContext) -> CompressResult {
+pub fn compress_git_log(
+    input: &str,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> CompressResult {
     let chars_in = input.chars().count();
     if chars_in <= opts.target_chars {
         return CompressResult {

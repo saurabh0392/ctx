@@ -86,8 +86,7 @@ pub fn sync_filter_config_from_active_config() -> Result<()> {
 pub fn filter_js_abs_path_string() -> Result<String> {
     write_filter_js()?;
     let p = filter_js_path();
-    let c = std::fs::canonicalize(&p)
-        .with_context(|| format!("canonicalize {}", p.display()))?;
+    let c = std::fs::canonicalize(&p).with_context(|| format!("canonicalize {}", p.display()))?;
     Ok(c.to_string_lossy().into_owned())
 }
 

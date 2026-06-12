@@ -62,9 +62,11 @@ impl CtxHarness {
         )
         .expect("insert session");
         let sid: i64 = conn
-            .query_row("SELECT id FROM sessions WHERE external_key='ext-journey'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='ext-journey'",
+                [],
+                |r| r.get(0),
+            )
             .expect("session id");
         conn.execute(
             "INSERT INTO turns (session_id, turn_index, role, human_text_prefix, flags, ts)

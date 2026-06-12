@@ -1,15 +1,14 @@
-.PHONY: dashboard dashboard-check e2e e2e-update
+.PHONY: roadmap roadmap-build
 
-dashboard:
-	@./scripts/stitch-dashboard.sh > src/dashboard.html
-	@echo "Wrote src/dashboard.html"
+# The dashboard is now a single hand-authored file: src/dashboard.html, embedded into the
+# binary via include_str!. There is no stitch/build step anymore; edit src/dashboard.html
+# directly and rebuild the binary (cargo install) to pick it up.
 
-dashboard-check:
-	@./scripts/stitch-dashboard.sh | diff -u src/dashboard.html - || (echo "dashboard.html is stale; run make dashboard" >&2; exit 1)
-	@echo "dashboard.html matches fragments"
+# Roadmap pipeline status page. Serves docs/roadmap.html and refreshes live from
+# Linear when LINEAR_PAT is set in .env. Opens http://localhost:4318.
+roadmap:
+	@node tools/status-server.mjs
 
-e2e:
-	@./scripts/run-e2e.sh
-
-e2e-update:
-	@./scripts/run-e2e.sh --update-snapshots
+# Regenerate the committed docs/roadmap.html snapshot without starting the server.
+roadmap-build:
+	@node tools/status-data.mjs

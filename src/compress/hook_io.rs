@@ -51,6 +51,7 @@ pub fn post_tool_use() -> Result<()> {
         &command_or_path,
         decision.shadow.as_ref(),
         decision.apply,
+        decision.explore_arm,
     );
 
     if !decision.apply {
@@ -64,6 +65,7 @@ pub fn post_tool_use() -> Result<()> {
         raw_output: raw,
         session_id,
         cwd,
+        recent_intent_text: _,
     } = tr;
     let session_id = session_id.as_deref();
     let cwd = cwd.as_str();
@@ -142,6 +144,7 @@ fn record_shadow_decision(
     command_or_path: &str,
     decision: Option<&super::ShadowDecision>,
     applied: bool,
+    explore_arm: Option<&str>,
 ) {
     let Some(d) = decision else {
         return;
@@ -173,6 +176,7 @@ fn record_shadow_decision(
         features_json: &features_json,
         command_or_path,
         applied,
+        explore_arm,
     };
     let _ = crate::db::insert_compress_decision(&conn, &row);
 }
@@ -208,14 +212,8 @@ pub fn extract_compressible_text(tool_name: &str, response: &Value) -> String {
 
     match tool_name.trim().to_ascii_lowercase().as_str() {
         "bash" => {
-            let stdout = obj
-                .get("stdout")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let stderr = obj
-                .get("stderr")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let stdout = obj.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+            let stderr = obj.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
             if stderr.is_empty() {
                 stdout.to_string()
             } else if stdout.is_empty() {
@@ -423,7 +421,10 @@ mod tests {
         });
         let wrapped = wrap_updated_tool_output("Bash", &original, "short");
         assert!(wrapped.is_object());
-        assert_eq!(wrapped.get("stdout").and_then(|v| v.as_str()), Some("short"));
+        assert_eq!(
+            wrapped.get("stdout").and_then(|v| v.as_str()),
+            Some("short")
+        );
         assert_eq!(wrapped.get("stderr").and_then(|v| v.as_str()), Some(""));
         assert_eq!(
             wrapped.get("interrupted").and_then(|v| v.as_bool()),
@@ -455,15 +456,11 @@ mod tests {
         let wrapped = wrap_updated_tool_output("Read", &original, "fn main() {}");
         assert!(wrapped.get("file").is_some());
         assert_eq!(
-            wrapped
-                .pointer("/file/content")
-                .and_then(|v| v.as_str()),
+            wrapped.pointer("/file/content").and_then(|v| v.as_str()),
             Some("fn main() {}")
         );
         assert_eq!(
-            wrapped
-                .pointer("/file/filePath")
-                .and_then(|v| v.as_str()),
+            wrapped.pointer("/file/filePath").and_then(|v| v.as_str()),
             Some("/tmp/a.rs")
         );
     }

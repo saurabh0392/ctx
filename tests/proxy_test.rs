@@ -21,10 +21,7 @@ use tokio::net::TcpListener;
 #[derive(Clone)]
 struct Captured(Arc<Mutex<Option<Vec<u8>>>>);
 
-async fn mock_v1_messages(
-    State(Captured(buf)): State<Captured>,
-    body: Bytes,
-) -> Json<Value> {
+async fn mock_v1_messages(State(Captured(buf)): State<Captured>, body: Bytes) -> Json<Value> {
     *buf.lock().unwrap() = Some(body.to_vec());
     Json(json!({
         "id": "msg_test",
@@ -125,10 +122,19 @@ async fn proxy_filters_tools_and_forwards_response() {
     assert_eq!(body["id"], "msg_test");
     assert_eq!(body["usage"]["output_tokens"], 2);
 
-    let upstream_bytes = captured.0.lock().unwrap().clone().expect("upstream saw body");
+    let upstream_bytes = captured
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("upstream saw body");
     let upstream_json: Value = serde_json::from_slice(&upstream_bytes).unwrap();
     let tools = upstream_json["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 1, "Figma tool should be stripped for carrier profile");
+    assert_eq!(
+        tools.len(),
+        1,
+        "Figma tool should be stripped for carrier profile"
+    );
     assert_eq!(
         tools[0]["name"].as_str().unwrap(),
         "mcp__claude_ai_Slack__search"
@@ -196,10 +202,7 @@ async fn mitm_connect_filters_tools_and_forwards_response() {
         .use_rustls_tls()
         .no_gzip()
         .add_root_certificate(cert)
-        .proxy(
-            reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}"))
-                .unwrap(),
-        )
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}")).unwrap())
         .build()
         .unwrap();
 
@@ -228,7 +231,12 @@ async fn mitm_connect_filters_tools_and_forwards_response() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["id"], "msg_test");
 
-    let upstream_bytes = captured.0.lock().unwrap().clone().expect("upstream saw body");
+    let upstream_bytes = captured
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("upstream saw body");
     let upstream_json: Value = serde_json::from_slice(&upstream_bytes).unwrap();
     let tools = upstream_json["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 1);
@@ -260,9 +268,8 @@ async fn connect_tunnel_passes_through_non_anthropic() {
     let mut c = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port))
         .await
         .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\nHost: 127.0.0.1:{echo_port}\r\n\r\n"
-    );
+    let req =
+        format!("CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\nHost: 127.0.0.1:{echo_port}\r\n\r\n");
     c.write_all(req.as_bytes()).await.unwrap();
     let mut buf = vec![0u8; 4096];
     let n = c.read(&mut buf).await.unwrap();
@@ -302,10 +309,7 @@ async fn spawn_sse_mock_upstream() -> u16 {
                         }
                         1 => {
                             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                            Some((
-                                Ok(Bytes::from("data: {\"chunk\":2}\n\n")),
-                                2,
-                            ))
+                            Some((Ok(Bytes::from("data: {\"chunk\":2}\n\n")), 2))
                         }
                         _ => None,
                     }
@@ -346,10 +350,7 @@ async fn mitm_streams_sse_response() {
         .use_rustls_tls()
         .no_gzip()
         .add_root_certificate(cert)
-        .proxy(
-            reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}"))
-                .unwrap(),
-        )
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}")).unwrap())
         .build()
         .unwrap();
 
@@ -378,14 +379,11 @@ async fn mitm_streams_sse_response() {
     assert!(ct.starts_with("text/event-stream"), "content-type={ct}");
 
     let mut byte_stream = resp.bytes_stream();
-    let first = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        byte_stream.next(),
-    )
-    .await
-    .expect("timeout waiting for first SSE chunk")
-    .expect("stream ended early")
-    .expect("chunk error");
+    let first = tokio::time::timeout(std::time::Duration::from_secs(2), byte_stream.next())
+        .await
+        .expect("timeout waiting for first SSE chunk")
+        .expect("stream ended early")
+        .expect("chunk error");
     assert!(
         first.starts_with(b"data:"),
         "first chunk should be SSE: {:?}",
@@ -440,10 +438,7 @@ async fn mitm_passthrough_429() {
         .use_rustls_tls()
         .no_gzip()
         .add_root_certificate(cert)
-        .proxy(
-            reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}"))
-                .unwrap(),
-        )
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}")).unwrap())
         .build()
         .unwrap();
 
@@ -462,7 +457,9 @@ async fn mitm_passthrough_429() {
 
     assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
-        resp.headers().get("retry-after").and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
         Some("30")
     );
     assert_eq!(resp.text().await.unwrap(), "rate limited");
@@ -534,8 +531,12 @@ fn install_sets_https_proxy_and_ca() {
     std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
 
     ctx::ensure_tls_crypto_provider();
-    ctx::proxy::install(8799, "https://api.anthropic.com", ctx::config::ProxyMode::Complement)
-        .expect("proxy install");
+    ctx::proxy::install(
+        8799,
+        "https://api.anthropic.com",
+        ctx::config::ProxyMode::Complement,
+    )
+    .expect("proxy install");
 
     let settings_path = tmp.path().join(".claude").join("settings.json");
     let settings: Value =

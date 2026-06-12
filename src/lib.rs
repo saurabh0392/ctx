@@ -1,14 +1,14 @@
 //! ctx library surface for integration tests and the `ctx` binary.
 
 pub mod ab;
+pub mod adaptive;
 pub mod agent;
 pub mod allowance;
 pub mod analytics;
-pub mod adaptive;
-pub mod bench;
-pub mod ca;
 pub mod behavior_guard;
+pub mod bench;
 pub mod budget_guard;
+pub mod ca;
 pub mod claude_settings;
 pub mod cli;
 pub mod coach;
@@ -16,33 +16,33 @@ pub mod compress;
 pub mod config;
 pub mod context_ctl;
 pub mod conversations;
+pub mod daemon;
 pub mod dashboard;
 pub mod dashboard_push;
-pub mod daemon;
 pub mod db;
 pub mod embedder;
 pub mod experiment_plan;
 pub mod filter;
 pub mod filter_control;
 pub mod filter_hook;
-pub mod host;
 pub mod hook;
+pub mod host;
 pub mod inject;
 pub mod learn;
-pub mod profiles;
-pub mod semantic_tools;
-pub mod proxy;
-pub mod quality_guard;
-pub mod rule_signals;
-pub mod setup;
-pub mod surface;
-pub mod test_lock;
 pub mod mcp;
 pub mod modes;
 pub mod outcome_signals;
+pub mod profiles;
+pub mod proxy;
+pub mod quality_guard;
+pub mod rule_signals;
+pub mod semantic_tools;
+pub mod setup;
 pub mod simulate;
 pub mod socket;
 pub mod stats;
+pub mod surface;
+pub mod test_lock;
 pub mod tool_usage_analysis;
 pub mod tuning;
 pub mod user_profile;
@@ -84,13 +84,15 @@ pub async fn run() -> Result<()> {
         Commands::Profile { command } => match command {
             ProfileCommand::List => profiles::list()?,
             ProfileCommand::Show { name } => profiles::show(&name)?,
-            ProfileCommand::Add { name, keep, keep_tool } => {
-                profiles::add(
-                    &name,
-                    keep.unwrap_or_default(),
-                    keep_tool.unwrap_or_default(),
-                )?
-            }
+            ProfileCommand::Add {
+                name,
+                keep,
+                keep_tool,
+            } => profiles::add(
+                &name,
+                keep.unwrap_or_default(),
+                keep_tool.unwrap_or_default(),
+            )?,
             ProfileCommand::Remove { name } => profiles::remove(&name)?,
             ProfileCommand::Auto { refresh } => profiles::auto_generate(refresh)?,
             ProfileCommand::Generate => profiles::generate_from_config(true)?,
@@ -100,11 +102,16 @@ pub async fn run() -> Result<()> {
         },
         Commands::Proxy { command } => match command {
             ProxyCommand::Start { port, upstream } => proxy::start(port, &upstream).await?,
-            ProxyCommand::Install { mode, port, upstream } => {
-                let mode = crate::config::ProxyMode::parse(&mode)
-                    .ok_or_else(|| anyhow::anyhow!(
+            ProxyCommand::Install {
+                mode,
+                port,
+                upstream,
+            } => {
+                let mode = crate::config::ProxyMode::parse(&mode).ok_or_else(|| {
+                    anyhow::anyhow!(
                         "Invalid --mode {mode:?}; use complement, standalone, or filter-only"
-                    ))?;
+                    )
+                })?;
                 proxy::install(port, &upstream, mode)?;
             }
             ProxyCommand::Uninstall => proxy::uninstall()?,
@@ -200,7 +207,11 @@ pub async fn run() -> Result<()> {
                     } else {
                         print!(
                             "{}",
-                            simulate::format_all_profiles(&results, &effective_cwd, &effective_prompt)
+                            simulate::format_all_profiles(
+                                &results,
+                                &effective_cwd,
+                                &effective_prompt
+                            )
                         );
                     }
                 } else {

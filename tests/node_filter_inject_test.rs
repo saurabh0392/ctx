@@ -153,10 +153,7 @@ req.end(body);
             .env("CTX_HOME", &tmp_path)
             .env("CTX_FILTER_HOST", "127.0.0.1")
             .env("CTX_FILTER_PORT", port.to_string())
-            .env(
-                "NODE_OPTIONS",
-                format!("--require {}", abs_clone.display()),
-            )
+            .env("NODE_OPTIONS", format!("--require {}", abs_clone.display()))
             .arg("-e")
             .arg(&script_clone)
             .output();

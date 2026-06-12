@@ -39,6 +39,32 @@ const FEATURE_NAMES: &[&str] = &[
     "drop_prompt_kw_ratio",
     "drop_dedup_ratio",
     "drop_boilerplate_ratio",
+    // Tool-kind one-hot (ADR 0007 / CTX-17). Without these the model is blind to which tool it is
+    // trimming, so it just mirrors the heuristic. With them it can learn that trimming a read is
+    // riskier than trimming a grep, which is what lets it diverge from the rules. Available for every
+    // historical label (kind is stored per decision), so it takes effect on the next retrain.
+    "kind_read",
+    "kind_grep",
+    "kind_test",
+    "kind_git_status",
+    "kind_git_diff",
+    "kind_git_log",
+    "kind_mcp",
+    "kind_generic",
+];
+
+/// Canonical kind strings for the one-hot block above, in the same order. Must align with
+/// `compress::shadow::kind_str` outputs. A kind not listed here contributes an all-zero block,
+/// which is a safe default.
+const KIND_ORDER: &[&str] = &[
+    "read",
+    "grep",
+    "test",
+    "git-status",
+    "git-diff",
+    "git-log",
+    "mcp",
+    "generic",
 ];
 
 #[derive(Serialize, Deserialize, Default)]
@@ -93,14 +119,27 @@ pub struct RetentionModel {
     pub per_tool: Vec<PerToolGate>,
 }
 
+/// Risk threshold for the learned arm: treat a decision as "model would trim" only when predicted
+/// correction risk is below this. Conservative on purpose. Shared by the offline benchmark and the
+/// live shadow-scoring in `agent::decide` so both judge the model the same way.
+pub const LEARNED_ACT_THRESHOLD: f64 = 0.15;
+
 fn feature_row(d: &LabeledDecision) -> Vec<f64> {
-    let total = d.lines_total.max(1) as f64;
-    let f: ShadowFeaturesJson = serde_json::from_str(&d.features_json).unwrap_or_default();
-    vec![
-        d.lines_drop as f64 / total,
-        1.0 - (d.lines_drop as f64 / total),
+    feature_vector(&d.kind, d.lines_total, d.lines_drop, &d.features_json)
+}
+
+/// Build the model input vector from a decision's raw parts. Single source of truth so live
+/// shadow-scoring uses the exact same features the model was trained on. `features_json` is the
+/// serialized `ShadowFeatures`; unknown fields are ignored, so callers can add metadata fields
+/// (repo key, file extension, the score itself) without disturbing the vector.
+fn feature_vector(kind: &str, lines_total: i64, lines_drop: i64, features_json: &str) -> Vec<f64> {
+    let total = lines_total.max(1) as f64;
+    let f: ShadowFeaturesJson = serde_json::from_str(features_json).unwrap_or_default();
+    let mut v = vec![
+        lines_drop as f64 / total,
+        1.0 - (lines_drop as f64 / total),
         f.risky_drops as f64 / total,
-        (d.lines_total as f64 + 1.0).ln(),
+        (lines_total as f64 + 1.0).ln(),
         f.drop.failure as f64 / total,
         f.drop.focus_path as f64 / total,
         f.drop.focus_symbol as f64 / total,
@@ -108,7 +147,48 @@ fn feature_row(d: &LabeledDecision) -> Vec<f64> {
         f.drop.prompt_keyword as f64 / total,
         f.drop.dedup as f64 / total,
         f.drop.boilerplate as f64 / total,
-    ]
+    ];
+    for k in KIND_ORDER {
+        v.push(if *k == kind { 1.0 } else { 0.0 });
+    }
+    v
+}
+
+fn score_with_model(
+    model: &RetentionModel,
+    kind: &str,
+    lines_total: i64,
+    lines_drop: i64,
+    features_json: &str,
+) -> f64 {
+    let x = feature_vector(kind, lines_total, lines_drop, features_json);
+    let z = x
+        .iter()
+        .zip(&model.weights)
+        .map(|(a, b)| a * b)
+        .sum::<f64>()
+        + model.bias;
+    sigmoid(z)
+}
+
+/// Predicted P(this decision precedes a correction) for a live decision described by its raw parts,
+/// loading the served model from disk. Returns `None` when no trustworthy model is being served
+/// (version 0 or a feature-shape mismatch), so the controller can record "no model" distinctly from
+/// a real score rather than logging the misleading base rate.
+pub fn score_parts(
+    kind: &str,
+    lines_total: i64,
+    lines_drop: i64,
+    features_json: &str,
+) -> Option<f64> {
+    let model = load_model().filter(|m| m.version > 0 && m.weights.len() == FEATURE_NAMES.len())?;
+    Some(score_with_model(
+        &model,
+        kind,
+        lines_total,
+        lines_drop,
+        features_json,
+    ))
 }
 
 fn sigmoid(z: f64) -> f64 {
@@ -250,9 +330,7 @@ pub fn train() -> Result<Option<RetentionModel>> {
 
     let scores: Vec<f64> = hold_x
         .iter()
-        .map(|xi| {
-            sigmoid(xi.iter().zip(&weights).map(|(a, b)| a * b).sum::<f64>() + bias)
-        })
+        .map(|xi| sigmoid(xi.iter().zip(&weights).map(|(a, b)| a * b).sum::<f64>() + bias))
         .collect();
     let holdout_auc = auc(&scores, &hold_y);
     let correct = scores
@@ -325,9 +403,13 @@ pub fn score_decision(model: &RetentionModel, d: &LabeledDecision) -> f64 {
     if model.version == 0 || model.weights.len() != FEATURE_NAMES.len() {
         return model.base_correction_rate;
     }
-    let x = feature_row(d);
-    let z = x.iter().zip(&model.weights).map(|(a, b)| a * b).sum::<f64>() + model.bias;
-    sigmoid(z)
+    score_with_model(
+        model,
+        &d.kind,
+        d.lines_total,
+        d.lines_drop,
+        &d.features_json,
+    )
 }
 
 pub fn load_model() -> Option<RetentionModel> {
@@ -397,10 +479,16 @@ pub fn run(json: bool) -> Result<()> {
         }
     } else {
         println!("Trained retention model v{}", model.version);
-        println!("  labels:        {} train / {} holdout", model.n_train, model.n_holdout);
+        println!(
+            "  labels:        {} train / {} holdout",
+            model.n_train, model.n_holdout
+        );
         println!("  holdout AUC:   {:.3}", model.holdout_auc);
         println!("  holdout acc:   {:.1}%", model.holdout_accuracy * 100.0);
-        println!("  base rate:     {:.1}% of decisions precede a correction", model.base_correction_rate * 100.0);
+        println!(
+            "  base rate:     {:.1}% of decisions precede a correction",
+            model.base_correction_rate * 100.0
+        );
     }
     println!();
     println!("Per-tool evidence gate (your own labels)");
@@ -414,8 +502,108 @@ pub fn run(json: bool) -> Result<()> {
             t.joined,
             t.correction_rate * 100.0,
             t.reread_rate * 100.0,
-            if t.earned { "ready to activate" } else { "watching" }
+            if t.earned {
+                "ready to activate"
+            } else {
+                "watching"
+            }
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::LabeledDecision;
+
+    fn model_with(weights: Vec<f64>, bias: f64) -> RetentionModel {
+        RetentionModel {
+            version: 1,
+            trained_at: "2026-06-11T00:00:00Z".into(),
+            n_train: 100,
+            n_holdout: 20,
+            feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
+            weights,
+            bias,
+            holdout_auc: 0.7,
+            holdout_accuracy: 0.7,
+            base_correction_rate: 0.1,
+            per_tool: vec![],
+        }
+    }
+
+    #[test]
+    fn feature_vector_has_expected_shape_and_ratios() {
+        let v = feature_vector("generic", 10, 4, "{}");
+        assert_eq!(v.len(), FEATURE_NAMES.len());
+        assert!((v[0] - 0.4).abs() < 1e-9, "drop_ratio");
+        assert!((v[1] - 0.6).abs() < 1e-9, "kept_ratio");
+        assert!((v[3] - 11f64.ln()).abs() < 1e-9, "log_lines");
+    }
+
+    #[test]
+    fn kind_one_hot_sets_exactly_one_flag() {
+        let v = feature_vector("read", 10, 4, "{}");
+        let kind_block = &v[v.len() - KIND_ORDER.len()..];
+        assert_eq!(kind_block.iter().filter(|x| **x == 1.0).count(), 1);
+        let read_idx = KIND_ORDER.iter().position(|k| *k == "read").unwrap();
+        assert_eq!(kind_block[read_idx], 1.0);
+        // An unknown kind sets no flag, which is a safe all-zero default.
+        let unknown = feature_vector("totally-unknown", 10, 4, "{}");
+        let ub = &unknown[unknown.len() - KIND_ORDER.len()..];
+        assert!(ub.iter().all(|x| *x == 0.0));
+    }
+
+    #[test]
+    fn zero_weight_model_scores_one_half() {
+        let m = model_with(vec![0.0; FEATURE_NAMES.len()], 0.0);
+        assert!((score_with_model(&m, "read", 10, 4, "{}") - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn score_matches_manual_sigmoid() {
+        let mut w = vec![0.0; FEATURE_NAMES.len()];
+        w[0] = 1.0; // weight only on drop_ratio (0.4 for 4/10)
+        let m = model_with(w, 0.0);
+        let expect = 1.0 / (1.0 + (-0.4f64).exp());
+        assert!((score_with_model(&m, "read", 10, 4, "{}") - expect).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_scoring_path_matches_training_path() {
+        // The controller's shadow score must equal what score_decision computes for the same
+        // decision, or live logs would not match what the model was trained/benchmarked on.
+        let mut w = vec![0.0; FEATURE_NAMES.len()];
+        w[2] = 2.0; // risky_drop_ratio
+        let m = model_with(w, -0.5);
+        let d = LabeledDecision {
+            tool_name: "Read".into(),
+            kind: "read".into(),
+            lines_total: 20,
+            lines_drop: 5,
+            chars_in: 100,
+            would_chars_out: 40,
+            features_json: r#"{"risky_drops":2,"drop":{"failure":1}}"#.into(),
+            correction: 0,
+            reread: 0,
+        };
+        let via_decision = score_decision(&m, &d);
+        let via_shared =
+            score_with_model(&m, &d.kind, d.lines_total, d.lines_drop, &d.features_json);
+        assert!((via_decision - via_shared).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unknown_metadata_fields_do_not_disturb_the_vector() {
+        // repo_key / file_ext / model_score get added to features_json; they must be ignored.
+        let plain = feature_vector("read", 12, 3, r#"{"risky_drops":1,"drop":{"failure":1}}"#);
+        let with_meta = feature_vector(
+            "read",
+            12,
+            3,
+            r#"{"risky_drops":1,"drop":{"failure":1},"repo_key":"/x","file_ext":"rs","model_score":0.2}"#,
+        );
+        assert_eq!(plain, with_meta);
+    }
 }

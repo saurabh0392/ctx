@@ -5,7 +5,6 @@
 /// this module looks at the user's historical sessions from ~/.claude/projects/ and
 /// injects a forward-looking hint at the start of a new session (turns 1-3).
 /// No LLM calls -- rule-based only.
-
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -18,9 +17,9 @@ fn warned() -> &'static Mutex<HashSet<u64>> {
 }
 
 struct BehaviorProfile {
-    correction_rate: f64,  // fraction of turns that are corrections (0.0-1.0)
-    compact_rate: f64,     // fraction of sessions that hit context limit
-    opus_rate: f64,        // fraction of sessions using Opus (expensive)
+    correction_rate: f64, // fraction of turns that are corrections (0.0-1.0)
+    compact_rate: f64,    // fraction of sessions that hit context limit
+    opus_rate: f64,       // fraction of sessions using Opus (expensive)
     total_sessions: usize,
 }
 
@@ -38,7 +37,10 @@ fn compute_behavior_profile() -> Option<BehaviorProfile> {
 
     let total_corrections: usize = sessions.iter().map(|s| s.correction_turns).sum();
     let compact_count = sessions.iter().filter(|s| s.hit_compact).count();
-    let opus_count = sessions.iter().filter(|s| s.models_used.iter().any(|m| m == "opus")).count();
+    let opus_count = sessions
+        .iter()
+        .filter(|s| s.models_used.iter().any(|m| m == "opus"))
+        .count();
 
     Some(BehaviorProfile {
         correction_rate: total_corrections as f64 / total_turns as f64,
@@ -49,11 +51,12 @@ fn compute_behavior_profile() -> Option<BehaviorProfile> {
 }
 
 fn session_key(messages: &[Value]) -> Option<u64> {
-    use std::hash::{Hash, Hasher, DefaultHasher};
+    use std::hash::{DefaultHasher, Hash, Hasher};
     let first = messages.first()?;
     let text = match first.get("content") {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(blocks)) => blocks.iter()
+        Some(Value::Array(blocks)) => blocks
+            .iter()
             .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
             .collect::<Vec<_>>()
             .join(" "),
@@ -66,7 +69,8 @@ fn session_key(messages: &[Value]) -> Option<u64> {
 
 fn is_early_in_session(messages: &[Value]) -> bool {
     // Count user turns -- fire only on turns 1-3
-    let user_turns = messages.iter()
+    let user_turns = messages
+        .iter()
         .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
         .count();
     user_turns <= 3
@@ -77,9 +81,13 @@ fn is_early_in_session(messages: &[Value]) -> bool {
 pub fn check(body: &[u8]) -> Option<String> {
     let value: Value = serde_json::from_slice(body).ok()?;
     let messages = value.get("messages")?.as_array()?;
-    if messages.is_empty() { return None; }
+    if messages.is_empty() {
+        return None;
+    }
 
-    if !is_early_in_session(messages) { return None; }
+    if !is_early_in_session(messages) {
+        return None;
+    }
 
     let key = session_key(messages)?;
     {
@@ -90,7 +98,9 @@ pub fn check(body: &[u8]) -> Option<String> {
         warned.insert(key);
     }
 
-    let profile_hint = compute_behavior_profile().as_ref().and_then(hint_from_profile);
+    let profile_hint = compute_behavior_profile()
+        .as_ref()
+        .and_then(hint_from_profile);
     let sim_hint = similar_history_hint(messages);
     match (profile_hint, sim_hint) {
         (None, None) => None,
@@ -163,34 +173,43 @@ fn hint_from_profile(profile: &BehaviorProfile) -> Option<String> {
 
     if profile.correction_rate > 0.20 {
         let pct = (profile.correction_rate * 100.0).round() as u32;
-        hints.push((profile.correction_rate, format!(
-            "[ctx behavior insight] Across your last {} sessions, about {}% of your messages \
+        hints.push((
+            profile.correction_rate,
+            format!(
+                "[ctx behavior insight] Across your last {} sessions, about {}% of your messages \
              were corrections to Claude's previous response. To reduce this: start each task \
              with the desired output format and key constraints before describing the problem. \
              Fewer corrections mean faster results and lower token cost.",
-            profile.total_sessions, pct
-        )));
+                profile.total_sessions, pct
+            ),
+        ));
     }
 
     if profile.compact_rate > 0.30 {
         let pct = (profile.compact_rate * 100.0).round() as u32;
-        hints.push((profile.compact_rate, format!(
-            "[ctx behavior insight] {}% of your recent sessions ran out of working memory \
+        hints.push((
+            profile.compact_rate,
+            format!(
+                "[ctx behavior insight] {}% of your recent sessions ran out of working memory \
              mid-session (context reset). This forces Claude to lose prior context and \
              costs extra tokens to recover. Keep this session focused on one clear goal. \
              Use a new session for each distinct task.",
-            pct
-        )));
+                pct
+            ),
+        ));
     }
 
     if profile.opus_rate > 0.40 && profile.total_sessions >= 5 {
         let pct = (profile.opus_rate * 100.0).round() as u32;
-        hints.push((profile.opus_rate * 0.5, format!(
-            "[ctx behavior insight] {}% of your recent sessions used Opus, which costs 5x \
+        hints.push((
+            profile.opus_rate * 0.5,
+            format!(
+                "[ctx behavior insight] {}% of your recent sessions used Opus, which costs 5x \
              more than Sonnet. For standard engineering, writing, and analysis tasks, \
              Sonnet delivers equivalent results at a fraction of the cost.",
-            pct
-        )));
+                pct
+            ),
+        ));
     }
 
     hints.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -318,6 +337,9 @@ mod tests {
         // First call inserts key into WARNED (may return None if no behavior profile)
         let _first = check(&body);
         // Second call must return None regardless of what first returned
-        assert!(check(&body).is_none(), "dedup: second call must always return None");
+        assert!(
+            check(&body).is_none(),
+            "dedup: second call must always return None"
+        );
     }
 }

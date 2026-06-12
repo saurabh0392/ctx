@@ -516,12 +516,10 @@ pub fn list_access_friction(conn: &Connection, promote_threshold: u32) -> Vec<Ac
     let mut rows: Vec<AccessFrictionRow> = counts
         .into_iter()
         .filter(|(_, c)| *c >= 1)
-        .map(|(tool, count)| {
-            AccessFrictionRow {
-                tool: tool.clone(),
-                tool_display: display_name_for_target(&tool),
-                count,
-            }
+        .map(|(tool, count)| AccessFrictionRow {
+            tool: tool.clone(),
+            tool_display: display_name_for_target(&tool),
+            count,
         })
         .collect();
     rows.retain(|r| r.count >= promote_threshold.min(1));

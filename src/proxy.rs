@@ -20,7 +20,10 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
 use crate::ca::{self, CertAuthority};
-use crate::{analytics, config::{Config, ProxyMode}};
+use crate::{
+    analytics,
+    config::{Config, ProxyMode},
+};
 
 pub struct ProxyState {
     pub client: reqwest::Client,
@@ -49,10 +52,23 @@ pub async fn start(port: u16, upstream: &str) -> Result<()> {
     println!("{} ctx proxy on :{port}", "->".cyan().bold());
     println!("  Mode:     {}", config.proxy_mode.as_str());
     println!("  Upstream: {upstream}");
-    println!("  MITM:     CONNECT {}:443 (HTTPS_PROXY mode)", ca::ANTHROPIC_API_HOST);
+    println!(
+        "  MITM:     CONNECT {}:443 (HTTPS_PROXY mode)",
+        ca::ANTHROPIC_API_HOST
+    );
     println!("  Profile:  {active}");
-    println!("  Auto-profile: {}", if config.auto_profile_enabled { "on" } else { "off" });
-    println!("  Inject:   {}", if config.inject_enabled { "on" } else { "off" });
+    println!(
+        "  Auto-profile: {}",
+        if config.auto_profile_enabled {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    println!(
+        "  Inject:   {}",
+        if config.inject_enabled { "on" } else { "off" }
+    );
     println!("{} Ctrl+C to stop\n", "i".dimmed());
 
     let state = Arc::new(ProxyState {
@@ -326,8 +342,8 @@ pub async fn proxy_handler(
     })?;
 
     let status_code = upstream_resp.status().as_u16();
-    let streaming = is_streaming_request(&filtered_bytes)
-        || response_is_event_stream(upstream_resp.headers());
+    let streaming =
+        is_streaming_request(&filtered_bytes) || response_is_event_stream(upstream_resp.headers());
     log_proxy_response(
         parts.uri.path(),
         streaming,
@@ -349,7 +365,12 @@ pub async fn proxy_handler(
     let body = if streaming {
         Body::from_stream(upstream_resp.bytes_stream())
     } else {
-        Body::from(upstream_resp.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?)
+        Body::from(
+            upstream_resp
+                .bytes()
+                .await
+                .map_err(|_| StatusCode::BAD_GATEWAY)?,
+        )
     };
     Ok(response.body(body).unwrap())
 }
@@ -369,13 +390,14 @@ fn response_is_event_stream(headers: &reqwest::header::HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-fn log_proxy_response(path: &str, stream: bool, status: u16, request_id: Option<&reqwest::header::HeaderValue>) {
-    let rid = request_id
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("-");
-    let line = format!(
-        "proxy path={path} stream={stream} status={status} request-id={rid}\n"
-    );
+fn log_proxy_response(
+    path: &str,
+    stream: bool,
+    status: u16,
+    request_id: Option<&reqwest::header::HeaderValue>,
+) {
+    let rid = request_id.and_then(|v| v.to_str().ok()).unwrap_or("-");
+    let line = format!("proxy path={path} stream={stream} status={status} request-id={rid}\n");
     eprintln!("[ctx] {line}");
     let log_path = crate::config::ctx_dir().join("proxy.stderr.log");
     let _ = std::fs::OpenOptions::new()
@@ -391,8 +413,8 @@ async fn build_hyper_response(
     path: &str,
 ) -> Result<HyperResponse<Body>, anyhow::Error> {
     let status_code = upstream_resp.status().as_u16();
-    let status = HyperStatusCode::from_u16(status_code)
-        .unwrap_or(HyperStatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        HyperStatusCode::from_u16(status_code).unwrap_or(HyperStatusCode::INTERNAL_SERVER_ERROR);
     let stream_req = is_streaming_request(request_body);
     let stream_resp = response_is_event_stream(upstream_resp.headers());
     let streaming = stream_req || stream_resp;
@@ -447,7 +469,11 @@ pub fn run_gates_for_mode(body: &[u8]) -> Vec<u8> {
 
 fn run_gates_filter_only(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let config = Config::load();
-    let active_slug = config.active_profile.as_deref().unwrap_or("all").to_string();
+    let active_slug = config
+        .active_profile
+        .as_deref()
+        .unwrap_or("all")
+        .to_string();
     let working_directory = working_dir_from_body(body);
 
     let bytes_before = body.len();
@@ -459,27 +485,34 @@ fn run_gates_filter_only(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Err
 
     let tokens_saved = if removed > 0 {
         let saved = bytes_before.saturating_sub(bytes.len()) / 4;
-        eprintln!("[ctx] -{removed} tools (~{saved} tokens)  profile={active_slug} (proxy filter-only)");
+        eprintln!(
+            "[ctx] -{removed} tools (~{saved} tokens)  profile={active_slug} (proxy filter-only)"
+        );
         saved
     } else {
         0
     };
 
     if removed > 0 {
-        analytics::record(removed, tokens_saved, &active_slug, analytics::TraceInfo {
-            removed_servers,
-            kept_servers,
-            auto_selected: false,
-            auto_trigger: None,
-            inject_fired: false,
-            inject_chars: 0,
-            adaptive_chars: 0,
-            budget_blocked: false,
-            coach_kind: None,
-            budget_fired: false,
-            behavior_kind: None,
-            working_directory,
-        });
+        analytics::record(
+            removed,
+            tokens_saved,
+            &active_slug,
+            analytics::TraceInfo {
+                removed_servers,
+                kept_servers,
+                auto_selected: false,
+                auto_trigger: None,
+                inject_fired: false,
+                inject_chars: 0,
+                adaptive_chars: 0,
+                budget_blocked: false,
+                coach_kind: None,
+                budget_fired: false,
+                behavior_kind: None,
+                working_directory,
+            },
+        );
     }
 
     Ok(bytes)
@@ -503,7 +536,11 @@ pub fn run_gates(body: &[u8]) -> Vec<u8> {
 
 fn run_gates_inner(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let config = Config::load();
-    let active_slug = config.active_profile.as_deref().unwrap_or("all").to_string();
+    let active_slug = config
+        .active_profile
+        .as_deref()
+        .unwrap_or("all")
+        .to_string();
 
     let working_directory = working_dir_from_body(body);
 
@@ -586,20 +623,25 @@ fn run_gates_inner(body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         || auto_selected;
 
     if anything_happened {
-        analytics::record(removed, tokens_saved, &effective_slug, analytics::TraceInfo {
-            removed_servers,
-            kept_servers,
-            auto_selected,
-            auto_trigger,
-            inject_fired,
-            inject_chars,
-            adaptive_chars: 0,
-            budget_blocked: false,
-            coach_kind,
-            budget_fired,
-            behavior_kind,
-            working_directory,
-        });
+        analytics::record(
+            removed,
+            tokens_saved,
+            &effective_slug,
+            analytics::TraceInfo {
+                removed_servers,
+                kept_servers,
+                auto_selected,
+                auto_trigger,
+                inject_fired,
+                inject_chars,
+                adaptive_chars: 0,
+                budget_blocked: false,
+                coach_kind,
+                budget_fired,
+                behavior_kind,
+                working_directory,
+            },
+        );
     }
 
     Ok(bytes)
@@ -659,8 +701,8 @@ fn auto_profile_info(body: &[u8], active_slug: &str) -> Option<(String, String)>
         _ => String::new(),
     };
 
-    let cwd = crate::profiles::extract_working_directory_from_system(&system_text)
-        .unwrap_or_default();
+    let cwd =
+        crate::profiles::extract_working_directory_from_system(&system_text).unwrap_or_default();
     let prompt = first_user_text_from_body(&value);
 
     if let Some((slug, trigger)) = crate::profiles::auto_select(&cwd, &prompt, active_slug) {
@@ -687,7 +729,10 @@ fn env_object(settings: &serde_json::Value) -> serde_json::Map<String, serde_jso
         .unwrap_or_default()
 }
 
-fn set_env_object(settings: &mut serde_json::Value, env: serde_json::Map<String, serde_json::Value>) {
+fn set_env_object(
+    settings: &mut serde_json::Value,
+    env: serde_json::Map<String, serde_json::Value>,
+) {
     settings["env"] = serde_json::Value::Object(env);
 }
 
@@ -841,9 +886,7 @@ pub fn install(port: u16, upstream: &str, mode: ProxyMode) -> Result<()> {
     println!("\nNext steps:");
     println!("  1. {}", host.reload_instruction());
     println!("  2. Run {} to verify wiring", "`ctx proxy status`".bold());
-    println!(
-        "  3. Test streaming: curl -x {proxy_http} https://api.anthropic.com/v1/messages ..."
-    );
+    println!("  3. Test streaming: curl -x {proxy_http} https://api.anthropic.com/v1/messages ...");
 
     Ok(())
 }
@@ -916,8 +959,14 @@ pub fn uninstall() -> Result<()> {
     cfg.proxy_install_mode = None;
     cfg.save()?;
 
-    println!("{} Uninstalled ctx MITM proxy env from settings.json", "✓".green());
-    println!("{}", crate::host::detect_primary_host().reload_instruction());
+    println!(
+        "{} Uninstalled ctx MITM proxy env from settings.json",
+        "✓".green()
+    );
+    println!(
+        "{}",
+        crate::host::detect_primary_host().reload_instruction()
+    );
     Ok(())
 }
 
@@ -941,10 +990,21 @@ pub fn status() -> Result<()> {
         }
     );
     println!("Profile:  {profile}");
-    println!("Auto-profile: {}", if config.auto_profile_enabled { "on" } else { "off" });
-    println!("Inject:   {}", if config.inject_enabled { "on" } else { "off" });
+    println!(
+        "Auto-profile: {}",
+        if config.auto_profile_enabled {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    println!(
+        "Inject:   {}",
+        if config.inject_enabled { "on" } else { "off" }
+    );
 
-    let ca_path = ca::canonical_ca_cert_path_string().unwrap_or_else(|_| "(CA not generated)".to_string());
+    let ca_path =
+        ca::canonical_ca_cert_path_string().unwrap_or_else(|_| "(CA not generated)".to_string());
     println!("CA cert:  {ca_path}");
 
     let log_path = crate::config::ctx_dir().join("proxy.stderr.log");
@@ -991,7 +1051,11 @@ pub fn status() -> Result<()> {
                 || is_ctx_forward_proxy_url(https_proxy, port);
             println!(
                 "MITM env: {} (CLAUDE_CODE_HTTPS_PROXY={})",
-                if mitm_on { "wired".green().to_string() } else { "not wired".red().to_string() },
+                if mitm_on {
+                    "wired".green().to_string()
+                } else {
+                    "not wired".red().to_string()
+                },
                 claude_proxy
             );
             println!("  HTTPS_PROXY={https_proxy}");
@@ -1017,23 +1081,18 @@ pub fn status() -> Result<()> {
                         .count()
                 })
                 .unwrap_or(0);
-            let async_ctx = [
-                "PostToolUse",
-                "SessionStart",
-                "SessionEnd",
-                "Stop",
-            ]
-            .iter()
-            .filter(|k| {
-                settings
-                    .pointer(&format!("/hooks/{k}"))
-                    .and_then(|v| v.as_array())
-                    .is_some_and(|arr| {
-                        arr.iter()
-                            .any(|e| crate::claude_settings::entry_is_ctx_hook_http_endpoint(e))
-                    })
-            })
-            .count();
+            let async_ctx = ["PostToolUse", "SessionStart", "SessionEnd", "Stop"]
+                .iter()
+                .filter(|k| {
+                    settings
+                        .pointer(&format!("/hooks/{k}"))
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|arr| {
+                            arr.iter()
+                                .any(|e| crate::claude_settings::entry_is_ctx_hook_http_endpoint(e))
+                        })
+                })
+                .count();
             println!(
                 "  ctx v2 hooks: UserPromptSubmit (ctx)={ups_ctx}, async HTTP to dashboard keys={async_ctx}"
             );

@@ -42,6 +42,7 @@ fn seed_decision(conn: &rusqlite::Connection, session_id: &str, command: &str, t
         features_json: "{}",
         command_or_path: command,
         applied: false,
+        explore_arm: None,
     };
     ctx::db::insert_compress_decision(conn, &d).expect("insert decision");
 }
@@ -71,7 +72,10 @@ fn cursor_decisions_join_via_ordinal_timeline() {
     seed_decision(&conn, uuid, "command that never appears", "Shell");
 
     let joined = ctx::surface::ingest::join_transcript_outcomes(&conn, cursor_home.path());
-    assert_eq!(joined, 2, "only the two decisions present in the transcript join");
+    assert_eq!(
+        joined, 2,
+        "only the two decisions present in the transcript join"
+    );
 
     // The read happened before the "no, that's broken, revert" correction turn.
     let (j_read, corr_read, rr_read) = outcome(&conn, "/x/a.rs");
@@ -133,7 +137,10 @@ fn cursor_correction_beyond_turn_window_does_not_count() {
 
     let (j, corr, _rr) = outcome(&conn, "make build");
     assert_eq!(j, 1, "a turn past the window closes it, so the run joins");
-    assert_eq!(corr, 0, "a correction many turns later is unrelated and must not count");
+    assert_eq!(
+        corr, 0,
+        "a correction many turns later is unrelated and must not count"
+    );
 }
 
 #[test]

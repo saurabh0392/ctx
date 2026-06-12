@@ -85,9 +85,7 @@ pub fn human_text_from_user_json_line(v: &Value) -> Option<String> {
         }
         return None;
     }
-    content
-        .as_str()
-        .map(|s| s.chars().take(2000).collect())
+    content.as_str().map(|s| s.chars().take(2000).collect())
 }
 
 fn tail_user_texts_from_jsonl(path: &Path) -> Vec<String> {
@@ -157,8 +155,12 @@ fn tail_assistant_text_from_jsonl(path: &Path) -> Option<String> {
         if type_ != "assistant" {
             continue;
         }
-        let Some(msg) = v.get("message") else { continue };
-        let Some(content) = msg.get("content") else { continue };
+        let Some(msg) = v.get("message") else {
+            continue;
+        };
+        let Some(content) = msg.get("content") else {
+            continue;
+        };
         if let Some(arr) = content.as_array() {
             for item in arr {
                 if item.get("type").and_then(|t| t.as_str()) == Some("text") {
@@ -294,7 +296,9 @@ pub fn user_prompt_submit() -> Result<()> {
 
     let cwd = input["cwd"].as_str().unwrap_or("");
     let prompt = input["prompt"].as_str().unwrap_or("");
-    let session_id = input["session_id"].as_str().or_else(|| input["sessionId"].as_str());
+    let session_id = input["session_id"]
+        .as_str()
+        .or_else(|| input["sessionId"].as_str());
     let parent_session_id = parent_session_from_input(&input);
 
     let mut cfg = crate::config::Config::load();
@@ -327,9 +331,7 @@ pub fn user_prompt_submit() -> Result<()> {
 
     // Auto-profile runs regardless of A/B arm; it picks the effective profile when enabled.
     if cfg.auto_profile_enabled {
-        if let Some((new_slug, trigger)) =
-            crate::profiles::auto_select(cwd, prompt, &active)
-        {
+        if let Some((new_slug, trigger)) = crate::profiles::auto_select(cwd, prompt, &active) {
             auto_selected = true;
             auto_trigger = Some(trigger);
             effective_profile = new_slug;
@@ -499,12 +501,9 @@ pub fn user_prompt_submit() -> Result<()> {
     let mut budget_fired = false;
     let mut budget_texts = coaching_texts.clone();
     budget_texts.push(prompt.to_string());
-    if let Some(warning) = crate::budget_guard::soft_warning_for_hook_input(
-        &input,
-        prompt,
-        &budget_texts,
-        model_hint,
-    ) {
+    if let Some(warning) =
+        crate::budget_guard::soft_warning_for_hook_input(&input, prompt, &budget_texts, model_hint)
+    {
         extra.push_str(warning.trim());
         extra.push_str("\n\n");
         budget_fired = true;

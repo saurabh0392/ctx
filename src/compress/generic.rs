@@ -18,10 +18,7 @@ pub fn redact_secrets(text: &str) -> String {
     for pat in SECRET_PATTERNS {
         if let Some(idx) = out.find(pat) {
             let line_start = out[..idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let line_end = out[idx..]
-                .find('\n')
-                .map(|i| idx + i)
-                .unwrap_or(out.len());
+            let line_end = out[idx..].find('\n').map(|i| idx + i).unwrap_or(out.len());
             out.replace_range(line_start..line_end, "[ctx redacted secret line]");
         }
     }
@@ -91,7 +88,11 @@ pub fn truncate_to_budget(text: &str, budget: usize, head_lines: usize) -> Strin
     if joined.chars().count() <= budget {
         return joined;
     }
-    joined.chars().take(budget.saturating_sub(1)).collect::<String>() + "…"
+    joined
+        .chars()
+        .take(budget.saturating_sub(1))
+        .collect::<String>()
+        + "…"
 }
 
 pub fn compress_generic(

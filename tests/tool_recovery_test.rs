@@ -116,7 +116,10 @@ fn stop_hook_recovery_expands_and_merges_trace() {
         });
 
         let added = semantic_tools::process_stop_hook_recovery(&payload).unwrap();
-        assert!(!added.is_empty(), "expected friction recovery, got {added:?}");
+        assert!(
+            !added.is_empty(),
+            "expected friction recovery, got {added:?}"
+        );
         assert_eq!(added[0].reason, ExpansionReason::AccessFriction);
 
         let traces = ctx::db::load_hook_traces(&conn, 5, 0, None).unwrap();

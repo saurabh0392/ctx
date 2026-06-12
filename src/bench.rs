@@ -11,11 +11,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::db::LabeledDecision;
-use crate::learn::{load_model, score_decision};
-
-/// Risk threshold for the learned arm: act (trim) only when predicted correction risk
-/// is below this. Conservative on purpose.
-const LEARNED_ACT_THRESHOLD: f64 = 0.15;
+use crate::learn::{load_model, score_decision, LEARNED_ACT_THRESHOLD};
 
 #[derive(Serialize)]
 pub struct ArmResult {
@@ -93,13 +89,16 @@ pub fn run_report() -> BenchReport {
         Some(model) => {
             let (n_l, cr_l, rr_l) = rate(
                 rows.iter()
-                    .filter(|d| d.lines_drop > 0 && score_decision(&model, d) < LEARNED_ACT_THRESHOLD)
+                    .filter(|d| {
+                        d.lines_drop > 0 && score_decision(&model, d) < LEARNED_ACT_THRESHOLD
+                    })
                     .map(|d| (d.correction, d.reread)),
             );
             arms.push(ArmResult {
                 arm: "ctx-learned".into(),
                 measured: n_l > 0,
-                note: (n_l == 0).then(|| "model trained but no decisions cleared the risk bar yet".into()),
+                note: (n_l == 0)
+                    .then(|| "model trained but no decisions cleared the risk bar yet".into()),
                 n_acted: n_l,
                 correction_rate: (n_l > 0).then_some(cr_l),
                 reread_rate: (n_l > 0).then_some(rr_l),
@@ -117,8 +116,14 @@ pub fn run_report() -> BenchReport {
 
     // Cross-system arms require live replay through those systems; not yet measured.
     for (arm, note) in [
-        ("native-compaction", "requires replaying the corpus through native compaction"),
-        ("competitor", "requires replaying the corpus through a named competitor"),
+        (
+            "native-compaction",
+            "requires replaying the corpus through native compaction",
+        ),
+        (
+            "competitor",
+            "requires replaying the corpus through a named competitor",
+        ),
     ] {
         arms.push(ArmResult {
             arm: arm.into(),
@@ -145,12 +150,18 @@ pub fn run(json: bool) -> Result<()> {
     println!("ctx context benchmark");
     println!("  labeled decisions: {}", report.total_labels);
     println!();
-    println!("  {:<20} {:>8} {:>14} {:>12}", "arm", "n", "correction", "re-read");
+    println!(
+        "  {:<20} {:>8} {:>14} {:>12}",
+        "arm", "n", "correction", "re-read"
+    );
     for a in &report.arms {
         match (a.correction_rate, a.reread_rate) {
             (Some(cr), Some(rr)) => println!(
                 "  {:<20} {:>8} {:>13.1}% {:>11.1}%",
-                a.arm, a.n_acted, cr * 100.0, rr * 100.0
+                a.arm,
+                a.n_acted,
+                cr * 100.0,
+                rr * 100.0
             ),
             _ => println!(
                 "  {:<20} {:>8} {:>14} {:>12}",

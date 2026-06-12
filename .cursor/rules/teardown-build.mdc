@@ -5,7 +5,7 @@ alwaysApply: true
 
 # ctx: teardown + build after changes
 
-When you change ctx (Rust, dashboard JS, config behavior, or hooks), finish with a full local reinstall cycle — do not skip unless the user explicitly says not to.
+When you change ctx (Rust, the dashboard in `src/dashboard.html`, config behavior, or hooks), finish with a full local reinstall cycle — do not skip unless the user explicitly says not to.
 
 ## 1. Teardown
 
@@ -23,9 +23,10 @@ Clean MCP registrations if uninstall missed them (settings.json, mcp.json).
 
 ## 2. Build
 
+The dashboard is a single self-contained file (`src/dashboard.html`, HTML + CSS + JS inline) embedded into the binary via `include_str!`. There is no stitch or build step: edit it directly and reinstall.
+
 ```bash
 cd ~/Documents/ctx   # or the repo root
-make dashboard         # when dashboard_static/js changed
 source "$HOME/.cargo/env"
 cargo install --locked --path .
 ```
