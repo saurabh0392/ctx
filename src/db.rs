@@ -323,6 +323,15 @@ fn migrate_compress_decisions_table(conn: &Connection) {
         "ALTER TABLE compress_decisions ADD COLUMN explore_arm TEXT",
         [],
     );
+    // Observation-only richer outcome signals (ADR 0019 / CTX-32): a JSON array of signal
+    // names that fired for this decision within the outcome window (e.g. ["reread","reedit",
+    // "correction_explicit"]). Recorded so each signal's precision can be spot-checked before
+    // any of them is allowed to influence the gate. The gate and the learned model do NOT read
+    // this column; it is purely for the audit.
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN outcome_signals TEXT",
+        [],
+    );
 }
 
 /// One shadow/active retention decision recorded for forward label collection.
@@ -779,20 +788,78 @@ pub fn unjoined_decisions_for_session(
 
 /// Back-fill a single decision's outcome label and mark it joined. Used by the
 /// transcript (ordinal) join; the timestamp join uses a bulk UPDATE instead.
+///
+/// `signals_json` is the observation-only richer-signal set for this decision (ADR 0019), a JSON
+/// array of signal names, or `None` to leave it unset. It never changes `outcome_correction`,
+/// which is the only label the gate reads; recording is decoupled from voting on purpose.
 pub fn set_decision_outcome(
     conn: &Connection,
     id: i64,
     correction: bool,
     reread: bool,
     surface: &str,
+    signals_json: Option<&str>,
 ) -> Result<()> {
     conn.execute(
         "UPDATE compress_decisions
-         SET outcome_correction = ?2, outcome_reread = ?3, outcome_joined = 1, surface = ?4
+         SET outcome_correction = ?2, outcome_reread = ?3, outcome_joined = 1, surface = ?4,
+             outcome_signals = ?5
          WHERE id = ?1",
-        params![id, correction as i64, reread as i64, surface],
+        params![id, correction as i64, reread as i64, surface, signals_json],
     )?;
     Ok(())
+}
+
+/// One joined decision that carries an observation-only richer-signal set (ADR 0019 / CTX-32),
+/// for the precision spot-check. `signals` are the recorded signal names; `correction` is the
+/// only one the gate currently reads, shown so co-occurrence is visible during hand-labeling.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SignalAuditRow {
+    pub ts: String,
+    pub tool_name: String,
+    pub command_or_path: Option<String>,
+    pub surface: Option<String>,
+    pub kind: String,
+    pub signals: Vec<String>,
+    pub correction: bool,
+    pub reread: bool,
+}
+
+/// Joined decisions whose observation-only signal set is non-empty, newest first. When
+/// `signal` is given, only rows where that signal fired are returned (substring match on the
+/// stored JSON array). `cap` bounds how many rows are read. Read-only; never touches the gate.
+pub fn signal_audit_rows(conn: &Connection, signal: Option<&str>, cap: usize) -> Vec<SignalAuditRow> {
+    let like = signal.map(|s| format!("%\"{s}\"%"));
+    let sql = "SELECT ts, tool_name, command_or_path, surface, kind, outcome_signals,
+                      outcome_correction, outcome_reread
+               FROM compress_decisions
+               WHERE outcome_joined = 1 AND outcome_signals IS NOT NULL
+                     AND outcome_signals != '[]'
+                     AND (?1 IS NULL OR outcome_signals LIKE ?1)
+               ORDER BY ts DESC
+               LIMIT ?2";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(params![like, cap as i64], |r| {
+        let signals_json: String = r.get(5)?;
+        let signals: Vec<String> = serde_json::from_str(&signals_json).unwrap_or_default();
+        Ok(SignalAuditRow {
+            ts: r.get(0)?,
+            tool_name: r.get(1)?,
+            command_or_path: r.get(2)?,
+            surface: r.get(3)?,
+            kind: r.get(4)?,
+            signals,
+            correction: r.get::<_, Option<i64>>(6)?.unwrap_or(0) != 0,
+            reread: r.get::<_, Option<i64>>(7)?.unwrap_or(0) != 0,
+        })
+    });
+    match rows {
+        Ok(it) => it.filter_map(|x| x.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// A labeled decision row for training / benchmarking (Act 1 / Act 2).

@@ -64,18 +64,27 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         .collect();
     correction_ordinals.sort_unstable();
 
+    // Per-flag ordinals, so the observation-only signal set can name which kind fired without
+    // changing what `correction` (the only label the gate reads) counts.
+    let explicit_ordinals = flag_ordinals(parsed, TurnFlag::CorrectionExplicit);
+    let aborted_ordinals = flag_ordinals(parsed, TurnFlag::Aborted);
+
     let Some(max_ordinal) = parsed.turns.iter().map(|t| t.ordinal).max() else {
         return 0;
     };
 
-    // fingerprint -> every ordinal it was called at. The earliest is the decision's
-    // position on the timeline; a second call inside the window is a re-read.
-    let mut by_fingerprint: HashMap<&str, Vec<u32>> = HashMap::new();
+    // fingerprint -> every (ordinal, is_edit) it was called at. The earliest ordinal is the
+    // decision's position; a later call inside the window is a re-read, and a later *edit* of
+    // the same path is an immediate re-edit (ADR 0019).
+    let mut by_fingerprint: HashMap<&str, Vec<(u32, bool)>> = HashMap::new();
     for call in &parsed.tool_calls {
         by_fingerprint
             .entry(call.input_fingerprint.as_str())
             .or_default()
-            .push(call.turn_ordinal.unwrap_or(0));
+            .push((
+                call.turn_ordinal.unwrap_or(0),
+                crate::outcome_signals::is_edit_tool(&call.tool_name),
+            ));
     }
 
     let decisions = crate::db::unjoined_decisions_for_session(conn, &parsed.session.session_key);
@@ -83,16 +92,15 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
     for d in decisions {
         // Place the decision on the timeline. If its tool call is not in the transcript,
         // we cannot assess an outcome honestly, so leave it unjoined.
-        let Some(ordinals) = by_fingerprint.get(d.command_or_path.as_str()) else {
+        let Some(calls) = by_fingerprint.get(d.command_or_path.as_str()) else {
             continue;
         };
-        let Some(&call_ordinal) = ordinals.iter().min() else {
+        let Some(call_ordinal) = calls.iter().map(|(o, _)| *o).min() else {
             continue;
         };
         let window_end = call_ordinal + CORRECTION_WINDOW_TURNS;
-        let correction = correction_ordinals
-            .iter()
-            .any(|&o| o > call_ordinal && o <= window_end);
+        let in_window = |o: u32| o > call_ordinal && o <= window_end;
+        let correction = correction_ordinals.iter().any(|&o| in_window(o));
         // Only score once the label is final: a correction inside the window is a
         // permanent positive, or a turn beyond the window confirms a clean run. A tool
         // call at the tail of an in-progress session waits, same as the Claude path.
@@ -100,15 +108,36 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         if !correction && !window_closed {
             continue;
         }
-        let reread = ordinals
-            .iter()
-            .any(|&o| o > call_ordinal && o <= window_end);
+        let reread = calls.iter().any(|&(o, _)| in_window(o));
+        let reedit = calls.iter().any(|&(o, is_edit)| is_edit && in_window(o));
+
+        // Observation-only signal set (ADR 0019): names every signal that fired, for the audit.
+        // Never read by the gate.
+        let mut signals: Vec<&str> = Vec::new();
+        if correction {
+            signals.push("correction");
+        }
+        if explicit_ordinals.iter().any(|&o| in_window(o)) {
+            signals.push("correction_explicit");
+        }
+        if aborted_ordinals.iter().any(|&o| in_window(o)) {
+            signals.push("aborted");
+        }
+        if reread {
+            signals.push("reread");
+        }
+        if reedit {
+            signals.push("reedit");
+        }
+        let signals_json = serde_json::to_string(&signals).ok();
+
         if crate::db::set_decision_outcome(
             conn,
             d.id,
             correction,
             reread,
             parsed.session.surface.as_str(),
+            signals_json.as_deref(),
         )
         .is_ok()
         {
@@ -116,4 +145,119 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         }
     }
     newly
+}
+
+/// Sorted ordinals of every turn carrying `flag`. Small helper so the signal set can report
+/// each flag kind independently of the merged correction window.
+fn flag_ordinals(parsed: &ParsedTranscript, flag: TurnFlag) -> Vec<u32> {
+    let mut v: Vec<u32> = parsed
+        .turns
+        .iter()
+        .filter(|t| t.flags.contains(&flag))
+        .map(|t| t.ordinal)
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::{CanonicalSession, CanonicalToolResult, CanonicalTurn, SurfaceId, TurnRole};
+
+    fn turn(ordinal: u32, role: TurnRole, flags: Vec<TurnFlag>) -> CanonicalTurn {
+        CanonicalTurn {
+            ordinal,
+            role,
+            text_prefix: String::new(),
+            flags,
+            ts: None,
+        }
+    }
+
+    fn call(fingerprint: &str, tool: &str, ordinal: u32) -> CanonicalToolResult {
+        CanonicalToolResult {
+            surface: SurfaceId::Cursor,
+            session_key: "sess-1".into(),
+            tool_name: tool.into(),
+            input_fingerprint: fingerprint.into(),
+            raw_text: String::new(),
+            observed_at: None,
+            turn_ordinal: Some(ordinal),
+        }
+    }
+
+    // Read a path, then edit the same path next turn: observation set records reread + reedit,
+    // with no correction. The gate-facing correction label stays 0 (ADR 0019: observe, don't vote).
+    #[test]
+    fn join_records_reedit_signal_without_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = crate::db::open_db().unwrap();
+        crate::db::ensure_schema(&conn).unwrap();
+
+        crate::db::insert_compress_decision(
+            &conn,
+            &crate::db::CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("sess-1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "scan",
+                lines_total: 100,
+                lines_keep: 60,
+                lines_drop: 40,
+                chars_in: 5000,
+                would_chars_out: 2000,
+                features_json: "{}",
+                command_or_path: "/a.rs",
+                applied: false,
+                explore_arm: None,
+                surface: None,
+            },
+        )
+        .unwrap();
+
+        let parsed = ParsedTranscript {
+            session: CanonicalSession {
+                surface: SurfaceId::Cursor,
+                session_key: "sess-1".into(),
+                external_key: "sess-1".into(),
+                project_label: "p".into(),
+                repo_root: None,
+            },
+            // Window closes because a turn exists past call_ordinal + window.
+            turns: vec![
+                turn(1, TurnRole::Assistant, vec![]),
+                turn(2, TurnRole::Assistant, vec![]),
+                turn(6, TurnRole::User, vec![]),
+            ],
+            tool_calls: vec![
+                call("/a.rs", "Read", 1),
+                call("/a.rs", "Write", 2),
+            ],
+        };
+
+        let newly = join_one(&conn, &parsed);
+        assert_eq!(newly, 1, "the decision should join once the window closed");
+
+        let (correction, signals): (i64, String) = conn
+            .query_row(
+                "SELECT outcome_correction, COALESCE(outcome_signals,'') FROM compress_decisions WHERE command_or_path = '/a.rs'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(correction, 0, "no correction turn, so the gate label stays 0");
+        assert!(signals.contains("reread"), "signals: {signals}");
+        assert!(signals.contains("reedit"), "signals: {signals}");
+        assert!(
+            !signals.contains("correction"),
+            "no correction should be recorded: {signals}"
+        );
+    }
 }

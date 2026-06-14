@@ -67,6 +67,22 @@ ordinal/fingerprint/flag timeline so they are unit-testable in isolation, then c
 join exactly where `reread` is computed today. This requires adding two attributes to the parsed
 tool-call model (did the call fail; is it an edit) and populating them per adapter.
 
+## Where each signal can be computed (constraint found while building)
+
+The Cursor transcript records tool *calls* but not tool *output* (no exit code, no error). So:
+
+- **Immediate re-edit** is computable from the transcript: tool-call names and path fingerprints
+  are present, so "a path read/written, then an edit of the same path within the window" can be
+  derived in the ordinal join. Shipped in increment 1.
+- **Error-then-retry** cannot come from the transcript (no failure signal there). It must be
+  computed at the live Cursor postToolUse hook (CTX-27), which does receive `tool_output` with
+  `exitCode`, or from the Claude timestamp path. Deferred to increment 1b, behind the live hook.
+
+So increment 1 records, observation-only, the signals derivable from the ordinal timeline today
+(correction tier, abort, re-read, and the new immediate re-edit) into a per-decision
+`outcome_signals` set, plus the audit command. Error-then-retry follows once it is wired at the
+hook where failure data exists.
+
 ## Alternatives considered
 
 - Wire the new signals straight into the gate behind their confidence tiers and "watch the

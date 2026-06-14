@@ -183,6 +183,18 @@ pub fn is_immediate_reedit(touch_ordinal: u32, edit_ordinals: &[u32], window: u3
         .any(|&o| o > touch_ordinal && o <= touch_ordinal.saturating_add(window))
 }
 
+/// Whether a tool name is an edit/write of a file (as opposed to a read or a shell/MCP call).
+/// Used to tell an immediate re-edit apart from a benign re-read of the same path. Matched
+/// case-insensitively against the tool names ctx sees across surfaces.
+pub fn is_edit_tool(tool_name: &str) -> bool {
+    let n = tool_name.trim().to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "write" | "edit" | "multiedit" | "str_replace" | "str_replace_editor" | "create_file"
+            | "applypatch" | "apply_patch" | "searchreplace" | "search_replace"
+    )
+}
+
 /// A tool call that failed, then was retried within `window` turns (the retry is another call
 /// with the same input fingerprint, which the caller resolves). Only counts when the first call
 /// actually failed: a clean call followed by a benign repeat is a re-read, not an error-retry.
@@ -331,6 +343,16 @@ mod tests {
                 CorrectionClass::Terse,
                 "should be terse: {s:?}"
             );
+        }
+    }
+
+    #[test]
+    fn edit_tools_recognized_across_surfaces() {
+        for t in ["Write", "edit", "MultiEdit", "str_replace", "create_file", "apply_patch"] {
+            assert!(is_edit_tool(t), "should be an edit tool: {t}");
+        }
+        for t in ["Read", "Grep", "Shell", "Bash", "MCP:save_issue", "Glob"] {
+            assert!(!is_edit_tool(t), "should not be an edit tool: {t}");
         }
     }
 

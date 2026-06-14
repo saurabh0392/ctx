@@ -337,6 +337,84 @@ pub fn labels(tool: Option<&str>, limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Spot-check the observation-only richer signals (ADR 0019 / CTX-32). Prints a per-signal
+/// count across recent joined decisions, then a sample of decisions for hand-labeling. None of
+/// these signals influence the gate yet; this is the proof step that has to pass before they do.
+pub fn signal_audit(signal: Option<&str>, limit: usize, json: bool) -> Result<()> {
+    let conn = crate::db::open_db()?;
+    let _ = crate::db::ensure_schema(&conn);
+
+    // Read a wide window for the counts, regardless of how many samples we print.
+    const COUNT_CAP: usize = 5000;
+    let all = crate::db::signal_audit_rows(&conn, signal, COUNT_CAP);
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&all)?);
+        return Ok(());
+    }
+
+    if all.is_empty() {
+        let scope = signal.unwrap_or("any signal");
+        println!("No decisions carry {scope} yet.");
+        println!("Signals are recorded when ingest joins a transcript outcome. Run `ctx ingest`,");
+        println!("or wait for more sessions. (Recording started with ADR 0019; older rows have none.)");
+        return Ok(());
+    }
+
+    // Count how often each signal fired across the window, so a noisy signal is obvious.
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for r in &all {
+        for s in &r.signals {
+            *counts.entry(s.clone()).or_default() += 1;
+        }
+    }
+    let scope = signal.unwrap_or("all signals");
+    println!(
+        "Signal audit for {scope}  ({} joined decisions carry a signal)",
+        all.len()
+    );
+    println!("None of these vote in the gate yet. Hand-label a sample and check precision per signal");
+    println!("before promoting any of them (ADR 0019). A false positive here is worse than no signal.");
+    println!();
+    println!("How often each signal fired:");
+    for (name, n) in &counts {
+        println!("   {name:<22} {n}");
+    }
+    println!();
+
+    let shown = limit.min(all.len());
+    println!("{shown} most recent samples to judge by hand:");
+    println!();
+    for (i, r) in all.iter().take(limit).enumerate() {
+        let when = local_short(&r.ts);
+        let target = r
+            .command_or_path
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("(none)");
+        let surface = r
+            .surface
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("claude-code");
+        println!(
+            "{}. [{}] {} on {}",
+            i + 1,
+            r.signals.join(" + "),
+            r.tool_name,
+            target
+        );
+        println!(
+            "   when: {when}   surface: {surface}   kind: {}   gate label: {}",
+            r.kind,
+            if r.correction { "correction" } else { "clean" }
+        );
+        println!();
+    }
+    Ok(())
+}
+
 fn local_short(ts: &str) -> String {
     use chrono::{DateTime, Local, Utc};
     if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {

@@ -187,6 +187,18 @@ pub enum ContextCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Spot-check richer outcome signals (ADR 0019): per-signal counts and recent samples, so
+    /// you can hand-label precision before any signal is allowed to influence the gate. Read-only.
+    SignalAudit {
+        /// Only show decisions where this signal fired (e.g. reedit, reread, correction_explicit)
+        #[arg(long)]
+        signal: Option<String>,
+        /// How many recent samples to print per run
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
