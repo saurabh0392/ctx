@@ -208,6 +208,23 @@
   @media (max-width: 880px) { .board { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 480px) { .board { grid-template-columns: 1fr; } }
 
+  /* compaction: lead stat + per-surface cards */
+  .cf-lead { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px 26px; max-width: 760px; }
+  .cf-lead.good { background: linear-gradient(150deg, #0f2920 0%, var(--surface) 75%); border-color: #1e3b30; }
+  .cf-big { font-size: 34px; font-weight: 800; letter-spacing: -1px; color: var(--t1); font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .cf-big b { color: var(--primary-lt); }
+  .cf-lead.good .cf-big { color: var(--primary-lt); }
+  .cf-cap { font-size: 13px; color: var(--t3); margin-top: 10px; line-height: 1.6; max-width: 620px; }
+  .cf-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; max-width: 760px; }
+  .cf-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 16px 15px; display: flex; flex-direction: column; }
+  .cf-surface { font-size: 13px; font-weight: 700; color: var(--t1); }
+  .cf-conf { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-top: 7px; }
+  .cf-conf.observed { color: var(--primary-lt); }
+  .cf-conf.unknown { color: var(--t4); }
+  .cf-num { font-size: 26px; font-weight: 800; color: var(--t1); font-variant-numeric: tabular-nums; margin-top: 12px; line-height: 1; }
+  .cf-note { font-size: 12px; color: var(--t3); line-height: 1.5; margin-top: 9px; }
+  @media (max-width: 720px) { .cf-grid { grid-template-columns: 1fr; } }
+
   /* ── payoff ── */
   .payoff { border-radius: var(--radius); padding: 28px; max-width: 760px; }
   .payoff.earned { background: linear-gradient(135deg, #0f2920 0%, var(--surface) 70%); border: 1px solid #1e3b30; }
@@ -296,6 +313,7 @@
       <nav class="nav">
         <a data-view="home" onclick="go('home')">Home</a>
         <a data-view="tools" onclick="go('tools')">Tools</a>
+        <a data-view="compaction" onclick="go('compaction')">Compaction</a>
         <a data-view="activity" onclick="go('activity')">Activity</a>
         <a data-view="settings" onclick="go('settings')">Settings</a>
         <span class="health" id="health"><span class="pip"></span><span id="health-txt">connecting</span></span>
@@ -349,6 +367,15 @@
       <div id="tools-list"></div>
     </section>
 
+    <!-- ══ COMPACTION ══ -->
+    <section class="view" id="view-compaction">
+      <div style="padding-top:40px">
+        <div class="page-title">When your agent compacts</div>
+        <p class="page-sub">When a coding agent runs low on room, it compacts: it summarizes and drops older detail so it can keep going. That is the platform's call, not ctx's. ctx just watches what happens next and counts the times a compaction was followed by you correcting the agent within a few turns. This is not proof the compaction caused the correction. It only tells you how often one came right after the other, on your own work, across the agents ctx can see.</p>
+      </div>
+      <div id="compaction-body" style="margin-top:24px"></div>
+    </section>
+
     <!-- ══ ACTIVITY ══ -->
     <section class="view" id="view-activity">
       <div style="padding-top:40px">
@@ -384,17 +411,18 @@
 
   // ── router ──
   function go(view) {
-    const v = ["home", "tools", "activity", "settings"].includes(view) ? view : "home";
+    const v = ["home", "tools", "compaction", "activity", "settings"].includes(view) ? view : "home";
     location.hash = v;
   }
   function render() {
     const v = (location.hash || "#home").slice(1);
-    const view = ["home", "tools", "activity", "settings"].includes(v) ? v : "home";
+    const view = ["home", "tools", "compaction", "activity", "settings"].includes(v) ? v : "home";
     document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === "view-" + view));
     document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view));
     window.scrollTo(0, 0);
     if (view === "home") loadHome();
     if (view === "tools") loadTools();
+    if (view === "compaction") loadCompaction();
     if (view === "activity") loadActivity();
     if (view === "settings") loadSettings();
   }
@@ -688,6 +716,52 @@
       const sub = r.command_or_path ? `<div class="act-sub">${esc(String(r.command_or_path).slice(0, 70))}</div>` : "";
       return `<div class="act"><span class="act-time">${esc(timeAgo(r.ts))}</span><span class="tool-name">${esc(label)}</span><span><div class="act-what">${what}</div>${sub}</span><span class="act-tag" style="${tagcss}">${tag}</span></div>`;
     }).join("");
+  }
+
+  // ════ COMPACTION ════
+  const SURFACE_NAME = { "claude-code": "Claude Code", "cursor": "Cursor", "codex": "Codex" };
+  async function loadCompaction() {
+    let ctx;
+    try { ctx = await getJSON("/api/context"); setHealth(true); }
+    catch (e) { setHealth(false); $("compaction-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
+    const surfaces = ctx.compaction || [];
+    const claude = surfaces.find((s) => s.surface === "claude-code");
+    const w = (claude && claude.window_turns) || 5;
+
+    // Lead block keys off the one surface we can measure today (Claude Code).
+    let lead;
+    if (!claude || claude.confidence !== "observed") {
+      lead = `<div class="cf-lead"><div class="cf-big">Nothing to show yet</div><div class="cf-cap">ctx hasn't indexed any Claude Code sessions on this machine yet. Once you run a few, this shows how often a compaction was followed by a correction. Run <code>ctx ingest</code> if you have used Claude Code and still see nothing.</div></div>`;
+    } else if ((claude.compaction_events || 0) === 0) {
+      const sess = claude.sessions_with_compaction || 0;
+      lead = `<div class="cf-lead good"><div class="cf-big">No compactions yet</div><div class="cf-cap">Across the Claude Code sessions ctx has seen, your agent hasn't had to compact its context. That is the good case, so there is nothing to report. If a session does compact, it shows up here.</div></div>`;
+    } else {
+      const n = claude.compaction_events || 0, m = claude.followed_by_correction || 0;
+      lead = `<div class="cf-lead"><div class="cf-big"><b>${num(m)}</b> of ${num(n)}</div><div class="cf-cap">Claude Code compactions on this machine were followed by you correcting the agent within ${w} turns. This counts what came next, not what caused it. A correction can follow a compaction for reasons that have nothing to do with it.</div></div>`;
+    }
+
+    const card = (s) => {
+      const name = SURFACE_NAME[s.surface] || s.surface;
+      if (s.confidence !== "observed") {
+        return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf unknown">not visible yet</div><div class="cf-num">&mdash;</div><div class="cf-note">${esc(name)} manages its own context and doesn't expose its compaction to ctx the way Claude Code does. We show nothing rather than guess.</div></div>`;
+      }
+      const n = s.compaction_events || 0, m = s.followed_by_correction || 0;
+      const body = n === 0
+        ? `<div class="cf-num">none</div><div class="cf-note">No compaction seen across ${num(s.sessions_with_compaction || 0)} session${(s.sessions_with_compaction || 0) === 1 ? "" : "s"}.</div>`
+        : `<div class="cf-num">${num(m)} <span style="font-size:14px;color:var(--t3);font-weight:600">of ${num(n)}</span></div><div class="cf-note">compactions were followed by a correction within ${w} turns, across ${num(s.sessions_with_compaction || 0)} session${(s.sessions_with_compaction || 0) === 1 ? "" : "s"}.</div>`;
+      return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf observed">observed here</div>${body}</div>`;
+    };
+
+    const order = ["claude-code", "cursor", "codex"];
+    const cards = order
+      .map((id) => surfaces.find((s) => s.surface === id))
+      .filter(Boolean)
+      .map(card)
+      .join("");
+
+    $("compaction-body").innerHTML =
+      lead +
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">ctx can only measure an agent whose sessions it sees. Claude Code exposes its compaction, so that count is real. The others are not visible yet, which we show plainly instead of as a zero.</p><div class="cf-grid">${cards}</div></div>`;
   }
 
   // ════ SETTINGS ════

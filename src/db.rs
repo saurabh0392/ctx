@@ -1094,6 +1094,128 @@ pub fn correction_snippets_for_session(
         .collect())
 }
 
+/// How many turns after a compaction event a correction still counts as "following" it.
+/// Wider than the per-tool correction window (a compaction's effects can surface a turn or
+/// two later) but tight enough that an unrelated correction far down the session is not
+/// attributed to it. Turn index, not wall clock, is the ground truth here: it is contiguous
+/// per session and present on every surface that persists turns. See ADR 0016.
+pub const COMPACTION_FOLLOWUP_WINDOW_TURNS: i64 = 5;
+
+/// Per-surface compaction-harm counts (ADR 0016 / CTX-25). Honest by construction: a surface
+/// with no persisted compaction signal reports `confidence == "unknown"` with `None` counts,
+/// never zero, so the UI says "we can't see this yet" instead of implying a clean result. No
+/// causal claim is made: `followed_by_correction` means a correction turn landed within the
+/// window after a compaction, not that the compaction caused it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CompactionFollowups {
+    pub surface: String,
+    /// "observed" when this surface has persisted turns, "unknown" when it does not.
+    pub confidence: String,
+    /// Compaction events (pre_compact turns) observed. `None` for an unknown surface.
+    pub compaction_events: Option<i64>,
+    /// Compaction events with at least one correction within the window after them.
+    pub followed_by_correction: Option<i64>,
+    /// Distinct sessions in which at least one compaction occurred.
+    pub sessions_with_compaction: Option<i64>,
+    /// The window used, in turns.
+    pub window_turns: i64,
+}
+
+/// Per-surface count of corrections that followed a native compaction within
+/// `COMPACTION_FOLLOWUP_WINDOW_TURNS`. Read-only. Claude Code is computed from the persisted
+/// `turns` table (compaction = a `pre_compact` flagged turn, the exchange right before a
+/// `compactMetadata` system row). Cursor and Codex are reported as `unknown` until their
+/// compaction turns are persisted. Never reports a causal claim (ADR 0016 / CTX-25).
+pub fn compaction_followups(conn: &Connection) -> Vec<CompactionFollowups> {
+    let window = COMPACTION_FOLLOWUP_WINDOW_TURNS;
+    vec![
+        claude_compaction_followups(conn, window),
+        unknown_surface("cursor", window),
+        unknown_surface("codex", window),
+    ]
+}
+
+fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
+    CompactionFollowups {
+        surface: surface.to_string(),
+        confidence: "unknown".to_string(),
+        compaction_events: None,
+        followed_by_correction: None,
+        sessions_with_compaction: None,
+        window_turns: window,
+    }
+}
+
+/// Claude Code arm of [`compaction_followups`]. Walks the persisted `turns` timeline per
+/// session and counts, for each `pre_compact` turn, whether a `correction` turn lands within
+/// `window` turns after it. When no Claude turns are persisted at all the surface is
+/// `unknown` (we have not seen sessions), distinct from "observed, zero compactions".
+fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFollowups {
+    // (session_id, turn_index, flags) for every turn, in timeline order. flags is the stored
+    // JSON-array string (e.g. ["pre_compact","correction"]) or a legacy bare string; a
+    // substring test matches both shapes, same as the existing outcome joins.
+    let rows: Vec<(i64, i64, String)> = match conn.prepare(
+        "SELECT session_id, turn_index, COALESCE(flags, '')
+         FROM turns
+         ORDER BY session_id, turn_index",
+    ) {
+        Ok(mut stmt) => match stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+        }) {
+            Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+            Err(_) => return unknown_surface("claude-code", window),
+        },
+        Err(_) => return unknown_surface("claude-code", window),
+    };
+
+    if rows.is_empty() {
+        return unknown_surface("claude-code", window);
+    }
+
+    let mut events = 0i64;
+    let mut followed = 0i64;
+    let mut sessions_with: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+    // Walk each session's turns once. Within a session, a compaction at turn index `pc` is
+    // "followed by a correction" when some correction turn has index in (pc, pc + window].
+    let mut i = 0usize;
+    while i < rows.len() {
+        let sid = rows[i].0;
+        let mut j = i;
+        while j < rows.len() && rows[j].0 == sid {
+            j += 1;
+        }
+        let session = &rows[i..j];
+        let corrections: Vec<i64> = session
+            .iter()
+            .filter(|(_, _, f)| f.contains("correction"))
+            .map(|(_, idx, _)| *idx)
+            .collect();
+        for (_, idx, flags) in session {
+            if flags.contains("pre_compact") {
+                events += 1;
+                sessions_with.insert(sid);
+                let hit = corrections
+                    .iter()
+                    .any(|&c| c > *idx && c <= *idx + window);
+                if hit {
+                    followed += 1;
+                }
+            }
+        }
+        i = j;
+    }
+
+    CompactionFollowups {
+        surface: "claude-code".to_string(),
+        confidence: "observed".to_string(),
+        compaction_events: Some(events),
+        followed_by_correction: Some(followed),
+        sessions_with_compaction: Some(sessions_with.len() as i64),
+        window_turns: window,
+    }
+}
+
 /// Recent tool names invoked in this Claude session (for SGR TaskFrame).
 pub fn recent_tool_names_for_session(
     conn: &Connection,
@@ -3033,6 +3155,114 @@ mod compress_decision_tests {
         assert_eq!(read.control_n, 2);
         assert_eq!(read.treatment_corrections, 1, "one treatment correction");
         assert_eq!(read.control_corrections, 0, "control had no corrections");
+    }
+
+    fn seed_session(conn: &Connection, key: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES (?1, 'p', '2026-05-31T10:00:00+00:00')",
+            params![key],
+        )
+        .unwrap();
+        conn.query_row(
+            "SELECT id FROM sessions WHERE external_key=?1",
+            params![key],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn seed_turn(conn: &Connection, sid: i64, idx: i64, flags: &str) {
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, ?2, 'turn', ?3, NULL)",
+            params![sid, idx, flags],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn compaction_unknown_when_no_turns_persisted() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let out = compaction_followups(&conn);
+        let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
+        // No turns at all means we have not seen sessions, which is unknown, not "zero
+        // compactions". Zero would falsely imply we looked and found a clean result.
+        assert_eq!(claude.confidence, "unknown");
+        assert_eq!(claude.compaction_events, None);
+        // Surfaces we cannot see are always unknown, never fabricated as zero.
+        let cursor = out.iter().find(|s| s.surface == "cursor").unwrap();
+        assert_eq!(cursor.confidence, "unknown");
+        assert_eq!(cursor.followed_by_correction, None);
+    }
+
+    #[test]
+    fn compaction_counts_correction_inside_window_only() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // Session A: a compaction at turn 2, a correction at turn 4 (inside the 5-turn window).
+        let a = seed_session(&conn, "sess-a");
+        seed_turn(&conn, a, 0, "[]");
+        seed_turn(&conn, a, 1, "[]");
+        seed_turn(&conn, a, 2, r#"["pre_compact"]"#);
+        seed_turn(&conn, a, 3, "[]");
+        seed_turn(&conn, a, 4, r#"["correction","correction_explicit"]"#);
+
+        // Session B: a compaction at turn 1, a correction far away at turn 9 (outside window).
+        let b = seed_session(&conn, "sess-b");
+        seed_turn(&conn, b, 0, "[]");
+        seed_turn(&conn, b, 1, r#"["pre_compact"]"#);
+        for idx in 2..9 {
+            seed_turn(&conn, b, idx, "[]");
+        }
+        seed_turn(&conn, b, 9, r#"["correction"]"#);
+
+        let out = compaction_followups(&conn);
+        let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
+        assert_eq!(claude.confidence, "observed");
+        assert_eq!(claude.compaction_events, Some(2), "two compaction events seen");
+        assert_eq!(
+            claude.followed_by_correction,
+            Some(1),
+            "only session A's correction is inside the window"
+        );
+        assert_eq!(claude.sessions_with_compaction, Some(2));
+        assert_eq!(claude.window_turns, COMPACTION_FOLLOWUP_WINDOW_TURNS);
+    }
+
+    #[test]
+    fn compaction_observed_zero_when_sessions_never_compact() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // Real sessions with turns but no compaction: this is an honest "observed, none",
+        // distinct from "unknown". A correction with no compaction before it is not counted.
+        let s = seed_session(&conn, "sess-clean");
+        seed_turn(&conn, s, 0, "[]");
+        seed_turn(&conn, s, 1, r#"["correction"]"#);
+
+        let out = compaction_followups(&conn);
+        let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
+        assert_eq!(claude.confidence, "observed");
+        assert_eq!(claude.compaction_events, Some(0));
+        assert_eq!(claude.followed_by_correction, Some(0));
+        assert_eq!(claude.sessions_with_compaction, Some(0));
     }
 }
 
