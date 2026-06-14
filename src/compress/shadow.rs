@@ -97,6 +97,18 @@ pub struct ShadowFeatures {
     /// `"self_dev":true`, which the corpus-exclusion SQL matches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_dev: Option<bool>,
+    /// `Some("consult")` when the read-edit guard would have protected this working read, but the
+    /// consult-read unblock (ADR 0029 / CTX-45) let it become trim-eligible because the recent
+    /// narration showed a consult read with no edit intent. Recorded so these reads' outcomes can be
+    /// measured in isolation and the expansion rolled back on data alone. `None` for every other
+    /// decision. Set by the controller in `agent::decide`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_unblock: Option<String>,
+    /// Coarse role of the file a read touched (`src`, `test`, `config`, `generated`, `vendored`,
+    /// `docs`), derived from its path. A cheap, repo-agnostic feature for the file-aware retention
+    /// model (CTX-46). Logged only; it does not change any trim decision. Set by the controller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_role: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +251,8 @@ pub fn compute_shadow_decision(
             model_score: None,
             would_model_apply: None,
             self_dev: None,
+            read_unblock: None,
+            path_role: None,
         },
     })
 }

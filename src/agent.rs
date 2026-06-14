@@ -100,28 +100,47 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     let is_read = kind_label == "read";
     let read_path = read_file_path(&tr.tool_input);
 
-    // Edit-intent guard (ADR 0001 / CTX-8): a Read only applies for reference reads (files the
-    // agent is not positioned to edit). Working reads of editable project files are never trimmed,
-    // even under a trial or after activation, so a re-trial cannot re-create the observed harm.
-    let static_guard_blocks = cfg.compress_read_edit_guard
-        && is_read
-        && !compress::edit_intent::read_is_trim_eligible(read_path, &tr.cwd);
+    // Edit-intent guard (ADR 0001 / CTX-8). A read is split three ways (ADR 0029 / CTX-45):
+    //  1. Reference read (deps, vendored, outside the repo): trim-eligible.
+    //  2. Working read of an editable project file: protected by default.
+    //  3. Working read the recent narration shows is consultative (a reading phase, no edit verb):
+    //     unblocked for trimming, but only when `compress_read_consult_trim` is on. Everything still
+    //     flows through burn-in and the causal gate before a trim is trusted.
+    let is_reference_read =
+        is_read && compress::edit_intent::read_is_trim_eligible(read_path, &tr.cwd);
 
-    // Intent signal (ADR 0004 / CTX-11): read the agent's recent narration and, when it shows
-    // edit-intent for this file, protect the read even if the static path heuristic would trim it
-    // (e.g. a reference path the agent has declared it will edit). Purely additive: it can only
-    // protect, never trim more. The signal is recorded in shadow features for prevalence.
-    let intent_blocks = if cfg.compress_intent_log && is_read {
-        let intent =
+    // Intent signal (ADR 0004 / CTX-11): the agent's recent narration, read once and used two ways.
+    // Protectively it blocks a reference read the narration says will be edited. Behind the consult
+    // flag it can also unblock a working read the narration shows is purely consultative. The signal
+    // is recorded in shadow features for prevalence either way.
+    let intent = if cfg.compress_intent_log && is_read {
+        let signal =
             compress::intent::IntentSignal::from_text(tr.recent_intent_text.as_deref(), read_path);
-        let blocks = intent.edit_intent_for_path();
         if let Some(d) = shadow.as_mut() {
-            d.features.intent = Some(intent);
+            d.features.intent = Some(signal.clone());
         }
-        blocks
+        Some(signal)
     } else {
-        false
+        None
     };
+    let intent_blocks = intent
+        .as_ref()
+        .map(|s| s.edit_intent_for_path())
+        .unwrap_or(false);
+
+    // Consult-read unblock (CTX-45): a working read becomes trim-eligible only with the flag on,
+    // readable narration, and no edit verb in that narration. Fails closed: no narration, no unblock.
+    let consult_unblock = cfg.compress_read_consult_trim
+        && is_read
+        && !is_reference_read
+        && intent
+            .as_ref()
+            .map(|s| s.consult_read_unblocks())
+            .unwrap_or(false);
+
+    // The static path guard protects a working read unless the consult unblock cleared it.
+    let static_guard_blocks =
+        cfg.compress_read_edit_guard && is_read && !is_reference_read && !consult_unblock;
 
     let read_guard_blocks = static_guard_blocks || intent_blocks;
     // Record the protection so the activity feed can tell a deliberately-kept read apart from one
@@ -130,6 +149,12 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     if read_guard_blocks {
         if let Some(d) = shadow.as_mut() {
             d.features.read_protected = Some(true);
+        }
+    } else if consult_unblock {
+        // Tag the read the consult unblock freed, so its outcomes are measurable in isolation and
+        // the expansion can be rolled back on data alone (CTX-45).
+        if let Some(d) = shadow.as_mut() {
+            d.features.read_unblock = Some("consult".to_string());
         }
     }
 
@@ -143,6 +168,8 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         // (CTX-32). Developing ctx is not user behavior; left in, it dominates and biases the gate.
         d.features.self_dev = is_self_dev_repo(&tr.cwd).then_some(true);
         d.features.file_ext = read_file_path(&tr.tool_input).and_then(file_ext_of);
+        // Coarse path role for the file-aware retention model (CTX-46). Logged only.
+        d.features.path_role = read_path.and_then(path_role_of).map(str::to_string);
         let features_json = d.features_json();
         if let Some(score) = crate::learn::score_parts(
             &kind_label,
@@ -207,6 +234,62 @@ fn file_ext_of(path: &str) -> Option<String> {
         return None;
     }
     Some(ext.to_ascii_lowercase())
+}
+
+/// Coarse role of the file a read touched, for the file-aware retention model (CTX-46). Pure path
+/// classification, repo-agnostic, checked in priority order so a vendored test still reads as
+/// vendored. Returns `None` for an unknown or empty path so the model sees an explicit absence
+/// rather than a guessed bucket. Logged only; it never changes a trim decision.
+fn path_role_of(path: &str) -> Option<&'static str> {
+    let p = path.trim();
+    if p.is_empty() {
+        return None;
+    }
+    let lower = p.to_lowercase().replace('\\', "/");
+    const VENDORED: &[&str] = &[
+        "/node_modules/",
+        "/vendor/",
+        "/.venv/",
+        "/venv/",
+        "/site-packages/",
+        "/target/",
+        "/.cargo/",
+        "/.rustup/",
+    ];
+    const GENERATED: &[&str] = &["/dist/", "/build/", "/.next/", "/out/", "/coverage/", "/gen/"];
+    const CONFIG_NAMES: &[&str] = &[
+        "cargo.toml",
+        "package.json",
+        "tsconfig.json",
+        "pyproject.toml",
+        "go.mod",
+        "dockerfile",
+        "makefile",
+    ];
+    if VENDORED.iter().any(|d| lower.contains(d)) {
+        return Some("vendored");
+    }
+    if GENERATED.iter().any(|d| lower.contains(d)) {
+        return Some("generated");
+    }
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    if lower.contains("test") || lower.contains("spec") || lower.contains("__tests__") {
+        return Some("test");
+    }
+    if lower.contains("/docs/") || name.ends_with(".md") || name.ends_with(".rst") {
+        return Some("docs");
+    }
+    if CONFIG_NAMES.contains(&name)
+        || name.ends_with(".toml")
+        || name.ends_with(".yaml")
+        || name.ends_with(".yml")
+        || name.ends_with(".ini")
+        || name.ends_with(".cfg")
+        || (name.ends_with(".json") && lower.contains("config"))
+    {
+        return Some("config");
+    }
+    Some("src")
 }
 
 /// A stable key for the repo a decision happened in: the nearest ancestor of `cwd` that contains a
@@ -484,6 +567,83 @@ mod tests {
         assert!(recorded.mentions_path);
         assert!(recorded.has_edit_verb);
         assert!(recorded.edit_intent_for_path());
+    }
+
+    #[test]
+    fn path_role_classifies_by_priority() {
+        assert_eq!(path_role_of("/proj/node_modules/react/index.js"), Some("vendored"));
+        assert_eq!(path_role_of("/proj/target/debug/build.rs"), Some("vendored"));
+        assert_eq!(path_role_of("web/dist/app.js"), Some("generated"));
+        assert_eq!(path_role_of("src/parser_test.rs"), Some("test"));
+        assert_eq!(path_role_of("docs/guide.md"), Some("docs"));
+        assert_eq!(path_role_of("Cargo.toml"), Some("config"));
+        assert_eq!(path_role_of("src/main.rs"), Some("src"));
+        assert_eq!(path_role_of(""), None);
+    }
+
+    fn consult_cfg() -> Config {
+        Config {
+            compress_intent_log: true,
+            compress_read_consult_trim: true,
+            ..read_trial_cfg(true)
+        }
+    }
+
+    #[test]
+    fn consult_unblock_trims_a_working_read_with_reading_narration() {
+        // A working project read the static guard would protect: with the consult flag on and a
+        // reading-phase narration (no edit verb), it becomes trim-eligible and is tagged.
+        let cfg = consult_cfg();
+        let tr = read_tr_narration(
+            "src/foo.rs",
+            "Let me read foo.rs to understand how the parser is structured.",
+        );
+        let d = decide(&cfg, &tr);
+        assert!(d.apply, "consult read should be unblocked for trimming");
+        let unblock = d
+            .shadow
+            .as_ref()
+            .and_then(|s| s.features.read_unblock.clone());
+        assert_eq!(unblock.as_deref(), Some("consult"));
+    }
+
+    #[test]
+    fn consult_unblock_still_protects_when_an_edit_verb_appears() {
+        let cfg = consult_cfg();
+        let tr = read_tr_narration(
+            "src/foo.rs",
+            "I'm going to refactor the parser, let me open foo.rs.",
+        );
+        let d = decide(&cfg, &tr);
+        assert!(!d.apply, "any edit verb keeps the working read protected");
+        assert!(d
+            .shadow
+            .as_ref()
+            .and_then(|s| s.features.read_unblock.clone())
+            .is_none());
+    }
+
+    #[test]
+    fn consult_unblock_fails_closed_without_narration() {
+        // No narration at all (no transcript): the working read stays protected.
+        let cfg = consult_cfg();
+        let d = decide(&cfg, &read_tr("src/foo.rs"));
+        assert!(!d.apply, "no narration means no unblock");
+    }
+
+    #[test]
+    fn consult_unblock_off_leaves_working_read_protected() {
+        // Same reading narration, but the flag is off: default guard behavior is unchanged.
+        let cfg = Config {
+            compress_read_consult_trim: false,
+            ..consult_cfg()
+        };
+        let tr = read_tr_narration(
+            "src/foo.rs",
+            "Let me read foo.rs to understand how the parser is structured.",
+        );
+        let d = decide(&cfg, &tr);
+        assert!(!d.apply, "with the flag off the working read stays whole");
     }
 
     #[test]

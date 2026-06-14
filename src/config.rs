@@ -600,6 +600,14 @@ pub struct Config {
     /// turning it off is an experiment knob to measure how much harm the guard prevents.
     #[serde(default = "default_true")]
     pub compress_read_edit_guard: bool,
+    /// Consult-read unblock for Read (ADR 0029 / CTX-45). When on, a working read the edit-intent
+    /// guard would protect becomes trim-eligible if the agent's recent narration shows it is a
+    /// consult read (readable narration with no edit verb at all), so the agent is reading to
+    /// understand, not to edit. Default OFF: it is an opt-in expansion that still must clear burn-in
+    /// and the causal gate before any trim is trusted, and it fails closed (no narration, no
+    /// unblock). Proven on real usage before the default flips.
+    #[serde(default)]
+    pub compress_read_consult_trim: bool,
     /// Thinking-intent signal for Read (ADR 0004 / CTX-11). When on, the controller reads the
     /// agent's most recent extended-thinking from the session transcript and protects a Read the
     /// static guard would trim if that thinking shows edit-intent for the file. Claude Code only;

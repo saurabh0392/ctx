@@ -103,6 +103,17 @@ impl IntentSignal {
     pub fn edit_intent_for_path(&self) -> bool {
         self.has_text && self.mentions_path && self.has_edit_verb
     }
+
+    /// The recent narration shows this read is consultative, not a prelude to an edit: we have
+    /// readable narration and it contains no edit verb at all, so the agent is in a reading and
+    /// understanding phase. CTX-45 (ADR 0029) uses this to *unblock* trimming a working read the
+    /// static guard would protect. Deliberately strict and fail-closed: the cost of a wrong unblock
+    /// is trimming a read the agent needed, so missing narration (no `has_text`) or any edit verb,
+    /// even one about a different file, keeps the read protected. It does not require `mentions_path`
+    /// because the absence of edit intent for the whole turn is the safer, higher-precision signal.
+    pub fn consult_read_unblocks(&self) -> bool {
+        self.has_text && !self.has_edit_verb
+    }
 }
 
 /// Lowercased basename of a path, e.g. `web/components/Foo.tsx` -> `foo.tsx`. Used so a relative
@@ -340,6 +351,42 @@ mod tests {
         let intent = IntentSignal::from_text(None, Some("src/foo.rs"));
         assert_eq!(intent, IntentSignal::default());
         assert!(!intent.edit_intent_for_path());
+    }
+
+    #[test]
+    fn consult_unblock_when_narration_has_no_edit_verb() {
+        let intent = IntentSignal::from_text(
+            Some("Let me read PlayerController.cs to understand how movement is wired."),
+            Some("unity/Assets/Scripts/PlayerController.cs"),
+        );
+        assert!(intent.has_text);
+        assert!(!intent.has_edit_verb);
+        assert!(
+            intent.consult_read_unblocks(),
+            "a reading-phase narration unblocks a working read"
+        );
+    }
+
+    #[test]
+    fn consult_unblock_denied_when_any_edit_verb_present() {
+        // Even an edit verb about a different file keeps the read protected: fail closed.
+        let intent = IntentSignal::from_text(
+            Some("I will refactor the input system, but first read PlayerController.cs."),
+            Some("unity/Assets/Scripts/PlayerController.cs"),
+        );
+        assert!(intent.has_edit_verb);
+        assert!(
+            !intent.consult_read_unblocks(),
+            "any edit verb in the turn blocks the unblock"
+        );
+    }
+
+    #[test]
+    fn consult_unblock_denied_without_readable_narration() {
+        // No transcript / signature-only thinking: no narration, so no unblock.
+        let intent = IntentSignal::from_text(None, Some("src/foo.rs"));
+        assert!(!intent.has_text);
+        assert!(!intent.consult_read_unblocks());
     }
 
     #[test]
