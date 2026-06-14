@@ -263,6 +263,37 @@ struct ContextModelView {
     history: Vec<serde_json::Value>,
 }
 
+/// One tool's place on the watching -> learning -> earned path, for the loop-health view
+/// (CTX-26 / ADR 0017). Flattens the raw causal counts and the shared `tool_stage` verdict so the
+/// view never re-derives "earned" on its own.
+#[derive(Serialize)]
+struct LoopHealthToolView {
+    #[serde(flatten)]
+    outcome: crate::db::CausalToolOutcome,
+    #[serde(flatten)]
+    stage: crate::compress::activation::ToolStage,
+}
+
+/// Honest accrual picture for the loop-health view (CTX-26 / ADR 0017): how much signal exists,
+/// how much of it joined to an outcome, the per-day arrival, and where each tool stands. No gate
+/// math here; it reads the same thresholds the live gate uses.
+#[derive(Serialize)]
+struct LoopHealthView {
+    total: i64,
+    joined: i64,
+    /// `joined / total`, or `None` when there are no decisions yet (so the UI says "not yet"
+    /// instead of showing 0%).
+    joined_pct: Option<f64>,
+    today: i64,
+    /// Whether autopilot burn-in is on. When off, tools shown as "learning" are eligible to trim
+    /// but will not start on their own, so the view can say so plainly.
+    autopilot: bool,
+    min_baseline: i64,
+    min_trimmed: i64,
+    by_day: Vec<crate::db::DecisionsByDay>,
+    tools: Vec<LoopHealthToolView>,
+}
+
 #[derive(Serialize)]
 struct ContextView {
     preset: String,
@@ -276,14 +307,16 @@ struct ContextView {
     /// (ADR 0016 / CTX-25). Always present, with `unknown` confidence for surfaces ctx
     /// cannot yet see. No causal claim.
     compaction: Vec<crate::db::CompactionFollowups>,
+    /// Accrual and per-tool stage for the loop-health view (ADR 0017 / CTX-26).
+    loop_health: LoopHealthView,
 }
 
 /// GET /api/context — everything the Context home needs, drawn only from real data.
 async fn api_context() -> Json<ContextView> {
-    use crate::compress::activation::{causal_clears_bar, CausalThresholds};
+    use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction) = match open_ctx_db() {
+    let (stats, tools, feed, compaction, loop_health) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
             let progress = crate::db::compress_tool_progress(&conn);
@@ -314,9 +347,55 @@ async fn api_context() -> Json<ContextView> {
                 .collect();
             let feed = crate::db::compress_decision_feed(&conn, 12);
             let compaction = crate::db::compaction_followups(&conn);
-            (stats, tools, feed, compaction)
+            let by_day = crate::db::decisions_by_day(&conn, 14);
+            // Only place tools that have actually started accruing trim-eligible evidence on the
+            // path. A tool with zero baseline and zero trimmed runs has nothing to show yet, and a
+            // wall of identical "0 of 30" rows buries the tools that are really moving. They count
+            // toward the totals above; they just aren't on the path until there is something to
+            // measure.
+            let lh_tools = causal
+                .iter()
+                .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0)
+                .map(|o| LoopHealthToolView {
+                    stage: tool_stage(o, &th),
+                    outcome: o.clone(),
+                })
+                .collect();
+            let joined_pct = if stats.total > 0 {
+                Some(stats.joined as f64 / stats.total as f64)
+            } else {
+                None
+            };
+            let loop_health = LoopHealthView {
+                total: stats.total,
+                joined: stats.joined,
+                joined_pct,
+                today: stats.today,
+                autopilot: cfg.compress_auto_trial,
+                min_baseline: th.min_baseline,
+                min_trimmed: th.min_trimmed,
+                by_day,
+                tools: lh_tools,
+            };
+            (stats, tools, feed, compaction, loop_health)
         }
-        None => (Default::default(), Vec::new(), Vec::new(), Vec::new()),
+        None => (
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            LoopHealthView {
+                total: 0,
+                joined: 0,
+                joined_pct: None,
+                today: 0,
+                autopilot: cfg.compress_auto_trial,
+                min_baseline: th.min_baseline,
+                min_trimmed: th.min_trimmed,
+                by_day: Vec::new(),
+                tools: Vec::new(),
+            },
+        ),
     };
 
     let model = crate::learn::load_model().map(|m| {
@@ -340,6 +419,7 @@ async fn api_context() -> Json<ContextView> {
         feed,
         model,
         compaction,
+        loop_health,
     })
 }
 
