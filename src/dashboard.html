@@ -232,21 +232,25 @@
   .lh-axis { display: flex; justify-content: space-between; max-width: 760px; margin-top: 6px; font-size: 10.5px; color: var(--t4); }
   .lh-legend { font-size: 11.5px; color: var(--t3); margin-top: 10px; display: flex; gap: 16px; align-items: center; }
   .lh-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
-  .lh-row { display: flex; align-items: center; gap: 14px; padding: 13px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); margin-bottom: 10px; }
-  .lh-tool { font-family: "SF Mono", ui-monospace, monospace; font-weight: 700; font-size: 12.5px; color: var(--t1); width: 120px; flex-shrink: 0; }
-  .lh-badge { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 3px 8px; border-radius: 6px; flex-shrink: 0; width: 74px; text-align: center; }
+  .lh-row { display: grid; grid-template-columns: minmax(0, 1.25fr) 84px minmax(96px, 1.9fr) 56px; align-items: center; gap: 16px; min-height: 58px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); margin-bottom: 8px; }
+  .lh-id { min-width: 0; }
+  .lh-tool { font-family: "SF Mono", ui-monospace, monospace; font-weight: 700; font-size: 12.5px; color: var(--t1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lh-server { font-size: 10.5px; color: var(--t4); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lh-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 4px 0; border-radius: 6px; text-align: center; }
   .lh-badge.watching { background: var(--surface3); color: var(--t3); }
   .lh-badge.learning { background: var(--primary-dim); color: var(--primary-lt); }
   .lh-badge.held { background: var(--danger-dim); color: var(--danger); }
   .lh-badge.earned { background: var(--primary); color: #04231a; }
   .lh-badge.blocked { background: var(--danger-dim); color: var(--danger); }
-  .lh-mid { flex: 1 1 auto; min-width: 0; }
-  .lh-note { font-size: 12.5px; color: var(--t2); line-height: 1.5; }
-  .lh-note .dim { color: var(--t4); }
-  .lh-prog { height: 5px; border-radius: 999px; background: var(--surface3); overflow: hidden; margin-top: 7px; }
-  .lh-fill { height: 100%; background: var(--primary-lt); border-radius: 999px; }
-  .lh-count { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--t3); flex-shrink: 0; width: 56px; text-align: right; }
-  @media (max-width: 640px) { .lh-tool { width: 90px; } .lh-count { display: none; } }
+  .lh-track { min-width: 0; }
+  .lh-prog { height: 6px; border-radius: 999px; background: var(--surface3); overflow: hidden; }
+  .lh-fill { height: 100%; border-radius: 999px; background: var(--primary-lt); }
+  .lh-fill.full { background: var(--primary); }
+  .lh-fill.bad { background: var(--danger); }
+  .lh-fill.muted { background: var(--t4); }
+  .lh-cap { font-size: 11px; color: var(--t4); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lh-count { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--t3); text-align: right; white-space: nowrap; }
+  @media (max-width: 640px) { .lh-row { grid-template-columns: minmax(0, 1fr) 76px 46px; gap: 12px; } .lh-track { display: none; } }
 
   /* ── payoff ── */
   .payoff { border-radius: var(--radius); padding: 28px; max-width: 760px; }
@@ -753,37 +757,49 @@
   }
 
   // ════ LOOP HEALTH ════
-  function loopStageRow(t, lh) {
-    const name = esc(t.tool_name || "tool");
-    const minB = lh.min_baseline || 30, minT = lh.min_trimmed || 30;
-    let badge, note, count = "", fillPct = null;
-    if (t.stage === "watching") {
-      const togo = t.baseline_to_go || 0;
-      badge = "watching";
-      note = `<b>${togo}</b> more left-alone run${togo === 1 ? "" : "s"} before ctx can start testing whether trimming is safe.`;
-      fillPct = Math.min(100, Math.round((t.baseline_n || 0) / minB * 100));
-      count = `${num(t.baseline_n || 0)} / ${minB}`;
-    } else if (t.stage === "learning") {
-      const togo = t.trimmed_to_go || 0;
-      badge = "learning";
-      const off = lh.autopilot ? "" : ` <span class="dim">Autopilot is off, so it will not start trimming on its own.</span>`;
-      note = `Testing now. <b>${togo}</b> more trimmed run${togo === 1 ? "" : "s"} to reach a verdict.${off}`;
-      fillPct = Math.min(100, Math.round((t.trimmed_n || 0) / minT * 100));
-      count = `${num(t.trimmed_n || 0)} / ${minT}`;
-    } else if (t.stage === "held") {
-      badge = "held";
-      note = `Its output changes often enough on its own that ctx will not trim it on autopilot. A deliberate trial can still test it.`;
-    } else if (t.stage === "earned") {
-      badge = "earned";
-      note = `Trimming proved no worse than leaving it alone across ${num(t.trimmed_n || 0)} run${(t.trimmed_n || 0) === 1 ? "" : "s"}. ctx trims this now.`;
-    } else if (t.stage === "blocked") {
-      badge = "blocked";
-      note = `Trimming looked worse on the runs ctx tested, so it stopped and left this tool in full.`;
-    } else {
-      badge = "watching"; note = "";
+  // Humanize tool names: "mcp__claude_ai_Linear__save_issue" -> { name: "save_issue", server: "Linear" }.
+  function toolLabel(raw) {
+    const s = String(raw == null ? "tool" : raw);
+    const parts = s.split("__");
+    if (parts.length >= 3 && parts[0] === "mcp") {
+      const server = parts[1].replace(/^claude_ai_/, "").replace(/_/g, " ");
+      return { name: parts.slice(2).join("__"), server };
     }
-    const prog = fillPct == null ? "" : `<div class="lh-prog"><div class="lh-fill" style="width:${fillPct}%"></div></div>`;
-    return `<div class="lh-row"><span class="lh-tool">${name}</span><span class="lh-badge ${badge}">${badge}</span><div class="lh-mid"><div class="lh-note">${note}</div>${prog}</div><span class="lh-count">${count}</span></div>`;
+    return { name: s, server: null };
+  }
+  function loopStageRow(t, lh) {
+    const lab = toolLabel(t.tool_name);
+    const minB = lh.min_baseline || 30, minT = lh.min_trimmed || 30;
+    // A caption appears only where it adds something the badge and count don't already say.
+    let badge, cap = "", fill = "", pctW = 0, count = "";
+    if (t.stage === "learning") {
+      badge = "learning";
+      cap = lh.autopilot ? "" : "ready to test, autopilot is off";
+      pctW = Math.min(100, Math.round((t.trimmed_n || 0) / minT * 100));
+      count = `${num(t.trimmed_n || 0)}/${minT}`;
+    } else if (t.stage === "earned") {
+      badge = "earned"; fill = "full"; pctW = 100;
+      cap = `proved safe over ${num(t.trimmed_n || 0)} run${(t.trimmed_n || 0) === 1 ? "" : "s"}`;
+      count = "\u2713";
+    } else if (t.stage === "held") {
+      badge = "held"; fill = "muted"; pctW = 100;
+      cap = "its output changes too often to trim on autopilot";
+    } else if (t.stage === "blocked") {
+      badge = "blocked"; fill = "bad"; pctW = 100;
+      cap = "trimming looked worse, so ctx held it back";
+    } else {
+      badge = "watching";
+      pctW = Math.min(100, Math.round((t.baseline_n || 0) / minB * 100));
+      count = `${num(t.baseline_n || 0)}/${minB}`;
+    }
+    const server = lab.server ? esc(lab.server) : "built-in";
+    const capHtml = cap ? `<div class="lh-cap">${esc(cap)}</div>` : "";
+    return `<div class="lh-row">`
+      + `<div class="lh-id"><div class="lh-tool" title="${esc(t.tool_name || "")}">${esc(lab.name)}</div><div class="lh-server">${server}</div></div>`
+      + `<span class="lh-badge ${badge}">${badge}</span>`
+      + `<div class="lh-track"><div class="lh-prog"><div class="lh-fill ${fill}" style="width:${pctW}%"></div></div>${capHtml}</div>`
+      + `<span class="lh-count">${count}</span>`
+      + `</div>`;
   }
 
   async function loadLoop() {
