@@ -225,6 +225,29 @@
   .cf-note { font-size: 12px; color: var(--t3); line-height: 1.5; margin-top: 9px; }
   @media (max-width: 720px) { .cf-grid { grid-template-columns: 1fr; } }
 
+  /* loop health: accrual lead + sparkline + per-tool stage rows */
+  .lh-spark { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin-top: 16px; max-width: 760px; }
+  .lh-bar { flex: 1 1 0; min-width: 5px; background: var(--surface3); border-radius: 4px 4px 0 0; display: flex; align-items: flex-end; overflow: hidden; }
+  .lh-bar-joined { width: 100%; background: var(--primary); border-radius: 4px 4px 0 0; min-height: 2px; }
+  .lh-axis { display: flex; justify-content: space-between; max-width: 760px; margin-top: 6px; font-size: 10.5px; color: var(--t4); }
+  .lh-legend { font-size: 11.5px; color: var(--t3); margin-top: 10px; display: flex; gap: 16px; align-items: center; }
+  .lh-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .lh-row { display: flex; align-items: center; gap: 14px; padding: 13px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); margin-bottom: 10px; }
+  .lh-tool { font-family: "SF Mono", ui-monospace, monospace; font-weight: 700; font-size: 12.5px; color: var(--t1); width: 120px; flex-shrink: 0; }
+  .lh-badge { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 3px 8px; border-radius: 6px; flex-shrink: 0; width: 74px; text-align: center; }
+  .lh-badge.watching { background: var(--surface3); color: var(--t3); }
+  .lh-badge.learning { background: var(--primary-dim); color: var(--primary-lt); }
+  .lh-badge.held { background: var(--danger-dim); color: var(--danger); }
+  .lh-badge.earned { background: var(--primary); color: #04231a; }
+  .lh-badge.blocked { background: var(--danger-dim); color: var(--danger); }
+  .lh-mid { flex: 1 1 auto; min-width: 0; }
+  .lh-note { font-size: 12.5px; color: var(--t2); line-height: 1.5; }
+  .lh-note .dim { color: var(--t4); }
+  .lh-prog { height: 5px; border-radius: 999px; background: var(--surface3); overflow: hidden; margin-top: 7px; }
+  .lh-fill { height: 100%; background: var(--primary-lt); border-radius: 999px; }
+  .lh-count { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--t3); flex-shrink: 0; width: 56px; text-align: right; }
+  @media (max-width: 640px) { .lh-tool { width: 90px; } .lh-count { display: none; } }
+
   /* ── payoff ── */
   .payoff { border-radius: var(--radius); padding: 28px; max-width: 760px; }
   .payoff.earned { background: linear-gradient(135deg, #0f2920 0%, var(--surface) 70%); border: 1px solid #1e3b30; }
@@ -313,6 +336,7 @@
       <nav class="nav">
         <a data-view="home" onclick="go('home')">Home</a>
         <a data-view="tools" onclick="go('tools')">Tools</a>
+        <a data-view="loop" onclick="go('loop')">Loop health</a>
         <a data-view="compaction" onclick="go('compaction')">Compaction</a>
         <a data-view="activity" onclick="go('activity')">Activity</a>
         <a data-view="settings" onclick="go('settings')">Settings</a>
@@ -376,6 +400,15 @@
       <div id="compaction-body" style="margin-top:24px"></div>
     </section>
 
+    <!-- ══ LOOP HEALTH ══ -->
+    <section class="view" id="view-loop">
+      <div style="padding-top:40px">
+        <div class="page-title">Loop health</div>
+        <p class="page-sub">The honest answer to "is anything happening on my machine yet". ctx only changes a tool once it has watched enough of your own runs to prove the change is safe. This page shows how much it has seen, how much of that it could label, and where each tool sits on the way from watching to earned. Sparse is normal early on. We show the real numbers, never a placeholder.</p>
+      </div>
+      <div id="loop-body" style="margin-top:24px"></div>
+    </section>
+
     <!-- ══ ACTIVITY ══ -->
     <section class="view" id="view-activity">
       <div style="padding-top:40px">
@@ -411,17 +444,18 @@
 
   // ── router ──
   function go(view) {
-    const v = ["home", "tools", "compaction", "activity", "settings"].includes(view) ? view : "home";
+    const v = ["home", "tools", "loop", "compaction", "activity", "settings"].includes(view) ? view : "home";
     location.hash = v;
   }
   function render() {
     const v = (location.hash || "#home").slice(1);
-    const view = ["home", "tools", "compaction", "activity", "settings"].includes(v) ? v : "home";
+    const view = ["home", "tools", "loop", "compaction", "activity", "settings"].includes(v) ? v : "home";
     document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === "view-" + view));
     document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view));
     window.scrollTo(0, 0);
     if (view === "home") loadHome();
     if (view === "tools") loadTools();
+    if (view === "loop") loadLoop();
     if (view === "compaction") loadCompaction();
     if (view === "activity") loadActivity();
     if (view === "settings") loadSettings();
@@ -716,6 +750,81 @@
       const sub = r.command_or_path ? `<div class="act-sub">${esc(String(r.command_or_path).slice(0, 70))}</div>` : "";
       return `<div class="act"><span class="act-time">${esc(timeAgo(r.ts))}</span><span class="tool-name">${esc(label)}</span><span><div class="act-what">${what}</div>${sub}</span><span class="act-tag" style="${tagcss}">${tag}</span></div>`;
     }).join("");
+  }
+
+  // ════ LOOP HEALTH ════
+  function loopStageRow(t, lh) {
+    const name = esc(t.tool_name || "tool");
+    const minB = lh.min_baseline || 30, minT = lh.min_trimmed || 30;
+    let badge, note, count = "", fillPct = null;
+    if (t.stage === "watching") {
+      const togo = t.baseline_to_go || 0;
+      badge = "watching";
+      note = `<b>${togo}</b> more left-alone run${togo === 1 ? "" : "s"} before ctx can start testing whether trimming is safe.`;
+      fillPct = Math.min(100, Math.round((t.baseline_n || 0) / minB * 100));
+      count = `${num(t.baseline_n || 0)} / ${minB}`;
+    } else if (t.stage === "learning") {
+      const togo = t.trimmed_to_go || 0;
+      badge = "learning";
+      const off = lh.autopilot ? "" : ` <span class="dim">Autopilot is off, so it will not start trimming on its own.</span>`;
+      note = `Testing now. <b>${togo}</b> more trimmed run${togo === 1 ? "" : "s"} to reach a verdict.${off}`;
+      fillPct = Math.min(100, Math.round((t.trimmed_n || 0) / minT * 100));
+      count = `${num(t.trimmed_n || 0)} / ${minT}`;
+    } else if (t.stage === "held") {
+      badge = "held";
+      note = `Its output changes often enough on its own that ctx will not trim it on autopilot. A deliberate trial can still test it.`;
+    } else if (t.stage === "earned") {
+      badge = "earned";
+      note = `Trimming proved no worse than leaving it alone across ${num(t.trimmed_n || 0)} run${(t.trimmed_n || 0) === 1 ? "" : "s"}. ctx trims this now.`;
+    } else if (t.stage === "blocked") {
+      badge = "blocked";
+      note = `Trimming looked worse on the runs ctx tested, so it stopped and left this tool in full.`;
+    } else {
+      badge = "watching"; note = "";
+    }
+    const prog = fillPct == null ? "" : `<div class="lh-prog"><div class="lh-fill" style="width:${fillPct}%"></div></div>`;
+    return `<div class="lh-row"><span class="lh-tool">${name}</span><span class="lh-badge ${badge}">${badge}</span><div class="lh-mid"><div class="lh-note">${note}</div>${prog}</div><span class="lh-count">${count}</span></div>`;
+  }
+
+  async function loadLoop() {
+    let ctx;
+    try { ctx = await getJSON("/api/context"); setHealth(true); }
+    catch (e) { setHealth(false); $("loop-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
+    const lh = ctx.loop_health || {};
+    const total = lh.total || 0;
+
+    let lead;
+    if (total === 0) {
+      lead = `<div class="cf-lead"><div class="cf-big">Nothing yet</div><div class="cf-cap">ctx hasn't seen any tool results on this machine yet. Run a few agent turns and they show up here. If you have used an agent and still see nothing, run <code>ctx ingest</code>.</div></div>`;
+    } else {
+      const jp = lh.joined_pct == null ? "n/a" : pct(lh.joined_pct);
+      lead = `<div class="cf-lead"><div class="cf-big"><b>${num(total)}</b> decisions watched</div><div class="cf-cap"><b>${num(lh.joined || 0)}</b> of those (${jp}) have an outcome ctx could label. ${num(lh.today || 0)} came in today. A decision only counts toward proof once ctx sees what happened next, so the labeled share grows as you keep working.</div></div>`;
+    }
+
+    const days = lh.by_day || [];
+    let spark = "";
+    if (days.length) {
+      const max = Math.max(...days.map((d) => d.total || 0), 1);
+      const bars = days.map((d) => {
+        const h = Math.max(6, Math.round((d.total || 0) / max * 100));
+        const jh = (d.total || 0) > 0 ? Math.round((d.joined || 0) / (d.total || 1) * 100) : 0;
+        const tip = `${esc(d.day)}: ${num(d.total || 0)} decision${(d.total || 0) === 1 ? "" : "s"}, ${num(d.joined || 0)} labeled`;
+        return `<div class="lh-bar" style="height:${h}%" title="${tip}"><div class="lh-bar-joined" style="height:${jh}%"></div></div>`;
+      }).join("");
+      const first = days[0].day, last = days[days.length - 1].day;
+      spark = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Arriving over time</div><div class="lh-spark">${bars}</div><div class="lh-axis"><span>${esc(first)}</span><span>${esc(last)}</span></div><div class="lh-legend"><span><span class="sw" style="background:var(--surface3)"></span>watched</span><span><span class="sw" style="background:var(--primary)"></span>labeled</span></div></div>`;
+    }
+
+    const tools = lh.tools || [];
+    let toolsBlock;
+    if (!tools.length) {
+      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">No tool has enough labeled, trim-eligible runs yet to place on the path. As outcomes land, tools appear here and move from watching to learning to earned.</p></div>`;
+    } else {
+      const rows = tools.map((t) => loopStageRow(t, lh)).join("");
+      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">Watching means ctx is still building a baseline of your runs. Learning means it has the baseline and is testing real trims now. Earned means trimming proved no worse than leaving the tool alone. ctx looks for about ${lh.min_baseline || 30} left-alone and ${lh.min_trimmed || 30} trimmed runs per tool.</p>${rows}</div>`;
+    }
+
+    $("loop-body").innerHTML = lead + spark + toolsBlock;
   }
 
   // ════ COMPACTION ════

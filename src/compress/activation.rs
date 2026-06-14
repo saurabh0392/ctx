@@ -169,6 +169,58 @@ pub fn activation_clears_bar(
     correction_rate <= th.max_correction_rate && reread_rate <= th.max_reread_rate
 }
 
+/// Where a tool stands on the watching -> learning -> earned path, with the honest distance to
+/// the next threshold. Derived from the same `CausalToolOutcome` and `CausalThresholds` the live
+/// gate uses, so the loop-health view (CTX-26) can never drift from what trimming actually does.
+/// `held` and `blocked` are deliberately distinct from `watching`/`learning`: a tool that will
+/// never auto-trial (baseline correction too high) or that filled its trimmed arm and failed the
+/// harm bar must not read as "still collecting".
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum ToolStage {
+    /// Not enough left-alone (baseline) runs yet to start testing.
+    Watching { baseline_to_go: i64 },
+    /// Baseline met and the tool is eligible to trim now; building the trimmed arm a verdict needs.
+    Learning { trimmed_to_go: i64 },
+    /// Baseline met but its left-alone correction rate is above the burn-in fuse, so autopilot
+    /// will not trial it. The output clearly matters here; trimming waits for a deliberate trial.
+    Held,
+    /// Trimmed arm full and trimming proved no measurably worse than leaving it alone. Earned.
+    Earned,
+    /// Trimmed arm full but the harm interval is too high. Trimming is held back, not earned.
+    Blocked,
+}
+
+/// Classify a tool's evidence into a [`ToolStage`]. Pure and shared so the gate, the status
+/// label, and the loop-health view agree on where a tool stands. This reports the stage the
+/// evidence supports; whether autopilot is actually trialing is a separate config fact the
+/// caller surfaces alongside it.
+pub fn tool_stage(o: &crate::db::CausalToolOutcome, th: &CausalThresholds) -> ToolStage {
+    if o.trimmed_n >= th.min_trimmed {
+        return if causal_clears_bar(o, th) {
+            ToolStage::Earned
+        } else {
+            ToolStage::Blocked
+        };
+    }
+    if o.baseline_n < th.min_baseline {
+        return ToolStage::Watching {
+            baseline_to_go: th.min_baseline - o.baseline_n,
+        };
+    }
+    let baseline_corr_rate = if o.baseline_n > 0 {
+        o.baseline_corrections as f64 / o.baseline_n as f64
+    } else {
+        0.0
+    };
+    if baseline_corr_rate > BURN_IN_MAX_BASELINE_CORR {
+        return ToolStage::Held;
+    }
+    ToolStage::Learning {
+        trimmed_to_go: th.min_trimmed - o.trimmed_n,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +367,53 @@ mod tests {
         let full = outcome(60, 1, 2, 30, 0, 0);
         assert!(!burn_in_clears(&full, &CausalThresholds::default()));
         assert!(causal_clears_bar(&full, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn stage_watching_reports_baseline_distance() {
+        // Below the baseline bar: still watching, with the honest count of left-alone runs to go.
+        let o = outcome(12, 0, 0, 0, 0, 0);
+        assert_eq!(
+            tool_stage(&o, &CausalThresholds::default()),
+            ToolStage::Watching { baseline_to_go: 18 }
+        );
+    }
+
+    #[test]
+    fn stage_learning_reports_trimmed_distance() {
+        // Baseline met, clean, trimmed arm building: learning, with trimmed runs left to a verdict.
+        let o = outcome(60, 1, 2, 8, 0, 0);
+        assert_eq!(
+            tool_stage(&o, &CausalThresholds::default()),
+            ToolStage::Learning { trimmed_to_go: 22 }
+        );
+    }
+
+    #[test]
+    fn stage_held_when_baseline_corrections_too_high() {
+        // Baseline met but correction rate above the burn-in fuse: autopilot will not trial it.
+        let o = outcome(50, 20, 0, 0, 0, 0);
+        assert_eq!(
+            tool_stage(&o, &CausalThresholds::default()),
+            ToolStage::Held
+        );
+    }
+
+    #[test]
+    fn stage_earned_when_full_arm_clears() {
+        let o = outcome(83, 2, 0, 37, 0, 0);
+        assert_eq!(
+            tool_stage(&o, &CausalThresholds::default()),
+            ToolStage::Earned
+        );
+    }
+
+    #[test]
+    fn stage_blocked_when_full_arm_fails_harm_bar() {
+        let o = outcome(200, 4, 4, 200, 84, 4);
+        assert_eq!(
+            tool_stage(&o, &CausalThresholds::default()),
+            ToolStage::Blocked
+        );
     }
 }

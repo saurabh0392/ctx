@@ -413,6 +413,49 @@ pub fn compress_decision_stats(conn: &Connection) -> CompressDecisionStats {
     row.unwrap_or_default()
 }
 
+/// One day of decision accrual for the loop-health view (CTX-26): how many decisions ctx made
+/// that day and how many have since joined to an outcome. Read-only. Lets the dashboard show
+/// whether signal is actually arriving over time, and how much of it gets labeled, instead of a
+/// single lifetime total that hides a stall.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DecisionsByDay {
+    /// `YYYY-MM-DD` (UTC), taken from the decision timestamp.
+    pub day: String,
+    pub total: i64,
+    pub joined: i64,
+}
+
+/// Decisions per day for the last `days` calendar days that have any decisions, oldest first.
+/// Only days with at least one decision appear (no zero-filling): the view draws gaps honestly
+/// rather than inventing empty buckets.
+pub fn decisions_by_day(conn: &Connection, days: usize) -> Vec<DecisionsByDay> {
+    let mut stmt = match conn.prepare(
+        "SELECT substr(ts, 1, 10) AS day,
+                COUNT(*),
+                COALESCE(SUM(outcome_joined), 0)
+         FROM compress_decisions
+         GROUP BY day
+         ORDER BY day DESC
+         LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(params![days as i64], |r| {
+        Ok(DecisionsByDay {
+            day: r.get(0)?,
+            total: r.get(1)?,
+            joined: r.get(2)?,
+        })
+    });
+    let mut out: Vec<DecisionsByDay> = match rows {
+        Ok(it) => it.filter_map(|x| x.ok()).collect(),
+        Err(_) => Vec::new(),
+    };
+    out.reverse();
+    out
+}
+
 /// Per-tool collection progress, used by the Learning home rows and Act 1 activation gate.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CompressToolProgress {
@@ -3078,6 +3121,45 @@ mod compress_decision_tests {
         let grep = progress.iter().find(|p| p.tool_name == "Grep").unwrap();
         assert_eq!(grep.corrections, 0);
         assert_eq!(grep.clean_runs, 1);
+    }
+
+    #[test]
+    fn decisions_by_day_buckets_and_orders_oldest_first() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // Two decisions on the earlier day, one on the later day.
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-30T09:00:00+00:00", "s1", "Read", "a.rs"),
+        )
+        .unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-30T14:00:00+00:00", "s1", "Read", "b.rs"),
+        )
+        .unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:00:00+00:00", "s1", "Read", "c.rs"),
+        )
+        .unwrap();
+
+        let by_day = decisions_by_day(&conn, 14);
+        assert_eq!(by_day.len(), 2);
+        // Oldest first.
+        assert_eq!(by_day[0].day, "2026-05-30");
+        assert_eq!(by_day[0].total, 2);
+        assert_eq!(by_day[1].day, "2026-05-31");
+        assert_eq!(by_day[1].total, 1);
+        // Nothing has joined to an outcome (no turns inserted), reported honestly as zero.
+        assert_eq!(by_day[0].joined, 0);
+        assert_eq!(by_day[1].joined, 0);
     }
 
     #[test]
