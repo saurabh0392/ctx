@@ -1,6 +1,6 @@
 # 0017. Loop-health view (CTX-26, increment 1)
 
-- Status: accepted
+- Status: accepted (IA superseded in part by 0022: Loop health is now the single per-tool surface)
 - Date: 2026-06-14
 - Deciders: Saurabh, CTX
 
