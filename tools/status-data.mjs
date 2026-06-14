@@ -98,7 +98,7 @@ export const COMPONENTS = [
       'Capture every tool result across Claude Code and Cursor, hook in safely, and ingest sessions without ever losing the original.',
     narrative: {
       done: [
-        'Claude Code hooks plus the filter proxy, with the full original always kept in the transcript.',
+        'Claude Code hooks plus soft MCP filtering, with the full original always kept in the transcript.',
         'Compression pipeline per tool kind: read, grep, git, test, and mcp, with session de-dup and retain rules.',
         'Non-blocking ingest that reflects the just-finished turn.',
       ],

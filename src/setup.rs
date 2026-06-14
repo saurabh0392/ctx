@@ -53,8 +53,7 @@ fn autorun_summary(periodic_ingest: bool) -> String {
     }
 }
 
-fn setup_preview_lines(port: u16, upstream: &str, periodic_ingest: bool) -> Vec<String> {
-    let _ = (port, upstream);
+fn setup_preview_lines(periodic_ingest: bool) -> Vec<String> {
     vec![
         format!(
             "Create {} and write config (soft filter mode by default)",
@@ -95,14 +94,7 @@ fn maybe_offer_editor_rule(host: &dyn crate::host::HostAdapter) -> Result<()> {
     Ok(())
 }
 
-pub fn run(
-    port: u16,
-    upstream: &str,
-    no_install: bool,
-    _no_zshrc_prompt: bool,
-    dry_run: bool,
-    yes: bool,
-) -> Result<()> {
+pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -> Result<()> {
     let host = crate::host::detect_primary_host();
     println!("{} Detected: {}", "i".cyan(), host.label());
     if crate::config::claude_desktop_installed() {
@@ -119,7 +111,7 @@ pub fn run(
     }
     println!();
     println!("{} ctx will:", "i".cyan());
-    for (i, line) in setup_preview_lines(port, upstream, host.needs_periodic_ingest())
+    for (i, line) in setup_preview_lines(host.needs_periodic_ingest())
         .into_iter()
         .enumerate()
     {
@@ -146,7 +138,6 @@ pub fn run(
         }
     }
 
-    crate::ensure_tls_crypto_provider();
     crate::config::ensure_dir()?;
     if crate::experiment_plan::restore_experiment_state_if_missing()? {
         println!(
@@ -178,11 +169,8 @@ pub fn run(
         }
     }
 
-    // Step 1–2: dashboard (proxy omitted from default setup — use `ctx proxy install` for legacy MITM).
-    println!(
-        "{} Skipping proxy install (default). MCP filtering uses permissions.deny; run `ctx proxy install` for legacy MITM.",
-        "i".cyan()
-    );
+    // ctx is hook-first: no proxy, no MITM. MCP filtering runs through Claude Code permission
+    // rules (permissions.deny), and everything else happens in hooks.
     // Step 1: create default system_prefix.md if missing
     println!(
         "{} Step 1/4: Creating default system_prefix.md...",
@@ -397,8 +385,10 @@ pub fn uninstall() -> Result<()> {
         );
     }
 
-    // Restore settings.json first so Claude Code is never left pointing at a dead proxy
-    crate::proxy::uninstall()?;
+    // Legacy cleanup: older versions could opt into a MITM proxy that wired env vars and a
+    // launch agent. The proxy is gone (ADR 0015), but strip any leftovers so we never strand a
+    // machine that pointed Claude Code at a now-dead proxy.
+    remove_legacy_proxy_artifacts();
 
     crate::daemon::uninstall_all()?;
 
@@ -426,6 +416,55 @@ pub fn uninstall() -> Result<()> {
     );
     println!("Apply the reload so removed hooks, filter rules, and MCP server config take effect.");
     Ok(())
+}
+
+/// Remove leftovers from the retired MITM proxy (ADR 0015): the ctx-owned proxy env vars in
+/// Claude Code settings and the legacy `com.ctx.proxy` launch agent. Best effort; only touches
+/// values that look ctx-owned (localhost proxy or a path under ~/.ctx).
+fn remove_legacy_proxy_artifacts() {
+    let path = crate::config::claude_settings_path();
+    if path.is_file() {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) {
+                if crate::claude_settings::strip_ctx_proxy_env(&mut doc) {
+                    let _ = crate::config::write_json_atomic(&path, &doc);
+                    println!(
+                        "{} Removed legacy ctx proxy env from {}",
+                        "✓".green(),
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(home) = dirs::home_dir() {
+        let plist = home
+            .join("Library")
+            .join("LaunchAgents")
+            .join("com.ctx.proxy.plist");
+        if plist.exists() {
+            let _ = std::process::Command::new("launchctl")
+                .args([
+                    "bootout",
+                    &format!(
+                        "gui/{}",
+                        std::process::Command::new("id")
+                            .arg("-u")
+                            .output()
+                            .ok()
+                            .and_then(|o| String::from_utf8(o.stdout).ok())
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| "501".to_string())
+                    ),
+                    plist.to_str().unwrap_or(""),
+                ])
+                .status();
+            let _ = std::fs::remove_file(&plist);
+            println!("{} Removed legacy com.ctx.proxy launch agent", "✓".green());
+        }
+    }
 }
 
 fn strip_claude_settings_hooks_if_present() -> Result<()> {

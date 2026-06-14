@@ -439,46 +439,6 @@ impl CompressPreset {
     }
 }
 
-/// MITM proxy operating mode (`ctx proxy install --mode`).
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyMode {
-    /// Hooks + soft filter only; proxy not wired (default).
-    #[default]
-    Off,
-    /// MITM filters request bodies; hooks own profile, inject, coach, trace.
-    Complement,
-    /// MITM runs full gate pipeline; install strips ctx hooks/deny.
-    Standalone,
-    /// MITM filters tools + analytics only (hooks optional).
-    FilterOnly,
-}
-
-impl ProxyMode {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().replace('-', "_").as_str() {
-            "off" => Some(Self::Off),
-            "complement" => Some(Self::Complement),
-            "standalone" => Some(Self::Standalone),
-            "filter_only" => Some(Self::FilterOnly),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Complement => "complement",
-            Self::Standalone => "standalone",
-            Self::FilterOnly => "filter_only",
-        }
-    }
-
-    pub fn mitm_active(self) -> bool {
-        !matches!(self, Self::Off)
-    }
-}
-
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Config {
     pub active_profile: Option<String>,
@@ -488,18 +448,9 @@ pub struct Config {
     /// Server IDs or tool prefixes temporarily un-denied for the current session(s).
     #[serde(default)]
     pub session_expansion: Vec<String>,
-    pub proxy_port: Option<u16>,
     /// Port for `ctx dashboard` (used by filter.js POST /api/ingest-request).
     #[serde(default)]
     pub dashboard_port: Option<u16>,
-    pub proxy_upstream: Option<String>,
-    /// MITM mode: off | complement | standalone | filter_only.
-    #[serde(default)]
-    pub proxy_mode: ProxyMode,
-    /// Deprecated; migrated to `proxy_mode` on load (legacy: native_hooks, mitm, reverse).
-    #[serde(default, skip_serializing)]
-    pub proxy_install_mode: Option<String>,
-    pub original_base_url: Option<String>,
     #[serde(default = "default_true")]
     pub auto_profile_enabled: bool,
     #[serde(default = "default_true")]
@@ -592,6 +543,15 @@ pub struct Config {
     /// This is the only way to generate the "after" arm; keep it scoped to one tool at a time.
     #[serde(default)]
     pub compress_trial_tools: Vec<String>,
+    /// Automatic bounded burn-in (ADR 0012 / CTX-23). When on, a compressible tool starts trimming
+    /// on its own once it has a solid clean baseline arm but no trimmed arm yet, building the
+    /// "after" arm the causal gate needs. This is the autopilot on-ramp that replaces the
+    /// hand-written `compress_trial_tools` list: burn-in respects the preset (never trims when
+    /// autopilot is off), is bounded to `min_trimmed` runs, and hands off to the causal gate, which
+    /// keeps clean tools trimming and stops harmful ones. Default on. A bad trim only costs a
+    /// re-read, never the underlying data.
+    #[serde(default = "default_true")]
+    pub compress_auto_trial: bool,
     /// Edit-intent guard for Read (ADR 0001 / CTX-8). When on, a Read is only trim-eligible if it
     /// is a reference read (a file the agent is not positioned to edit); working reads of editable
     /// project files are never trimmed, even under a trial or after the activation gate. Default on;
@@ -756,11 +716,13 @@ fn default_true() -> bool {
     true
 }
 
-/// Default randomized-exploration rate for Phase 2 (ADR 0009). The fraction of trim-eligible
-/// decisions ctx deliberately leaves untrimmed to build an unbiased control arm. Only forgone
-/// savings, never added risk, and only fires where a tool would already trim.
+/// Default randomized-exploration rate. Off (ADR 0012): Phase 2 was shelved because the control
+/// arm never gathered enough data to support a per-decision causal claim, while withholding trims
+/// cost real savings. The plumbing stays so exploration can be re-enabled deliberately later, but
+/// it no longer runs by default. The honest before/after gate in `activation.rs` is what earns a
+/// tool now.
 fn default_explore_rate() -> f64 {
-    0.20
+    0.0
 }
 
 impl Default for AbTestConfig {
@@ -826,8 +788,10 @@ impl Config {
                 compress_read_edit_guard: true,
                 // Thinking-intent signal on by default (ADR 0004): protective and self-measuring.
                 compress_intent_log: true,
-                // Phase 2 randomized exploration on by default (ADR 0009). Harmless until a tool
-                // actually trims; then it forgoes savings on a fraction to earn unbiased proof.
+                // Automatic burn-in on by default (ADR 0012): the autopilot on-ramp that lets tools
+                // earn without a hand-written trial list.
+                compress_auto_trial: true,
+                // Exploration off by default (ADR 0012): Phase 2 was shelved; plumbing kept, idle.
                 compress_explore_rate: default_explore_rate(),
                 experiment_hooks_enabled: true,
                 ..Default::default()
@@ -845,12 +809,12 @@ impl Config {
                     compress_shadow_enabled: true,
                     compress_read_edit_guard: true,
                     compress_intent_log: true,
+                    compress_auto_trial: true,
                     compress_explore_rate: default_explore_rate(),
                     experiment_hooks_enabled: true,
                     ..Default::default()
                 })
         };
-        cfg.migrate_proxy_mode();
         cfg.migrate_compress_defaults();
         if cfg.migrate_experiment_hooks_enabled() {
             let _ = cfg.save();
@@ -882,23 +846,6 @@ impl Config {
             self.compress_redact_secrets = true;
             self.compress_preserve_errors = true;
         }
-    }
-
-    /// Map legacy `proxy_install_mode` strings to `proxy_mode` when unset.
-    fn migrate_proxy_mode(&mut self) {
-        if self.proxy_mode != ProxyMode::Off {
-            return;
-        }
-        let Some(ref old) = self.proxy_install_mode else {
-            return;
-        };
-        self.proxy_mode = match old.as_str() {
-            "complement" | "mitm" => ProxyMode::Complement,
-            "standalone" => ProxyMode::Standalone,
-            "filter_only" => ProxyMode::FilterOnly,
-            // native_hooks, reverse, node_inject, unknown → off
-            _ => ProxyMode::Off,
-        };
     }
 
     pub fn save(&self) -> Result<()> {

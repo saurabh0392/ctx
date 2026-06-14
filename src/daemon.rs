@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-pub const PROXY_LABEL: &str = "com.ctx.proxy";
 pub const DASHBOARD_LABEL: &str = "com.ctx.dashboard";
 pub const INGEST_LABEL: &str = "com.ctx.ingest";
 pub const EXPERIMENT_TICK_LABEL: &str = "com.ctx.experiment-tick";
@@ -36,7 +35,7 @@ fn cargo_bin_display() -> String {
         .unwrap_or_default()
 }
 
-/// Preview line for setup when proxy is not installed by default.
+/// Preview line for setup: ctx runs hook-first with a local dashboard, no proxy.
 pub fn dashboard_ingest_summary(dashboard_port: u16, periodic_ingest: bool) -> String {
     let ingest_tail = if periodic_ingest {
         ", periodic ingest (every 5 min)"
@@ -53,68 +52,6 @@ pub fn dashboard_ingest_summary(dashboard_port: u16, periodic_ingest: bool) -> S
     }
 }
 
-/// Human-readable description for `ctx setup` preview lines.
-pub fn background_services_summary(
-    port: u16,
-    upstream: &str,
-    dashboard_port: u16,
-    periodic_ingest: bool,
-) -> String {
-    let ingest_tail = if periodic_ingest {
-        ", periodic ingest (every 5 min)"
-    } else {
-        ""
-    };
-    #[cfg(target_os = "macos")]
-    {
-        format!(
-            "Install launchd agents: proxy (:{port} → {upstream}), dashboard (:{dashboard_port}){ingest_tail}"
-        )
-    }
-    #[cfg(target_os = "linux")]
-    {
-        format!(
-            "Install systemd user services: ctx-proxy (:{port} → {upstream}), ctx-dashboard (:{dashboard_port}){ingest_tail}"
-        )
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        format!(
-            "Start ctx proxy (:{port}), dashboard (:{dashboard_port}) in the background{ingest_tail}; add a scheduled task for `ctx ingest` if you want periodic indexing"
-        )
-    }
-}
-
-pub fn step1_banner() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "Step 1/5: Installing launchd agent (auto-start on login)..."
-    }
-    #[cfg(target_os = "linux")]
-    {
-        "Step 1/5: Installing systemd user services (auto-start on login)..."
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        "Step 1/5: Starting ctx proxy in the background..."
-    }
-}
-
-pub fn step2_banner() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "Step 2/5: Starting ctx proxy via launchctl..."
-    }
-    #[cfg(target_os = "linux")]
-    {
-        "Step 2/5: Enabling ctx-proxy via systemctl --user..."
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        "Step 2/5: Waiting for ctx proxy..."
-    }
-}
-
 pub fn step5_banner() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -128,42 +65,6 @@ pub fn step5_banner() -> &'static str {
     {
         "Step 5/5: Starting ctx dashboard in the background..."
     }
-}
-
-pub fn install_proxy(port: u16, upstream: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    return macos::write_proxy_plist(port, upstream);
-    #[cfg(target_os = "linux")]
-    return linux::write_proxy_unit(port, upstream);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (port, upstream);
-        Ok(())
-    }
-}
-
-pub fn bootstrap_proxy(port: u16, upstream: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (port, upstream);
-        return macos::load_proxy_plist();
-    }
-    #[cfg(target_os = "linux")]
-    return linux::daemon_reload_and_enable(&["ctx-proxy.service"]);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        try_spawn_proxy(port, upstream)?;
-        Ok(())
-    }
-}
-
-pub fn stop_proxy_service() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    return macos::unload_proxy_plist();
-    #[cfg(target_os = "linux")]
-    return linux::stop_proxy_unit();
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    Ok(())
 }
 
 pub fn install_dashboard(port: u16) -> Result<()> {
@@ -241,41 +142,11 @@ pub fn uninstall_all() -> Result<()> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         println!(
-            "  {} Stop any `ctx proxy start` / `ctx dashboard` terminals you opened for ctx.",
+            "  {} Stop any `ctx dashboard` terminals you opened for ctx.",
             "i".yellow()
         );
         Ok(())
     }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn try_spawn_proxy(port: u16, upstream: &str) -> Result<()> {
-    use colored::Colorize;
-    let bin = ctx_binary();
-    let status = std::process::Command::new(&bin)
-        .args([
-            "proxy",
-            "start",
-            "--port",
-            &port.to_string(),
-            "--upstream",
-            upstream,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(_) | Err(_) => {
-            eprintln!(
-                "  {} Could not auto-start the proxy. Start it manually before `ctx proxy install`:",
-                "!".yellow()
-            );
-            eprintln!("    {bin} proxy start --port {port} --upstream {upstream}");
-        }
-    }
-    Ok(())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -314,69 +185,6 @@ mod macos {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| "501".to_string())
-    }
-
-    pub fn write_proxy_plist(port: u16, upstream: &str) -> Result<()> {
-        let bin = ctx_binary();
-        let log_dir = crate::config::ctx_dir();
-        let ctx_home = log_dir.display().to_string();
-        let stdout_log = log_dir.join("proxy.stdout.log");
-        let stderr_log = log_dir.join("proxy.stderr.log");
-        let ca_cert = crate::ca::canonical_ca_cert_path_string()?
-            .replace('&', "&amp;")
-            .replace('<', "&lt;");
-
-        let plist = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{PROXY_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{bin}</string>
-        <string>proxy</string>
-        <string>start</string>
-        <string>--port</string>
-        <string>{port}</string>
-        <string>--upstream</string>
-        <string>{upstream}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{stdout}</string>
-    <key>StandardErrorPath</key>
-    <string>{stderr}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOME</key>
-        <string>{home}</string>
-        <key>CTX_HOME</key>
-        <string>{ctx_home}</string>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cargo_bin}</string>
-        <key>NODE_EXTRA_CA_CERTS</key>
-        <string>{ca_cert}</string>
-    </dict>
-</dict>
-</plist>"#,
-            stdout = stdout_log.display(),
-            stderr = stderr_log.display(),
-            home = home_display(),
-            cargo_bin = cargo_bin_display(),
-        );
-
-        let p = plist_path(PROXY_LABEL);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&p, &plist)?;
-        println!("  Written {}", p.display());
-        Ok(())
     }
 
     pub fn write_dashboard_plist(port: u16) -> Result<()> {
@@ -549,48 +357,6 @@ mod macos {
         Ok(())
     }
 
-    fn bootout_bootstrap(label: &str, friendly: &str) -> Result<()> {
-        let p = plist_path(label);
-        let domain = format!("gui/{}", uid());
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &domain, p.to_str().unwrap_or("")])
-            .status();
-
-        let status = std::process::Command::new("launchctl")
-            .args(["bootstrap", &domain, p.to_str().unwrap_or("")])
-            .status()
-            .with_context(|| format!("launchctl bootstrap failed for {friendly}"))?;
-
-        if status.success() {
-            println!("  launchd agent bootstrapped ({label})");
-        } else {
-            anyhow::bail!(
-                "launchctl bootstrap failed for {friendly}. Try manually:\n  launchctl bootstrap {} {}",
-                domain,
-                p.display()
-            );
-        }
-        Ok(())
-    }
-
-    pub fn load_proxy_plist() -> Result<()> {
-        bootout_bootstrap(PROXY_LABEL, "proxy")
-    }
-
-    pub fn unload_proxy_plist() -> Result<()> {
-        let p = plist_path(PROXY_LABEL);
-        if !p.exists() {
-            return Ok(());
-        }
-        let domain = format!("gui/{}", uid());
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &domain, p.to_str().unwrap_or("")])
-            .status();
-        let _ = std::fs::remove_file(&p);
-        println!("  Stopped {PROXY_LABEL} launchd agent");
-        Ok(())
-    }
-
     pub fn load_dashboard_plist() -> Result<()> {
         let p = plist_path(DASHBOARD_LABEL);
         let domain = format!("gui/{}", uid());
@@ -634,7 +400,6 @@ mod macos {
     pub fn uninstall_launchd_agents() -> Result<()> {
         let domain = format!("gui/{}", uid());
         for (label, name) in [
-            (PROXY_LABEL, "proxy"),
             (DASHBOARD_LABEL, "dashboard"),
             (INGEST_LABEL, "ingest"),
             (EXPERIMENT_TICK_LABEL, "experiment-tick"),
@@ -674,37 +439,6 @@ mod linux {
         std::fs::write(path, body)?;
         println!("  Written {}", path.display());
         Ok(())
-    }
-
-    pub fn write_proxy_unit(port: u16, upstream: &str) -> Result<()> {
-        let bin = ctx_binary();
-        let ca = crate::ca::canonical_ca_cert_path_string().unwrap_or_default();
-        let home = home_display();
-        let ctx_home = crate::config::ctx_dir().display().to_string();
-        let path = systemd_user_dir()
-            .ok_or_else(|| anyhow::anyhow!("no XDG config dir for systemd user units"))?
-            .join("ctx-proxy.service");
-        let body = format!(
-            r#"[Unit]
-Description=ctx MITM proxy for Anthropic API
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart={bin} proxy start --port {port} --upstream {upstream}
-Restart=always
-WorkingDirectory={home}
-Environment=HOME={home}
-Environment=CTX_HOME={ctx_home}
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{cbin}
-Environment=NODE_EXTRA_CA_CERTS={ca}
-
-[Install]
-WantedBy=default.target
-"#,
-            cbin = cargo_bin_display(),
-        );
-        write_unit(&path, &body)
     }
 
     pub fn write_dashboard_unit(port: u16) -> Result<()> {
@@ -789,34 +523,18 @@ WantedBy=timers.target
         Ok(())
     }
 
-    pub fn stop_proxy_unit() -> Result<()> {
-        let _ = std::process::Command::new("systemctl")
-            .args(["--user", "disable", "--now", "ctx-proxy.service"])
-            .status();
-        if let Some(dir) = systemd_user_dir() {
-            let p = dir.join("ctx-proxy.service");
-            if p.exists() {
-                let _ = std::fs::remove_file(&p);
-                println!("Removed {}", p.display());
-            }
-        }
-        Ok(())
-    }
-
     pub fn uninstall_systemd_units() -> Result<()> {
         let _ = std::process::Command::new("systemctl")
             .args([
                 "--user",
                 "disable",
                 "--now",
-                "ctx-proxy.service",
                 "ctx-dashboard.service",
                 "ctx-ingest.timer",
             ])
             .status();
         if let Some(dir) = systemd_user_dir() {
             for f in [
-                "ctx-proxy.service",
                 "ctx-dashboard.service",
                 "ctx-ingest.service",
                 "ctx-ingest.timer",

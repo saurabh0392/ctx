@@ -253,6 +253,43 @@ pub fn strip_allowed_mcp_servers(settings: &mut Value) -> bool {
     false
 }
 
+/// Remove env vars wired by the retired MITM proxy (ADR 0015) from `settings.env`. Only strips
+/// values that look ctx-owned: a localhost `ANTHROPIC_BASE_URL` / `HTTP(S)_PROXY`, or a
+/// `NODE_EXTRA_CA_CERTS` that points under `~/.ctx`. Leaves any user-set values alone. Returns
+/// true if it changed anything.
+pub fn strip_ctx_proxy_env(settings: &mut Value) -> bool {
+    let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) else {
+        return false;
+    };
+    let is_local = |v: &Value| {
+        v.as_str()
+            .map(|s| s.contains("127.0.0.1") || s.contains("localhost"))
+            .unwrap_or(false)
+    };
+    let mut changed = false;
+    for key in ["ANTHROPIC_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY"] {
+        if env.get(key).map(is_local).unwrap_or(false) {
+            env.remove(key);
+            changed = true;
+        }
+    }
+    if env
+        .get("NODE_EXTRA_CA_CERTS")
+        .and_then(|v| v.as_str())
+        .map(|s| s.contains("/.ctx/"))
+        .unwrap_or(false)
+    {
+        env.remove("NODE_EXTRA_CA_CERTS");
+        changed = true;
+    }
+    if env.is_empty() {
+        if let Some(obj) = settings.as_object_mut() {
+            obj.remove("env");
+        }
+    }
+    changed
+}
+
 /// Strip ctx `NODE_OPTIONS` `--require …/filter.js` from `settings.env` when present.
 pub fn strip_ctx_filter_from_node_options_in_settings(settings: &mut Value) -> bool {
     let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) else {

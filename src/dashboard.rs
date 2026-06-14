@@ -88,7 +88,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(serve_html))
-        // Runtime ingest: filter.js (proxy), Claude Code hooks, and the statusline post here.
+        // Runtime ingest: the filter.js NODE_OPTIONS shim, Claude Code hooks, and the statusline post here.
         .route("/api/ingest-request", post(api_ingest_request))
         .route("/api/hook/event", post(api_hook_event))
         .route("/api/trigger-ingest", post(api_trigger_ingest))
@@ -594,6 +594,11 @@ struct ProofView {
     /// Characters removed by tools that have not earned yet (trials and unproven trims). Shown as
     /// "trimmed while testing", never as money, so we never bank savings we cannot vouch for.
     trial_chars_saved: i64,
+    /// Aggregate trimmed-arm outcomes across all tools, for the honest home headline. Raw counts so
+    /// the UI can state the real correction/re-read rate "on trimmed calls" with no rounding.
+    trimmed_n_total: i64,
+    trimmed_corrections_total: i64,
+    trimmed_rereads_total: i64,
 }
 
 fn proof_metric(hits: i64, n: i64) -> Option<ProofMetric> {
@@ -690,6 +695,9 @@ async fn api_context_proof() -> Json<ProofView> {
     use crate::compress::activation::CausalThresholds;
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
+    let mut trimmed_n_total = 0i64;
+    let mut trimmed_corrections_total = 0i64;
+    let mut trimmed_rereads_total = 0i64;
     let (tools, safe_chars_saved, trial_chars_saved) = match open_ctx_db() {
         Some(conn) => {
             // Applied chars saved per tool, then bucketed by verdict so only earned ("safe")
@@ -699,9 +707,16 @@ async fn api_context_proof() -> Json<ProofView> {
                     .into_iter()
                     .map(|s| (s.tool_name, s.chars_saved))
                     .collect();
-            let tools: Vec<ProofToolView> = crate::db::causal_tool_outcomes(&conn, None)
+            let outcomes: Vec<crate::db::CausalToolOutcome> =
+                crate::db::causal_tool_outcomes(&conn, None)
+                    .into_iter()
+                    .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0)
+                    .collect();
+            trimmed_n_total = outcomes.iter().map(|o| o.trimmed_n).sum();
+            trimmed_corrections_total = outcomes.iter().map(|o| o.trimmed_corrections).sum();
+            trimmed_rereads_total = outcomes.iter().map(|o| o.trimmed_rereads).sum();
+            let tools: Vec<ProofToolView> = outcomes
                 .into_iter()
-                .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0)
                 .map(|o| {
                     let trialing = cfg.compress_trial_tools.iter().any(|t| t == &o.tool_name);
                     let mut v = proof_tool_view(&o, &th, trialing);
@@ -739,6 +754,9 @@ async fn api_context_proof() -> Json<ProofView> {
         tools,
         safe_chars_saved,
         trial_chars_saved,
+        trimmed_n_total,
+        trimmed_corrections_total,
+        trimmed_rereads_total,
     })
 }
 
@@ -822,12 +840,7 @@ struct SettingsFileEntry {
 #[derive(Serialize)]
 struct SettingsGetResponse {
     active_profile: Option<String>,
-    proxy_port: Option<u16>,
     dashboard_port: Option<u16>,
-    proxy_upstream: Option<String>,
-    proxy_mode: String,
-    proxy_mitm_wired: bool,
-    proxy_install_mode: Option<String>,
     auto_profile_enabled: bool,
     filter_mode: String,
     inject_enabled: bool,
@@ -910,23 +923,6 @@ async fn api_settings_get() -> impl IntoResponse {
     let adaptive_prefix_preview = adaptive_full.chars().take(4000).collect::<String>();
     let adaptive_prefix_char_budget = crate::adaptive::rebuild_max_chars_for_db(&conn);
     let ctx_active_since = crate::db::get_ctx_active_since(&conn);
-    let proxy_port = cfg.proxy_port.unwrap_or(8788);
-    let proxy_mitm_wired = std::fs::read_to_string(crate::config::claude_settings_path())
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .map(|settings| {
-            let claude = settings
-                .pointer("/env/CLAUDE_CODE_HTTPS_PROXY")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let https = settings
-                .pointer("/env/HTTPS_PROXY")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let url = format!("http://127.0.0.1:{proxy_port}");
-            claude == url || https == url
-        })
-        .unwrap_or(false);
     let row_counts = SettingsRowCounts {
         sessions: count_table(&conn, "sessions"),
         turns: count_table(&conn, "turns"),
@@ -936,12 +932,7 @@ async fn api_settings_get() -> impl IntoResponse {
     };
     let body = SettingsGetResponse {
         active_profile: cfg.active_profile.clone(),
-        proxy_port: cfg.proxy_port,
         dashboard_port: cfg.dashboard_port,
-        proxy_upstream: cfg.proxy_upstream.clone(),
-        proxy_mode: cfg.proxy_mode.as_str().to_string(),
-        proxy_mitm_wired,
-        proxy_install_mode: cfg.proxy_install_mode.clone(),
         auto_profile_enabled: cfg.auto_profile_enabled,
         filter_mode: cfg.filter_mode.as_str().to_string(),
         inject_enabled: cfg.inject_enabled,

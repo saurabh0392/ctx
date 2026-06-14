@@ -1414,13 +1414,6 @@ pub fn status() -> Result<()> {
         println!("Savings:    —");
     }
 
-    let port = config.proxy_port.unwrap_or(8788);
-    let upstream = config
-        .proxy_upstream
-        .as_deref()
-        .unwrap_or("https://api.anthropic.com");
-    println!("\nProxy:      :{port} -> {upstream}");
-
     if let Ok(alerts) = crate::quality_guard::quality_alerts() {
         if let Some(a) = alerts.first() {
             println!("{} {}", "!".yellow(), a.recommendation);

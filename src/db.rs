@@ -1616,6 +1616,144 @@ pub struct HookTraceRow {
     pub tools_expanded: Vec<crate::semantic_tools::ToolExpansionEntry>,
 }
 
+/// One bucket of the cache-safety audit (CTX-28). Requests are grouped by whether ctx
+/// edited the cached prefix on that request, so we can see if prefix edits correlate with
+/// more cache writes (the 1.25x penalty) and fewer cache reads (the 0.1x discount).
+///
+/// Honesty note: the token figures come from enrichment, which joins a hook trace to a
+/// turn's usage by session and time. It is a correlational signal across the user's own
+/// traffic, not a controlled A/B. Read it as a smell test, not proof.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct CacheAuditBucket {
+    pub category: String,
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+}
+
+/// Aggregate enriched hook traces by what ctx did to the cached prefix on each request.
+/// `tools_removed > 0` means MCP tool schemas were stripped from the `tools` block (front of
+/// the cached prefix). `inject_chars > 0` means content was added to the system block. Both
+/// sit inside Anthropic's cached prefix; tool-output trimming does not and is excluded here
+/// because it edits message content after the prefix. Read-only.
+pub fn cache_audit(conn: &Connection, ts_since: Option<&str>) -> Vec<CacheAuditBucket> {
+    let _ = ensure_schema(conn);
+    let select = r#"SELECT
+            CASE
+                WHEN COALESCE(tools_removed,0) > 0 AND COALESCE(inject_chars,0) > 0 THEN 'tools+system'
+                WHEN COALESCE(tools_removed,0) > 0 THEN 'tools-filtered'
+                WHEN COALESCE(inject_chars,0) > 0 THEN 'system-injected'
+                ELSE 'untouched'
+            END AS category,
+            COUNT(*) AS requests,
+            SUM(COALESCE(input_tokens,0)) AS input_sum,
+            SUM(COALESCE(cache_read_tokens,0)) AS cache_read_sum,
+            SUM(COALESCE(cache_creation_tokens,0)) AS cache_creation_sum
+        FROM hook_traces
+        WHERE COALESCE(enriched,0) = 1
+          AND (cache_read_tokens IS NOT NULL OR cache_creation_tokens IS NOT NULL)"#;
+    let map_row = |r: &rusqlite::Row<'_>| {
+        Ok(CacheAuditBucket {
+            category: r.get(0)?,
+            requests: r.get(1)?,
+            input_tokens: r.get::<_, i64>(2)?,
+            cache_read_tokens: r.get::<_, i64>(3)?,
+            cache_creation_tokens: r.get::<_, i64>(4)?,
+        })
+    };
+    let mut out = Vec::new();
+    let res = if let Some(s) = ts_since {
+        let sql = format!("{select} AND ts >= ?1 GROUP BY category ORDER BY category");
+        conn.prepare(&sql).and_then(|mut stmt| {
+            let rows = stmt.query_map(params![s], map_row)?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            Ok(v)
+        })
+    } else {
+        let sql = format!("{select} GROUP BY category ORDER BY category");
+        conn.prepare(&sql).and_then(|mut stmt| {
+            let rows = stmt.query_map([], map_row)?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            Ok(v)
+        })
+    };
+    if let Ok(v) = res {
+        out = v;
+    }
+    out
+}
+
+/// One arm of a running A/B, scoped to one feature, with the cache tokens for that arm.
+/// Used to compare cache behavior between treatment (feature on) and control (feature off)
+/// on the same machine and period, which is the clean way to answer "does this feature bust
+/// the cache". Read-only.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct CacheAuditArm {
+    pub feature: String,
+    pub arm: String,
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub total_cost: f64,
+}
+
+/// Break the cache audit down by A/B arm for the prefix-affecting features, reading the
+/// `ab_group` tags the hook records (e.g. `P:T I:C ...`). For each feature we return the
+/// treatment and control rows that have enriched cache data, so the caller can compare cache
+/// shares and cost between the arms. Only meaningful while an experiment is running with that
+/// feature split below 100. Read-only.
+pub fn cache_audit_arms(conn: &Connection, ts_since: Option<&str>) -> Vec<CacheAuditArm> {
+    let _ = ensure_schema(conn);
+    // (tag in ab_group, human label). These all edit the cached prefix except compress, which
+    // edits tool output after the prefix and is included only as a cache-neutral reference.
+    let features: [(&str, &str); 4] = [
+        ("P", "profile (MCP filtering)"),
+        ("I", "system prefix injection"),
+        ("A", "adaptive prefix"),
+        ("C", "coaching"),
+    ];
+    let agg = "SELECT COUNT(*), SUM(COALESCE(input_tokens,0)), \
+               SUM(COALESCE(cache_read_tokens,0)), SUM(COALESCE(cache_creation_tokens,0)), \
+               SUM(COALESCE(cost_usd,0)) FROM hook_traces \
+               WHERE enriched=1 AND ab_group IS NOT NULL AND ab_group LIKE ?1";
+    let with_ts = format!("{agg} AND ts >= ?2");
+    let mut out = Vec::new();
+    for (tag, label) in features {
+        for (arm_tag, arm_name) in [("T", "treatment"), ("C", "control")] {
+            let pat = format!("%{tag}:{arm_tag}%");
+            let map = |r: &rusqlite::Row<'_>| {
+                Ok(CacheAuditArm {
+                    feature: label.to_string(),
+                    arm: arm_name.to_string(),
+                    requests: r.get(0)?,
+                    input_tokens: r.get::<_, i64>(1).unwrap_or(0),
+                    cache_read_tokens: r.get::<_, i64>(2).unwrap_or(0),
+                    cache_creation_tokens: r.get::<_, i64>(3).unwrap_or(0),
+                    total_cost: r.get::<_, f64>(4).unwrap_or(0.0),
+                })
+            };
+            let row = match ts_since {
+                Some(s) => conn.query_row(&with_ts, params![pat, s], map),
+                None => conn.query_row(agg, params![pat], map),
+            };
+            if let Ok(a) = row {
+                if a.requests > 0 {
+                    out.push(a);
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn load_hook_traces(
     conn: &Connection,
     limit: usize,

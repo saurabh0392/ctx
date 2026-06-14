@@ -258,7 +258,7 @@ pub fn show() -> Result<()> {
 
     if records.is_empty() {
         println!("No data yet. Use Claude Code with ctx filtering enabled.");
-        println!("  ctx setup   # or: ctx proxy install");
+        println!("  ctx setup");
         return Ok(());
     }
 

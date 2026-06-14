@@ -43,7 +43,7 @@ ctx setup --yes
 ```
 
 This does 6 things:
-1. Creates ~/.ctx/ with config, system_prefix.md, optional filter.js/CA for legacy proxy
+1. Creates ~/.ctx/ with config, system_prefix.md, and the legacy filter.js (no proxy, no CA)
 2. Installs launchd agents for dashboard (:8789) and periodic ingest where supported
 3. Merges allowedMcpServers and UserPromptSubmit hooks into ~/.claude/settings.json
 4. Indexes existing Claude sessions into ~/.ctx/ctx.db
@@ -90,6 +90,6 @@ Also mention:
 
 - `ctx setup --uninstall` reverses everything
 - `ctx setup --dry-run` shows what setup will do without changing anything
-- LaunchAgents are at ~/Library/LaunchAgents/com.ctx.{proxy,dashboard,ingest}.plist
+- LaunchAgents are at ~/Library/LaunchAgents/com.ctx.{dashboard,ingest}.plist
 - All data lives under ~/.ctx/ (SQLite, config, logs)
 - No data leaves the machine. Zero telemetry.

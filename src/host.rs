@@ -29,7 +29,7 @@ pub trait HostAdapter: Send + Sync {
     /// Extra MCP JSON files (besides `~/.claude/settings.json`) to merge `ctx` into.
     fn mcp_extra_config_paths(&self) -> Vec<PathBuf>;
     fn needs_periodic_ingest(&self) -> bool;
-    /// When false, skip `ctx proxy install` (NODE_OPTIONS + filter.js); Desktop Electron ignores it.
+    /// When false, skip the legacy NODE_OPTIONS + filter.js preload; Desktop Electron ignores it.
     fn supports_node_options(&self) -> bool;
     fn reload_instruction(&self) -> &'static str;
     fn offer_editor_rules(&self) -> bool;

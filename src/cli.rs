@@ -34,30 +34,21 @@ pub enum Commands {
         #[command(subcommand)]
         command: ProfileCommand,
     },
-    /// Manage the MCP-filtering proxy
-    Proxy {
-        #[command(subcommand)]
-        command: ProxyCommand,
-    },
     /// Manage system prompt injection (~/.ctx/system_prefix.md)
     Inject {
         #[command(subcommand)]
         command: InjectCommand,
     },
-    /// One-command install: proxy, launchd autostart, default system prefix
+    /// One-command install: hooks, soft filter, launchd autostart, default system prefix
     Setup {
-        #[arg(long, default_value = "8788")]
-        port: u16,
-        #[arg(long, default_value = "https://api.anthropic.com")]
-        upstream: String,
         /// Reverse everything ctx setup did
         #[arg(long)]
         uninstall: bool,
-        /// Start proxy + launchd only; skip writing ~/.claude/settings.json
-        /// Use this when Claude Code is open — close it, then run `ctx proxy install`
+        /// Install hooks/services only; skip writing ~/.claude/settings.json
+        /// Use this when Claude Code is open — close it, then re-run `ctx setup`
         #[arg(long)]
         no_install: bool,
-        /// Skip the optional ~/.zshrc prompt for NODE_EXTRA_CA_CERTS
+        /// Deprecated no-op (kept so old scripts do not break)
         #[arg(long)]
         no_zshrc_prompt: bool,
         /// Print planned actions and exit without changing anything
@@ -187,6 +178,15 @@ pub enum ContextCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Cache-safety audit: does editing the cached prefix (MCP filtering, system injection)
+    /// correlate with more cache writes and fewer cache reads in your own traffic. Read-only.
+    CacheAudit {
+        /// Only look at the last N days of requests (omit for all time)
+        #[arg(long)]
+        days: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -304,31 +304,6 @@ pub enum HookCommand {
     UserPromptSubmit,
     /// PostToolUse: compress tool output via updatedToolOutput
     PostToolUse,
-}
-
-#[derive(Subcommand)]
-pub enum ProxyCommand {
-    /// Start the filtering proxy in the foreground
-    Start {
-        #[arg(long, default_value = "8788")]
-        port: u16,
-        #[arg(long, default_value = "https://api.anthropic.com")]
-        upstream: String,
-    },
-    /// Install MITM proxy: wire HTTPS_PROXY + CA trust in ~/.claude/settings.json
-    Install {
-        /// complement | standalone | filter-only
-        #[arg(long, value_name = "MODE")]
-        mode: String,
-        #[arg(long, default_value = "8788")]
-        port: u16,
-        #[arg(long, default_value = "https://api.anthropic.com")]
-        upstream: String,
-    },
-    /// Uninstall: remove ctx MITM env from settings.json and stop proxy service
-    Uninstall,
-    /// Show proxy configuration
-    Status,
 }
 
 #[derive(Subcommand)]

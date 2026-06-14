@@ -44,7 +44,7 @@ fn err_response(id: Value, code: i64, msg: &str) -> JsonRpcResponse {
 const TOOL_DEFS: &[(&str, &str, &str)] = &[
     (
         "ctx_status",
-        "Current ctx status: active profile, proxy state, session count, token savings, cost saved, budget info.",
+        "Current ctx status: active profile, session count, token savings, cost saved, budget info.",
         "{}",
     ),
     (
@@ -159,13 +159,8 @@ fn tool_status() -> Result<Value, String> {
         None
     };
 
-    let proxy_up =
-        std::net::TcpStream::connect(format!("127.0.0.1:{}", config.proxy_port.unwrap_or(8788)))
-            .is_ok();
-
     Ok(json!({
         "active_profile": config.active_profile.as_deref().unwrap_or("all"),
-        "proxy_listening": proxy_up,
         "month": current_month,
         "month_spend_usd": month_spend,
         "month_sessions": month_sessions,
@@ -259,7 +254,6 @@ fn tool_settings() -> Result<Value, String> {
 
     Ok(json!({
         "active_profile": cfg.active_profile,
-        "proxy_port": cfg.proxy_port,
         "dashboard_port": cfg.dashboard_port,
         "auto_profile_enabled": cfg.auto_profile_enabled,
         "inject_enabled": cfg.inject_enabled,

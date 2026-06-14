@@ -8,7 +8,6 @@ pub mod analytics;
 pub mod behavior_guard;
 pub mod bench;
 pub mod budget_guard;
-pub mod ca;
 pub mod claude_settings;
 pub mod cli;
 pub mod coach;
@@ -33,7 +32,6 @@ pub mod mcp;
 pub mod modes;
 pub mod outcome_signals;
 pub mod profiles;
-pub mod proxy;
 pub mod quality_guard;
 pub mod rule_signals;
 pub mod semantic_tools;
@@ -47,24 +45,14 @@ pub mod tool_usage_analysis;
 pub mod tuning;
 pub mod user_profile;
 
-/// Install rustls ring crypto provider once (required for [`ca::CertAuthority`]).
-pub fn ensure_tls_crypto_provider() {
-    use std::sync::OnceLock;
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-}
-
 use anyhow::Result;
 use clap::Parser;
 use cli::{
     BenchCommand, Cli, Commands, ContextCommand, ExperimentCommand, ExperimentPlanCommand,
-    FilterCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand, ProxyCommand,
+    FilterCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand,
 };
 
 pub async fn run() -> Result<()> {
-    ensure_tls_crypto_provider();
     let cli = Cli::parse();
 
     match cli.command {
@@ -100,23 +88,6 @@ pub async fn run() -> Result<()> {
                 profiles::migrate_tools(name.as_deref(), force)?
             }
         },
-        Commands::Proxy { command } => match command {
-            ProxyCommand::Start { port, upstream } => proxy::start(port, &upstream).await?,
-            ProxyCommand::Install {
-                mode,
-                port,
-                upstream,
-            } => {
-                let mode = crate::config::ProxyMode::parse(&mode).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Invalid --mode {mode:?}; use complement, standalone, or filter-only"
-                    )
-                })?;
-                proxy::install(port, &upstream, mode)?;
-            }
-            ProxyCommand::Uninstall => proxy::uninstall()?,
-            ProxyCommand::Status => proxy::status()?,
-        },
         Commands::Inject { command } => match command {
             InjectCommand::Show => inject::show()?,
             InjectCommand::Edit => inject::edit()?,
@@ -124,8 +95,6 @@ pub async fn run() -> Result<()> {
             InjectCommand::Enable => inject::enable()?,
         },
         Commands::Setup {
-            port,
-            upstream,
             uninstall,
             no_install,
             no_zshrc_prompt,
@@ -135,7 +104,7 @@ pub async fn run() -> Result<()> {
             if uninstall {
                 setup::uninstall()?;
             } else {
-                setup::run(port, &upstream, no_install, no_zshrc_prompt, dry_run, yes)?;
+                setup::run(no_install, no_zshrc_prompt, dry_run, yes)?;
             }
         }
         Commands::Dashboard { port, no_open } => dashboard::serve(port, no_open).await?,
@@ -277,6 +246,7 @@ pub async fn run() -> Result<()> {
             ContextCommand::Trial { tool, on, off } => {
                 context_ctl::trial(tool.as_deref(), on, off)?
             }
+            ContextCommand::CacheAudit { days, json } => context_ctl::cache_audit(days, json)?,
         },
         Commands::Bench { command } => match command {
             BenchCommand::Run { json } => bench::run(json)?,

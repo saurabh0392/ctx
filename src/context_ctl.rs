@@ -426,6 +426,120 @@ pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
     Ok(())
 }
 
+/// Cache-safety audit (CTX-28). Prompt caching bills cached-prefix reads at about 0.1x and
+/// cache writes at 1.25x to 2x. Filtering MCP tool schemas edits the `tools` block and
+/// injecting into the system prompt edits the `system` block; both sit inside the cached
+/// prefix and can force a cache write. Tool-output trimming edits content after the prefix,
+/// so it is cache-safe by position and is not counted here. This groups the user's own
+/// enriched requests by what ctx did to the prefix and reports cache behavior per bucket, so
+/// we can see whether prefix edits correlate with more writes and fewer reads. Read-only.
+pub fn cache_audit(days: Option<i64>, json: bool) -> Result<()> {
+    let conn = crate::db::open_db()?;
+    let _ = crate::db::ensure_schema(&conn);
+    let since =
+        days.map(|d| (chrono::Utc::now() - chrono::Duration::days(d.max(0))).to_rfc3339());
+    let buckets = crate::db::cache_audit(&conn, since.as_deref());
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&buckets)?);
+        return Ok(());
+    }
+
+    if buckets.is_empty() {
+        println!("No enriched requests with cache data yet.");
+        println!("Run some Claude Code turns, then `ctx ingest`, then try this again.");
+        return Ok(());
+    }
+
+    println!("Cache-safety audit");
+    println!(
+        "Prompt caching bills cached-prefix reads at about 0.1x and cache writes at 1.25x to 2x."
+    );
+    println!("Filtering MCP tool schemas edits the tools block, and injecting into the system");
+    println!("prompt edits the system block. Both sit inside the cached prefix, so editing them");
+    println!("can force a cache write. Tool-output trimming edits content after the prefix, so it");
+    println!("is cache-safe by position and is not counted here.");
+    println!();
+    println!("This is correlational across your own traffic, not a controlled A/B. Read it as a");
+    println!("smell test: if a touched bucket shows a lower cache-read share and a higher");
+    println!("cache-write share than untouched, ctx may be busting the cache there.");
+    println!();
+    println!(
+        "  {:<16} {:>8} {:>12} {:>12} {:>10}",
+        "bucket", "requests", "cache-read", "cache-write", "fresh"
+    );
+    for b in &buckets {
+        let total = (b.input_tokens + b.cache_read_tokens + b.cache_creation_tokens).max(1);
+        let read = b.cache_read_tokens as f64 / total as f64 * 100.0;
+        let write = b.cache_creation_tokens as f64 / total as f64 * 100.0;
+        let fresh = b.input_tokens as f64 / total as f64 * 100.0;
+        println!(
+            "  {:<16} {:>8} {:>11.1}% {:>11.1}% {:>9.1}%",
+            b.category, b.requests, read, write, fresh
+        );
+    }
+    println!();
+    println!("cache-read: share of input served from cache at the discount. Higher is better.");
+    println!("cache-write: share re-cached at a premium. Higher in a touched bucket is the warning.");
+    println!("fresh: share processed uncached at full price.");
+
+    let arms = crate::db::cache_audit_arms(&conn, since.as_deref());
+    if !arms.is_empty() {
+        use std::collections::BTreeMap;
+        let mut by_feature: BTreeMap<String, (Option<&crate::db::CacheAuditArm>, Option<&crate::db::CacheAuditArm>)> =
+            BTreeMap::new();
+        for a in &arms {
+            let e = by_feature.entry(a.feature.clone()).or_default();
+            if a.arm == "treatment" {
+                e.0 = Some(a);
+            } else {
+                e.1 = Some(a);
+            }
+        }
+        println!();
+        println!("By experiment arm");
+        println!("If an A/B is running, this compares cache behavior with each feature on (treatment)");
+        println!("vs off (control) on your own traffic. A feature that busts the cache shows a lower");
+        println!("cache-read share and higher cost in treatment. Assignment is per request and the");
+        println!("cache is shared across arms, so read this as strong-suggestive, not a clean verdict.");
+        for (feature, (t, c)) in by_feature {
+            println!();
+            println!("  {feature}");
+            match (t, c) {
+                (Some(t), Some(c)) => {
+                    print_arm("    on  (treatment)", t);
+                    print_arm("    off (control)  ", c);
+                }
+                (Some(t), None) => {
+                    print_arm("    on  (treatment)", t);
+                    println!("    off (control)   none yet. Set this feature's pct to 50 to get a control arm.");
+                }
+                (None, Some(c)) => {
+                    print_arm("    off (control)  ", c);
+                    println!("    on  (treatment) none yet.");
+                }
+                (None, None) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_arm(label: &str, a: &crate::db::CacheAuditArm) {
+    let total = (a.input_tokens + a.cache_read_tokens + a.cache_creation_tokens).max(1);
+    let read = a.cache_read_tokens as f64 / total as f64 * 100.0;
+    let write = a.cache_creation_tokens as f64 / total as f64 * 100.0;
+    let avg_cost = if a.requests > 0 {
+        a.total_cost / a.requests as f64
+    } else {
+        0.0
+    };
+    println!(
+        "{label}  n={:<5} cache-read {:>5.1}%  cache-write {:>5.1}%  avg cost ${:.3}",
+        a.requests, read, write, avg_cost
+    );
+}
+
 pub fn set_preset(value: &str) -> Result<()> {
     let preset = CompressPreset::parse(value)
         .ok_or_else(|| anyhow::anyhow!("unknown preset '{value}' (use off, safe, or full)"))?;
