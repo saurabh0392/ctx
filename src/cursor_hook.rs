@@ -36,6 +36,17 @@ pub fn post_tool_use() -> Result<()> {
         return Ok(());
     }
 
+    // Dedup with the preToolUse Shell rewrite (CTX-41): a command we rewrote to `ctx run …` was
+    // already compacted and accounted for by the wrapper. Recording it again here would double
+    // count, so this hook stays out of the way for ctx-wrapped commands.
+    if cursor_shell_command(&payload)
+        .map(|c| is_ctx_run_wrapped(&c))
+        .unwrap_or(false)
+    {
+        print!("{{}}");
+        return Ok(());
+    }
+
     let mut output = json!({});
     if let Some(tr) = extract_cursor_tool_result(&payload) {
         let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
@@ -94,6 +105,160 @@ pub fn post_tool_use() -> Result<()> {
 
     print!("{}", serde_json::to_string(&output)?);
     Ok(())
+}
+
+/// Cursor `preToolUse` Shell hook (CTX-41 / ADR 0024).
+///
+/// Cursor will not let a `postToolUse` hook rewrite built-in Shell *output* (ADR 0018/0021), but it
+/// lets a `preToolUse` hook rewrite the Shell *command* before it runs via `updated_input`. So when
+/// a shell command is safe to wrap and Shell has earned trimming, this rewrites `<cmd>` to
+/// `ctx run <cmd>`. The wrapper runs the real command, re-checks the same gate with the real output,
+/// and either compacts or passes through. Anything else emits `{}` and leaves the command untouched.
+pub fn pre_tool_use() -> Result<()> {
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    let payload: Value = serde_json::from_str(buf.trim()).unwrap_or(json!({}));
+
+    let cfg = Config::load();
+    let output = decide_pre_tool_use(&cfg, &payload).unwrap_or_else(|| json!({}));
+    print!("{}", serde_json::to_string(&output)?);
+    Ok(())
+}
+
+/// Pure decision for the preToolUse hook: given config and the Cursor payload, return the rewrite
+/// response, or `None` to emit `{}` (no change). Split out so it is unit-testable without stdio.
+fn decide_pre_tool_use(cfg: &Config, payload: &Value) -> Option<Value> {
+    if !cfg.compress_enabled {
+        return None;
+    }
+    // Scoped to Shell by the hook matcher, but verify defensively.
+    let tool_name = payload.get("tool_name").and_then(|v| v.as_str())?;
+    if !tool_name.eq_ignore_ascii_case("shell") {
+        return None;
+    }
+    let command = cursor_shell_command(payload)?;
+    let wrapped = decide_shell_rewrite(cfg, &command)?;
+    let mut updated = payload
+        .get("tool_input")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    updated.insert("command".into(), json!(wrapped));
+    // Pair the rewrite with permission "allow", matching the proven RTK pattern. preToolUse does not
+    // drive the shell approval prompt (Cursor does not enforce "ask" here; beforeShellExecution is
+    // the approval gate), so this does not bypass the user's command approval.
+    Some(json!({
+        "permission": "allow",
+        "updated_input": Value::Object(updated),
+    }))
+}
+
+/// Decide whether to wrap a shell command in `ctx run`. Returns the wrapped command string, or
+/// `None` to leave it alone. Two conditions must hold: the command is on the safe, non-interactive
+/// allowlist (so capturing its output can never break an editor/pager/REPL), and Shell has earned
+/// trimming for this command's kind (trial, activation, or burn-in). The wrapper still re-checks the
+/// gate against the real output, so this is the cheap front gate, not the final say.
+fn decide_shell_rewrite(cfg: &Config, command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() || is_ctx_run_wrapped(trimmed) {
+        return None;
+    }
+    if !is_safe_to_wrap(trimmed) {
+        return None;
+    }
+
+    let kind = crate::compress::classify::classify_tool("Shell", Some(trimmed), None);
+    let kind_label = crate::compress::shadow::kind_str(kind);
+    let eligible = cfg.compress_trialing("Shell")
+        || (cfg.compress_applies_kind(kind_label)
+            && (crate::compress::activation::tool_activated(cfg, "Shell", kind_label)
+                || crate::compress::activation::tool_in_burn_in(cfg, "Shell")));
+    if !eligible {
+        return None;
+    }
+
+    Some(format!("{} run {}", ctx_exe(), shell_single_quote(trimmed)))
+}
+
+/// Resolve the ctx executable path for the rewrite, falling back to bare `ctx` on PATH.
+fn ctx_exe() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "ctx".to_string())
+}
+
+/// True when a command already runs through the ctx wrapper, so we never double-wrap (and so the
+/// postToolUse hook can recognize and skip it).
+fn is_ctx_run_wrapped(command: &str) -> bool {
+    let c = command.trim_start();
+    // Match either bare `ctx run ` or `/abs/path/to/ctx run `.
+    if let Some(first) = c.split_whitespace().next() {
+        let is_ctx_bin = first == "ctx"
+            || std::path::Path::new(first)
+                .file_name()
+                .and_then(|n| n.to_str())
+                == Some("ctx");
+        if is_ctx_bin {
+            return c.split_whitespace().nth(1) == Some("run");
+        }
+    }
+    false
+}
+
+/// Allowlist gate: only wrap read-only, non-interactive inspection commands whose output is safe to
+/// capture and worth compacting. Default-deny: anything not recognized is left untouched, so editors,
+/// pagers, REPLs, and prompts (vim, less, git commit, npm init, ssh) are never wrapped. This is a
+/// safety boundary, not a compression heuristic; the gate decides whether compaction actually fires.
+fn is_safe_to_wrap(command: &str) -> bool {
+    let mut tokens = command.split_whitespace();
+    let Some(first) = tokens.next() else {
+        return false;
+    };
+    // A leading VAR=val assignment or an absolute path confuses simple matching; be conservative and
+    // skip those rather than guess.
+    if first.contains('=') || first.contains('/') {
+        return false;
+    }
+    match first {
+        "git" => matches!(
+            tokens.next(),
+            Some(
+                "status" | "diff" | "log" | "show" | "branch" | "ls-files" | "blame" | "shortlog"
+                    | "describe" | "diff-tree"
+            )
+        ),
+        // Read-only inspection tools that commonly produce large, noisy output.
+        "ls" | "grep" | "rg" | "find" | "cat" | "tree" | "head" | "tail" | "wc" | "cargo" => true,
+        _ => false,
+    }
+}
+
+/// POSIX single-quote a command so it survives as one argument to `ctx run` (which re-runs it via
+/// `sh -c`). Embedded single quotes are closed, escaped, and reopened: `it's` -> `'it'\''s'`.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Pull the Shell command string out of a Cursor hook payload (`tool_input.command`).
+fn cursor_shell_command(payload: &Value) -> Option<String> {
+    payload
+        .get("tool_input")
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
 }
 
 /// Build Cursor's `updated_mcp_tool_output` from the trimmed text, mirroring the MCP result
@@ -347,6 +512,129 @@ mod tests {
         assert_eq!(updated["isError"], json!(false));
         assert_eq!(updated["content"][0]["type"], json!("text"));
         assert_eq!(updated["content"][0]["text"], json!("short"));
+    }
+
+    fn shell_trial_cfg() -> Config {
+        Config {
+            compress_enabled: true,
+            compress_trial_tools: vec!["Shell".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn safe_to_wrap_allows_read_only_inspection() {
+        assert!(is_safe_to_wrap("git status"));
+        assert!(is_safe_to_wrap("git diff HEAD~5 --stat"));
+        assert!(is_safe_to_wrap("git log --oneline -n 200"));
+        assert!(is_safe_to_wrap("ls -la"));
+        assert!(is_safe_to_wrap("grep -rn foo src/"));
+        assert!(is_safe_to_wrap("rg pattern"));
+        assert!(is_safe_to_wrap("cargo build"));
+    }
+
+    #[test]
+    fn safe_to_wrap_blocks_interactive_and_unknown() {
+        // Editors, pagers, REPLs, prompts: capturing their output would break them.
+        assert!(!is_safe_to_wrap("vim src/main.rs"));
+        assert!(!is_safe_to_wrap("less big.log"));
+        assert!(!is_safe_to_wrap("git commit -m wip"));
+        assert!(!is_safe_to_wrap("git rebase -i HEAD~3"));
+        assert!(!is_safe_to_wrap("npm init"));
+        assert!(!is_safe_to_wrap("python"));
+        // Leading env assignment or absolute path: don't guess.
+        assert!(!is_safe_to_wrap("FOO=1 git status"));
+        assert!(!is_safe_to_wrap("/usr/bin/git status"));
+    }
+
+    #[test]
+    fn shell_single_quote_escapes_embedded_quotes() {
+        assert_eq!(shell_single_quote("git status"), "'git status'");
+        assert_eq!(shell_single_quote("echo it's"), "'echo it'\\''s'");
+        // Round-trip: the quoted form is a single sh argument equal to the original.
+        let original = "grep -n \"a'b\" src/";
+        let quoted = shell_single_quote(original);
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("printf '%s' {quoted}"))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), original);
+    }
+
+    #[test]
+    fn detects_ctx_run_wrapped_commands() {
+        assert!(is_ctx_run_wrapped("ctx run 'git status'"));
+        assert!(is_ctx_run_wrapped("/Users/me/.cargo/bin/ctx run 'ls'"));
+        assert!(!is_ctx_run_wrapped("git status"));
+        assert!(!is_ctx_run_wrapped("ctx status"));
+        assert!(!is_ctx_run_wrapped("ctxrun foo"));
+    }
+
+    #[test]
+    fn rewrite_wraps_eligible_safe_command() {
+        let cfg = shell_trial_cfg();
+        let wrapped = decide_shell_rewrite(&cfg, "git status").expect("should wrap");
+        assert!(wrapped.contains(" run "), "must invoke the run wrapper");
+        assert!(
+            wrapped.contains("'git status'"),
+            "original command must be passed as one quoted arg, got: {wrapped}"
+        );
+    }
+
+    #[test]
+    fn rewrite_skips_unsafe_and_wrapped_and_disabled() {
+        let cfg = shell_trial_cfg();
+        assert!(
+            decide_shell_rewrite(&cfg, "vim foo").is_none(),
+            "interactive command must never be wrapped"
+        );
+        assert!(
+            decide_shell_rewrite(&cfg, "ctx run 'git status'").is_none(),
+            "already-wrapped command must not be double-wrapped"
+        );
+        let off = Config {
+            compress_enabled: false,
+            ..shell_trial_cfg()
+        };
+        assert!(
+            decide_shell_rewrite(&off, "git status").is_none(),
+            "compression disabled means no rewrite"
+        );
+    }
+
+    #[test]
+    fn pre_tool_use_emits_updated_input_for_eligible_shell() {
+        let cfg = shell_trial_cfg();
+        let payload = json!({
+            "tool_name": "Shell",
+            "tool_input": {"command": "git diff HEAD~3 --stat", "working_directory": "/proj"}
+        });
+        let out = decide_pre_tool_use(&cfg, &payload).expect("should rewrite");
+        assert_eq!(out["permission"], json!("allow"));
+        let cmd = out["updated_input"]["command"].as_str().unwrap();
+        assert!(cmd.contains(" run "));
+        assert!(cmd.contains("'git diff HEAD~3 --stat'"));
+        // Sibling input fields are preserved.
+        assert_eq!(out["updated_input"]["working_directory"], json!("/proj"));
+    }
+
+    #[test]
+    fn pre_tool_use_ignores_non_shell_and_ineligible() {
+        let cfg = shell_trial_cfg();
+        let read_payload = json!({"tool_name": "Read", "tool_input": {"path": "a.rs"}});
+        assert!(decide_pre_tool_use(&cfg, &read_payload).is_none());
+
+        // A safe command but Shell not earned (no trial, no activation): leave it alone.
+        let plain = Config {
+            compress_enabled: true,
+            ..Default::default()
+        };
+        let shell_payload = json!({"tool_name": "Shell", "tool_input": {"command": "vim x"}});
+        assert!(
+            decide_pre_tool_use(&plain, &shell_payload).is_none(),
+            "interactive command stays untouched even when Shell could be eligible"
+        );
     }
 
     #[test]

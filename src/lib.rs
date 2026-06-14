@@ -10,6 +10,7 @@ pub mod bench;
 pub mod budget_guard;
 pub mod claude_settings;
 pub mod cli;
+pub mod cmd_run;
 pub mod coach;
 pub mod compress;
 pub mod config;
@@ -114,7 +115,9 @@ pub async fn run() -> Result<()> {
             HookCommand::UserPromptSubmit => hook::user_prompt_submit()?,
             HookCommand::PostToolUse => compress::post_tool_use()?,
             HookCommand::CursorPostToolUse => cursor_hook::post_tool_use()?,
+            HookCommand::CursorPreToolUse => cursor_hook::pre_tool_use()?,
         },
+        Commands::Run { command } => cmd_run::exec(command)?,
         Commands::Mcp => mcp::serve_stdio()?,
         Commands::Mode { name, command } => match command {
             Some(ModeCommand::List) => {

@@ -52,7 +52,9 @@ pub fn classify_tool(
     file_path: Option<&str>,
 ) -> CompressKind {
     let name = tool_name.trim();
-    if name.eq_ignore_ascii_case("bash") {
+    // Claude Code names the shell tool "Bash"; Cursor names it "Shell". They are the same surface,
+    // so both classify by their command (git/grep/test) rather than falling through to Generic.
+    if name.eq_ignore_ascii_case("bash") || name.eq_ignore_ascii_case("shell") {
         return classify_bash_command(command.unwrap_or(""));
     }
     if name.eq_ignore_ascii_case("read") {

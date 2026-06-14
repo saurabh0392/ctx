@@ -9,54 +9,85 @@ use serde_json::{json, Value};
 
 /// ctx subcommand wired as the Cursor postToolUse command hook.
 pub const CTX_CURSOR_POST_TOOL_SUBCOMMAND: &str = "hook cursor-post-tool-use";
+/// ctx subcommand wired as the Cursor preToolUse Shell hook (CTX-41): it rewrites a Shell command
+/// to `ctx run <cmd>` so the compacted result returns as Shell's own output (the RTK approach).
+pub const CTX_CURSOR_PRE_TOOL_SUBCOMMAND: &str = "hook cursor-pre-tool-use";
 
-/// Cursor hook event ctx registers under.
-const CURSOR_POST_TOOL_EVENT: &str = "postToolUse";
+/// One ctx-managed Cursor hook: which event it registers under, the ctx subcommand it runs, and an
+/// optional tool matcher (Cursor scopes a hook to a tool type via `matcher`).
+struct CtxCursorHook {
+    event: &'static str,
+    subcommand: &'static str,
+    matcher: Option<&'static str>,
+}
 
-fn resolve_ctx_cursor_command() -> String {
+/// Every Cursor hook ctx owns. postToolUse observes all tools (and trims MCP results); preToolUse
+/// is scoped to Shell so only shell commands are considered for the `ctx run` input rewrite.
+fn ctx_cursor_hooks() -> [CtxCursorHook; 2] {
+    [
+        CtxCursorHook {
+            event: "postToolUse",
+            subcommand: CTX_CURSOR_POST_TOOL_SUBCOMMAND,
+            matcher: None,
+        },
+        CtxCursorHook {
+            event: "preToolUse",
+            subcommand: CTX_CURSOR_PRE_TOOL_SUBCOMMAND,
+            matcher: Some("Shell"),
+        },
+    ]
+}
+
+fn resolve_ctx_cursor_command(subcommand: &str) -> String {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(s) = exe.to_str() {
             if !s.is_empty() {
-                return format!("{} {}", s, CTX_CURSOR_POST_TOOL_SUBCOMMAND);
+                return format!("{s} {subcommand}");
             }
         }
     }
-    format!("ctx {}", CTX_CURSOR_POST_TOOL_SUBCOMMAND)
+    format!("ctx {subcommand}")
 }
 
-/// True when this Cursor hook entry is the ctx-managed postToolUse command hook.
+/// True when this Cursor hook entry is any ctx-managed command hook. ctx subcommands are namespaced
+/// `hook cursor-...`, so matching that prefix catches every ctx entry across events.
 fn entry_is_ctx_cursor_hook(entry: &Value) -> bool {
     entry
         .get("command")
         .and_then(|c| c.as_str())
-        .map(|c| c.contains(CTX_CURSOR_POST_TOOL_SUBCOMMAND))
+        .map(|c| c.contains("hook cursor-"))
         .unwrap_or(false)
 }
 
-/// Remove ctx-managed entries from `hooks.postToolUse`, pruning empty containers. Returns true if
-/// it changed anything. Leaves every non-ctx hook (and every other event) untouched.
+/// Remove every ctx-managed entry from every event, pruning empty containers. Returns true if it
+/// changed anything. Scanning all events (not just the ones ctx currently re-adds) means setup
+/// reconciles the file to exactly the hooks this ctx binary supports, so a stale ctx entry left by a
+/// different ctx version (e.g. a hook subcommand this binary no longer has) gets cleaned up instead
+/// of dangling. Every non-ctx hook is left untouched.
 pub fn strip_ctx_cursor_hook(doc: &mut Value) -> bool {
     let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return false;
     };
-    let Some(arr) = hooks
-        .get_mut(CURSOR_POST_TOOL_EVENT)
-        .and_then(|a| a.as_array_mut())
-    else {
-        return false;
-    };
-    let before = arr.len();
-    arr.retain(|e| !entry_is_ctx_cursor_hook(e));
-    let changed = arr.len() != before;
-    if arr.is_empty() {
-        hooks.remove(CURSOR_POST_TOOL_EVENT);
+    let mut changed = false;
+    let event_keys: Vec<String> = hooks.keys().cloned().collect();
+    for event in event_keys {
+        let Some(arr) = hooks.get_mut(&event).and_then(|a| a.as_array_mut()) else {
+            continue;
+        };
+        let before = arr.len();
+        arr.retain(|e| !entry_is_ctx_cursor_hook(e));
+        if arr.len() != before {
+            changed = true;
+        }
+        if arr.is_empty() {
+            hooks.remove(&event);
+        }
     }
     changed
 }
 
-/// Merge the ctx postToolUse command hook into the document, replacing any prior ctx entry first
-/// so repeated setups stay idempotent. No matcher: increment 1 observes every tool, and the
-/// handler stays silent on tools with no compressible output.
+/// Merge every ctx Cursor hook into the document, replacing any prior ctx entries first so repeated
+/// setups stay idempotent. Leaves the user's own hooks and events untouched.
 pub fn merge_ctx_cursor_hook(doc: &mut Value) -> Result<()> {
     if !doc.is_object() {
         *doc = json!({});
@@ -67,17 +98,20 @@ pub fn merge_ctx_cursor_hook(doc: &mut Value) -> Result<()> {
     }
     strip_ctx_cursor_hook(doc);
 
-    let entry = json!({
-        "command": resolve_ctx_cursor_command()
-    });
-    doc["hooks"]
-        .as_object_mut()
-        .context("hooks must be an object")?
-        .entry(CURSOR_POST_TOOL_EVENT.to_string())
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .context("hooks.postToolUse must be an array")?
-        .push(entry);
+    for hook in ctx_cursor_hooks() {
+        let mut entry = json!({ "command": resolve_ctx_cursor_command(hook.subcommand) });
+        if let Some(m) = hook.matcher {
+            entry["matcher"] = json!(m);
+        }
+        doc["hooks"]
+            .as_object_mut()
+            .context("hooks must be an object")?
+            .entry(hook.event.to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("hooks.{} must be an array", hook.event))?
+            .push(entry);
+    }
     Ok(())
 }
 
@@ -145,15 +179,49 @@ mod tests {
         let mut doc = json!({});
         merge_ctx_cursor_hook(&mut doc).unwrap();
         assert_eq!(doc["version"], json!(1));
-        let arr = doc["hooks"]["postToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert!(arr[0]["command"]
+
+        let post = doc["hooks"]["postToolUse"].as_array().unwrap();
+        assert_eq!(post.len(), 1);
+        assert!(post[0]["command"]
             .as_str()
             .unwrap()
             .contains(CTX_CURSOR_POST_TOOL_SUBCOMMAND));
 
+        // preToolUse is registered too, scoped to Shell via matcher.
+        let pre = doc["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1);
+        assert!(pre[0]["command"]
+            .as_str()
+            .unwrap()
+            .contains(CTX_CURSOR_PRE_TOOL_SUBCOMMAND));
+        assert_eq!(pre[0]["matcher"].as_str(), Some("Shell"));
+
         assert!(strip_ctx_cursor_hook(&mut doc));
         assert!(doc.get("hooks").and_then(|h| h.get("postToolUse")).is_none());
+        assert!(doc.get("hooks").and_then(|h| h.get("preToolUse")).is_none());
+    }
+
+    #[test]
+    fn strips_stale_ctx_entry_from_unmanaged_event() {
+        // A ctx entry left under an event this binary no longer manages (e.g. a preCompact hook from
+        // a different ctx version) must be reconciled away, not left dangling at a missing subcommand.
+        let mut doc = json!({
+            "version": 1,
+            "hooks": {
+                "preCompact": [{ "command": "/abs/ctx hook cursor-pre-compact" }],
+                "postToolUse": [{ "command": "./hooks/user-audit.sh" }]
+            }
+        });
+        assert!(strip_ctx_cursor_hook(&mut doc));
+        assert!(
+            doc["hooks"].get("preCompact").is_none(),
+            "stale ctx preCompact entry must be removed"
+        );
+        assert_eq!(
+            doc["hooks"]["postToolUse"].as_array().unwrap().len(),
+            1,
+            "user's own hook stays"
+        );
     }
 
     #[test]
@@ -162,6 +230,7 @@ mod tests {
         merge_ctx_cursor_hook(&mut doc).unwrap();
         merge_ctx_cursor_hook(&mut doc).unwrap();
         assert_eq!(doc["hooks"]["postToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["hooks"]["preToolUse"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -170,6 +239,7 @@ mod tests {
             "version": 1,
             "hooks": {
                 "postToolUse": [{ "command": "./hooks/user-audit.sh" }],
+                "preToolUse": [{ "command": "./hooks/user-pre.sh" }],
                 "beforeShellExecution": [{ "command": "./hooks/guard.sh" }]
             }
         });
@@ -179,11 +249,16 @@ mod tests {
         assert!(post
             .iter()
             .any(|e| e["command"].as_str() == Some("./hooks/user-audit.sh")));
+        let pre = doc["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 2, "user's preToolUse hook must survive");
 
         assert!(strip_ctx_cursor_hook(&mut doc));
         let post = doc["hooks"]["postToolUse"].as_array().unwrap();
         assert_eq!(post.len(), 1);
         assert_eq!(post[0]["command"].as_str(), Some("./hooks/user-audit.sh"));
+        let pre = doc["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1, "stripping ctx leaves the user's preToolUse hook");
+        assert_eq!(pre[0]["command"].as_str(), Some("./hooks/user-pre.sh"));
         // The user's other event is never touched.
         assert!(doc["hooks"]["beforeShellExecution"].is_array());
     }
