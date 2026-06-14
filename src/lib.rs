@@ -15,6 +15,8 @@ pub mod compress;
 pub mod config;
 pub mod context_ctl;
 pub mod conversations;
+pub mod cursor_hook;
+pub mod cursor_hooks;
 pub mod daemon;
 pub mod dashboard;
 pub mod dashboard_push;
@@ -111,6 +113,7 @@ pub async fn run() -> Result<()> {
         Commands::Hook { command } => match command {
             HookCommand::UserPromptSubmit => hook::user_prompt_submit()?,
             HookCommand::PostToolUse => compress::post_tool_use()?,
+            HookCommand::CursorPostToolUse => cursor_hook::post_tool_use()?,
         },
         Commands::Mcp => mcp::serve_stdio()?,
         Commands::Mode { name, command } => match command {

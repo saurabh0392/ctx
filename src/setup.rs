@@ -329,6 +329,10 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
     wire_mcp_server(&*host)?;
 
     if !no_install {
+        register_cursor_hook_if_present();
+    }
+
+    if !no_install {
         println!();
         println!("Next: {}", host.reload_instruction());
         if host.supports_node_options() {
@@ -374,6 +378,26 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
     Ok(())
 }
 
+/// Register the live Cursor postToolUse hook in `~/.cursor/hooks.json`, but only when Cursor is
+/// actually present (a `~/.cursor` directory exists). We never create that directory for users who
+/// do not run Cursor. Best-effort: a failure here must not abort setup. (ADR 0018 / CTX-27)
+fn register_cursor_hook_if_present() {
+    let present = dirs::home_dir()
+        .map(|h| h.join(".cursor").exists())
+        .unwrap_or(false);
+    if !present {
+        return;
+    }
+    match crate::cursor_hooks::write_ctx_cursor_hook() {
+        Ok(()) => {
+            println!("  Cursor:     live postToolUse hook in ~/.cursor/hooks.json (observe-only)");
+        }
+        Err(e) => {
+            println!("{} Cursor hook registration skipped: {e}", "!".yellow());
+        }
+    }
+}
+
 pub fn uninstall() -> Result<()> {
     if let Err(e) = crate::experiment_plan::backup_experiment_state() {
         println!("{} Experiment backup skipped: {e}", "!".yellow());
@@ -395,6 +419,16 @@ pub fn uninstall() -> Result<()> {
     unwire_mcp_server();
 
     strip_claude_settings_hooks_if_present()?;
+
+    match crate::cursor_hooks::remove_ctx_cursor_hook() {
+        Ok(true) => println!("{} Removed ctx hook from ~/.cursor/hooks.json", "✓".green()),
+        Ok(false) => {}
+        Err(e) => println!(
+            "{} Cursor hook removal skipped (edit ~/.cursor/hooks.json if needed): {}",
+            "!".yellow(),
+            e
+        ),
+    }
 
     match crate::config::remove_user_ctx_from_cursor_known_mcp_ids() {
         Ok(true) => println!(

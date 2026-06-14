@@ -52,6 +52,8 @@ pub fn post_tool_use() -> Result<()> {
         decision.shadow.as_ref(),
         decision.apply,
         decision.explore_arm,
+        // Claude Code surface is stamped at outcome-join time, not here (legacy behaviour).
+        None,
     );
 
     if !decision.apply {
@@ -137,14 +139,17 @@ pub fn post_tool_use() -> Result<()> {
 }
 
 /// Persist the would-do retention decision to `compress_decisions` for forward label
-/// collection. Best-effort: never fails the hook.
-fn record_shadow_decision(
+/// collection. Best-effort: never fails the hook. `surface` stamps the originating agent for
+/// surfaces ctx observes live (e.g. "cursor"); pass `None` for Claude Code, whose surface is
+/// stamped at outcome-join time.
+pub(crate) fn record_shadow_decision(
     session_id: Option<&str>,
     tool_name: &str,
     command_or_path: &str,
     decision: Option<&super::ShadowDecision>,
     applied: bool,
     explore_arm: Option<&str>,
+    surface: Option<&str>,
 ) {
     let Some(d) = decision else {
         return;
@@ -177,6 +182,7 @@ fn record_shadow_decision(
         command_or_path,
         applied,
         explore_arm,
+        surface,
     };
     let _ = crate::db::insert_compress_decision(&conn, &row);
 }

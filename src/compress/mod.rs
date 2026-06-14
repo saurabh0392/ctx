@@ -22,6 +22,7 @@ pub use hook_io::{
     extract_compressible_text, extract_tool_output, post_tool_use, tool_response_value,
     wrap_updated_tool_output,
 };
+pub(crate) use hook_io::record_shadow_decision;
 pub use shadow::{compute_shadow_decision, ShadowDecision};
 pub use types::{CompressKind, CompressResult};
 

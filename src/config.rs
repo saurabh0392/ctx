@@ -260,6 +260,21 @@ pub fn claude_code_cli_present() -> bool {
     claude_settings_path().is_file()
 }
 
+/// Path to the user-level Cursor hooks file (`~/.cursor/hooks.json`), where ctx registers its
+/// live Cursor postToolUse hook (ADR 0018). Mirrors [`claude_settings_path`]'s test isolation so
+/// unit tests never touch the real Cursor config.
+pub fn cursor_hooks_path() -> PathBuf {
+    if cfg!(test) {
+        if let Ok(p) = std::env::var("CTX_HOME") {
+            return PathBuf::from(p).join(".cursor").join("hooks.json");
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cursor")
+        .join("hooks.json")
+}
+
 /// True when Claude Code project JSONL logs exist under `~/.claude/projects/`.
 pub fn claude_projects_has_jsonl() -> bool {
     let Some(home) = dirs::home_dir() else {
