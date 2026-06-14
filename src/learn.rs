@@ -51,7 +51,22 @@ const FEATURE_NAMES: &[&str] = &[
     "kind_git_log",
     "kind_mcp",
     "kind_generic",
+    // Path-role one-hot (ADR 0030 / CTX-46). The model was blind to *which file* a read touched; it
+    // could not learn "reads of src get edited, reads of vendored code don't." `path_role` is logged
+    // per read decision from CTX-45 on; historical rows without it contribute an all-zero block,
+    // which is a safe default, so this takes effect as file-tagged data accrues.
+    "role_src",
+    "role_test",
+    "role_config",
+    "role_generated",
+    "role_vendored",
+    "role_docs",
 ];
+
+/// Canonical path-role strings for the one-hot block above, in the same order. Must align with
+/// `agent::path_role_of` outputs. A role not listed here (or a missing `path_role`) contributes an
+/// all-zero block, a safe default.
+const ROLE_ORDER: &[&str] = &["src", "test", "config", "generated", "vendored", "docs"];
 
 /// Canonical kind strings for the one-hot block above, in the same order. Must align with
 /// `compress::shadow::kind_str` outputs. A kind not listed here contributes an all-zero block,
@@ -73,6 +88,10 @@ struct ShadowFeaturesJson {
     risky_drops: usize,
     #[serde(default)]
     drop: FlagCountsJson,
+    /// Coarse file role logged per read decision (CTX-45). Absent on historical rows and on
+    /// non-read decisions, in which case the role one-hot is all-zero.
+    #[serde(default)]
+    path_role: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -150,6 +169,10 @@ fn feature_vector(kind: &str, lines_total: i64, lines_drop: i64, features_json: 
     ];
     for k in KIND_ORDER {
         v.push(if *k == kind { 1.0 } else { 0.0 });
+    }
+    let role = f.path_role.as_deref().unwrap_or("");
+    for r in ROLE_ORDER {
+        v.push(if *r == role { 1.0 } else { 0.0 });
     }
     v
 }
@@ -544,15 +567,32 @@ mod tests {
 
     #[test]
     fn kind_one_hot_sets_exactly_one_flag() {
+        // The kind block sits just before the trailing path-role block.
+        let kind_lo = FEATURE_NAMES.len() - KIND_ORDER.len() - ROLE_ORDER.len();
+        let kind_hi = FEATURE_NAMES.len() - ROLE_ORDER.len();
         let v = feature_vector("read", 10, 4, "{}");
-        let kind_block = &v[v.len() - KIND_ORDER.len()..];
+        let kind_block = &v[kind_lo..kind_hi];
         assert_eq!(kind_block.iter().filter(|x| **x == 1.0).count(), 1);
         let read_idx = KIND_ORDER.iter().position(|k| *k == "read").unwrap();
         assert_eq!(kind_block[read_idx], 1.0);
         // An unknown kind sets no flag, which is a safe all-zero default.
         let unknown = feature_vector("totally-unknown", 10, 4, "{}");
-        let ub = &unknown[unknown.len() - KIND_ORDER.len()..];
+        let ub = &unknown[kind_lo..kind_hi];
         assert!(ub.iter().all(|x| *x == 0.0));
+    }
+
+    #[test]
+    fn path_role_one_hot_sets_exactly_one_flag() {
+        let role_lo = FEATURE_NAMES.len() - ROLE_ORDER.len();
+        // A read tagged with a role lights exactly that role.
+        let v = feature_vector("read", 10, 4, r#"{"path_role":"vendored"}"#);
+        let role_block = &v[role_lo..];
+        assert_eq!(role_block.iter().filter(|x| **x == 1.0).count(), 1);
+        let idx = ROLE_ORDER.iter().position(|r| *r == "vendored").unwrap();
+        assert_eq!(role_block[idx], 1.0);
+        // No path_role (historical row or non-read) leaves the whole block zero.
+        let none = feature_vector("read", 10, 4, "{}");
+        assert!(none[role_lo..].iter().all(|x| *x == 0.0));
     }
 
     #[test]
