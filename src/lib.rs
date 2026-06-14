@@ -250,6 +250,11 @@ pub async fn run() -> Result<()> {
                 context_ctl::trial(tool.as_deref(), on, off)?
             }
             ContextCommand::CacheAudit { days, json } => context_ctl::cache_audit(days, json)?,
+            ContextCommand::SignalAudit {
+                signal,
+                limit,
+                json,
+            } => context_ctl::signal_audit(signal.as_deref(), limit, json)?,
         },
         Commands::Bench { command } => match command {
             BenchCommand::Run { json } => bench::run(json)?,
