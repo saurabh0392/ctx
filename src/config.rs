@@ -93,6 +93,33 @@ pub fn write_json_atomic(path: &std::path::Path, value: &serde_json::Value) -> R
     Ok(())
 }
 
+/// Like [`write_json_atomic`], but skips the write entirely when the pretty-printed value already
+/// matches what is on disk. Returns true if it wrote, false if it skipped.
+///
+/// This is the cache-safety guard (CTX-28). In soft filter mode the UserPromptSubmit hook resyncs
+/// `~/.claude/settings.json` on every prompt, so without this an unchanged deny set would still
+/// rewrite the file each turn. The rewrite is cache-neutral when the bytes match, but skipping it
+/// makes the invariant explicit and code-enforced: the cached `tools` prefix only ever changes when
+/// the effective tool set genuinely changes, never as a side effect of a no-op resync. Serialization
+/// is deterministic for a given value, and the prior file was written by the same serializer, so a
+/// logically unchanged document compares equal. If anything differs (or the file is unreadable) we
+/// fall through and write, so the guard can never leave stale content.
+pub fn write_json_atomic_if_changed(
+    path: &std::path::Path,
+    value: &serde_json::Value,
+) -> Result<bool> {
+    let next = serde_json::to_string_pretty(value)?;
+    if let Ok(current) = std::fs::read_to_string(path) {
+        if current == next {
+            return Ok(false);
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &next)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(true)
+}
+
 /// Merge or replace the `ctx` entry under `mcpServers` (Claude Code / Cursor / Desktop config shape).
 pub fn merge_ctx_into_mcp_servers(doc: &mut Value, ctx_bin: &str) -> Result<()> {
     let obj = doc
@@ -927,5 +954,71 @@ mod hook_strip_tests {
         let hooks = doc["hooks"].as_object().unwrap();
         assert_eq!(hooks["PreToolUse"].as_array().unwrap().len(), 0);
         assert_eq!(hooks["Stop"].as_array().unwrap().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod cache_safe_write_tests {
+    use super::*;
+    use serde_json::json;
+
+    // CTX-28: the soft-mode hook resyncs settings every prompt. The guard must not touch the file
+    // when the content is unchanged, so the cached tools prefix stays byte-stable.
+    #[test]
+    fn unchanged_value_is_not_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let doc = json!({ "permissions": { "deny": ["mcp__a__*", "mcp__b__*"] } });
+
+        assert!(
+            write_json_atomic_if_changed(&path, &doc).unwrap(),
+            "first write must create the file"
+        );
+        let first = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        // Re-serializing the same logical document must compare equal and skip the write, leaving the
+        // file (and its mtime) untouched. We rebuild the value via a round-trip to mimic the hook,
+        // which reads the file, re-applies rules, and serializes again.
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            !write_json_atomic_if_changed(&path, &reparsed).unwrap(),
+            "an identical resync must be skipped"
+        );
+        let second = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(first, second, "skipped write must not touch the file mtime");
+    }
+
+    #[test]
+    fn genuine_change_is_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+
+        let before = json!({ "permissions": { "deny": ["mcp__a__*"] } });
+        assert!(write_json_atomic_if_changed(&path, &before).unwrap());
+
+        // A real tool-set change (different deny set) must be persisted, otherwise filtering would
+        // silently stop reflecting the active profile.
+        let after = json!({ "permissions": { "deny": ["mcp__a__*", "mcp__b__*"] } });
+        assert!(
+            write_json_atomic_if_changed(&path, &after).unwrap(),
+            "a changed deny set must be written"
+        );
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["permissions"]["deny"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn writes_when_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nested").join("settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let doc = json!({ "permissions": { "deny": [] } });
+        assert!(
+            write_json_atomic_if_changed(&path, &doc).unwrap(),
+            "missing file must be created"
+        );
+        assert!(path.exists());
     }
 }
