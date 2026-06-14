@@ -43,6 +43,7 @@ fn seed_decision(conn: &rusqlite::Connection, session_id: &str, command: &str, t
         command_or_path: command,
         applied: false,
         explore_arm: None,
+        surface: None,
     };
     ctx::db::insert_compress_decision(conn, &d).expect("insert decision");
 }

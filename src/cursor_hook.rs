@@ -96,6 +96,59 @@ pub fn post_tool_use() -> Result<()> {
     Ok(())
 }
 
+/// Cursor `preCompact` command hook (CTX-31 increment 1, ADR 0023). Cursor fires this just before
+/// it compacts a conversation. Cursor's transcript carries no compaction marker, so this live event
+/// is the only honest signal that a Cursor compaction happened. We persist it (best-effort) so the
+/// compaction-harm view can show a real, lower-confidence count for Cursor instead of "not visible
+/// yet". Purely observational: we never block or alter the compaction, and always emit `{}`.
+pub fn pre_compact() -> Result<()> {
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    let payload: Value = serde_json::from_str(buf.trim()).unwrap_or(json!({}));
+
+    let cfg = Config::load();
+    if !cfg.compress_enabled {
+        print!("{{}}");
+        return Ok(());
+    }
+
+    let event = parse_cursor_compaction(&payload);
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        let _ = crate::db::insert_cursor_compaction(&conn, &event);
+    }
+
+    print!("{{}}");
+    Ok(())
+}
+
+/// Lift a Cursor `preCompact` payload into a [`crate::db::CursorCompaction`]. `conversation_id` is
+/// the stable session id (Cursor also sends `session_id` as the same value on some events, so we
+/// fall back to it). Every metric is optional: a missing field is recorded as NULL rather than
+/// guessed, so the persisted row never overstates what Cursor told us.
+pub fn parse_cursor_compaction(payload: &Value) -> crate::db::CursorCompaction {
+    let session_id = payload
+        .get("conversation_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| payload.get("session_id").and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    crate::db::CursorCompaction {
+        ts: chrono::Utc::now().to_rfc3339(),
+        session_id,
+        trigger: payload
+            .get("trigger")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        context_usage_percent: payload.get("context_usage_percent").and_then(|v| v.as_f64()),
+        context_tokens: payload.get("context_tokens").and_then(|v| v.as_i64()),
+        context_window_size: payload.get("context_window_size").and_then(|v| v.as_i64()),
+        message_count: payload.get("message_count").and_then(|v| v.as_i64()),
+        messages_to_compact: payload.get("messages_to_compact").and_then(|v| v.as_i64()),
+        is_first_compaction: payload.get("is_first_compaction").and_then(|v| v.as_bool()),
+    }
+}
+
 /// Build Cursor's `updated_mcp_tool_output` from the trimmed text, mirroring the MCP result
 /// envelope Cursor sends in. Verified live against a real Cursor 3.7 postToolUse payload (ADR
 /// 0018): `tool_output` is a JSON-stringified `{"content":[{"type":"text","text":...}],
@@ -347,6 +400,49 @@ mod tests {
         assert_eq!(updated["isError"], json!(false));
         assert_eq!(updated["content"][0]["type"], json!("text"));
         assert_eq!(updated["content"][0]["text"], json!("short"));
+    }
+
+    #[test]
+    fn parses_cursor_pre_compact_payload() {
+        // A Cursor preCompact payload (shape per the hooks docs, CTX-31). Every metric must land,
+        // and conversation_id must be the session id so the row joins to live Cursor activity.
+        let payload = json!({
+            "conversation_id": "conv-42",
+            "hook_event_name": "preCompact",
+            "trigger": "auto",
+            "context_usage_percent": 91.5,
+            "context_tokens": 184000,
+            "context_window_size": 200000,
+            "message_count": 128,
+            "messages_to_compact": 40,
+            "is_first_compaction": true
+        });
+        let c = parse_cursor_compaction(&payload);
+        assert_eq!(c.session_id.as_deref(), Some("conv-42"));
+        assert_eq!(c.trigger.as_deref(), Some("auto"));
+        assert_eq!(c.context_usage_percent, Some(91.5));
+        assert_eq!(c.context_tokens, Some(184000));
+        assert_eq!(c.context_window_size, Some(200000));
+        assert_eq!(c.message_count, Some(128));
+        assert_eq!(c.messages_to_compact, Some(40));
+        assert_eq!(c.is_first_compaction, Some(true));
+        assert!(!c.ts.is_empty());
+    }
+
+    #[test]
+    fn parses_minimal_pre_compact_payload_without_guessing() {
+        // A sparse payload: only what Cursor sent is recorded, everything else stays None (NULL),
+        // so the row never overstates the signal. session_id falls back to `session_id`.
+        let payload = json!({
+            "session_id": "sess-7",
+            "hook_event_name": "preCompact"
+        });
+        let c = parse_cursor_compaction(&payload);
+        assert_eq!(c.session_id.as_deref(), Some("sess-7"));
+        assert_eq!(c.trigger, None);
+        assert_eq!(c.context_usage_percent, None);
+        assert_eq!(c.message_count, None);
+        assert_eq!(c.is_first_compaction, None);
     }
 
     #[test]

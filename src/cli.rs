@@ -318,6 +318,8 @@ pub enum HookCommand {
     PostToolUse,
     /// Cursor postToolUse: observe Cursor tool results and record cursor decisions (ADR 0018)
     CursorPostToolUse,
+    /// Cursor preCompact: record a live Cursor compaction event (ADR 0023 / CTX-31)
+    CursorPreCompact,
 }
 
 #[derive(Subcommand)]

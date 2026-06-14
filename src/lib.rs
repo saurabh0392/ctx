@@ -114,6 +114,7 @@ pub async fn run() -> Result<()> {
             HookCommand::UserPromptSubmit => hook::user_prompt_submit()?,
             HookCommand::PostToolUse => compress::post_tool_use()?,
             HookCommand::CursorPostToolUse => cursor_hook::post_tool_use()?,
+            HookCommand::CursorPreCompact => cursor_hook::pre_compact()?,
         },
         Commands::Mcp => mcp::serve_stdio()?,
         Commands::Mode { name, command } => match command {

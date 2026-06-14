@@ -10,53 +10,67 @@ use serde_json::{json, Value};
 /// ctx subcommand wired as the Cursor postToolUse command hook.
 pub const CTX_CURSOR_POST_TOOL_SUBCOMMAND: &str = "hook cursor-post-tool-use";
 
-/// Cursor hook event ctx registers under.
-const CURSOR_POST_TOOL_EVENT: &str = "postToolUse";
+/// ctx subcommand wired as the Cursor preCompact command hook (CTX-31 / ADR 0023).
+pub const CTX_CURSOR_PRE_COMPACT_SUBCOMMAND: &str = "hook cursor-pre-compact";
 
-fn resolve_ctx_cursor_command() -> String {
+/// The Cursor hook events ctx owns, as (event name, ctx subcommand) pairs. postToolUse drives the
+/// live compress decisions (ADR 0018); preCompact records compaction events so Cursor graduates
+/// from honest-unknown on the compaction view (ADR 0023).
+fn ctx_cursor_hooks() -> [(&'static str, &'static str); 2] {
+    [
+        ("postToolUse", CTX_CURSOR_POST_TOOL_SUBCOMMAND),
+        ("preCompact", CTX_CURSOR_PRE_COMPACT_SUBCOMMAND),
+    ]
+}
+
+fn resolve_ctx_cursor_command(subcommand: &str) -> String {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(s) = exe.to_str() {
             if !s.is_empty() {
-                return format!("{} {}", s, CTX_CURSOR_POST_TOOL_SUBCOMMAND);
+                return format!("{} {}", s, subcommand);
             }
         }
     }
-    format!("ctx {}", CTX_CURSOR_POST_TOOL_SUBCOMMAND)
+    format!("ctx {}", subcommand)
 }
 
-/// True when this Cursor hook entry is the ctx-managed postToolUse command hook.
+/// True when this Cursor hook entry is any ctx-managed command hook.
 fn entry_is_ctx_cursor_hook(entry: &Value) -> bool {
     entry
         .get("command")
         .and_then(|c| c.as_str())
-        .map(|c| c.contains(CTX_CURSOR_POST_TOOL_SUBCOMMAND))
+        .map(|c| {
+            c.contains(CTX_CURSOR_POST_TOOL_SUBCOMMAND) || c.contains(CTX_CURSOR_PRE_COMPACT_SUBCOMMAND)
+        })
         .unwrap_or(false)
 }
 
-/// Remove ctx-managed entries from `hooks.postToolUse`, pruning empty containers. Returns true if
-/// it changed anything. Leaves every non-ctx hook (and every other event) untouched.
+/// Remove every ctx-managed entry from the events ctx owns, pruning empty containers. Returns true
+/// if it changed anything. Leaves every non-ctx hook (and every other event) untouched.
 pub fn strip_ctx_cursor_hook(doc: &mut Value) -> bool {
     let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return false;
     };
-    let Some(arr) = hooks
-        .get_mut(CURSOR_POST_TOOL_EVENT)
-        .and_then(|a| a.as_array_mut())
-    else {
-        return false;
-    };
-    let before = arr.len();
-    arr.retain(|e| !entry_is_ctx_cursor_hook(e));
-    let changed = arr.len() != before;
-    if arr.is_empty() {
-        hooks.remove(CURSOR_POST_TOOL_EVENT);
+    let mut changed = false;
+    for (event, _) in ctx_cursor_hooks() {
+        let Some(arr) = hooks.get_mut(event).and_then(|a| a.as_array_mut()) else {
+            continue;
+        };
+        let before = arr.len();
+        arr.retain(|e| !entry_is_ctx_cursor_hook(e));
+        if arr.len() != before {
+            changed = true;
+        }
+        if arr.is_empty() {
+            hooks.remove(event);
+        }
     }
     changed
 }
 
-/// Merge the ctx postToolUse command hook into the document, replacing any prior ctx entry first
-/// so repeated setups stay idempotent. No matcher: increment 1 observes every tool, and the
-/// handler stays silent on tools with no compressible output.
+/// Merge ctx's Cursor command hooks into the document, replacing any prior ctx entries first so
+/// repeated setups stay idempotent. No matchers: ctx observes every tool and every compaction, and
+/// each handler stays silent when there is nothing to do.
 pub fn merge_ctx_cursor_hook(doc: &mut Value) -> Result<()> {
     if !doc.is_object() {
         *doc = json!({});
@@ -67,17 +81,17 @@ pub fn merge_ctx_cursor_hook(doc: &mut Value) -> Result<()> {
     }
     strip_ctx_cursor_hook(doc);
 
-    let entry = json!({
-        "command": resolve_ctx_cursor_command()
-    });
-    doc["hooks"]
-        .as_object_mut()
-        .context("hooks must be an object")?
-        .entry(CURSOR_POST_TOOL_EVENT.to_string())
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .context("hooks.postToolUse must be an array")?
-        .push(entry);
+    for (event, subcommand) in ctx_cursor_hooks() {
+        let entry = json!({ "command": resolve_ctx_cursor_command(subcommand) });
+        doc["hooks"]
+            .as_object_mut()
+            .context("hooks must be an object")?
+            .entry(event.to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("hooks.{event} must be an array"))?
+            .push(entry);
+    }
     Ok(())
 }
 
@@ -145,15 +159,22 @@ mod tests {
         let mut doc = json!({});
         merge_ctx_cursor_hook(&mut doc).unwrap();
         assert_eq!(doc["version"], json!(1));
-        let arr = doc["hooks"]["postToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert!(arr[0]["command"]
+        let post = doc["hooks"]["postToolUse"].as_array().unwrap();
+        assert_eq!(post.len(), 1);
+        assert!(post[0]["command"]
             .as_str()
             .unwrap()
             .contains(CTX_CURSOR_POST_TOOL_SUBCOMMAND));
+        let pre = doc["hooks"]["preCompact"].as_array().unwrap();
+        assert_eq!(pre.len(), 1);
+        assert!(pre[0]["command"]
+            .as_str()
+            .unwrap()
+            .contains(CTX_CURSOR_PRE_COMPACT_SUBCOMMAND));
 
         assert!(strip_ctx_cursor_hook(&mut doc));
         assert!(doc.get("hooks").and_then(|h| h.get("postToolUse")).is_none());
+        assert!(doc.get("hooks").and_then(|h| h.get("preCompact")).is_none());
     }
 
     #[test]
@@ -162,6 +183,7 @@ mod tests {
         merge_ctx_cursor_hook(&mut doc).unwrap();
         merge_ctx_cursor_hook(&mut doc).unwrap();
         assert_eq!(doc["hooks"]["postToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["hooks"]["preCompact"].as_array().unwrap().len(), 1);
     }
 
     #[test]
