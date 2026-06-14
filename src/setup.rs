@@ -390,7 +390,7 @@ fn register_cursor_hook_if_present() {
     }
     match crate::cursor_hooks::write_ctx_cursor_hook() {
         Ok(()) => {
-            println!("  Cursor:     live postToolUse hook in ~/.cursor/hooks.json (observe-only)");
+            println!("  Cursor:     live postToolUse hook in ~/.cursor/hooks.json (trims MCP results, watches built-ins)");
         }
         Err(e) => {
             println!("{} Cursor hook registration skipped: {e}", "!".yellow());

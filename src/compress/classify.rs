@@ -38,6 +38,14 @@ fn is_test_command(lower: &str) -> bool {
         || lower.starts_with("ruff ")
 }
 
+/// True for an MCP tool on any surface: Claude Code's `mcp__server__tool` or Cursor's `MCP:tool`
+/// (ADR 0018). One definition so classification, the allow-list, and the apply path all agree on
+/// what counts as MCP regardless of which agent named it.
+pub fn is_mcp_tool(tool_name: &str) -> bool {
+    let name = tool_name.trim();
+    name.starts_with("mcp__") || name.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("mcp:"))
+}
+
 pub fn classify_tool(
     tool_name: &str,
     command: Option<&str>,
@@ -53,7 +61,7 @@ pub fn classify_tool(
     if name.eq_ignore_ascii_case("grep") || name.eq_ignore_ascii_case("glob") {
         return CompressKind::Grep;
     }
-    if name.starts_with("mcp__") {
+    if is_mcp_tool(name) {
         return CompressKind::Mcp;
     }
     if file_path.is_some() && name.eq_ignore_ascii_case("read") {

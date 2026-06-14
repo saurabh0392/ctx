@@ -918,12 +918,12 @@
   }
 
   // ════ SURFACES ════
-  // What ctx can actually do on each agent today. Honest about the asymmetry (ADR 0018): it acts
-  // on Claude built-in and MCP output, but on Cursor it observes live and MCP trimming is still
-  // to come (CTX-33). No claim of parity.
+  // What ctx can actually do on each agent today. Honest about the asymmetry (ADR 0018 / CTX-33):
+  // on Claude it trims both MCP and built-in output; on Cursor it trims MCP results live (Cursor
+  // only lets a hook replace MCP output) and watches built-in Read, Shell, and Grep. No claim of parity.
   const SURFACE_CAP = {
     "claude-code": "ctx trims MCP results and long tool output here, live, once a tool has earned it.",
-    "cursor": "ctx watches every tool result here live. Trimming Cursor's MCP results is coming next; built-in output stays observe-only for now.",
+    "cursor": "ctx trims Cursor's MCP results live, once a tool has earned it. Built-in Read, Shell, and Grep stay observe-only, because Cursor only lets a hook replace MCP output.",
   };
   async function loadSurfaces() {
     let ctx;

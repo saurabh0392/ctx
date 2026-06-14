@@ -1,10 +1,14 @@
-//! Cursor `postToolUse` command hook (ADR 0018 / CTX-27).
+//! Cursor `postToolUse` command hook (ADR 0018 / CTX-27, CTX-33).
 //!
 //! Cursor runs command hooks the same way Claude Code does: JSON in on stdin, JSON out on stdout.
-//! Increment 1 is observe-only. We lift each Cursor tool result into the same canonical
-//! [`crate::agent::ToolResult`] the Claude path uses, run the surface-agnostic controller to get
-//! the would-do retention decision, and record it stamped `surface = "cursor"`. We do not modify
-//! Cursor's tool output yet; acting on MCP outputs via `updated_mcp_tool_output` is increment 2.
+//! We lift each Cursor tool result into the same canonical [`crate::agent::ToolResult`] the Claude
+//! path uses and run the surface-agnostic controller to get the would-do retention decision,
+//! recorded stamped `surface = "cursor"`.
+//!
+//! Cursor lets a `postToolUse` hook replace tool output only for MCP tools, via
+//! `updated_mcp_tool_output` (ADR 0018). So this hook *acts* (CTX-33) on MCP results when the gate
+//! says trim, recording a real apply, and stays observe-only for built-in Read/Shell/Grep, which
+//! Cursor will not let a hook rewrite. We never claim parity with Claude here.
 
 use std::io::Read;
 
@@ -12,14 +16,15 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::agent::ToolResult;
+use crate::compress::CompressResult;
 use crate::config::Config;
 
 /// Stable surface tag stamped on every decision this hook records.
 pub const CURSOR_SURFACE: &str = "cursor";
 
-/// Read the Cursor postToolUse payload, record a `surface = "cursor"` decision, emit `{}`.
-/// Best-effort and always silent on stdout: a hook that fails or has nothing to say must never
-/// disturb the Cursor session.
+/// Read the Cursor postToolUse payload, record a `surface = "cursor"` decision, and for MCP tools
+/// that have earned a trim, emit `updated_mcp_tool_output` with the shortened result. Best-effort:
+/// a hook that fails or has nothing to act on emits `{}` and never disturbs the Cursor session.
 pub fn post_tool_use() -> Result<()> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
@@ -27,32 +32,119 @@ pub fn post_tool_use() -> Result<()> {
 
     let cfg = Config::load();
     if !cfg.compress_enabled {
+        print!("{{}}");
         return Ok(());
     }
 
+    let mut output = json!({});
     if let Some(tr) = extract_cursor_tool_result(&payload) {
         let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
         let decision = crate::agent::decide(&cfg, &tr);
-        // Observe-only (increment 1): ctx never rewrites Cursor output here, so `applied` must be
-        // false no matter what the controller would do on Claude. Recording `decision.apply` would
-        // overstate ("trims applied" on Cursor) and wrongly drop these runs into the causal trimmed
-        // arm. The would-do retention still rides along in the shadow decision. Acting on Cursor MCP
-        // output is CTX-33; that increment will record a real apply.
-        let applied_on_cursor = false;
+
+        // On Cursor, ctx can replace output only for MCP tools (`updated_mcp_tool_output`); built-in
+        // Read/Shell/Grep stay observe-only because Cursor will not let a hook rewrite them (ADR
+        // 0018). So a trim is applied here only when the gate says apply AND this is an MCP tool AND
+        // the compressor actually shortened the result. Anything else stays `applied = false`, so a
+        // trim ctx did not perform is never recorded as one (the honesty rule from ADR 0020).
+        let mut applied = false;
+        if decision.apply && crate::compress::classify::is_mcp_tool(&tr.tool_name) {
+            if let Some(result) = crate::compress::compress_tool_output(
+                &tr.tool_name,
+                &tr.tool_input,
+                &tr.raw_output,
+                &cfg,
+                tr.session_id.as_deref(),
+                &tr.cwd,
+                false,
+            ) {
+                if result.chars_saved() > 0 {
+                    let updated =
+                        cursor_mcp_updated_output(payload.get("tool_output"), &result.text);
+                    record_cursor_apply(
+                        tr.session_id.as_deref(),
+                        &tr.tool_name,
+                        &command_or_path,
+                        &result,
+                        &cfg,
+                        &tr.cwd,
+                    );
+                    let note = format!(
+                        "ctx trimmed this MCP result ({} to {} chars) to save context. The tool still ran in full.",
+                        result.chars_in, result.chars_out
+                    );
+                    output = json!({
+                        "updated_mcp_tool_output": updated,
+                        "additional_context": note,
+                    });
+                    applied = true;
+                }
+            }
+        }
+
         crate::compress::record_shadow_decision(
             tr.session_id.as_deref(),
             &tr.tool_name,
             &command_or_path,
             decision.shadow.as_ref(),
-            applied_on_cursor,
+            applied,
             decision.explore_arm,
             Some(CURSOR_SURFACE),
         );
     }
 
-    // Observe-only: no output rewrite. An empty object is the safe "nothing to change" reply.
-    print!("{}", serde_json::to_string(&json!({}))?);
+    print!("{}", serde_json::to_string(&output)?);
     Ok(())
+}
+
+/// Build Cursor's `updated_mcp_tool_output` from the trimmed text, mirroring the MCP result
+/// envelope Cursor sends in. Verified live against a real Cursor 3.7 postToolUse payload (ADR
+/// 0018): `tool_output` is a JSON-stringified `{"content":[{"type":"text","text":...}],
+/// "isError":false}`. We parse it so sibling fields (e.g. `isError`) survive, and replace only the
+/// text content with the trimmed text, so the model reads the shorter result in the same shape.
+fn cursor_mcp_updated_output(original_output: Option<&Value>, compressed: &str) -> Value {
+    let mut env = original_output
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    env.insert(
+        "content".into(),
+        json!([{ "type": "text", "text": compressed }]),
+    );
+    env.entry("isError".to_string()).or_insert(json!(false));
+    Value::Object(env)
+}
+
+/// Record a live Cursor MCP trim as a real apply: a compress_event for the savings feed and the
+/// analytics counter, mirroring the Claude apply path so the cross-surface view shows Cursor's
+/// savings (CTX-33). The decision row's applied flag is set by the caller via
+/// `record_shadow_decision`; this only adds the event and counter.
+fn record_cursor_apply(
+    session_id: Option<&str>,
+    tool_name: &str,
+    command_or_path: &str,
+    result: &CompressResult,
+    cfg: &Config,
+    cwd: &str,
+) {
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        let _ = crate::db::insert_compress_event(
+            &conn,
+            &chrono::Utc::now().to_rfc3339(),
+            session_id,
+            tool_name,
+            &result.strategy,
+            result.chars_in,
+            result.chars_out,
+            command_or_path,
+        );
+    }
+    crate::analytics::record_compress(
+        result.chars_saved(),
+        cfg.active_profile.as_deref().unwrap_or("all"),
+        cwd,
+    );
 }
 
 /// Lift a Cursor `postToolUse` payload into the canonical tool result. Returns `None` when there
@@ -231,5 +323,38 @@ mod tests {
         let tr = extract_cursor_tool_result(&payload).expect("extract");
         assert_eq!(tr.tool_name, "Grep");
         assert!(tr.raw_output.contains("fn main"));
+    }
+
+    #[test]
+    fn cursor_mcp_tool_name_is_detected() {
+        // Cursor names MCP tools `MCP:<tool>`; Claude uses `mcp__server__tool`. Both must read as MCP
+        // so only MCP results get an apply path. Built-ins must not.
+        assert!(crate::compress::classify::is_mcp_tool("MCP:get_issue"));
+        assert!(crate::compress::classify::is_mcp_tool("mcp__linear__get_issue"));
+        assert!(!crate::compress::classify::is_mcp_tool("Shell"));
+        assert!(!crate::compress::classify::is_mcp_tool("Read"));
+    }
+
+    #[test]
+    fn updated_mcp_output_replaces_text_and_keeps_envelope() {
+        // Real Cursor MCP envelope shape (verified live, ADR 0018): a JSON-stringified
+        // {"content":[{"type":"text","text":...}],"isError":false}. The trim must land in the text
+        // content and leave isError intact, so the model reads a shorter result in the same shape.
+        let original = json!(
+            "{\"content\":[{\"type\":\"text\",\"text\":\"a very long original result\"}],\"isError\":false}"
+        );
+        let updated = cursor_mcp_updated_output(Some(&original), "short");
+        assert_eq!(updated["isError"], json!(false));
+        assert_eq!(updated["content"][0]["type"], json!("text"));
+        assert_eq!(updated["content"][0]["text"], json!("short"));
+    }
+
+    #[test]
+    fn updated_mcp_output_handles_missing_or_unparsable_original() {
+        // No original (or a non-JSON one): still return a valid MCP envelope carrying the trimmed
+        // text, defaulting isError to false, so Cursor always gets a well-formed replacement.
+        let updated = cursor_mcp_updated_output(None, "trimmed");
+        assert_eq!(updated["content"][0]["text"], json!("trimmed"));
+        assert_eq!(updated["isError"], json!(false));
     }
 }

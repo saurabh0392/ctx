@@ -39,7 +39,7 @@ Ship it in increments, each separately verifiable:
    confidence" to "observed live," gives the loop-health and compaction views real Cursor data,
    and directly unblocks CTX-31 (persist Cursor turns).
 2. Act on MCP outputs. Use `updated_mcp_tool_output` to apply ctx trimming to Cursor MCP tool
-   results live, behind the same causal gate as Claude.
+   results live, behind the same causal gate as Claude. Shipped: CTX-33, ADR 0021.
 3. Cross-surface view. One honest dashboard view across Claude and Cursor, with explicit
    "unknown" where a surface has no data.
 
