@@ -78,10 +78,12 @@ shell commands to run through it.
 - The allowlist is conservative by design; it will need to grow as we confirm more commands are safe to
   wrap. Anything unrecognized is simply left untouched, so the failure mode is "no savings", never a
   broken command.
-- One behavior still needs live confirmation on a real Cursor build: that `updated_input` takes effect
-  (with `permission: "allow"`) and that the wrapped command runs and returns compacted output. This is a
-  pre-rollout check, not a code change; the gate keeps the hook inert until Shell earns trimming, so a
-  fresh install changes nothing until there is evidence.
+- Live-confirmed on a real Cursor build (2026-06-14): with Shell forced into trial, a `git log -n 400`
+  Shell tool call was rewritten by the `preToolUse` hook to `ctx run`, Cursor applied `updated_input`,
+  the wrapper ran and returned compacted output (58,483 -> 2,500 chars), recorded as a `Shell`
+  compress_event under `surface = "cursor"`, and `postToolUse` correctly skipped the wrapped command.
+  So `updated_input` with `permission: "allow"` does take effect for Shell. The gate keeps the hook
+  inert until Shell earns trimming, so a fresh install still changes nothing until there is evidence.
 - Supersedes the "Shell stays observe-only on Cursor no matter what" framing in ADR 0021 (already
   corrected there by the CTX-39 note): that limit is real for the `postToolUse` *output* path, not for
   the `preToolUse` *input* path.
