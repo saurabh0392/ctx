@@ -175,7 +175,7 @@ fn apply_sgr(
 
 fn tool_allowed(tool_name: &str, cfg: &Config) -> bool {
     let name = tool_name.trim();
-    if name.starts_with("mcp__") {
+    if classify::is_mcp_tool(name) {
         return true;
     }
     cfg.compress_tools
