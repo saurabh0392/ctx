@@ -356,7 +356,6 @@
       </div>
       <nav class="nav">
         <a data-view="home" onclick="go('home')">Home</a>
-        <a data-view="tools" onclick="go('tools')">Tools</a>
         <a data-view="loop" onclick="go('loop')">Loop health</a>
         <a data-view="compaction" onclick="go('compaction')">Compaction</a>
         <a data-view="surfaces" onclick="go('surfaces')">Surfaces</a>
@@ -401,16 +400,6 @@
         <span class="link" onclick="go('settings')">Settings</span>
         <span class="link" onclick="go('activity')">Activity</span>
       </div>
-    </section>
-
-    <!-- ══ TOOLS ══ -->
-    <section class="view" id="view-tools">
-      <div style="padding-top:40px">
-        <div class="page-title">Tools, tool by tool</div>
-        <p class="page-sub">Every tool is somewhere on the path from just watching to earning the right to trim. ctx watches until there is enough evidence, then tests by trimming for a bounded run, then keeps trimming only if your re-reads and corrections did not rise. Plain English leads, the numbers are one click away.</p>
-      </div>
-      <div class="tally" id="tools-tally"></div>
-      <div id="tools-list"></div>
     </section>
 
     <!-- ══ COMPACTION ══ -->
@@ -485,7 +474,6 @@
     document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view));
     window.scrollTo(0, 0);
     if (view === "home") loadHome();
-    if (view === "tools") loadTools();
     if (view === "loop") loadLoop();
     if (view === "compaction") loadCompaction();
     if (view === "surfaces") loadSurfaces();
@@ -577,7 +565,7 @@
         const shown = t.slice(0, CHIP_CAP).map((x) => `<span class="bc-chip">${esc(prettyTool(x))}</span>`).join("");
         chips = shown + (t.length > CHIP_CAP ? `<span class="bc-more">+${t.length - CHIP_CAP} more</span>` : "");
       }
-      return `<div class="bcard ${s}" onclick="go('tools')"><div class="bc-head"><span class="bc-dot ${s}"></span><span class="bc-title">${title}</span><span class="bc-count">${t.length}</span></div><div class="bc-desc">${desc}</div><div class="bc-tools">${chips}</div></div>`;
+      return `<div class="bcard ${s}" onclick="go('loop')"><div class="bc-head"><span class="bc-dot ${s}"></span><span class="bc-title">${title}</span><span class="bc-count">${t.length}</span></div><div class="bc-desc">${desc}</div><div class="bc-tools">${chips}</div></div>`;
     }).join("");
 
     // savings, up top beside the summary
@@ -613,26 +601,7 @@
 
   async function setPreset(p) { await post("/api/context/preset", { preset: p }); loadHome(); }
 
-  // ════ TOOLS ════
-  async function loadTools() {
-    let ctx, proof, mp;
-    try { [ctx, proof, mp] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/model-progress").catch(() => null)]); setHealth(true); }
-    catch (e) { setHealth(false); $("tools-list").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
-
-    const rows = mergeTools(ctx, proof);
-    const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
-    const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
-
-    // tally
-    const count = (s) => rows.filter((r) => r.stage === s).length;
-    const chip = (s, word) => count(s) ? `<span class="chip"><span class="d ${s}"></span><b>${count(s)}</b> ${word}</span>` : "";
-    $("tools-tally").innerHTML = (chip("earned", "earning it") + chip("test", "on trial") + chip("off", "kept off") + chip("watch", "still watching")) || "";
-
-    if (!rows.length) { $("tools-list").innerHTML = `<div class="empty">Nothing to show yet. As your agents return tool output, each tool appears here and starts its climb from watching toward earning the right to trim.</div>`; return; }
-
-    $("tools-list").innerHTML = rows.map((r, i) => toolCard(r, i, minB, minT, expBy[r.tool])).join("");
-  }
-
+  // ════ PER-TOOL EVIDENCE (rendered inside Loop health, CTX-35) ════
   function metricLine(name, m) { return m ? `<div class="ba-metric"><span class="ba-mn">${name}</span><span><div class="ba-mv">${pct(m.rate)}</div><div class="ba-ci">${pct(m.lo)} to ${pct(m.hi)}</div></span></div>` : ""; }
   function baCol(label, n, corr, rr) {
     if (!n) return `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">no runs yet</div></div>`;
@@ -744,7 +713,7 @@
     </div>`;
   }
 
-  async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadTools(); }
+  async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadLoop(); }
 
   // ════ ACTIVITY ════
   function timeAgo(ts) {
@@ -785,55 +754,23 @@
   }
 
   // ════ LOOP HEALTH ════
-  // Humanize tool names: "mcp__claude_ai_Linear__save_issue" -> { name: "save_issue", server: "Linear" }.
-  function toolLabel(raw) {
-    const s = String(raw == null ? "tool" : raw);
-    const parts = s.split("__");
-    if (parts.length >= 3 && parts[0] === "mcp") {
-      const server = parts[1].replace(/^claude_ai_/, "").replace(/_/g, " ");
-      return { name: parts.slice(2).join("__"), server };
-    }
-    return { name: s, server: null };
-  }
-  function loopStageRow(t, lh) {
-    const lab = toolLabel(t.tool_name);
-    const minB = lh.min_baseline || 30, minT = lh.min_trimmed || 30;
-    // A caption appears only where it adds something the badge and count don't already say.
-    let badge, cap = "", fill = "", pctW = 0, count = "";
-    if (t.stage === "learning") {
-      badge = "learning";
-      cap = lh.autopilot ? "" : "ready to test, autopilot is off";
-      pctW = Math.min(100, Math.round((t.trimmed_n || 0) / minT * 100));
-      count = `${num(t.trimmed_n || 0)}/${minT}`;
-    } else if (t.stage === "earned") {
-      badge = "earned"; fill = "full"; pctW = 100;
-      cap = `proved safe over ${num(t.trimmed_n || 0)} run${(t.trimmed_n || 0) === 1 ? "" : "s"}`;
-      count = "\u2713";
-    } else if (t.stage === "held") {
-      badge = "held"; fill = "muted"; pctW = 100;
-      cap = "its output changes too often to trim on autopilot";
-    } else if (t.stage === "blocked") {
-      badge = "blocked"; fill = "bad"; pctW = 100;
-      cap = "trimming looked worse, so ctx held it back";
-    } else {
-      badge = "watching";
-      pctW = Math.min(100, Math.round((t.baseline_n || 0) / minB * 100));
-      count = `${num(t.baseline_n || 0)}/${minB}`;
-    }
-    const server = lab.server ? esc(lab.server) : "built-in";
-    const capHtml = cap ? `<div class="lh-cap">${esc(cap)}</div>` : "";
-    return `<div class="lh-row">`
-      + `<div class="lh-id"><div class="lh-tool" title="${esc(t.tool_name || "")}">${esc(lab.name)}</div><div class="lh-server">${server}</div></div>`
-      + `<span class="lh-badge ${badge}">${badge}</span>`
-      + `<div class="lh-track"><div class="lh-prog"><div class="lh-fill ${fill}" style="width:${pctW}%"></div></div>${capHtml}</div>`
-      + `<span class="lh-count">${count}</span>`
-      + `</div>`;
-  }
-
+  // One per-tool surface (CTX-35): the accrual summary and sparkline on top say how much the loop
+  // has learned, then each tool's full evidence and trial controls sit below. This replaced the
+  // separate Tools tab; the rich card render (mergeTools + toolCard) is shared with nothing else now.
   async function loadLoop() {
-    let ctx;
-    try { ctx = await getJSON("/api/context"); setHealth(true); }
-    catch (e) { setHealth(false); $("loop-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
+    let ctx, proof, mp;
+    try {
+      [ctx, proof, mp] = await Promise.all([
+        getJSON("/api/context"),
+        getJSON("/api/context/proof").catch(() => ({ tools: [] })),
+        getJSON("/api/context/model-progress").catch(() => null),
+      ]);
+      setHealth(true);
+    } catch (e) {
+      setHealth(false);
+      $("loop-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`;
+      return;
+    }
     const lh = ctx.loop_health || {};
     const total = lh.total || 0;
 
@@ -859,13 +796,20 @@
       spark = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Arriving over time</div><div class="lh-spark">${bars}</div><div class="lh-axis"><span>${esc(first)}</span><span>${esc(last)}</span></div><div class="lh-legend"><span><span class="sw" style="background:var(--surface3)"></span>watched</span><span><span class="sw" style="background:var(--primary)"></span>labeled</span></div></div>`;
     }
 
-    const tools = lh.tools || [];
+    // Per-tool evidence + controls, the rich cards that used to live on the Tools tab.
+    const rows = mergeTools(ctx, proof);
+    const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
+    const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
+    const count = (s) => rows.filter((r) => r.stage === s).length;
+    const chip = (s, word) => count(s) ? `<span class="chip"><span class="d ${s}"></span><b>${count(s)}</b> ${word}</span>` : "";
+    const tally = chip("earned", "earning it") + chip("test", "on trial") + chip("off", "kept off") + chip("watch", "still watching");
+
     let toolsBlock;
-    if (!tools.length) {
-      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">No tool has enough labeled, trim-eligible runs yet to place on the path. As outcomes land, tools appear here and move from watching to learning to earned.</p></div>`;
+    if (!rows.length) {
+      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">No tool has enough labeled, trim-eligible runs yet to place on the path. As outcomes land, each tool appears here and climbs from watching, to testing real trims, to earned.</p></div>`;
     } else {
-      const rows = tools.map((t) => loopStageRow(t, lh)).join("");
-      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">Watching means ctx is still building a baseline of your runs. Learning means it has the baseline and is testing real trims now. Earned means trimming proved no worse than leaving the tool alone. ctx looks for about ${lh.min_baseline || 30} left-alone and ${lh.min_trimmed || 30} trimmed runs per tool.</p>${rows}</div>`;
+      const cards = rows.map((r, i) => toolCard(r, i, minB, minT, expBy[r.tool])).join("");
+      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">Every tool climbs the same ladder. ctx watches until there is enough evidence, then tests by trimming for a bounded run, and keeps trimming only if your re-reads and corrections did not rise. It looks for about ${minB} left-alone and ${minT} trimmed runs per tool. Open any tool for the evidence.</p>${tally ? `<div class="tally">${tally}</div>` : ""}${cards}</div>`;
     }
 
     $("loop-body").innerHTML = lead + spark + toolsBlock;
