@@ -87,12 +87,15 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         .as_ref()
         .map(|d| d.kind_str().to_string())
         .unwrap_or_else(|| "generic".to_string());
-    // A deliberate trial trims the chosen tool live even while the preset stays off and the
-    // evidence gate is unmet (the gate cannot pass before any trimmed data exists). Otherwise
-    // the normal path: the preset must allow the kind AND the tool must have earned activation.
+    // A deliberate trial (`compress_trial_tools`) trims the chosen tool live even while the preset
+    // stays off and the evidence gate is unmet. Otherwise the autopilot path: the preset must allow
+    // the kind AND the tool must either have earned activation OR be in automatic burn-in (ADR 0012
+    // / CTX-23), the bounded on-ramp that lets a tool with a clean baseline build its "after" arm.
+    // Burn-in respects the preset, so it never trims when autopilot is off.
     let base_apply = cfg.compress_trialing(&tr.tool_name)
         || (cfg.compress_applies_kind(&kind_label)
-            && compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label));
+            && (compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label)
+                || compress::activation::tool_in_burn_in(cfg, &tr.tool_name)));
 
     let is_read = kind_label == "read";
     let read_path = read_file_path(&tr.tool_input);
@@ -260,7 +263,8 @@ impl AgentTransport for ClaudeCodeTransport {
             .unwrap_or("")
             .to_string();
         // Lift the agent's most recent narration from the transcript the payload points at, so the
-        // read guard can act on declared edit-intent. Best-effort: None on any failure.
+        // read guard can act on declared edit-intent. Works for both Claude Code and Cursor
+        // transcripts (ADR 0011 / CTX-21). Best-effort: None on any failure.
         let recent_intent_text = compress::intent::recent_intent_text_for_payload(payload);
         Some(ToolResult {
             tool_name,
