@@ -272,6 +272,10 @@ struct ContextView {
     tools: Vec<ContextToolView>,
     feed: Vec<crate::db::CompressDecisionFeedRow>,
     model: Option<ContextModelView>,
+    /// Per-surface count of corrections that followed a native compaction within a window
+    /// (ADR 0016 / CTX-25). Always present, with `unknown` confidence for surfaces ctx
+    /// cannot yet see. No causal claim.
+    compaction: Vec<crate::db::CompactionFollowups>,
 }
 
 /// GET /api/context — everything the Context home needs, drawn only from real data.
@@ -279,7 +283,7 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed) = match open_ctx_db() {
+    let (stats, tools, feed, compaction) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
             let progress = crate::db::compress_tool_progress(&conn);
@@ -309,9 +313,10 @@ async fn api_context() -> Json<ContextView> {
                 })
                 .collect();
             let feed = crate::db::compress_decision_feed(&conn, 12);
-            (stats, tools, feed)
+            let compaction = crate::db::compaction_followups(&conn);
+            (stats, tools, feed, compaction)
         }
-        None => (Default::default(), Vec::new(), Vec::new()),
+        None => (Default::default(), Vec::new(), Vec::new(), Vec::new()),
     };
 
     let model = crate::learn::load_model().map(|m| {
@@ -334,6 +339,7 @@ async fn api_context() -> Json<ContextView> {
         tools,
         feed,
         model,
+        compaction,
     })
 }
 
