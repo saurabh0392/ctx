@@ -98,29 +98,43 @@ pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
     })
 }
 
-/// Turn Cursor's JSON-stringified `tool_output` into the text the compressors reason over, reusing
-/// the same extraction the Claude path uses. Cursor's "Shell" maps to the "Bash" extractor so its
-/// stdout is read rather than the whole result object.
+/// Turn Cursor's JSON-stringified `tool_output` into the text the compressors reason over.
+///
+/// Cursor's Shell results carry their terminal text under an `output` key
+/// (`{"output":"...","exitCode":0}`), which differs from the `stdout`-shaped example in Cursor's
+/// docs and from Claude Code's Bash shape, so we read `output` first. Everything else (Read, Grep,
+/// MCP) reuses the same extraction the Claude path uses.
 fn cursor_tool_output_text(tool_name: &str, out: Option<&Value>) -> String {
+    let out = match out {
+        Some(o) => o,
+        None => return String::new(),
+    };
+    // Parse the JSON-stringified payload; pass plain (non-JSON) strings straight through.
+    let parsed: Value = if let Some(s) = out.as_str() {
+        let trimmed = s.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => return s.to_string(),
+            }
+        } else {
+            return s.to_string();
+        }
+    } else {
+        out.clone()
+    };
+
+    // Cursor Shell/terminal results put the text under "output".
+    if let Some(o) = parsed.get("output").and_then(|x| x.as_str()) {
+        return o.to_string();
+    }
+
     let extract_name = if tool_name.eq_ignore_ascii_case("shell") {
         "Bash"
     } else {
         tool_name
     };
-    let Some(out) = out else {
-        return String::new();
-    };
-    if let Some(s) = out.as_str() {
-        let trimmed = s.trim();
-        if trimmed.starts_with('{') || trimmed.starts_with('[') {
-            if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                return crate::compress::extract_compressible_text(extract_name, &v);
-            }
-        }
-        return s.to_string();
-    }
-    // Defensive: tolerate a structured object if Cursor ever sends one directly.
-    crate::compress::extract_compressible_text(extract_name, out)
+    crate::compress::extract_compressible_text(extract_name, &parsed)
 }
 
 #[cfg(test)]
@@ -146,6 +160,35 @@ mod tests {
             tr.raw_output.contains("on branch main"),
             "stdout should be lifted, got: {}",
             tr.raw_output
+        );
+    }
+
+    #[test]
+    fn extracts_shell_output_field_real_cursor_shape() {
+        // Cursor's real Shell payload uses "output" (not "stdout") and an empty top-level cwd, so
+        // the text must come from "output" and the cwd from workspace_roots. Captured live from a
+        // Cursor 3.7 postToolUse event (ADR 0018).
+        let payload = json!({
+            "conversation_id": "conv-9",
+            "generation_id": "gen-9",
+            "hook_event_name": "postToolUse",
+            "workspace_roots": ["/Users/me/proj"],
+            "tool_name": "Shell",
+            "tool_input": {"command": "ls -la", "cwd": ""},
+            "cwd": "",
+            "tool_output": "{\"output\":\"total 8\\ndrwxr-xr-x  2 me staff\",\"exitCode\":0}"
+        });
+        let tr = extract_cursor_tool_result(&payload).expect("extract");
+        assert_eq!(tr.tool_name, "Shell");
+        assert_eq!(tr.cwd, "/Users/me/proj");
+        assert!(
+            tr.raw_output.contains("total 8"),
+            "Shell 'output' field must be lifted, got: {}",
+            tr.raw_output
+        );
+        assert!(
+            !tr.raw_output.contains("exitCode"),
+            "should be just the terminal text, not the wrapper json"
         );
     }
 

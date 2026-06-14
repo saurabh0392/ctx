@@ -52,6 +52,20 @@ This fits ctx's headline (MCP schema and result trimming is the main value); bui
 stays a Claude-Code capability for now, and the cross-surface view must state this honestly rather
 than imply parity.
 
+## Verified live (Cursor 3.7.19)
+
+Confirmed by capturing real hook payloads from a running Cursor agent, not just the docs:
+
+- `postToolUse` fires for every tool we care about, including `Shell`, `Read`, `Grep`, `Write`,
+  `Delete`, and MCP (`MCP:<tool>`). There is no need for a separate `afterShellExecution` hook to
+  see terminal output; `postToolUse` already carries it.
+- Cursor's Shell `tool_output` is shaped `{"output":"...","exitCode":N}`. It uses `output`, not
+  the `stdout` field Cursor's own docs example shows, so the parser reads `output` first.
+- The top-level `cwd` (and `tool_input.cwd`) come back empty in practice; `workspace_roots[0]` is
+  the reliable working directory, which is what the parser uses.
+- The payload also carries `generation_id` (per user message / turn) and `transcript_path`, which
+  later increments can use for turn-level joins and Cursor narration.
+
 ## Alternatives considered
 
 - Stay ingest-only and just harden the transcript adapter. Rejected as the primary path: it keeps
