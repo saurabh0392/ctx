@@ -225,6 +225,23 @@
   .cf-note { font-size: 12px; color: var(--t3); line-height: 1.5; margin-top: 9px; }
   @media (max-width: 720px) { .cf-grid { grid-template-columns: 1fr; } }
 
+  /* surfaces: one card per agent, side by side, equal height */
+  .sf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; max-width: 760px; align-items: stretch; }
+  .sf-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; display: flex; flex-direction: column; }
+  .sf-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .sf-name { font-size: 15px; font-weight: 700; color: var(--t1); }
+  .sf-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 4px 9px; border-radius: 7px; white-space: nowrap; }
+  .sf-pill.act { background: var(--primary); color: #04231a; }
+  .sf-pill.obs { background: var(--primary-dim); color: var(--primary-lt); }
+  .sf-pill.none { background: var(--surface3); color: var(--t4); }
+  .sf-cap { font-size: 12px; color: var(--t3); line-height: 1.5; margin-top: 10px; min-height: 36px; }
+  .sf-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .sf-k { font-size: 11px; color: var(--t4); }
+  .sf-v { font-size: 19px; font-weight: 700; color: var(--t1); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .sf-foot { font-size: 11px; color: var(--t4); line-height: 1.5; margin-top: 14px; }
+  .sf-empty { font-size: 12.5px; color: var(--t3); line-height: 1.55; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex: 1; }
+  @media (max-width: 720px) { .sf-grid { grid-template-columns: 1fr; } }
+
   /* loop health: accrual lead + sparkline + per-tool stage rows */
   .lh-spark { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin-top: 16px; max-width: 760px; }
   .lh-bar { flex: 1 1 0; min-width: 5px; background: var(--surface3); border-radius: 4px 4px 0 0; display: flex; align-items: flex-end; overflow: hidden; }
@@ -342,6 +359,7 @@
         <a data-view="tools" onclick="go('tools')">Tools</a>
         <a data-view="loop" onclick="go('loop')">Loop health</a>
         <a data-view="compaction" onclick="go('compaction')">Compaction</a>
+        <a data-view="surfaces" onclick="go('surfaces')">Surfaces</a>
         <a data-view="activity" onclick="go('activity')">Activity</a>
         <a data-view="settings" onclick="go('settings')">Settings</a>
         <span class="health" id="health"><span class="pip"></span><span id="health-txt">connecting</span></span>
@@ -413,6 +431,15 @@
       <div id="loop-body" style="margin-top:24px"></div>
     </section>
 
+    <!-- ══ SURFACES ══ -->
+    <section class="view" id="view-surfaces">
+      <div style="padding-top:40px">
+        <div class="page-title">Every agent, one honest layer</div>
+        <p class="page-sub">ctx sits under each coding agent you run and treats them as one. No agent vendor measures the others, so this is the one place you see Claude Code and Cursor side by side, on your own work. Each card is that agent's real activity. Where ctx hasn't seen an agent yet, it says so plainly instead of showing a zero.</p>
+      </div>
+      <div id="surfaces-body" style="margin-top:24px"></div>
+    </section>
+
     <!-- ══ ACTIVITY ══ -->
     <section class="view" id="view-activity">
       <div style="padding-top:40px">
@@ -448,12 +475,12 @@
 
   // ── router ──
   function go(view) {
-    const v = ["home", "tools", "loop", "compaction", "activity", "settings"].includes(view) ? view : "home";
+    const v = ["home", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(view) ? view : "home";
     location.hash = v;
   }
   function render() {
     const v = (location.hash || "#home").slice(1);
-    const view = ["home", "tools", "loop", "compaction", "activity", "settings"].includes(v) ? v : "home";
+    const view = ["home", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(v) ? v : "home";
     document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === "view-" + view));
     document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view));
     window.scrollTo(0, 0);
@@ -461,6 +488,7 @@
     if (view === "tools") loadTools();
     if (view === "loop") loadLoop();
     if (view === "compaction") loadCompaction();
+    if (view === "surfaces") loadSurfaces();
     if (view === "activity") loadActivity();
     if (view === "settings") loadSettings();
   }
@@ -887,6 +915,66 @@
     $("compaction-body").innerHTML =
       lead +
       `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">ctx can only measure an agent whose sessions it sees. Claude Code exposes its compaction, so that count is real. The others are not visible yet, which we show plainly instead of as a zero.</p><div class="cf-grid">${cards}</div></div>`;
+  }
+
+  // ════ SURFACES ════
+  // What ctx can actually do on each agent today. Honest about the asymmetry (ADR 0018): it acts
+  // on Claude built-in and MCP output, but on Cursor it observes live and MCP trimming is still
+  // to come (CTX-33). No claim of parity.
+  const SURFACE_CAP = {
+    "claude-code": "ctx trims MCP results and long tool output here, live, once a tool has earned it.",
+    "cursor": "ctx watches every tool result here live. Trimming Cursor's MCP results is coming next; built-in output stays observe-only for now.",
+  };
+  async function loadSurfaces() {
+    let ctx;
+    try { ctx = await getJSON("/api/context"); setHealth(true); }
+    catch (e) { setHealth(false); $("surfaces-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
+    const surfaces = ctx.surfaces || [];
+    const seen = surfaces.filter((s) => s.seen);
+    const totalDecisions = surfaces.reduce((a, s) => a + (s.decisions || 0), 0);
+
+    let lead;
+    if (!seen.length) {
+      lead = `<div class="cf-lead"><div class="cf-big">No agents seen yet</div><div class="cf-cap">ctx is the same honest layer under every coding agent you run. The moment you use Claude Code or Cursor with ctx installed, each one shows up here with its own real numbers. Run <code>ctx ingest</code> if you have used an agent and still see nothing.</div></div>`;
+    } else {
+      const names = seen.map((s) => SURFACE_NAME[s.surface] || s.surface).join(" and ");
+      lead = `<div class="cf-lead"><div class="cf-big"><b>${num(totalDecisions)}</b> decisions across ${seen.length} agent${seen.length === 1 ? "" : "s"}</div><div class="cf-cap">ctx is watching ${esc(names)} on this machine as one layer. No agent vendor measures the others, so this is the only place they sit side by side, on your own work.</div></div>`;
+    }
+
+    const card = (s) => {
+      const name = SURFACE_NAME[s.surface] || s.surface;
+      const cap = SURFACE_CAP[s.surface] || "";
+      if (!s.seen) {
+        return `<div class="sf-card"><div class="sf-head"><div class="sf-name">${esc(name)}</div><div class="sf-pill none">not seen yet</div></div><div class="sf-cap">${esc(cap)}</div><div class="sf-empty">No sessions on this machine yet. When you run ${esc(name)} with ctx installed, its decisions, savings, and corrections show up here.</div></div>`;
+      }
+      const acting = (s.acted || 0) > 0;
+      const pill = acting ? `<div class="sf-pill act">acting</div>` : `<div class="sf-pill obs">observing</div>`;
+      const savedTok = tok(s.chars_saved || 0);
+      const saved = savedTok > 0 ? fmtK(savedTok) + " tok" : "none yet";
+      const ago = s.last_seen ? timeAgo(s.last_seen) : "n/a";
+      return `<div class="sf-card">
+        <div class="sf-head"><div class="sf-name">${esc(name)}</div>${pill}</div>
+        <div class="sf-cap">${esc(cap)}</div>
+        <div class="sf-metrics">
+          <div><div class="sf-k">Decisions</div><div class="sf-v">${num(s.decisions)}</div></div>
+          <div><div class="sf-k">Trims applied</div><div class="sf-v">${num(s.acted)}</div></div>
+          <div><div class="sf-k">Context saved</div><div class="sf-v">${saved}</div></div>
+          <div><div class="sf-k">Corrections seen</div><div class="sf-v">${num(s.corrections)}</div></div>
+        </div>
+        <div class="sf-foot">${num(s.observed)} watched without changes, ${num(s.joined)} with an outcome ctx could label. Last activity ${esc(ago)}.</div>
+      </div>`;
+    };
+
+    const order = ["claude-code", "cursor"];
+    const cards = order
+      .map((id) => surfaces.find((s) => s.surface === id))
+      .filter(Boolean)
+      .map(card)
+      .join("");
+
+    $("surfaces-body").innerHTML =
+      lead +
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Acting means ctx is shortening what the agent reads back. Observing means it is only watching for now. The numbers are this machine's real decisions, not an estimate.</p><div class="sf-grid">${cards}</div></div>`;
   }
 
   // ════ SETTINGS ════
