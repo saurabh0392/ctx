@@ -95,6 +95,13 @@ pub fn compress_tool_output(
         return None;
     }
 
+    // Floor guard (CTX-40): a strategy must never erase non-trivial output to empty. If it did,
+    // treat it as a no-op rather than handing the model an empty result. A genuinely empty input
+    // returned early above, so chars_in > 0 here means real content would be lost.
+    if result.chars_out == 0 && chars_in > 0 {
+        return None;
+    }
+
     if cfg.compress_sgr_enabled && sgr_arm {
         result = apply_sgr(
             result, cfg, session_id, cwd, tool_name, tool_input, raw_output,
