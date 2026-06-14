@@ -17,6 +17,18 @@ pub fn post_tool_use() -> Result<()> {
     std::io::stdin().read_to_string(&mut buf)?;
     let payload: Value = serde_json::from_str(buf.trim()).unwrap_or(json!({}));
 
+    // A Claude model running inside Cursor fires both hook systems for one tool call: this
+    // Claude PostToolUse hook (registered in ~/.claude/settings.json) and the Cursor
+    // postToolUse hook (~/.cursor/hooks.json). Letting both record would log the same event
+    // twice, once here as surface=null and once in the Cursor hook as surface="cursor",
+    // doubling every per-tool count and poisoning the signal corpus (CTX-37). The Cursor hook
+    // owns Cursor events: it stamps the right surface and does the MCP trimming Cursor allows.
+    // So bail here on a Cursor-shaped payload. Cursor always sends `cursor_version`; a real
+    // Claude Code CLI payload never does, so this is safe for genuine Claude sessions.
+    if is_cursor_payload(&payload) {
+        return Ok(());
+    }
+
     let cfg = Config::load();
     if !cfg.compress_enabled {
         return Ok(());
@@ -136,6 +148,14 @@ pub fn post_tool_use() -> Result<()> {
     });
     println!("{}", serde_json::to_string(&out)?);
     Ok(())
+}
+
+/// True when this PostToolUse payload came from Cursor, not the Claude Code CLI. Cursor's hook
+/// payload always carries `cursor_version` (and `conversation_id`); Claude Code's never does.
+/// Used to stop the Claude hook from double-recording a tool call that the Cursor hook already
+/// owns when a Claude model runs inside Cursor (CTX-37).
+fn is_cursor_payload(payload: &Value) -> bool {
+    payload.get("cursor_version").is_some() || payload.get("conversation_id").is_some()
 }
 
 /// Persist the would-do retention decision to `compress_decisions` for forward label
@@ -397,6 +417,39 @@ mod tests {
     fn extract_string_tool_response() {
         let p = json!({"tool_response": "hello world"});
         assert_eq!(extract_tool_output(&p), "hello world");
+    }
+
+    #[test]
+    fn cursor_payload_is_detected_so_claude_hook_bails() {
+        // A real Cursor 3.7 postToolUse payload (captured live, CTX-37). It must read as Cursor
+        // so the Claude hook bails and the Cursor hook is the sole recorder, avoiding the
+        // surface=null duplicate that doubled every per-tool count.
+        let cursor = json!({
+            "conversation_id": "c0ef659b",
+            "generation_id": "6468b45d",
+            "model": "claude-opus-4-8",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/Cargo.toml"},
+            "tool_output": "{\"file_path\":\"/proj/Cargo.toml\",\"content_length\":143}",
+            "hook_event_name": "postToolUse",
+            "cursor_version": "3.7.19",
+            "workspace_roots": ["/proj"]
+        });
+        assert!(is_cursor_payload(&cursor));
+    }
+
+    #[test]
+    fn claude_payload_is_not_treated_as_cursor() {
+        // A native Claude Code PostToolUse payload has no cursor_version / conversation_id, so the
+        // Claude hook must still own it.
+        let claude = json!({
+            "session_id": "abc-123",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_response": {"stdout": "a\nb", "stderr": ""}
+        });
+        assert!(!is_cursor_payload(&claude));
     }
 
     #[test]
