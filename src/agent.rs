@@ -139,6 +139,9 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     // and proven per repo before it is ever allowed to steer a trim.
     if let Some(d) = shadow.as_mut() {
         d.features.repo_key = repo_key_for(&tr.cwd);
+        // Tag decisions made inside ctx's own source repo so the corpus queries can exclude them
+        // (CTX-32). Developing ctx is not user behavior; left in, it dominates and biases the gate.
+        d.features.self_dev = is_self_dev_repo(&tr.cwd).then_some(true);
         d.features.file_ext = read_file_path(&tr.tool_input).and_then(file_ext_of);
         let features_json = d.features_json();
         if let Some(score) = crate::learn::score_parts(
@@ -224,6 +227,45 @@ fn repo_key_for(cwd: &str) -> Option<String> {
         }
     }
     Some(cwd.to_string())
+}
+
+/// True when `cwd` is inside ctx's own source repo, identified by content rather than path: the
+/// nearest `.git` ancestor (the repo root) has a `Cargo.toml` whose `[package].name` is `ctx`
+/// (CTX-32). Content-based so it holds on any machine and checkout path. Used to keep ctx's own
+/// development churn out of the learning/gate/audit corpus. A missing or unreadable Cargo.toml, or
+/// any other package name, returns false, so the default is to keep the decision. Also reused by the
+/// one-time historical backfill in `db`, which passes a stored `repo_key` (already a repo root).
+pub(crate) fn is_self_dev_repo(cwd: &str) -> bool {
+    if cwd.is_empty() {
+        return false;
+    }
+    let mut dir = std::path::Path::new(cwd);
+    loop {
+        if dir.join(".git").exists() {
+            return cargo_package_is_ctx(&dir.join("Cargo.toml"));
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return false,
+        }
+    }
+}
+
+/// True when a `Cargo.toml` declares `[package] name = "ctx"`. Parsed with the toml crate so a
+/// dependency or workspace member that merely mentions `ctx` cannot trigger a false match.
+fn cargo_package_is_ctx(cargo_toml: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(cargo_toml) else {
+        return false;
+    };
+    text.parse::<toml::Value>()
+        .ok()
+        .and_then(|v| {
+            v.get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|n| n == "ctx")
+        })
+        .unwrap_or(false)
 }
 
 /// Reference transport for Claude Code PostToolUse payloads. Delegates to the existing
@@ -507,6 +549,38 @@ mod tests {
             repo_key_for("/nonexistent/ctx-test/deep/dir").as_deref(),
             Some("/nonexistent/ctx-test/deep/dir")
         );
+    }
+
+    #[test]
+    fn self_dev_repo_detected_by_package_name_not_path() {
+        let tmp = std::env::temp_dir().join(format!("ctx-selfdev-{}", std::process::id()));
+        let nested = tmp.join("src/compress");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+
+        // No Cargo.toml yet: a git repo that is not ctx is not self-dev.
+        assert!(!is_self_dev_repo(nested.to_str().unwrap()));
+
+        // A Cargo.toml whose package is ctx marks the whole tree as self-dev, from any depth.
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"ctx\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert!(is_self_dev_repo(tmp.to_str().unwrap()));
+        assert!(is_self_dev_repo(nested.to_str().unwrap()));
+
+        // A different package, even one that mentions ctx as a dependency, is not self-dev.
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"my-app\"\n\n[dependencies]\nctx = \"1\"\n",
+        )
+        .unwrap();
+        assert!(!is_self_dev_repo(nested.to_str().unwrap()));
+
+        // Empty cwd is never self-dev.
+        assert!(!is_self_dev_repo(""));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // A trialed reference read of 500 lines is trim-eligible and actually drops lines, so it is a
