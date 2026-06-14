@@ -15,6 +15,8 @@ pub fn ctx_env_lock() -> MutexGuard<'static, ()> {
 
 pub struct CtxHarness {
     pub tmp: TempDir,
+    prev_home: Option<String>,
+    prev_ctx_home: Option<String>,
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -22,12 +24,24 @@ impl CtxHarness {
     pub fn new() -> Self {
         let _guard = ctx_env_lock();
         let tmp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var("HOME").ok();
+        let prev_ctx_home = std::env::var("CTX_HOME").ok();
         std::env::set_var("CTX_HOME", tmp.path());
+        // Isolate HOME too: several code paths (experiment tick, friction recovery) write
+        // ~/.claude/settings.json, which is resolved from HOME, not CTX_HOME. Without this a
+        // test run clobbers the live PostToolUse collection hook in the real settings file.
+        std::env::set_var("HOME", tmp.path());
         let _ = std::fs::create_dir_all(tmp.path());
+        let _ = std::fs::create_dir_all(tmp.path().join(".claude"));
         let conn = db::open_db().expect("open_db");
         db::ensure_schema(&conn).expect("ensure_schema");
         drop(conn);
-        Self { tmp, _guard }
+        Self {
+            tmp,
+            prev_home,
+            prev_ctx_home,
+            _guard,
+        }
     }
 
     pub fn open(&self) -> Connection {
@@ -48,9 +62,11 @@ impl CtxHarness {
         )
         .expect("insert session");
         let sid: i64 = conn
-            .query_row("SELECT id FROM sessions WHERE external_key='ext-journey'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='ext-journey'",
+                [],
+                |r| r.get(0),
+            )
             .expect("session id");
         conn.execute(
             "INSERT INTO turns (session_id, turn_index, role, human_text_prefix, flags, ts)
@@ -97,5 +113,18 @@ impl CtxHarness {
             ],
         )
         .expect("insert hook_trace");
+    }
+}
+
+impl Drop for CtxHarness {
+    fn drop(&mut self) {
+        match &self.prev_home {
+            Some(p) => std::env::set_var("HOME", p),
+            None => std::env::remove_var("HOME"),
+        }
+        match &self.prev_ctx_home {
+            Some(p) => std::env::set_var("CTX_HOME", p),
+            None => std::env::remove_var("CTX_HOME"),
+        }
     }
 }

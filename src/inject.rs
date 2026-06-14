@@ -6,7 +6,9 @@ pub fn load_prefix() -> Option<String> {
     if !path.exists() {
         return None;
     }
-    std::fs::read_to_string(&path).ok().filter(|s| !s.trim().is_empty())
+    std::fs::read_to_string(&path)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
 }
 
 /// Prepend system_prefix.md content to the `system` field of an Anthropic request body.
@@ -94,7 +96,10 @@ mod tests {
         .unwrap();
         let result = inject_system(&body, "prefix text");
         let v: serde_json::Value = serde_json::from_slice(&result).unwrap();
-        assert_eq!(v["system"].as_str().unwrap(), "prefix text\n\noriginal instructions");
+        assert_eq!(
+            v["system"].as_str().unwrap(),
+            "prefix text\n\noriginal instructions"
+        );
     }
 
     #[test]

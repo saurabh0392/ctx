@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ctx Tools journey prototype</title>
+<style>
+:root {
+  --bg:#111c20; --surface:#182428; --surface2:#1f2e33; --surface3:#263840;
+  --border:#2e4048; --border2:#3d5560;
+  --t1:#f0f5f0; --t2:#9dbea8; --t3:#7aab90; --t4:#638c78;
+  --primary:#93c043; --primary-lt:#b0d46a; --primary-glow:rgba(147,192,67,.13); --primary-border:rgba(147,192,67,.28);
+  --green:#93c043; --red:#f87171; --amber:#fbbf24; --blue:#60a5fa; --purple:#c4b5fd; --orange:#fb923c; --cyan:#22d3ee;
+  --sidebar:224px;
+}
+[data-theme="light"] {
+  --bg:#f3f6f1; --surface:#fff; --surface2:#edf2e9; --surface3:#e2eadc;
+  --border:#cad8c2; --border2:#afc4a4;
+  --t1:#1a2a1c; --t2:#3a5240; --t3:#728c70; --t4:#9bb494;
+  --primary:#5c8520; --primary-lt:#4a6e18; --primary-glow:rgba(92,133,32,.10); --primary-border:rgba(92,133,32,.28);
+  --green:#5c8520; --red:#c0392b; --amber:#b5860a; --blue:#2563eb; --purple:#7c3aed;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:"Inter",-apple-system,"SF Pro Text","Segoe UI",sans-serif; background:var(--bg); color:var(--t1); min-height:100vh; display:flex; font-size:14px; line-height:1.5; }
+
+/* sidebar */
+.sidebar { width:var(--sidebar); background:#182428; border-right:1px solid #2e4048; padding:24px 0; flex-shrink:0; display:flex; flex-direction:column; position:fixed; inset:0 auto 0 0; z-index:10; }
+[data-theme="light"] .sidebar { background:#fff; border-right-color:#cad8c2; }
+.sb-logo { padding:0 20px 24px; border-bottom:1px solid #2e4048; margin-bottom:8px; }
+.sb-logo-mark { font-size:20px; font-weight:800; letter-spacing:-.8px; color:var(--t1); }
+.sb-logo-mark span { color:var(--primary-lt); }
+.sb-logo-sub { font-size:11px; color:var(--t3); margin-top:2px; letter-spacing:.05em; text-transform:uppercase; }
+.nav-section { padding:8px 14px 4px; font-size:10px; font-weight:600; color:#3d5560; letter-spacing:.09em; text-transform:uppercase; margin-top:8px; }
+.nav-item { display:flex; align-items:center; gap:10px; padding:9px 12px; margin:1px 8px; border-radius:8px; font-size:13px; font-weight:500; color:var(--t2); cursor:pointer; transition:all .15s; border:1px solid transparent; }
+.nav-item:hover { background:var(--surface3); color:var(--primary-lt); }
+.nav-item.active { background:rgba(147,192,67,.18); color:var(--primary-lt); border-color:rgba(147,192,67,.35); }
+.nav-icon { font-size:15px; opacity:.85; width:18px; text-align:center; }
+.theme-btn { margin:auto 12px 0; padding:8px 12px; background:transparent; border:1px solid var(--border); border-radius:8px; color:var(--t2); font-size:12px; font-weight:500; cursor:pointer; width:calc(100% - 24px); }
+
+/* main */
+.main-wrap { margin-left:var(--sidebar); flex:1; }
+.tab-panel { padding:32px 48px 64px; min-height:100vh; }
+.page-title { font-size:26px; font-weight:700; color:var(--t1); letter-spacing:-.5px; margin-bottom:6px; }
+.page-sub { font-size:14px; color:var(--t3); margin-bottom:22px; max-width:720px; line-height:1.6; }
+
+.proto-note { margin:0 0 22px; padding:11px 16px; background:rgba(251,191,36,.10); border:1px solid rgba(251,191,36,.3); border-radius:10px; font-size:12px; color:var(--amber); }
+
+/* summary strip */
+.tally { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:22px; }
+.tally-chip { display:inline-flex; align-items:center; gap:7px; padding:7px 13px; background:var(--surface); border:1px solid var(--border); border-radius:20px; font-size:12.5px; color:var(--t2); }
+.tally-chip b { color:var(--t1); font-variant-numeric:tabular-nums; }
+.dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.dot.on { background:var(--green); }
+.dot.trial { background:var(--amber); }
+.dot.close { background:var(--blue); }
+.dot.watch { background:var(--t4); }
+.dot.off { background:var(--red); }
+
+/* live test banner */
+.trial-banner { display:flex; align-items:center; gap:16px; padding:14px 18px; background:rgba(251,191,36,.08); border:1px solid rgba(251,191,36,.3); border-radius:12px; margin-bottom:22px; }
+.tb-text { font-size:13px; color:var(--t2); line-height:1.55; flex:1; }
+.tb-text b { color:var(--amber); }
+.tb-btn { background:var(--primary); color:#0f1a0a; border:none; border-radius:9px; padding:8px 14px; font-size:12.5px; font-weight:700; cursor:pointer; white-space:nowrap; }
+.tb-btn.ghost { background:transparent; color:var(--t2); border:1px solid var(--border2); }
+
+/* journey rows */
+.section-head { font-size:13px; font-weight:700; color:var(--t4); text-transform:uppercase; letter-spacing:.06em; margin:26px 0 10px; }
+.jrow { background:var(--surface); border:1px solid var(--border); border-radius:13px; margin-bottom:10px; overflow:hidden; transition:border-color .18s; }
+.jrow:hover { border-color:var(--border2); }
+.jrow.open { border-color:var(--primary-border); }
+.jhead { display:flex; align-items:center; gap:14px; padding:16px 18px; cursor:pointer; }
+.jname { font-size:15px; font-weight:700; color:var(--t1); font-family:"SF Mono",ui-monospace,monospace; min-width:62px; }
+.jpill { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:3px 10px; border-radius:8px; white-space:nowrap; }
+.p-on { background:rgba(147,192,67,.16); color:var(--primary-lt); }
+.p-trial { background:rgba(251,191,36,.14); color:var(--amber); }
+.p-close { background:rgba(96,165,250,.14); color:var(--blue); }
+.p-watch { background:var(--surface3); color:var(--t3); }
+.p-off { background:rgba(248,113,113,.14); color:var(--red); }
+.jsummary { flex:1; font-size:13px; color:var(--t2); line-height:1.5; }
+.jchev { color:var(--t4); font-size:13px; transition:transform .2s; flex-shrink:0; }
+.jrow.open .jchev { transform:rotate(90deg); }
+
+/* expand drawer */
+.jdraw { display:none; padding:0 18px 18px 18px; border-top:1px solid var(--border); margin-top:-1px; }
+.jrow.open .jdraw { display:block; animation:fade .2s ease; }
+@keyframes fade { from { opacity:0; transform:translateY(-3px); } to { opacity:1; transform:none; } }
+.jstory { font-size:13.5px; color:var(--t2); line-height:1.65; margin:16px 0 4px; max-width:680px; }
+.jstory b { color:var(--t1); }
+.jstory .good { color:var(--primary-lt); font-weight:600; }
+.jstory .bad { color:var(--red); font-weight:600; }
+.draw-actions { display:flex; align-items:center; gap:16px; margin-top:14px; flex-wrap:wrap; }
+.shownum { font-size:12.5px; font-weight:600; color:var(--primary-lt); cursor:pointer; background:none; border:none; padding:0; }
+.shownum:hover { text-decoration:underline; }
+
+/* numbers block (hidden until toggled) */
+.nums { display:none; margin-top:16px; }
+.nums.show { display:block; animation:fade .2s ease; }
+.ba-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.ba-col { background:var(--surface2); border:1px solid var(--border); border-radius:11px; padding:14px 16px; }
+.ba-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--t4); margin-bottom:3px; }
+.ba-n { font-size:12px; color:var(--t3); margin-bottom:12px; }
+.ba-metric { display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-top:1px solid var(--border); }
+.ba-mname { font-size:12.5px; color:var(--t2); }
+.ba-mval { font-size:15px; font-weight:700; color:var(--t1); font-variant-numeric:tabular-nums; text-align:right; }
+.ba-ci { font-size:10.5px; color:var(--t4); text-align:right; }
+.nums-note { font-size:11.5px; color:var(--t4); margin-top:10px; line-height:1.5; }
+
+.empty { padding:40px; text-align:center; color:var(--t3); font-size:13px; background:var(--surface); border:1px dashed var(--border2); border-radius:13px; }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-mark">ctx<span>.</span></div>
+    <div class="sb-logo-sub">Context safety layer</div>
+  </div>
+  <div class="nav-section">Your context</div>
+  <div class="nav-item"><span class="nav-icon">&#9678;</span> Home</div>
+  <div class="nav-item active"><span class="nav-icon">&#9670;</span> Tools</div>
+  <div class="nav-item"><span class="nav-icon">&#8801;</span> Activity</div>
+  <div class="nav-section">Setup</div>
+  <div class="nav-item"><span class="nav-icon">&#127899;</span> Profiles</div>
+  <div class="nav-item"><span class="nav-icon">&#9881;</span> Settings</div>
+  <button class="theme-btn" onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</aside>
+
+<div class="main-wrap">
+<div class="tab-panel">
+  <div class="proto-note">Prototype with mock data. Every tool below is fake but shows a real journey state. Click any row to expand the story, then "Show the numbers" to reveal the exact rates.</div>
+
+  <h1 class="page-title">Tools</h1>
+  <p class="page-sub">Every tool ctx watches starts off untouched. It only earns the right to trim once your own sessions show that cutting its output never made you re-read or fix things more often. Here is exactly where each one stands.</p>
+
+  <div class="tally">
+    <span class="tally-chip"><span class="dot on"></span><b>2</b> trimming now</span>
+    <span class="tally-chip"><span class="dot trial"></span><b>1</b> on trial</span>
+    <span class="tally-chip"><span class="dot close"></span><b>1</b> too close</span>
+    <span class="tally-chip"><span class="dot watch"></span><b>1</b> still watching</span>
+    <span class="tally-chip"><span class="dot off"></span><b>1</b> kept off</span>
+  </div>
+
+  <div class="trial-banner">
+    <div class="tb-text">A live test is running on <b>Bash</b>. ctx is trimming it for real so it can see what happens next. This is a real change to your output, scoped to one tool, and the full text still lands in your transcript.</div>
+    <button class="tb-btn ghost" onclick="alert('stub: stop the Bash test')">Stop the test</button>
+  </div>
+
+  <div id="list"></div>
+</div>
+</div>
+
+<script>
+// Mock journey data. In the real page this is merged from /api/context (the climb)
+// and /api/context/proof (tested tools), then sorted by stage.
+const TOOLS = [
+  {
+    tool: "git", stage: "on", active: true,
+    summary: "Earned it. Trimming git never cost you a re-read or a fix.",
+    story: `<b>git</b> earned it. Across <b>64</b> of your runs, trimming git did <span class="good">not</span> make you re-read or correct any more often than leaving it whole. So ctx trims it now, and the full output still lands in your transcript.`,
+    base: { n: 31, corr: "9.7%", corrCi: "3.3% to 25.0%", rr: "12.9%", rrCi: "5.1% to 28.9%" },
+    trim: { n: 33, corr: "9.1%", corrCi: "3.1% to 23.6%", rr: "12.1%", rrCi: "4.8% to 27.3%" },
+    delta: `Trimmed vs left alone: re-reads moved <span class="good">-0.8 points</span> and fixes moved <span class="good">-0.6 points</span>. Both sit at or below zero, so trimming is not measurably worse. That is enough to earn it.`,
+    action: null
+  },
+  {
+    tool: "test", stage: "on", active: false,
+    summary: "Cleared the bar on your data. Ready, flip the preset to turn it on.",
+    story: `<b>test</b> cleared the bar on <b>48</b> of your runs: trimming it did <span class="good">not</span> make you re-read or correct more. It is ready. It will start trimming the moment you flip the Compression preset to Safe.`,
+    base: { n: 24, corr: "8.3%", corrCi: "2.3% to 25.8%", rr: "16.7%", rrCi: "7.0% to 34.5%" },
+    trim: { n: 24, corr: "8.3%", corrCi: "2.3% to 25.8%", rr: "12.5%", rrCi: "4.3% to 31.0%" },
+    delta: `Trimmed vs left alone: re-reads moved <span class="good">-4.2 points</span> and fixes were flat. Below zero on both, so it earned activation. It just is not switched on yet.`,
+    action: null
+  },
+  {
+    tool: "Bash", stage: "trial",
+    summary: "On trial now. ctx has trimmed it 8 times and left it alone 21.",
+    story: `<b>Bash</b> is on trial. So far ctx has trimmed it <b>8</b> times and left it alone <b>21</b> times. It needs about <b>30</b> of each before it can give you a straight, honest answer. Keep working and it will get there.`,
+    base: { n: 21, corr: "14.3%", corrCi: "5.0% to 34.6%", rr: "9.5%", rrCi: "2.7% to 28.9%" },
+    trim: { n: 8, corr: "12.5%", corrCi: "2.2% to 47.1%", rr: "12.5%", rrCi: "2.2% to 47.1%" },
+    delta: `Too early to read the gap. The trimmed side only has 8 runs, so the range is still very wide. ctx will not call it until both sides reach about 30.`,
+    action: { label: "Stop the test", warn: true }
+  },
+  {
+    tool: "grep", stage: "close",
+    summary: "Close, but not conclusive yet. A few more trimmed runs will settle it.",
+    story: `<b>grep</b> is close but not conclusive. The numbers lean fine, but they still wobble enough that ctx will not call it safe. A handful more trimmed runs should settle which way it goes.`,
+    base: { n: 30, corr: "10.0%", corrCi: "3.5% to 25.6%", rr: "13.3%", rrCi: "5.3% to 29.7%" },
+    trim: { n: 31, corr: "12.9%", corrCi: "5.1% to 28.9%", rr: "19.4%", rrCi: "9.2% to 36.3%" },
+    delta: `Trimmed vs left alone: re-reads moved <b>+6.1 points</b>, but the range still crosses zero (-7 to +19), so it is too close to call. Not safe, not proven harmful, yet.`,
+    action: { label: "Keep the test running", warn: false }
+  },
+  {
+    tool: "Edit", stage: "watch",
+    summary: "Still watching. 12 of about 30 runs judged so far.",
+    story: `<b>Edit</b> is still in watching mode. ctx has recorded what it would trim on your runs and is checking it against what you actually needed next. So far <b>12 of about 30</b> runs have a verdict. Nothing has changed in your output.`,
+    base: null, trim: null,
+    delta: null,
+    action: { label: "Put Edit on trial", warn: false }
+  },
+  {
+    tool: "Read", stage: "off",
+    summary: "Tested and it backfired, so ctx keeps it off.",
+    story: `ctx tested <b>Read</b> and it backfired. When it trimmed Read, you re-read files <span class="bad">noticeably more often</span> than when it left them whole. So ctx keeps Read off. That is the safety layer doing its job: a tool only trims when your data clears it.`,
+    base: { n: 34, corr: "11.8%", corrCi: "4.7% to 26.6%", rr: "14.7%", rrCi: "6.5% to 30.1%" },
+    trim: { n: 32, corr: "15.6%", corrCi: "6.9% to 31.8%", rr: "31.3%", rrCi: "18.0% to 48.6%" },
+    delta: `Trimmed vs left alone: re-reads jumped <span class="bad">+16.6 points</span> (range +2 to +31, clearly above zero). That is real harm, so Read stays off.`,
+    action: { label: "Run the test again", warn: false }
+  }
+];
+
+const PILL = {
+  on: ['p-on', 'On'], trial: ['p-trial', 'On trial'], close: ['p-close', 'Too close'],
+  watch: ['p-watch', 'Watching'], off: ['p-off', 'Kept off']
+};
+const ORDER = { on: 0, trial: 1, close: 2, watch: 3, off: 4 };
+
+function metricRow(name, val, ci) {
+  return `<div class="ba-metric"><span class="ba-mname">${name}</span><span><div class="ba-mval">${val}</div><div class="ba-ci">${ci}</div></span></div>`;
+}
+
+function numsBlock(t) {
+  if (!t.base && !t.trim) {
+    return `<div class="nums-note">No before-and-after to show yet. ctx needs runs where it actually trimmed this tool, which only happens once it is on trial.</div>`;
+  }
+  const col = (label, c) => c
+    ? `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">${c.n} runs</div>${metricRow("You had to fix it", c.corr, c.corrCi)}${metricRow("You re-read it", c.rr, c.rrCi)}</div>`
+    : `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">no runs yet</div></div>`;
+  return `<div class="ba-grid">${col("When ctx left it whole", t.base)}${col("When ctx trimmed it", t.trim)}</div>
+    <div class="nums-note">The small range after each number is how sure ctx is (95% of the time the true rate sits in there). The wider the range, the fewer runs it has seen.</div>`;
+}
+
+function render() {
+  const list = document.getElementById("list");
+  const sorted = TOOLS.slice().sort((a, b) => ORDER[a.stage] - ORDER[b.stage]);
+  list.innerHTML = sorted.map((t, i) => {
+    const [cls, label] = PILL[t.stage];
+    const action = t.action
+      ? `<button class="tb-btn ${t.action.warn ? 'ghost' : ''}" onclick="event.stopPropagation();alert('stub: ${t.action.label}')">${t.action.label}</button>`
+      : "";
+    return `<div class="jrow" id="row${i}">
+      <div class="jhead" onclick="toggleRow(${i})">
+        <span class="jname">${t.tool}</span>
+        <span class="jpill ${cls}">${label}</span>
+        <span class="jsummary">${t.summary}</span>
+        <span class="jchev">&#9654;</span>
+      </div>
+      <div class="jdraw">
+        <div class="jstory">${t.story}</div>
+        ${t.delta ? `<div class="jstory">${t.delta}</div>` : ""}
+        <div class="draw-actions">
+          ${(t.base || t.trim) ? `<button class="shownum" onclick="toggleNums(${i})">Show the numbers</button>` : ""}
+          ${action}
+        </div>
+        <div class="nums" id="nums${i}">${numsBlock(t)}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function toggleRow(i) { document.getElementById("row" + i).classList.toggle("open"); }
+function toggleNums(i) {
+  const n = document.getElementById("nums" + i);
+  n.classList.toggle("show");
+  const btn = n.parentElement.querySelector(".shownum");
+  btn.textContent = n.classList.contains("show") ? "Hide the numbers" : "Show the numbers";
+}
+
+render();
+</script>
+</body>
+</html>

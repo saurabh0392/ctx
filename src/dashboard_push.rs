@@ -39,10 +39,7 @@ pub async fn api_events_stream() -> Sse<impl Stream<Item = Result<Event, Infalli
             match rx.recv().await {
                 Ok(ev) => {
                     let data = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
-                    return Some((
-                        Ok(Event::default().event("dashboard").data(data)),
-                        rx,
-                    ));
+                    return Some((Ok(Event::default().event("dashboard").data(data)), rx));
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return None,
@@ -50,9 +47,7 @@ pub async fn api_events_stream() -> Sse<impl Stream<Item = Result<Event, Infalli
         }
     });
 
-    let connected = stream::once(async {
-        Ok(Event::default().event("connected").data("{}"))
-    });
+    let connected = stream::once(async { Ok(Event::default().event("connected").data("{}")) });
 
     let merged = stream::select(connected, stream);
     Sse::new(merged).keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
@@ -64,9 +59,7 @@ pub struct PushBody {
     pub hook_type: Option<String>,
 }
 
-pub async fn api_dashboard_push(
-    axum::Json(body): axum::Json<PushBody>,
-) -> axum::http::StatusCode {
+pub async fn api_dashboard_push(axum::Json(body): axum::Json<PushBody>) -> axum::http::StatusCode {
     notify(DashboardEvent {
         kind: body.kind,
         hook_type: body.hook_type,

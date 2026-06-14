@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use crate::config::FilterMode;
 
 pub const CTX_USER_PROMPT_SUBCOMMAND: &str = "hook user-prompt-submit";
+pub const CTX_POST_TOOL_SUBCOMMAND: &str = "hook post-tool-use";
 pub const CTX_HOOK_EVENT_PATH: &str = "/api/hook/event";
 pub const CTX_STATUSLINE_SCRIPT_NAME: &str = "ctx-statusline.sh";
 
@@ -50,6 +51,13 @@ pub fn entry_is_ctx_hook_http_endpoint(entry: &Value) -> bool {
     })
 }
 
+/// True when this hook matcher entry is managed by ctx PostToolUse compress hook.
+pub fn entry_is_ctx_post_tool_hook(entry: &Value) -> bool {
+    hook_commands_from_entry(entry)
+        .iter()
+        .any(|c| c.contains(CTX_POST_TOOL_SUBCOMMAND))
+}
+
 /// Remove ctx v2 native hook entries from `settings["hooks"]`. Returns true if modified.
 pub fn strip_ctx_native_hooks_from_settings(settings: &mut Value) -> bool {
     let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
@@ -68,6 +76,8 @@ pub fn strip_ctx_native_hooks_from_settings(settings: &mut Value) -> bool {
             arr.retain(|entry| {
                 if key == "UserPromptSubmit" {
                     !entry_is_ctx_user_prompt_hook(entry)
+                } else if key == "PostToolUse" {
+                    !entry_is_ctx_post_tool_hook(entry) && !entry_is_ctx_hook_http_endpoint(entry)
                 } else {
                     !entry_is_ctx_hook_http_endpoint(entry)
                 }
@@ -81,14 +91,22 @@ pub fn strip_ctx_native_hooks_from_settings(settings: &mut Value) -> bool {
 }
 
 fn resolve_ctx_command_for_hooks() -> String {
+    resolve_ctx_subcommand(CTX_USER_PROMPT_SUBCOMMAND)
+}
+
+fn resolve_ctx_post_tool_command() -> String {
+    resolve_ctx_subcommand(CTX_POST_TOOL_SUBCOMMAND)
+}
+
+fn resolve_ctx_subcommand(sub: &str) -> String {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(s) = exe.to_str() {
             if !s.is_empty() {
-                return format!("{} {}", s, CTX_USER_PROMPT_SUBCOMMAND);
+                return format!("{} {}", s, sub);
             }
         }
     }
-    format!("ctx {}", CTX_USER_PROMPT_SUBCOMMAND)
+    format!("ctx {}", sub)
 }
 
 fn http_hook_event_entry(dashboard_port: u16) -> Value {
@@ -106,14 +124,20 @@ fn http_hook_event_entry(dashboard_port: u16) -> Value {
 /// Merge ctx v2 `UserPromptSubmit` command hook and async HTTP analytics hooks.
 /// Removes prior ctx-managed entries for the same events, then appends fresh ones.
 pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Result<()> {
-    if !settings.get("hooks").map(|h| h.is_object()).unwrap_or(false) {
+    if !settings
+        .get("hooks")
+        .map(|h| h.is_object())
+        .unwrap_or(false)
+    {
         settings["hooks"] = json!({});
     }
     strip_ctx_native_hooks_from_settings(settings);
     let hooks = settings
         .get_mut("hooks")
         .and_then(|h| h.as_object_mut())
-        .ok_or_else(|| anyhow::anyhow!("settings.hooks must be an object (create empty hooks first)"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("settings.hooks must be an object (create empty hooks first)")
+        })?;
 
     let cmd = resolve_ctx_command_for_hooks();
     let ups_entry = json!({
@@ -131,7 +155,23 @@ pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Resu
         .context("hooks.UserPromptSubmit must be array")?
         .push(ups_entry);
 
-    for ev in ["PostToolUse", "SessionStart", "SessionEnd", "Stop"] {
+    let post_tool_cmd = resolve_ctx_post_tool_command();
+    let post_tool_entry = json!({
+        "matcher": "Bash|Read|Grep|Glob|mcp__.*",
+        "hooks": [{
+            "type": "command",
+            "command": post_tool_cmd,
+            "timeout": 2
+        }]
+    });
+    hooks
+        .entry("PostToolUse".to_string())
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .context("hooks.PostToolUse must be array")?
+        .push(post_tool_entry);
+
+    for ev in ["SessionStart", "SessionEnd", "Stop"] {
         hooks
             .entry(ev.to_string())
             .or_insert_with(|| json!([]))
@@ -144,8 +184,7 @@ pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Resu
 }
 
 fn statusline_command_is_ctx_managed(cmd: &str) -> bool {
-    cmd.contains(CTX_STATUSLINE_SCRIPT_NAME)
-        || cmd.contains(".ctx/bin/ctx-statusline")
+    cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline")
 }
 
 /// Remove ctx-managed `statusLine` entry. Returns true if modified.
@@ -214,6 +253,43 @@ pub fn strip_allowed_mcp_servers(settings: &mut Value) -> bool {
     false
 }
 
+/// Remove env vars wired by the retired MITM proxy (ADR 0015) from `settings.env`. Only strips
+/// values that look ctx-owned: a localhost `ANTHROPIC_BASE_URL` / `HTTP(S)_PROXY`, or a
+/// `NODE_EXTRA_CA_CERTS` that points under `~/.ctx`. Leaves any user-set values alone. Returns
+/// true if it changed anything.
+pub fn strip_ctx_proxy_env(settings: &mut Value) -> bool {
+    let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) else {
+        return false;
+    };
+    let is_local = |v: &Value| {
+        v.as_str()
+            .map(|s| s.contains("127.0.0.1") || s.contains("localhost"))
+            .unwrap_or(false)
+    };
+    let mut changed = false;
+    for key in ["ANTHROPIC_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY"] {
+        if env.get(key).map(is_local).unwrap_or(false) {
+            env.remove(key);
+            changed = true;
+        }
+    }
+    if env
+        .get("NODE_EXTRA_CA_CERTS")
+        .and_then(|v| v.as_str())
+        .map(|s| s.contains("/.ctx/"))
+        .unwrap_or(false)
+    {
+        env.remove("NODE_EXTRA_CA_CERTS");
+        changed = true;
+    }
+    if env.is_empty() {
+        if let Some(obj) = settings.as_object_mut() {
+            obj.remove("env");
+        }
+    }
+    changed
+}
+
 /// Strip ctx `NODE_OPTIONS` `--require …/filter.js` from `settings.env` when present.
 pub fn strip_ctx_filter_from_node_options_in_settings(settings: &mut Value) -> bool {
     let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) else {
@@ -236,7 +312,10 @@ pub fn strip_ctx_filter_from_node_options_in_settings(settings: &mut Value) -> b
 
 /// Remove ctx-managed `permissions.deny` MCP rules. Returns true if modified.
 pub fn strip_ctx_deny_rules(settings: &mut Value) -> bool {
-    let Some(perms) = settings.get_mut("permissions").and_then(|p| p.as_object_mut()) else {
+    let Some(perms) = settings
+        .get_mut("permissions")
+        .and_then(|p| p.as_object_mut())
+    else {
         return false;
     };
     let Some(deny) = perms.get_mut("deny").and_then(|d| d.as_array_mut()) else {
@@ -260,7 +339,11 @@ pub fn merge_profile_deny_rules(settings: &mut Value, slug: &str) -> Result<()> 
     let local_names = crate::profiles::local_mcp_server_names(settings);
     let patterns = crate::profiles::deny_patterns_for_profile(&profile, &expansion, &local_names);
 
-    if !settings.get("permissions").map(|p| p.is_object()).unwrap_or(false) {
+    if !settings
+        .get("permissions")
+        .map(|p| p.is_object())
+        .unwrap_or(false)
+    {
         settings["permissions"] = json!({});
     }
     let perms = settings
@@ -331,7 +414,11 @@ pub fn apply_native_ctx_to_settings_doc(
     strip_ctx_filter_from_node_options_in_settings(settings);
     let mode = crate::config::Config::load().filter_mode;
     merge_profile_filter(settings, active_slug, mode)?;
-    if !settings.get("hooks").map(|h| h.is_object()).unwrap_or(false) {
+    if !settings
+        .get("hooks")
+        .map(|h| h.is_object())
+        .unwrap_or(false)
+    {
         settings["hooks"] = json!({});
     }
     merge_ctx_native_hooks(settings, dashboard_port)?;
@@ -351,16 +438,69 @@ pub fn ctx_statusline_wired_in_settings() -> bool {
     doc.get("statusLine")
         .and_then(|sl| sl.get("command"))
         .and_then(|c| c.as_str())
-        .map(|cmd| cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline"))
+        .map(|cmd| {
+            cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline")
+        })
         .unwrap_or(false)
 }
 
-/// Read ~/.claude/settings.json, apply [`apply_native_ctx_to_settings_doc`], write atomically.
-pub fn write_native_ctx_to_user_settings(active_slug: &str, dashboard_port: u16) -> Result<()> {
+/// Observation-only wiring for experiment pre-ctx phase: no hooks, no filter rules.
+/// Keeps statusLine so ingest and allowance meters still work.
+pub fn apply_observation_only_to_settings_doc(settings: &mut Value) -> Result<()> {
+    strip_ctx_filter_from_node_options_in_settings(settings);
+    merge_profile_filter(settings, "all", FilterMode::Off)?;
+    if settings
+        .get("hooks")
+        .map(|h| h.is_object())
+        .unwrap_or(false)
+    {
+        strip_ctx_native_hooks_from_settings(settings);
+    }
+    strip_allowed_mcp_servers(settings);
+    merge_ctx_statusline(settings)?;
+    Ok(())
+}
+
+/// Strip ctx intervention hooks and filters; keep statusLine for telemetry.
+pub fn write_observation_only_to_user_settings() -> Result<()> {
     let path = crate::config::claude_settings_path();
     let mut doc = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        json!({})
+    };
+    apply_observation_only_to_settings_doc(&mut doc)?;
+    crate::config::write_json_atomic(&path, &doc)?;
+    Ok(())
+}
+
+/// Apply experiment hook mode from config (`experiment_hooks_enabled`).
+pub fn sync_experiment_hooks_from_config() -> Result<()> {
+    let cfg = crate::config::Config::load();
+    if cfg.experiment_hooks_enabled {
+        let slug = cfg.active_profile.as_deref().unwrap_or("all");
+        let port = cfg.dashboard_port.unwrap_or(8789);
+        write_native_ctx_to_user_settings(slug, port)
+    } else {
+        write_observation_only_to_user_settings()
+    }
+}
+
+/// Read ~/.claude/settings.json, apply [`apply_native_ctx_to_settings_doc`], write atomically.
+/// Respects `experiment_hooks_enabled` (pre-ctx phase writes observation-only settings).
+pub fn write_native_ctx_to_user_settings(active_slug: &str, dashboard_port: u16) -> Result<()> {
+    if !crate::config::Config::load().experiment_hooks_enabled {
+        return write_observation_only_to_user_settings();
+    }
+    let path = crate::config::claude_settings_path();
+    let mut doc = if path.exists() {
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
     } else {
         if let Some(parent) = path.parent() {
@@ -393,7 +533,9 @@ mod tests {
                 .map(|s| s.starts_with("mcp__claude_ai_") && s.ends_with("__*"))
                 .unwrap_or(false)
         }));
-        assert!(!deny.iter().any(|v| v.as_str() == Some("mcp__claude_ai_Data_Shippo__*")));
+        assert!(!deny
+            .iter()
+            .any(|v| v.as_str() == Some("mcp__claude_ai_Data_Shippo__*")));
     }
 
     #[test]

@@ -52,24 +52,38 @@ impl UserProfile {
 
         for proj_entry in proj_entries.flatten() {
             let proj_path = proj_entry.path();
-            if !proj_path.is_dir() { continue; }
-            let dir_name = proj_path.file_name()
+            if !proj_path.is_dir() {
+                continue;
+            }
+            let dir_name = proj_path
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            if dir_name == "subagents" { continue; }
+            if dir_name == "subagents" {
+                continue;
+            }
 
-            let Ok(file_entries) = std::fs::read_dir(&proj_path) else { continue };
+            let Ok(file_entries) = std::fs::read_dir(&proj_path) else {
+                continue;
+            };
             for file_entry in file_entries.flatten() {
                 let fpath = file_entry.path();
-                let fname = fpath.file_name()
+                let fname = fpath
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                if !fname.ends_with(".jsonl") || fname.contains("compact") { continue; }
+                if !fname.ends_with(".jsonl") || fname.contains("compact") {
+                    continue;
+                }
 
-                let Ok(content) = std::fs::read_to_string(&fpath) else { continue };
+                let Ok(content) = std::fs::read_to_string(&fpath) else {
+                    continue;
+                };
                 let (lens, turns) = scan_file(&content);
                 msg_lens.extend(lens);
-                if turns >= 3 { session_turns.push(turns); }
+                if turns >= 3 {
+                    session_turns.push(turns);
+                }
             }
         }
 
@@ -115,9 +129,7 @@ fn try_compute_from_db(conn: &rusqlite::Connection) -> Option<UserProfile> {
         .collect::<Result<_, _>>()
         .ok()?;
     let mut turns_per: Vec<i64> = conn
-        .prepare(
-            "SELECT turn_count FROM sessions WHERE turn_count >= 3 LIMIT 5000",
-        )
+        .prepare("SELECT turn_count FROM sessions WHERE turn_count >= 3 LIMIT 5000")
         .ok()?
         .query_map([], |r| r.get(0))
         .ok()?
@@ -162,18 +174,26 @@ fn scan_file(content: &str) -> (Vec<usize>, usize) {
 
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() { continue; }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         let type_ = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
 
         if type_ == "user" {
             let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
-            if is_meta { continue; }
+            if is_meta {
+                continue;
+            }
             if let Some(text) = extract_user_text(&v) {
                 let len = text.trim().len();
                 if len > 0 {
                     msg_lens.push(len);
-                    if last_was_assistant { turn_count += 1; }
+                    if last_was_assistant {
+                        turn_count += 1;
+                    }
                 }
                 last_was_assistant = false;
             }
@@ -208,7 +228,9 @@ fn extract_user_text(v: &Value) -> Option<String> {
 }
 
 fn percentile(sorted: &[usize], pct: f64) -> usize {
-    if sorted.is_empty() { return 0; }
+    if sorted.is_empty() {
+        return 0;
+    }
     let idx = ((sorted.len() as f64 - 1.0) * pct) as usize;
     sorted[idx]
 }

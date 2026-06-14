@@ -22,11 +22,26 @@ struct ModelPricing {
 
 fn pricing_for(model: &str) -> ModelPricing {
     if model.contains("opus") {
-        ModelPricing { input: 15.0, cache_read: 1.5, cache_creation: 18.75, output: 75.0 }
+        ModelPricing {
+            input: 15.0,
+            cache_read: 1.5,
+            cache_creation: 18.75,
+            output: 75.0,
+        }
     } else if model.contains("haiku") {
-        ModelPricing { input: 0.80, cache_read: 0.08, cache_creation: 1.00, output: 4.0 }
+        ModelPricing {
+            input: 0.80,
+            cache_read: 0.08,
+            cache_creation: 1.00,
+            output: 4.0,
+        }
     } else {
-        ModelPricing { input: 3.0, cache_read: 0.30, cache_creation: 3.75, output: 15.0 }
+        ModelPricing {
+            input: 3.0,
+            cache_read: 0.30,
+            cache_creation: 3.75,
+            output: 15.0,
+        }
     }
 }
 
@@ -53,6 +68,8 @@ fn compute_cost(
 pub struct TurnDetail {
     pub turn_index: usize,
     pub human_text: String,
+    #[serde(default)]
+    pub user_ts: Option<String>,
     pub input_tokens: usize,
     pub output_tokens: usize,
     #[serde(default)]
@@ -179,7 +196,9 @@ fn extract_output_text(content: &Value) -> (Option<String>, bool) {
         for item in arr {
             let ctype = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if ctype == "text" {
-                let txt = item.get("text").and_then(|v| v.as_str())
+                let txt = item
+                    .get("text")
+                    .and_then(|v| v.as_str())
                     .map(|s| s.chars().take(600).collect());
                 return (txt, true);
             }
@@ -194,7 +213,9 @@ fn usage_block_from_value(v: &Value) -> Option<&Value> {
 }
 
 fn parse_row_with_context(line: &str, last_model: &mut Option<String>) -> Row {
-    let Ok(v) = serde_json::from_str::<Value>(line) else { return Row::Other };
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Row::Other;
+    };
     let type_ = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
 
     if type_ == "system" {
@@ -222,9 +243,16 @@ fn parse_row_with_context(line: &str, last_model: &mut Option<String>) -> Row {
 
     if type_ == "user" {
         let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
-        let timestamp = v.get("timestamp").and_then(|x| x.as_str()).map(|s| s.to_string());
+        let timestamp = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
         let human_text = v.get("message").and_then(|m| extract_human_text(m));
-        return Row::User(UserRow { timestamp, is_meta, human_text });
+        return Row::User(UserRow {
+            timestamp,
+            is_meta,
+            human_text,
+        });
     }
 
     if type_ == "result" {
@@ -253,7 +281,10 @@ fn parse_row_with_context(line: &str, last_model: &mut Option<String>) -> Row {
             .or_else(|| v.get("id"))
             .and_then(|x| x.as_str())
             .map(|s| s.to_string());
-        let timestamp = v.get("timestamp").and_then(|x| x.as_str()).map(|s| s.to_string());
+        let timestamp = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
         let model = last_model
             .clone()
             .unwrap_or_else(|| "claude-sonnet".to_string());
@@ -271,12 +302,21 @@ fn parse_row_with_context(line: &str, last_model: &mut Option<String>) -> Row {
     }
 
     if type_ == "assistant" {
-        let request_id = v.get("requestId").and_then(|x| x.as_str()).map(|s| s.to_string());
-        let timestamp = v.get("timestamp").and_then(|x| x.as_str()).map(|s| s.to_string());
+        let request_id = v
+            .get("requestId")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        let timestamp = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
         if let Some(msg) = v.get("message") {
             let model_raw = msg.get("model").and_then(|x| x.as_str()).unwrap_or("");
             let u = msg.get("usage");
-            let input_tokens = u.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let input_tokens = u
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
             let cache_read = u
                 .and_then(|u| u.get("cache_read_input_tokens"))
                 .and_then(|v| v.as_u64())
@@ -285,10 +325,15 @@ fn parse_row_with_context(line: &str, last_model: &mut Option<String>) -> Row {
                 .and_then(|u| u.get("cache_creation_input_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as usize;
-            let output_tokens = u.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let output_tokens = u
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
 
             let model = if model_raw.is_empty() || model_raw == "<synthetic>" {
-                last_model.clone().unwrap_or_else(|| "claude-sonnet".to_string())
+                last_model
+                    .clone()
+                    .unwrap_or_else(|| "claude-sonnet".to_string())
             } else {
                 model_raw.to_string()
             };
@@ -332,12 +377,22 @@ fn detect_flags(
     is_pre_compact: bool,
 ) -> Vec<String> {
     let mut flags = Vec::new();
-    // Correction: user's message is shorter than their personal P25 baseline
-    // AND Claude just produced a substantial response (not just a tool call).
-    // This is the most reliable cross-user signal without pattern matching.
-    let trimmed_len = human_text.trim().len();
-    if trimmed_len < profile.correction_threshold && prev_output_tokens > 150 {
-        flags.push("correction".to_string());
+    // Correction signal, scored through the shared lexical guard so go-aheads and menu
+    // picks ("lets do 1") are not mislabeled as harm (SAU-148 audit). Two confidence tiers:
+    //   - Explicit: the turn carried complaint language ("wrong", "revert", "undo"). High
+    //     confidence, so it flags even after a short assistant reply.
+    //   - Terse: a short non-complaint follow-up after substantial work. Low confidence,
+    //     kept for the fail-safe gate but tagged so training can down-weight it.
+    let substantial_prior = prev_output_tokens > 150;
+    match crate::outcome_signals::classify_correction(human_text, profile.correction_threshold) {
+        crate::outcome_signals::CorrectionClass::Explicit => {
+            flags.push("correction".to_string());
+            flags.push("correction_explicit".to_string());
+        }
+        crate::outcome_signals::CorrectionClass::Terse if substantial_prior => {
+            flags.push("correction".to_string());
+        }
+        _ => {}
     }
 
     if prev_output_tokens > 0 && prev_output_tokens < 400 {
@@ -391,9 +446,13 @@ fn build_tip(flags: &[String], cost_usd: f64, input_tokens: usize, output_tokens
 // ---------------------------------------------------------------------------
 
 fn model_short(model: &str) -> &'static str {
-    if model.contains("opus") { "opus" }
-    else if model.contains("haiku") { "haiku" }
-    else { "sonnet" }
+    if model.contains("opus") {
+        "opus"
+    } else if model.contains("haiku") {
+        "haiku"
+    } else {
+        "sonnet"
+    }
 }
 
 fn session_id(path: &Path) -> String {
@@ -417,8 +476,16 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
         .collect();
 
     // Find compact event row indices
-    let compact_indices: Vec<usize> = raw_rows.iter().enumerate()
-        .filter_map(|(i, r)| if matches!(r, Row::Compact) { Some(i) } else { None })
+    let compact_indices: Vec<usize> = raw_rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| {
+            if matches!(r, Row::Compact) {
+                Some(i)
+            } else {
+                None
+            }
+        })
         .collect();
 
     // For assistant deduplication: requestId -> last row index with text content (prefer text over thinking)
@@ -435,8 +502,13 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
         }
     }
     // Canonical indices: prefer text-content row; fall back to last row
-    let canonical: std::collections::HashSet<usize> = req_to_idx.keys()
-        .map(|k| *req_text_idx.get(k).unwrap_or_else(|| req_to_idx.get(k).unwrap()))
+    let canonical: std::collections::HashSet<usize> = req_to_idx
+        .keys()
+        .map(|k| {
+            *req_text_idx
+                .get(k)
+                .unwrap_or_else(|| req_to_idx.get(k).unwrap())
+        })
         .collect();
 
     let mut turns: Vec<TurnDetail> = Vec::new();
@@ -454,7 +526,7 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
 
     let mut prev_output_tokens: usize = 0;
     let mut prev_output_text: Option<String> = None;
-    let mut pending_human: Option<(usize, String)> = None;
+    let mut pending_human: Option<(usize, String, Option<String>)> = None;
 
     for (i, row) in raw_rows.iter().enumerate() {
         match row {
@@ -463,11 +535,39 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                     if started_at.is_none() {
                         started_at = u.timestamp.clone();
                     }
-                    pending_human = Some((i, text.clone()));
+                    if crate::outcome_signals::is_user_interrupt(text) {
+                        // The user hit ESC to stop the agent. Emit this as its own turn now:
+                        // the standard path waits for a following assistant reply, but the
+                        // next real prompt overwrites this row, so the signal would be lost.
+                        // Flagged "aborted" (a distinct high-precision signal type) plus
+                        // "correction" so the existing windowed outcome join attributes it.
+                        corrections += 1;
+                        turns.push(TurnDetail {
+                            turn_index: turns.len(),
+                            human_text: text.clone(),
+                            user_ts: u.timestamp.clone(),
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_creation_tokens: 0,
+                            model: String::new(),
+                            cost_usd: 0.0,
+                            flags: vec!["aborted".to_string(), "correction".to_string()],
+                            tip: String::new(),
+                        });
+                    } else {
+                        pending_human = Some((i, text.clone(), u.timestamp.clone()));
+                    }
                 }
             }
             Row::Assistant(a) if canonical.contains(&i) => {
-                let cost = compute_cost(a.input_tokens, a.cache_read, a.cache_creation, a.output_tokens, &a.model);
+                let cost = compute_cost(
+                    a.input_tokens,
+                    a.cache_read,
+                    a.cache_creation,
+                    a.output_tokens,
+                    &a.model,
+                );
                 total_input += a.input_tokens;
                 total_cache_creation += a.cache_creation;
                 total_cache_read += a.cache_read;
@@ -475,13 +575,13 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                 total_cost += cost;
                 models.insert(model_short(&a.model));
 
-                if let Some((human_row_idx, human_text)) = pending_human.take() {
+                if let Some((human_row_idx, human_text, user_ts)) = pending_human.take() {
                     if first_user_message.is_empty() {
                         first_user_message = human_text.chars().take(2000).collect();
                     }
-                    let is_pre_compact = compact_indices.iter().any(|&ci| {
-                        ci > human_row_idx && ci <= human_row_idx + 10
-                    });
+                    let is_pre_compact = compact_indices
+                        .iter()
+                        .any(|&ci| ci > human_row_idx && ci <= human_row_idx + 10);
 
                     let flags = detect_flags(
                         &human_text,
@@ -494,12 +594,17 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                     );
                     let tip = build_tip(&flags, cost, a.input_tokens, a.output_tokens);
 
-                    if flags.contains(&"correction".to_string()) { corrections += 1; }
-                    if flags.contains(&"clarification".to_string()) { clarifying += 1; }
+                    if flags.contains(&"correction".to_string()) {
+                        corrections += 1;
+                    }
+                    if flags.contains(&"clarification".to_string()) {
+                        clarifying += 1;
+                    }
 
                     turns.push(TurnDetail {
                         turn_index: turns.len(),
                         human_text,
+                        user_ts,
                         input_tokens: a.input_tokens,
                         output_tokens: a.output_tokens,
                         cache_read_tokens: a.cache_read,
@@ -520,7 +625,8 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                             .active_profile
                             .unwrap_or_else(|| "all".into());
                         if let Ok(p) = crate::profiles::get(&slug) {
-                            let tools = crate::semantic_tools::detect_access_friction_tools(text, &p);
+                            let tools =
+                                crate::semantic_tools::detect_access_friction_tools(text, &p);
                             let _ = crate::semantic_tools::record_access_friction(&tools);
                         }
                     }
@@ -530,10 +636,16 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
         }
     }
 
-    if turns.is_empty() { return None; }
+    if turns.is_empty() {
+        return None;
+    }
 
     let mut top_turns = turns.clone();
-    top_turns.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+    top_turns.sort_by(|a, b| {
+        b.cost_usd
+            .partial_cmp(&a.cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     top_turns.truncate(3);
     top_turns.sort_by_key(|t| t.turn_index);
 
@@ -628,15 +740,21 @@ fn all_sessions_from_filesystem() -> Vec<SessionCost> {
     let projects_dir = home.join(".claude").join("projects");
     let mut sessions: Vec<SessionCost> = Vec::new();
 
-    let Ok(proj_entries) = std::fs::read_dir(&projects_dir) else { return sessions };
+    let Ok(proj_entries) = std::fs::read_dir(&projects_dir) else {
+        return sessions;
+    };
     for proj_entry in proj_entries.flatten() {
         let proj_path = proj_entry.path();
-        if !proj_path.is_dir() { continue; }
+        if !proj_path.is_dir() {
+            continue;
+        }
         let dir_name = proj_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        if dir_name == "subagents" { continue; }
+        if dir_name == "subagents" {
+            continue;
+        }
 
         let proj_display = {
             let parts: Vec<&str> = dir_name.split('-').filter(|s| !s.is_empty()).collect();
@@ -649,16 +767,24 @@ fn all_sessions_from_filesystem() -> Vec<SessionCost> {
             }
         };
 
-        let Ok(file_entries) = std::fs::read_dir(&proj_path) else { continue };
+        let Ok(file_entries) = std::fs::read_dir(&proj_path) else {
+            continue;
+        };
         for file_entry in file_entries.flatten() {
             let fpath = file_entry.path();
-            if !fpath.is_file() { continue; }
+            if !fpath.is_file() {
+                continue;
+            }
             let fname = fpath
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            if !fname.ends_with(".jsonl") { continue; }
-            if fname.contains("compact") { continue; }
+            if !fname.ends_with(".jsonl") {
+                continue;
+            }
+            if fname.contains("compact") {
+                continue;
+            }
 
             let mut session = match parse_session(&fpath, &proj_display, &profile) {
                 Some(p) => p.session,
@@ -791,7 +917,11 @@ fn read_desktop_init_cwd(path: &Path) -> Option<String> {
             if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
                 return Some(c.to_string());
             }
-            if let Some(c) = v.get("message").and_then(|m| m.get("cwd")).and_then(|x| x.as_str()) {
+            if let Some(c) = v
+                .get("message")
+                .and_then(|m| m.get("cwd"))
+                .and_then(|x| x.as_str())
+            {
                 return Some(c.to_string());
             }
             return None;
@@ -807,12 +937,18 @@ fn desktop_project_label_from_cwd(cwd: &str) -> String {
     }
     let norm = cwd.replace('\\', "/");
     let parts: Vec<&str> = norm.split('/').filter(|s| !s.is_empty()).collect();
-    if let Some(doc_idx) = parts.iter().position(|&s| s.eq_ignore_ascii_case("documents")) {
+    if let Some(doc_idx) = parts
+        .iter()
+        .position(|&s| s.eq_ignore_ascii_case("documents"))
+    {
         if doc_idx + 1 < parts.len() {
             return parts[doc_idx + 1..].join(" ");
         }
     }
-    parts.last().map(|s| (*s).to_string()).unwrap_or_else(|| "Claude Desktop".to_string())
+    parts
+        .last()
+        .map(|s| (*s).to_string())
+        .unwrap_or_else(|| "Claude Desktop".to_string())
 }
 
 fn ingest_one_jsonl_session(
@@ -887,6 +1023,11 @@ fn ingest_one_jsonl_session(
         } else {
             String::new()
         };
+        let turn_ts = t
+            .user_ts
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(Some(parsed.session.started_at.as_str()));
         let _tid = crate::db::insert_turn(
             &*tx,
             sid,
@@ -900,7 +1041,7 @@ fn ingest_one_jsonl_session(
             &t.model,
             &flags_json,
             &prefix,
-            Some(parsed.session.started_at.as_str()),
+            turn_ts,
         )?;
     }
     for (tool_name, server_prefix, ts) in &tool_uses {
@@ -936,7 +1077,9 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
 
     // Read the previous ingest timestamp once and convert to SystemTime for mtime comparisons.
     let last_ingest_cutoff: Option<std::time::SystemTime> = conn
-        .query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| r.get::<_, String>(0))
+        .query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| {
+            r.get::<_, String>(0)
+        })
         .ok()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
         .map(|dt| {
@@ -997,7 +1140,13 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
                         continue;
                     }
 
-                    if ingest_one_jsonl_session(&tx, &fpath, &proj_display, &profile, store_prompt_text)? {
+                    if ingest_one_jsonl_session(
+                        &tx,
+                        &fpath,
+                        &proj_display,
+                        &profile,
+                        store_prompt_text,
+                    )? {
                         count += 1;
                     }
                 }
@@ -1022,7 +1171,19 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     tx.commit()?;
 
     let _ = crate::db::enrich_hook_traces(&conn);
+    // Act 0: back-fill outcome labels (correction / re-read) onto shadow decision rows
+    // now that downstream turns and tool calls for those sessions have landed.
+    let _ = crate::db::join_compress_outcomes(&conn);
+    // Act 3 (cross-surface): join outcomes for agents whose transcripts carry no
+    // timestamps (Cursor) using the ordinal/fingerprint timeline. Disjoint from the
+    // Claude join above; runs before training so fresh labels are included.
+    let _ = crate::surface::ingest::join_transcript_outcomes(&conn, &home);
+    // Act 1: re-train the local outcome model on the freshly labeled data (online
+    // improvement). No-op until enough labels accrue; never fails ingest.
+    let _ = crate::learn::train();
     let _ = crate::tuning::run_tuning_after_ingest(&conn);
+    let _ = crate::experiment_plan::ensure_pending_phase_applied();
+    let _ = crate::claude_settings::sync_experiment_hooks_from_config();
 
     if crate::config::Config::load().adaptive_prefix_enabled {
         let _ = crate::adaptive::refresh_adaptive_prefix();
@@ -1035,9 +1196,15 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     );
 
     if embeddings_on {
-        let current_backend = if crate::embedder::onnx_available() { "onnx" } else { "hash" };
+        let current_backend = if crate::embedder::onnx_available() {
+            "onnx"
+        } else {
+            "hash"
+        };
         let prev_backend: String = conn
-            .query_row("SELECT v FROM meta WHERE k = 'embed_backend'", [], |r| r.get(0))
+            .query_row("SELECT v FROM meta WHERE k = 'embed_backend'", [], |r| {
+                r.get(0)
+            })
             .unwrap_or_else(|_| "hash".to_string());
 
         if current_backend == "onnx" && prev_backend != "onnx" {
@@ -1059,6 +1226,10 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
 
     let _ = crate::profiles::after_ingest_profile_sync();
 
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::maybe_reset_stale_install_watermark(&conn);
+    }
+
     Ok(count)
 }
 
@@ -1072,7 +1243,9 @@ fn tool_uses_from_jsonl_file(path: &Path) -> Vec<(String, String, String)> {
         if line.is_empty() {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if v.get("type").and_then(|x| x.as_str()) != Some("assistant") {
             continue;
         }
@@ -1081,14 +1254,22 @@ fn tool_uses_from_jsonl_file(path: &Path) -> Vec<(String, String, String)> {
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string();
-        let Some(msg) = v.get("message") else { continue };
-        let Some(content) = msg.get("content") else { continue };
-        let Some(arr) = content.as_array() else { continue };
+        let Some(msg) = v.get("message") else {
+            continue;
+        };
+        let Some(content) = msg.get("content") else {
+            continue;
+        };
+        let Some(arr) = content.as_array() else {
+            continue;
+        };
         for item in arr {
             if item.get("type").and_then(|x| x.as_str()) != Some("tool_use") {
                 continue;
             }
-            let Some(name) = item.get("name").and_then(|x| x.as_str()) else { continue };
+            let Some(name) = item.get("name").and_then(|x| x.as_str()) else {
+                continue;
+            };
             if let Some(prefix) = crate::filter::server_prefix_from_tool(name) {
                 out.push((name.to_string(), prefix, ts.clone()));
             }
@@ -1115,7 +1296,9 @@ pub fn monthly_spend(sessions: &[SessionCost]) -> Vec<MonthlySpend> {
 
     let mut by_month: HashMap<String, MonthlySpend> = HashMap::new();
     for s in sessions {
-        let Some(month) = month_of(&s.started_at) else { continue };
+        let Some(month) = month_of(&s.started_at) else {
+            continue;
+        };
         let ctx_saved = ctx_by_month.get(&month).copied().unwrap_or(0.0);
         let e = by_month.entry(month.clone()).or_insert(MonthlySpend {
             month: month.clone(),
@@ -1146,11 +1329,16 @@ pub fn monthly_spend(sessions: &[SessionCost]) -> Vec<MonthlySpend> {
 
 pub fn generate_tips(sessions: &[SessionCost]) -> Vec<AdvisorTip> {
     let mut tips: Vec<AdvisorTip> = Vec::new();
-    if sessions.is_empty() { return tips; }
+    if sessions.is_empty() {
+        return tips;
+    }
 
     // Long session cost spike
     let long: Vec<_> = sessions.iter().filter(|s| s.turn_count >= 15).collect();
-    let short_: Vec<_> = sessions.iter().filter(|s| s.turn_count < 15 && s.turn_count > 1).collect();
+    let short_: Vec<_> = sessions
+        .iter()
+        .filter(|s| s.turn_count < 15 && s.turn_count > 1)
+        .collect();
     if !long.is_empty() && !short_.is_empty() {
         let avg_long = long.iter().map(|s| s.total_usd).sum::<f64>() / long.len() as f64;
         let avg_short = short_.iter().map(|s| s.total_usd).sum::<f64>() / short_.len() as f64;
@@ -1167,9 +1355,13 @@ pub fn generate_tips(sessions: &[SessionCost]) -> Vec<AdvisorTip> {
     }
 
     // Opus usage
-    let opus_sessions: Vec<_> = sessions.iter().filter(|s| s.models_used.contains(&"opus".to_string())).collect();
+    let opus_sessions: Vec<_> = sessions
+        .iter()
+        .filter(|s| s.models_used.contains(&"opus".to_string()))
+        .collect();
     if !opus_sessions.is_empty() {
-        let avg_opus = opus_sessions.iter().map(|s| s.total_usd).sum::<f64>() / opus_sessions.len() as f64;
+        let avg_opus =
+            opus_sessions.iter().map(|s| s.total_usd).sum::<f64>() / opus_sessions.len() as f64;
         let projected_save = avg_opus * opus_sessions.len() as f64 * 0.8;
         tips.push(AdvisorTip {
             title: format!("You used Opus in {} sessions this month", opus_sessions.len()),
@@ -1183,10 +1375,15 @@ pub fn generate_tips(sessions: &[SessionCost]) -> Vec<AdvisorTip> {
 
     // Context fatigue
     let compact_sessions: Vec<_> = sessions.iter().filter(|s| s.hit_compact).collect();
-    let non_compact: Vec<_> = sessions.iter().filter(|s| !s.hit_compact && s.turn_count > 1).collect();
+    let non_compact: Vec<_> = sessions
+        .iter()
+        .filter(|s| !s.hit_compact && s.turn_count > 1)
+        .collect();
     if compact_sessions.len() >= 2 && !non_compact.is_empty() {
-        let avg_compact = compact_sessions.iter().map(|s| s.total_usd).sum::<f64>() / compact_sessions.len() as f64;
-        let avg_non = non_compact.iter().map(|s| s.total_usd).sum::<f64>() / non_compact.len() as f64;
+        let avg_compact = compact_sessions.iter().map(|s| s.total_usd).sum::<f64>()
+            / compact_sessions.len() as f64;
+        let avg_non =
+            non_compact.iter().map(|s| s.total_usd).sum::<f64>() / non_compact.len() as f64;
         let extra = (avg_compact - avg_non).max(0.0);
         if extra > 0.5 {
             tips.push(AdvisorTip {
@@ -1215,7 +1412,11 @@ pub fn generate_tips(sessions: &[SessionCost]) -> Vec<AdvisorTip> {
         });
     }
 
-    tips.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+    tips.sort_by(|a, b| {
+        b.value
+            .partial_cmp(&a.value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     tips.truncate(3);
     tips
 }
@@ -1330,9 +1531,10 @@ pub fn detect_patterns(conn: &Connection) -> Vec<PatternAlert> {
                 let total_spend: f64 = groups.iter().map(|(_, s, _)| *s).sum();
                 let total_sessions: i64 = groups.iter().map(|(_, _, c)| *c).sum();
                 if total_spend > 0.01 && total_sessions > 3 {
-                    if let Some((pname, pspend, pcnt)) = groups.iter().max_by(|a, b| {
-                        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-                    }) {
+                    if let Some((pname, pspend, pcnt)) = groups
+                        .iter()
+                        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    {
                         let share = *pspend / total_spend;
                         if share > 0.6 && *pcnt > 3 {
                             let other_spend = total_spend - pspend;
@@ -1394,7 +1596,10 @@ pub fn detect_patterns(conn: &Connection) -> Vec<PatternAlert> {
                 let (st, cost, corrs, turns) = row;
                 let hour_opt = DateTime::parse_from_rfc3339(&st)
                     .map(|d| d.with_timezone(&Local).hour())
-                    .or_else(|_| st.parse::<DateTime<Utc>>().map(|d| d.with_timezone(&Local).hour()));
+                    .or_else(|_| {
+                        st.parse::<DateTime<Utc>>()
+                            .map(|d| d.with_timezone(&Local).hour())
+                    });
                 let Ok(h) = hour_opt else { continue };
                 if (8..20).contains(&h) {
                     day_costs.push(cost);
@@ -1407,7 +1612,8 @@ pub fn detect_patterns(conn: &Connection) -> Vec<PatternAlert> {
                 }
             }
             if evening_costs.len() >= 2 && day_costs.len() >= 2 {
-                let ev_avg = evening_costs.iter().copied().sum::<f64>() / evening_costs.len() as f64;
+                let ev_avg =
+                    evening_costs.iter().copied().sum::<f64>() / evening_costs.len() as f64;
                 let day_avg = day_costs.iter().copied().sum::<f64>() / day_costs.len() as f64;
                 if day_avg > 0.01 && ev_avg > day_avg * 1.5 {
                     let ev_cr = if evening_turns > 0 {
@@ -1465,7 +1671,11 @@ const fn build_crc32_table() -> [u32; 256] {
         let mut c = i as u32;
         let mut j = 0;
         while j < 8 {
-            if c & 1 != 0 { c = 0xEDB8_8320 ^ (c >> 1); } else { c >>= 1; }
+            if c & 1 != 0 {
+                c = 0xEDB8_8320 ^ (c >> 1);
+            } else {
+                c >>= 1;
+            }
             j += 1;
         }
         table[i] = c;

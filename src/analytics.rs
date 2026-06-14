@@ -84,6 +84,32 @@ pub struct TraceInfo {
     pub working_directory: String,
 }
 
+pub fn record_compress(compress_chars_saved: usize, profile: &str, working_directory: &str) {
+    let _ = crate::config::ensure_dir();
+    append(&Record {
+        ts: Utc::now().to_rfc3339(),
+        tools_removed: 0,
+        tokens_saved: 0,
+        compress_chars_saved,
+        profile: profile.to_string(),
+        removed_servers: vec![],
+        kept_servers: vec![],
+        auto_selected: false,
+        auto_trigger: None,
+        inject_fired: false,
+        inject_chars: 0,
+        adaptive_chars: 0,
+        budget_blocked: false,
+        coach_kind: None,
+        budget_fired: false,
+        behavior_kind: None,
+        working_directory: working_directory.to_string(),
+        tools_sent_count: 0,
+        mcp_tools_invoked: vec![],
+        tools_sent_by_server: HashMap::new(),
+    });
+}
+
 pub fn record(tools_removed: usize, tokens_saved: usize, profile: &str, trace: TraceInfo) {
     let _ = crate::config::ensure_dir();
     append(&Record {
@@ -138,11 +164,20 @@ pub fn group_into_sessions(records: &[Record]) -> Vec<Session> {
         .unwrap_or(30) as i64;
     let gap = chrono::Duration::minutes(gap_mins);
     let mut sessions: Vec<Session> = Vec::new();
-    let mut current: Option<(DateTime<Utc>, DateTime<Utc>, usize, usize, usize, String, String)> =
-        None;
+    let mut current: Option<(
+        DateTime<Utc>,
+        DateTime<Utc>,
+        usize,
+        usize,
+        usize,
+        String,
+        String,
+    )> = None;
 
     for rec in records.iter().filter(|r| record_belongs_to_session(r)) {
-        let Ok(ts) = rec.ts.parse::<DateTime<Utc>>() else { continue };
+        let Ok(ts) = rec.ts.parse::<DateTime<Utc>>() else {
+            continue;
+        };
         let wd = rec.working_directory.clone();
         match current {
             None => {
@@ -223,7 +258,7 @@ pub fn show() -> Result<()> {
 
     if records.is_empty() {
         println!("No data yet. Use Claude Code with ctx filtering enabled.");
-        println!("  ctx setup   # or: ctx proxy install");
+        println!("  ctx setup");
         return Ok(());
     }
 

@@ -63,7 +63,13 @@ fn section_budgets(max_chars: usize) -> [usize; 5] {
     let sum: usize = w.iter().sum();
     let base = max_chars / sum;
     let rem = max_chars.saturating_sub(base * sum);
-    let mut out = [base * w[0], base * w[1], base * w[2], base * w[3], base * w[4]];
+    let mut out = [
+        base * w[0],
+        base * w[1],
+        base * w[2],
+        base * w[3],
+        base * w[4],
+    ];
     for i in 0..rem.min(5) {
         out[i] += 1;
     }
@@ -137,7 +143,12 @@ fn query_tool_patterns(conn: &Connection, budget: usize) -> String {
         .join(", ");
     let mut tail = String::new();
     if pairs.len() > 5 {
-        let rare: Vec<_> = pairs.iter().skip(8).take(4).map(|(s, _)| s.as_str()).collect();
+        let rare: Vec<_> = pairs
+            .iter()
+            .skip(8)
+            .take(4)
+            .map(|(s, _)| s.as_str())
+            .collect();
         if !rare.is_empty() {
             tail = format!("\nLess active recently: {}.", rare.join(", "));
         }
@@ -147,8 +158,25 @@ fn query_tool_patterns(conn: &Connection, budget: usize) -> String {
 }
 
 static LANG_KEYS: &[&str] = &[
-    "rust", "python", "typescript", "javascript", "go", "java", "kotlin", "swift", "ruby", "php",
-    "c++", "cpp", "react", "vue", "svelte", "next", "node", "django", "rails",
+    "rust",
+    "python",
+    "typescript",
+    "javascript",
+    "go",
+    "java",
+    "kotlin",
+    "swift",
+    "ruby",
+    "php",
+    "c++",
+    "cpp",
+    "react",
+    "vue",
+    "svelte",
+    "next",
+    "node",
+    "django",
+    "rails",
 ];
 
 fn query_coding_style(conn: &Connection, budget: usize) -> String {
@@ -161,7 +189,12 @@ fn query_coding_style(conn: &Connection, budget: usize) -> String {
         Err(_) => return String::new(),
     };
     let mut counts: HashMap<&'static str, usize> = HashMap::new();
-    for row in stmt.query_map([], |r| r.get::<_, String>(0)).into_iter().flatten().filter_map(|x| x.ok()) {
+    for row in stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.ok())
+    {
         let row = row;
         for k in LANG_KEYS {
             if row.contains(k) {
@@ -192,7 +225,11 @@ fn classify_task(text: &str) -> Option<&'static str> {
         Some("reviewing")
     } else if t.contains("plan") || t.contains("design") || t.contains("roadmap") {
         Some("planning")
-    } else if t.contains("implement") || t.contains("add ") || t.contains("write ") || t.contains("create ") {
+    } else if t.contains("implement")
+        || t.contains("add ")
+        || t.contains("write ")
+        || t.contains("create ")
+    {
         Some("implementation")
     } else {
         None
@@ -232,7 +269,10 @@ fn query_task_distribution(conn: &Connection, budget: usize) -> String {
         .take(4)
         .map(|(k, n)| format!("{k} ({n})"))
         .collect();
-    let text = format!("## Task mix (from first prompts)\nMost common: {}.", parts.join(", "));
+    let text = format!(
+        "## Task mix (from first prompts)\nMost common: {}.",
+        parts.join(", ")
+    );
     truncate_to_char_budget(&text, budget)
 }
 

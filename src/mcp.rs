@@ -24,7 +24,12 @@ struct JsonRpcResponse {
 }
 
 fn ok_response(id: Value, result: Value) -> JsonRpcResponse {
-    JsonRpcResponse { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
+    JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        id,
+        result: Some(result),
+        error: None,
+    }
 }
 
 fn err_response(id: Value, code: i64, msg: &str) -> JsonRpcResponse {
@@ -39,7 +44,7 @@ fn err_response(id: Value, code: i64, msg: &str) -> JsonRpcResponse {
 const TOOL_DEFS: &[(&str, &str, &str)] = &[
     (
         "ctx_status",
-        "Current ctx status: active profile, proxy state, session count, token savings, cost saved, budget info.",
+        "Current ctx status: active profile, session count, token savings, cost saved, budget info.",
         "{}",
     ),
     (
@@ -120,33 +125,42 @@ fn tool_status() -> Result<Value, String> {
     let spend_sessions = crate::conversations::all_sessions();
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
-    let month_spend: f64 = spend_sessions.iter()
+    let month_spend: f64 = spend_sessions
+        .iter()
         .filter(|s| s.started_at.starts_with(&current_month))
         .map(|s| s.total_usd)
         .sum();
-    let month_sessions = spend_sessions.iter()
+    let month_sessions = spend_sessions
+        .iter()
         .filter(|s| s.started_at.starts_with(&current_month))
         .count();
 
     use chrono::Datelike;
     let day = now.day().max(1) as f64;
     let days_in_month = chrono::NaiveDate::from_ymd_opt(
-        if now.month() == 12 { now.year() + 1 } else { now.year() },
-        if now.month() == 12 { 1 } else { now.month() + 1 },
+        if now.month() == 12 {
+            now.year() + 1
+        } else {
+            now.year()
+        },
+        if now.month() == 12 {
+            1
+        } else {
+            now.month() + 1
+        },
         1,
-    ).unwrap()
-        .signed_duration_since(
-            chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap()
-        ).num_days() as f64;
-    let projection = if month_spend > 0.0 { Some(month_spend / day * days_in_month) } else { None };
-
-    let proxy_up = std::net::TcpStream::connect(
-        format!("127.0.0.1:{}", config.proxy_port.unwrap_or(8788))
-    ).is_ok();
+    )
+    .unwrap()
+    .signed_duration_since(chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap())
+    .num_days() as f64;
+    let projection = if month_spend > 0.0 {
+        Some(month_spend / day * days_in_month)
+    } else {
+        None
+    };
 
     Ok(json!({
         "active_profile": config.active_profile.as_deref().unwrap_or("all"),
-        "proxy_listening": proxy_up,
         "month": current_month,
         "month_spend_usd": month_spend,
         "month_sessions": month_sessions,
@@ -177,20 +191,25 @@ fn tool_spend(args: &Value) -> Result<Value, String> {
 fn tool_sessions() -> Result<Value, String> {
     let sessions = crate::conversations::all_sessions();
     let recent: Vec<_> = sessions.into_iter().take(20).collect();
-    let summaries: Vec<Value> = recent.iter().map(|s| json!({
-        "started_at": s.started_at,
-        "project": s.project,
-        "turns": s.turn_count,
-        "total_usd": s.total_usd,
-        "input_tokens": s.input_tokens,
-        "cache_read_tokens": s.cache_read_tokens,
-        "output_tokens": s.output_tokens,
-        "models": s.models_used,
-        "hit_compact": s.hit_compact,
-        "correction_turns": s.correction_turns,
-        "clarifying_turns": s.clarifying_turns,
-        "first_message_preview": s.first_user_message.chars().take(200).collect::<String>(),
-    })).collect();
+    let summaries: Vec<Value> = recent
+        .iter()
+        .map(|s| {
+            json!({
+                "started_at": s.started_at,
+                "project": s.project,
+                "turns": s.turn_count,
+                "total_usd": s.total_usd,
+                "input_tokens": s.input_tokens,
+                "cache_read_tokens": s.cache_read_tokens,
+                "output_tokens": s.output_tokens,
+                "models": s.models_used,
+                "hit_compact": s.hit_compact,
+                "correction_turns": s.correction_turns,
+                "clarifying_turns": s.clarifying_turns,
+                "first_message_preview": s.first_user_message.chars().take(200).collect::<String>(),
+            })
+        })
+        .collect();
     Ok(json!(summaries))
 }
 
@@ -218,17 +237,23 @@ fn tool_settings() -> Result<Value, String> {
     let conn = crate::db::open_db().ok();
     let count = |table: &str| -> i64 {
         conn.as_ref()
-            .and_then(|c| c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).ok())
+            .and_then(|c| {
+                c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                    .ok()
+            })
             .unwrap_or(0)
     };
-    let last_ingest: Option<String> = conn.as_ref().and_then(|c|
-        c.query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| r.get(0))
-            .optional().ok().flatten()
-    );
+    let last_ingest: Option<String> = conn.as_ref().and_then(|c| {
+        c.query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| {
+            r.get(0)
+        })
+        .optional()
+        .ok()
+        .flatten()
+    });
 
     Ok(json!({
         "active_profile": cfg.active_profile,
-        "proxy_port": cfg.proxy_port,
         "dashboard_port": cfg.dashboard_port,
         "auto_profile_enabled": cfg.auto_profile_enabled,
         "inject_enabled": cfg.inject_enabled,
@@ -284,39 +309,52 @@ fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
     }
 
     match req.method.as_str() {
-        "initialize" => {
-            Some(ok_response(id, json!({
+        "initialize" => Some(ok_response(
+            id,
+            json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
                 "serverInfo": {
                     "name": "ctx",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
-            })))
-        }
+            }),
+        )),
         "notifications/initialized" => None,
         "tools/list" => Some(ok_response(id, build_tools_list())),
         "tools/call" => {
-            let name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let name = req
+                .params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let args = req.params.get("arguments").cloned().unwrap_or(json!({}));
             match handle_tool_call(name, &args) {
                 Ok(result) => {
                     let text = serde_json::to_string_pretty(&result).unwrap_or_default();
-                    Some(ok_response(id, json!({
-                        "content": [{ "type": "text", "text": text }],
-                    })))
+                    Some(ok_response(
+                        id,
+                        json!({
+                            "content": [{ "type": "text", "text": text }],
+                        }),
+                    ))
                 }
-                Err(e) => {
-                    Some(ok_response(id, json!({
+                Err(e) => Some(ok_response(
+                    id,
+                    json!({
                         "content": [{ "type": "text", "text": e }],
                         "isError": true,
-                    })))
-                }
+                    }),
+                )),
             }
         }
         _ => {
             if req.id.is_some() {
-                Some(err_response(id, -32601, &format!("Method not found: {}", req.method)))
+                Some(err_response(
+                    id,
+                    -32601,
+                    &format!("Method not found: {}", req.method),
+                ))
             } else {
                 None
             }
@@ -332,7 +370,9 @@ pub fn serve_stdio() -> anyhow::Result<()> {
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
 
         let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(r) => r,

@@ -1,0 +1,46 @@
+---
+description: After ctx code changes, teardown and rebuild from source before handing off
+alwaysApply: true
+---
+
+# ctx: teardown + build after changes
+
+When you change ctx (Rust, the dashboard in `src/dashboard.html`, config behavior, or hooks), finish with a full local reinstall cycle — do not skip unless the user explicitly says not to.
+
+## 1. Teardown
+
+```bash
+which ctx && ctx setup --uninstall || true
+pkill -f "ctx proxy" 2>/dev/null || true
+pkill -f "ctx dashboard" 2>/dev/null || true
+rm -rf ~/.ctx
+rm -f ~/Library/LaunchAgents/com.ctx.{proxy,dashboard,ingest,experiment-tick}.plist
+```
+
+Experiment plan state (`experiment-plan.toml`, journal, tick state) is mirrored to `~/Library/Application Support/ctx/experiment/` on every save. `ctx setup` restores it automatically when `~/.ctx` was wiped.
+
+Clean MCP registrations if uninstall missed them (settings.json, mcp.json).
+
+## 2. Build
+
+The dashboard is a single self-contained file (`src/dashboard.html`, HTML + CSS + JS inline) embedded into the binary via `include_str!`. There is no stitch or build step: edit it directly and reinstall.
+
+```bash
+cd ~/Documents/ctx   # or the repo root
+source "$HOME/.cargo/env"
+cargo install --locked --path .
+```
+
+## 3. Setup + verify
+
+```bash
+ctx setup --yes
+ctx status
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8789/
+```
+
+Tell the user to **Reload Window** in the IDE after setup.
+
+## Metrics rule
+
+Never show catalog placeholder tool counts (e.g. hardcoded 156) when MCP usage is not indexed. Use `tool_metrics_ready()` / observed history only; show `unknown` or `—` until ingest has MCP data.

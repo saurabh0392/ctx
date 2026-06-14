@@ -1,6 +1,6 @@
 //! Writes `~/.ctx/filter.js` and `~/.ctx/filter-config.json` for legacy NODE_OPTIONS setups.
 //! **Deprecated:** Claude Code ships a Bun binary where `NODE_OPTIONS --require` is ignored.
-//! Prefer native `allowedMcpServers` + hooks (see `claude_settings` and `ctx setup` / `ctx proxy install`).
+//! Prefer native `allowedMcpServers` + hooks (see `claude_settings` and `ctx setup`).
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -86,8 +86,7 @@ pub fn sync_filter_config_from_active_config() -> Result<()> {
 pub fn filter_js_abs_path_string() -> Result<String> {
     write_filter_js()?;
     let p = filter_js_path();
-    let c = std::fs::canonicalize(&p)
-        .with_context(|| format!("canonicalize {}", p.display()))?;
+    let c = std::fs::canonicalize(&p).with_context(|| format!("canonicalize {}", p.display()))?;
     Ok(c.to_string_lossy().into_owned())
 }
 

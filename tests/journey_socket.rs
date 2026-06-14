@@ -4,8 +4,8 @@ mod harness;
 
 use harness::CtxHarness;
 use serial_test::serial;
-use std::io::{BufRead, Write};
 use std::io::BufReader;
+use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 

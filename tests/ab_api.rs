@@ -33,7 +33,7 @@ async fn ab_report_empty_when_no_experiment_rows() {
         .await
         .expect("body");
     let report: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
-    assert_eq!(report.len(), 4);
+    assert_eq!(report.len(), 7);
     for row in &report {
         assert_eq!(row["treatment"]["count"].as_i64().unwrap_or(0), 0);
         assert_eq!(row["control"]["count"].as_i64().unwrap_or(0), 0);

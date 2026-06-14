@@ -68,9 +68,15 @@ coaching_pct = 100
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("hook trace row");
-    assert_eq!(removed, 0, "control profile should report zero tools removed");
+    assert_eq!(
+        removed, 0,
+        "control profile should report zero tools removed"
+    );
     let group = ab_group.expect("ab_group should be set when experiment active");
-    assert!(group.contains("P:C"), "expected profile control in ab_group, got {group}");
+    assert!(
+        group.contains("P:C"),
+        "expected profile control in ab_group, got {group}"
+    );
 }
 
 #[test]
@@ -104,10 +110,9 @@ coaching_pct = 100
     );
 
     ctx::profiles::apply_profile("data", true, true).expect("seed treatment deny");
-    let before: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
-    )
-    .unwrap();
+    let before: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
     let deny_before = before["permissions"]["deny"].as_array().unwrap();
     assert!(
         deny_before.iter().any(|v| {
@@ -126,10 +131,9 @@ coaching_pct = 100
     .to_string();
     run_hook(&h, &stdin_json);
 
-    let after: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
-    )
-    .unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
     let deny_after = after["permissions"]["deny"].as_array().unwrap();
     assert!(
         deny_after.iter().any(|v| v.as_str() == Some("Bash(rm *)")),
@@ -177,5 +181,8 @@ adaptive_prefix_enabled = false
             |r| r.get(0),
         )
         .expect("ab_group");
-    assert!(ab_group.is_none(), "no experiment => ab_group should be NULL");
+    assert!(
+        ab_group.is_none(),
+        "no experiment => ab_group should be NULL"
+    );
 }

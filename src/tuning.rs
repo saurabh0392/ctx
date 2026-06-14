@@ -45,7 +45,7 @@ pub fn save_ab_results(results: &AbResultsFile) -> Result<()> {
     Ok(())
 }
 
-const MIN_SAMPLES: i64 = 100;
+pub const MIN_SAMPLES: i64 = 100;
 const BENEFIT_THRESHOLD_PCT: f64 = 10.0;
 
 fn feature_label(feature: &str) -> String {
@@ -54,6 +54,9 @@ fn feature_label(feature: &str) -> String {
         "inject" => "System prefix".to_string(),
         "adaptive" => "Adaptive prefix".to_string(),
         "coaching" => "Coaching".to_string(),
+        "compress" => "Output compression".to_string(),
+        "compress_sgr" => "Session-grounded retention (SGR)".to_string(),
+        "tool_mix" => "Semantic tool mix".to_string(),
         _ => feature.to_string(),
     }
 }
@@ -81,7 +84,12 @@ fn cohort_metrics(
     ))
 }
 
-fn build_verdict(feature: &str, _letter: char, t: (u64, f64, f64), c: (u64, f64, f64)) -> FeatureVerdict {
+fn build_verdict(
+    feature: &str,
+    _letter: char,
+    t: (u64, f64, f64),
+    c: (u64, f64, f64),
+) -> FeatureVerdict {
     let label = feature_label(feature);
     let delta = if c.1 > 0.0 {
         Some(((t.1 - c.1) / c.1) * 100.0)
@@ -164,6 +172,9 @@ pub fn run_tuning_after_ingest(conn: &rusqlite::Connection) -> Result<Option<AbR
         ("inject", 'I'),
         ("adaptive", 'A'),
         ("coaching", 'C'),
+        ("compress", 'X'),
+        ("compress_sgr", 'S'),
+        ("tool_mix", 'M'),
     ];
     let mut features = Vec::new();
     for (name, letter) in features_spec {
@@ -195,6 +206,9 @@ fn experiment_active(ab: &AbTestConfig) -> bool {
         || ab.inject_pct < 100
         || ab.adaptive_pct < 100
         || ab.coaching_pct < 100
+        || ab.compress_pct < 100
+        || ab.compress_sgr_pct < 100
+        || ab.tool_mix_pct < 100
 }
 
 pub fn apply_recommendations() -> Result<()> {
@@ -243,6 +257,24 @@ fn apply_recommendations_inner(results: &mut AbResultsFile, auto: bool) -> Resul
                         ));
                     }
                 }
+                "compress" => {
+                    if cfg.compress_enabled {
+                        cfg.compress_enabled = false;
+                        log.push(format!(
+                            "Disabled output compression ({})",
+                            if auto { "auto" } else { "manual" }
+                        ));
+                    }
+                }
+                "compress_sgr" => {
+                    if cfg.compress_sgr_enabled {
+                        cfg.compress_sgr_enabled = false;
+                        log.push(format!(
+                            "Disabled session-grounded retention ({})",
+                            if auto { "auto" } else { "manual" }
+                        ));
+                    }
+                }
                 _ => {}
             },
             _ => {}
@@ -269,8 +301,8 @@ pub fn print_experiment_status() -> Result<()> {
     let cfg = Config::load();
     if let Some(ab) = &cfg.ab_test {
         println!(
-            "Experiment active: profile {}%, inject {}%, adaptive {}%, coaching {}%",
-            ab.profile_pct, ab.inject_pct, ab.adaptive_pct, ab.coaching_pct
+            "Experiment active: profile {}%, inject {}%, adaptive {}%, coaching {}%, compress {}%, sgr {}%",
+            ab.profile_pct, ab.inject_pct, ab.adaptive_pct, ab.coaching_pct, ab.compress_pct, ab.compress_sgr_pct
         );
     } else {
         println!("No experiment configured (all features at 100%)");

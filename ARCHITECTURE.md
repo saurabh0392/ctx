@@ -31,6 +31,7 @@ flowchart LR
 
   CC_IDE --> Hooks
   CC_CLI --> Hooks
+  Hooks -->|"PostToolUse compress"| DB
   Hooks --> Deny
   Hooks -->|"insert hook_traces"| DB
   Hooks -->|"POST /api/trigger-ingest"| Dashboard
@@ -44,7 +45,7 @@ flowchart LR
 
 **Strict mode (opt-in):** `filter_mode = strict` uses `allowedMcpServers` instead — non-allowlisted remote connectors disconnect for maximum token savings.
 
-**Optional:** `ctx proxy` MITM (`ctx proxy install --mode complement|standalone|filter-only`). **complement** adds HTTP-body tool stripping alongside hooks; **standalone** runs the full gate pipeline without hooks; **filter_only** is filter + analytics only. SSE responses stream through the proxy (fixes 429 retry storms from buffering). Not started by `ctx setup`. Deprecated: `ANTHROPIC_BASE_URL` reverse mode. `filter.js` + `NODE_OPTIONS` are deprecated (Bun-based Claude Code ignores Node preload).
+**No proxy:** ctx is hook-first. It never terminates TLS, installs a CA, or edits requests on the wire. The MITM proxy was removed in ADR 0015; the only thing ctx changes in the cached request prefix is the system-prefix injection it asks Claude Code to add through the hook. (`filter.js` + `NODE_OPTIONS` are also deprecated; Bun-based Claude Code ignores Node preload.)
 
 **Desktop:** No hooks path. MCP tools, dashboard, and ingest of `audit.jsonl` still work.
 
@@ -58,6 +59,7 @@ flowchart LR
 | Setup | `setup.rs`, `host.rs`, `daemon.rs` | Install, host detection, launchd/systemd |
 | Native hooks | `hook.rs`, `filter_control.rs`, `claude_settings.rs`, `profiles.rs` | `UserPromptSubmit`, filter modes, settings merge, deny/allowlist |
 | Gates | `inject.rs`, `adaptive.rs`, `coach.rs`, `budget_guard.rs`, `behavior_guard.rs` | Prefixes, coaching, budget |
+| Compress | `compress/` | PostToolUse output compression (Bash, Read, Grep, Glob, MCP) |
 | A/B | `ab.rs`, `config::AbTestConfig` | Per-feature treatment vs control coin flips |
 | Modes | `modes.rs` | Named presets (profile + toggles) |
 | Tuning | `tuning.rs` | Post-ingest A/B comparison → `ab-results.json` |
@@ -67,7 +69,7 @@ flowchart LR
 | UI | `dashboard.rs`, `dashboard.html` | Axum API + embedded UI |
 | MCP | `mcp.rs` | stdio tools over `ctx.db` |
 | Config | `config.rs`, `user_profile.rs` | `config.toml`, calibrated thresholds |
-| Legacy | `filter.rs`, `filter_hook.rs`, `proxy.rs`, `analytics.rs` | Deprecated MITM/JSONL paths |
+| Legacy | `filter_hook.rs`, `analytics.rs` | Deprecated JSONL paths |
 
 ---
 
@@ -80,7 +82,7 @@ flowchart LR
 | `off` | Strip ctx-managed deny and allowlist | All connected |
 
 - `profiles::deny_patterns_for_profile()` maps profile keep-lists → deny wildcards (prefix mode) or per-tool deny entries (`keep_tools` mode); local MCP servers (including `ctx`) are never denied.
-- `Profile::keeps_tool()` / `filters_tool()` — tool-level filtering when `keep_tools` is non-empty; proxy MITM strips individual `tools[]` entries via the same methods.
+- `Profile::keeps_tool()` / `filters_tool()` — tool-level filtering when `keep_tools` is non-empty; soft mode emits per-tool `permissions.deny` entries via the same methods.
 - `ctx profile migrate-tools` expands legacy server-prefix `keep` into `keep_tools` from SQLite invocation counts.
 - `claude_settings::merge_profile_filter()` applies mode-specific merge; `strip_ctx_deny_rules()` on uninstall.
 - CLI: `ctx filter mode|expand|clear-expansion`.
@@ -105,7 +107,7 @@ MCP tool stripping happens outside the hook via **`permissions.deny`** (soft mod
 
 ## SQLite (`ctx.db`)
 
-Primary tables: `sessions`, `turns`, `tool_invocations`, `requests` (legacy proxy rows), `hook_traces`, `hook_events`, `session_embeddings`, `profile_changes`, `meta`.
+Primary tables: `sessions`, `turns`, `tool_invocations`, `requests` (legacy rows), `hook_traces`, `hook_events`, `session_embeddings`, `profile_changes`, `meta`.
 
 ### `hook_traces`
 
@@ -175,7 +177,7 @@ After each ingest, when `[ab_test]` is active and cohorts have at least 100 enri
 
 ## Dashboard
 
-Axum serves embedded `dashboard.html` via `include_str!` in `dashboard.rs`. Tabs include Savings, Prompt Stats, Profiles, Request Trace (hook + proxy rows), Pipeline, Settings, and Experiment (dev).
+Axum serves embedded `dashboard.html` via `include_str!` in `dashboard.rs`. Tabs include Savings, Prompt Stats, Profiles, Request Trace (hook rows), Pipeline, Settings, and Experiment (dev).
 
 Notable APIs: `/api/stats`, `/api/hook-traces`, `/api/task-costs`, `/api/simulate`, `/api/settings`, `/api/settings/mode`, `/api/trigger-ingest`, `/api/ab-report`, `/api/ab-daily`.
 
@@ -211,16 +213,6 @@ Initial extraction from a monolithic file (one-time or after a deliberate merge-
 | --- | --- | --- |
 | Dashboard | `:8789` | UI + APIs |
 | Ingest | every 300s | JSONL → SQLite, enrich `hook_traces`, rebuild adaptive prefix |
-| Proxy | `:8788` | Optional MITM (`ctx proxy install --mode …`; default `proxy_mode = off`) |
-
-### Proxy modes
-
-| Mode | MITM env | Hooks / deny | Proxy gates |
-| --- | --- | --- | --- |
-| `off` | No | Yes (default) | N/A |
-| `complement` | Yes | Yes | Filter tools + analytics only |
-| `filter_only` | Yes | Optional | Filter tools + analytics only |
-| `standalone` | Yes | Stripped on install | Full pipeline (filter, inject, coach, budget) |
 
 ---
 
@@ -257,6 +249,5 @@ Integration tests isolate `CTX_HOME`. Hook and A/B: `tests/ab_hook.rs`, `tests/j
 | `src/dashboard_static/` | Fragment source for dashboard HTML/CSS/JS |
 | `assets/filter.js` | Legacy preload copy |
 | `test.sh` | Hook smoke + focused cargo test |
-| `smoke_gates.sh` | Native hook smoke + legacy proxy gate smoke |
 
-`analytics.jsonl` remains for legacy proxy/filter paths but is not the primary analytics store for v0.3.1 hook-native installs.
+`analytics.jsonl` remains for legacy filter paths but is not the primary analytics store for hook-native installs.

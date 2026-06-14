@@ -55,7 +55,8 @@ pub fn soft_warning_for_user_texts(texts: &[String], model: Option<&str>) -> Opt
         .iter()
         .map(|t| serde_json::json!({"role": "user", "content": t.as_str()}))
         .collect();
-    let body = serde_json::to_vec(&serde_json::json!({"model": model, "messages": messages})).ok()?;
+    let body =
+        serde_json::to_vec(&serde_json::json!({"model": model, "messages": messages})).ok()?;
     check(&body)
 }
 
@@ -91,9 +92,10 @@ fn hook_budget_body(input: &Value, prompt: &str, model: &str) -> Option<Vec<u8>>
         return None;
     }
     let prompt_trim = prompt.trim();
-    let last_user = messages.iter().rev().find(|m| {
-        m.get("role").and_then(|r| r.as_str()) == Some("user")
-    });
+    let last_user = messages
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
     let needs_append = match last_user {
         None => true,
         Some(m) => message_text(m).trim() != prompt_trim,
@@ -252,7 +254,7 @@ mod tests {
         let mut cfg = Config::load();
         cfg.monthly_budget_usd = Some(100.0);
         cfg.save().unwrap();
-        let big = "z".repeat(12_000_000);
+        let big = "z".repeat(35_000_000);
         assert!(hard_block_reason_for_prompt(&big).is_some());
         match prev {
             Some(v) => std::env::set_var("CTX_HOME", v),
@@ -283,16 +285,25 @@ mod tests {
         let haiku_val: Value = serde_json::from_slice(&haiku_body).unwrap();
         let opus_cost = estimate_cost(&opus_val);
         let haiku_cost = estimate_cost(&haiku_val);
-        assert!(opus_cost > haiku_cost, "Opus ({opus_cost}) should cost more than Haiku ({haiku_cost})");
+        assert!(
+            opus_cost > haiku_cost,
+            "Opus ({opus_cost}) should cost more than Haiku ({haiku_cost})"
+        );
         // 15.0 / 0.80 = 18.75x ratio
-        assert!(opus_cost / haiku_cost > 10.0, "Expected >10x ratio, got {}", opus_cost / haiku_cost);
+        assert!(
+            opus_cost / haiku_cost > 10.0,
+            "Expected >10x ratio, got {}",
+            opus_cost / haiku_cost
+        );
     }
 
     #[test]
     fn unknown_model_defaults_to_sonnet_rate() {
-        let body = make_body_with_model(&[("user", &"z".repeat(4_000_000))], "claude-unknown-model");
+        let body =
+            make_body_with_model(&[("user", &"z".repeat(4_000_000))], "claude-unknown-model");
         let val: Value = serde_json::from_slice(&body).unwrap();
-        let sonnet_body = make_body_with_model(&[("user", &"z".repeat(4_000_000))], "claude-sonnet-4-6");
+        let sonnet_body =
+            make_body_with_model(&[("user", &"z".repeat(4_000_000))], "claude-sonnet-4-6");
         let sonnet_val: Value = serde_json::from_slice(&sonnet_body).unwrap();
         assert!((estimate_cost(&val) - estimate_cost(&sonnet_val)).abs() < 0.001);
     }
@@ -315,7 +326,10 @@ mod tests {
         let body = super::hook_budget_body(&input, "follow up", "claude-sonnet-4-20250514")
             .expect("transcript should produce a budget body");
         let w = super::check_with_threshold(&body, 1.0);
-        assert!(w.is_some(), "transcript-sized session should cross a low threshold");
+        assert!(
+            w.is_some(),
+            "transcript-sized session should cross a low threshold"
+        );
     }
 
     #[test]

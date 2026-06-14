@@ -1,59 +1,58 @@
 //! ctx library surface for integration tests and the `ctx` binary.
 
 pub mod ab;
+pub mod adaptive;
+pub mod agent;
 pub mod allowance;
 pub mod analytics;
-pub mod adaptive;
-pub mod ca;
 pub mod behavior_guard;
+pub mod bench;
 pub mod budget_guard;
 pub mod claude_settings;
 pub mod cli;
 pub mod coach;
+pub mod compress;
 pub mod config;
+pub mod context_ctl;
 pub mod conversations;
+pub mod daemon;
 pub mod dashboard;
 pub mod dashboard_push;
-pub mod daemon;
 pub mod db;
 pub mod embedder;
+pub mod experiment_plan;
 pub mod filter;
 pub mod filter_control;
 pub mod filter_hook;
-pub mod host;
 pub mod hook;
+pub mod host;
 pub mod inject;
-pub mod profiles;
-pub mod semantic_tools;
-pub mod proxy;
-pub mod quality_guard;
-pub mod setup;
-pub mod test_lock;
+pub mod learn;
 pub mod mcp;
 pub mod modes;
+pub mod outcome_signals;
+pub mod profiles;
+pub mod quality_guard;
+pub mod rule_signals;
+pub mod semantic_tools;
+pub mod setup;
 pub mod simulate;
 pub mod socket;
+pub mod stats;
+pub mod surface;
+pub mod test_lock;
+pub mod tool_usage_analysis;
 pub mod tuning;
 pub mod user_profile;
-
-/// Install rustls ring crypto provider once (required for [`ca::CertAuthority`]).
-pub fn ensure_tls_crypto_provider() {
-    use std::sync::OnceLock;
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-}
 
 use anyhow::Result;
 use clap::Parser;
 use cli::{
-    Cli, Commands, ExperimentCommand, FilterCommand, HookCommand, InjectCommand, ModeCommand,
-    ProfileCommand, ProxyCommand,
+    BenchCommand, Cli, Commands, ContextCommand, ExperimentCommand, ExperimentPlanCommand,
+    FilterCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand,
 };
 
 pub async fn run() -> Result<()> {
-    ensure_tls_crypto_provider();
     let cli = Cli::parse();
 
     match cli.command {
@@ -73,31 +72,21 @@ pub async fn run() -> Result<()> {
         Commands::Profile { command } => match command {
             ProfileCommand::List => profiles::list()?,
             ProfileCommand::Show { name } => profiles::show(&name)?,
-            ProfileCommand::Add { name, keep, keep_tool } => {
-                profiles::add(
-                    &name,
-                    keep.unwrap_or_default(),
-                    keep_tool.unwrap_or_default(),
-                )?
-            }
+            ProfileCommand::Add {
+                name,
+                keep,
+                keep_tool,
+            } => profiles::add(
+                &name,
+                keep.unwrap_or_default(),
+                keep_tool.unwrap_or_default(),
+            )?,
             ProfileCommand::Remove { name } => profiles::remove(&name)?,
             ProfileCommand::Auto { refresh } => profiles::auto_generate(refresh)?,
             ProfileCommand::Generate => profiles::generate_from_config(true)?,
             ProfileCommand::MigrateTools { name, force } => {
                 profiles::migrate_tools(name.as_deref(), force)?
             }
-        },
-        Commands::Proxy { command } => match command {
-            ProxyCommand::Start { port, upstream } => proxy::start(port, &upstream).await?,
-            ProxyCommand::Install { mode, port, upstream } => {
-                let mode = crate::config::ProxyMode::parse(&mode)
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "Invalid --mode {mode:?}; use complement, standalone, or filter-only"
-                    ))?;
-                proxy::install(port, &upstream, mode)?;
-            }
-            ProxyCommand::Uninstall => proxy::uninstall()?,
-            ProxyCommand::Status => proxy::status()?,
         },
         Commands::Inject { command } => match command {
             InjectCommand::Show => inject::show()?,
@@ -106,8 +95,6 @@ pub async fn run() -> Result<()> {
             InjectCommand::Enable => inject::enable()?,
         },
         Commands::Setup {
-            port,
-            upstream,
             uninstall,
             no_install,
             no_zshrc_prompt,
@@ -117,12 +104,13 @@ pub async fn run() -> Result<()> {
             if uninstall {
                 setup::uninstall()?;
             } else {
-                setup::run(port, &upstream, no_install, no_zshrc_prompt, dry_run, yes)?;
+                setup::run(no_install, no_zshrc_prompt, dry_run, yes)?;
             }
         }
         Commands::Dashboard { port, no_open } => dashboard::serve(port, no_open).await?,
         Commands::Hook { command } => match command {
             HookCommand::UserPromptSubmit => hook::user_prompt_submit()?,
+            HookCommand::PostToolUse => compress::post_tool_use()?,
         },
         Commands::Mcp => mcp::serve_stdio()?,
         Commands::Mode { name, command } => match command {
@@ -188,7 +176,11 @@ pub async fn run() -> Result<()> {
                     } else {
                         print!(
                             "{}",
-                            simulate::format_all_profiles(&results, &effective_cwd, &effective_prompt)
+                            simulate::format_all_profiles(
+                                &results,
+                                &effective_cwd,
+                                &effective_prompt
+                            )
                         );
                     }
                 } else {
@@ -211,6 +203,25 @@ pub async fn run() -> Result<()> {
             ExperimentCommand::Status => tuning::print_experiment_status()?,
             ExperimentCommand::Apply => tuning::apply_recommendations()?,
             ExperimentCommand::Reset => tuning::reset_experiment()?,
+            ExperimentCommand::Tick { dry_run } => experiment_plan::run_tick(dry_run)?,
+            ExperimentCommand::Digest { json } => experiment_plan::run_digest(json)?,
+            ExperimentCommand::InstallSchedule => experiment_plan::install_schedule()?,
+            ExperimentCommand::Analyze { json } => {
+                let conn = crate::db::open_db()?;
+                crate::db::ensure_schema(&conn)?;
+                let analysis = crate::tool_usage_analysis::run(&conn)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&analysis)?);
+                } else {
+                    crate::tool_usage_analysis::print_human(&analysis);
+                }
+            }
+            ExperimentCommand::Plan { command } => match command {
+                ExperimentPlanCommand::Init { corpus, template } => {
+                    experiment_plan::plan_init(&corpus, &template)?
+                }
+                ExperimentPlanCommand::Status => experiment_plan::plan_status()?,
+            },
         },
         Commands::Filter { command } => match command {
             FilterCommand::Mode { mode } => {
@@ -221,6 +232,24 @@ pub async fn run() -> Result<()> {
             }
             FilterCommand::Expand { target } => filter_control::expand_session_target(&target)?,
             FilterCommand::ClearExpansion => filter_control::clear_session_expansion()?,
+        },
+        Commands::Context { command } => match command {
+            ContextCommand::Status { json } => context_ctl::status(json)?,
+            ContextCommand::Preset { value } => context_ctl::set_preset(&value)?,
+            ContextCommand::On => context_ctl::set_preset("safe")?,
+            ContextCommand::Off => context_ctl::set_preset("off")?,
+            ContextCommand::Learn { json } => learn::run(json)?,
+            ContextCommand::Labels { tool, limit, json } => {
+                context_ctl::labels(tool.as_deref(), limit, json)?
+            }
+            ContextCommand::Proof { tool, json } => context_ctl::proof(tool.as_deref(), json)?,
+            ContextCommand::Trial { tool, on, off } => {
+                context_ctl::trial(tool.as_deref(), on, off)?
+            }
+            ContextCommand::CacheAudit { days, json } => context_ctl::cache_audit(days, json)?,
+        },
+        Commands::Bench { command } => match command {
+            BenchCommand::Run { json } => bench::run(json)?,
         },
     }
 

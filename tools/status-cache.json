@@ -1,0 +1,82 @@
+[
+  {
+    "id": "CTX-10",
+    "title": "Test isolation: serialize all HOME/CTX_HOME env access in tests",
+    "status": "Backlog",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-10/test-isolation-serialize-all-homectx-home-env-access-in-tests",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-9",
+    "title": "Read guard Phase 2: session working-set + honest proof stratification",
+    "status": "Backlog",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-9/read-guard-phase-2-session-working-set-honest-proof-stratification",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-8",
+    "title": "Read edit-intent guard: never trim a read the agent is about to edit",
+    "status": "Backlog",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-8/read-edit-intent-guard-never-trim-a-read-the-agent-is-about-to-edit",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-7",
+    "title": "Phase 0: clickable dashboard prototype (Home, Proof, Activity)",
+    "status": "Done",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-7/phase-0-clickable-dashboard-prototype-home-proof-activity",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-4",
+    "title": "Retire Savings and Prompt Stats (remove cost/budget)",
+    "status": "In Review",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-4/retire-savings-and-prompt-stats-remove-costbudget",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-6",
+    "title": "New IA and sidebar nav (3 core + 2 setup)",
+    "status": "In Review",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-6/new-ia-and-sidebar-nav-3-core-2-setup",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-3",
+    "title": "Rename Request Trace to Activity and reframe for transparency",
+    "status": "In Review",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-3/rename-request-trace-to-activity-and-reframe-for-transparency",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-2",
+    "title": "Proof page + backend API (the differentiator)",
+    "status": "In Review",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-2/proof-page-backend-api-the-differentiator",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-5",
+    "title": "Home reframe + fix Context panel misalignment",
+    "status": "In Review",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-5/home-reframe-fix-context-panel-misalignment",
+    "project": "Context truth layer"
+  },
+  {
+    "id": "CTX-1",
+    "title": "Dashboard revamp: reposition to the context truth and safety layer",
+    "status": "In Progress",
+    "updatedAt": "2026-06-07",
+    "url": "https://linear.app/saurabh0392/issue/CTX-1/dashboard-revamp-reposition-to-the-context-truth-and-safety-layer",
+    "project": "Context truth layer"
+  }
+]

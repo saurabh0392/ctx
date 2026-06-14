@@ -19,7 +19,9 @@ filter_mode = "soft"
     let p = ctx::profiles::get("data").unwrap();
     let patterns = ctx::profiles::deny_patterns_for_profile(&p, &[], &[]);
     assert!(patterns.iter().any(|s| s == "mcp__claude_ai_Figma__*"));
-    assert!(!patterns.iter().any(|s| s == "mcp__claude_ai_Data_Shippo__*"));
+    assert!(!patterns
+        .iter()
+        .any(|s| s == "mcp__claude_ai_Data_Shippo__*"));
 }
 
 #[test]
@@ -43,7 +45,11 @@ filter_mode = "soft"
     // Point claude settings at temp home
     let claude_dir = h.tmp.path().join(".claude");
     std::fs::create_dir_all(&claude_dir).unwrap();
-    std::fs::write(claude_dir.join("settings.json"), r#"{"permissions":{"deny":["Bash(rm *)"]}}"#).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{"permissions":{"deny":["Bash(rm *)"]}}"#,
+    )
+    .unwrap();
 
     ctx::profiles::apply_profile("data", true, true).unwrap();
 
@@ -107,7 +113,11 @@ adaptive_prefix_enabled = false
         .wait_with_output()
         .unwrap();
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
@@ -138,7 +148,9 @@ fn is_ctx_managed_deny_recognizes_per_tool_names() {
     assert!(ctx::profiles::is_ctx_managed_deny_pattern(
         "mcp__claude_ai_Atlassian__jira_get_issue"
     ));
-    assert!(ctx::profiles::is_ctx_managed_deny_pattern("mcp__claude_ai_Figma__*"));
+    assert!(ctx::profiles::is_ctx_managed_deny_pattern(
+        "mcp__claude_ai_Figma__*"
+    ));
     assert!(!ctx::profiles::is_ctx_managed_deny_pattern("Bash(rm *)"));
 }
 

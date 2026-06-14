@@ -128,8 +128,8 @@ mod onnx_impl {
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .commit_from_file(&model_path)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let tokenizer = tokenizers::Tokenizer::from_file(&tok_path)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let tokenizer =
+                tokenizers::Tokenizer::from_file(&tok_path).map_err(|e| anyhow::anyhow!("{e}"))?;
             Ok(Self { session, tokenizer })
         }
 
@@ -145,11 +145,7 @@ mod onnx_impl {
                 .iter()
                 .map(|&m| m as i64)
                 .collect();
-            let type_ids: Vec<i64> = encoding
-                .get_type_ids()
-                .iter()
-                .map(|&t| t as i64)
-                .collect();
+            let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&t| t as i64).collect();
             let seq_len = ids.len();
 
             let ids_tensor = ort::value::Tensor::from_array(([1usize, seq_len], ids))
@@ -164,15 +160,25 @@ mod onnx_impl {
                 "attention_mask" => mask_tensor,
                 "token_type_ids" => type_tensor
             ];
-            let outputs = self.session.run(inputs)
+            let outputs = self
+                .session
+                .run(inputs)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             let (shape, data) = outputs[0]
                 .try_extract_tensor::<f32>()
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             // shape derefs to &[i64], expected [1, seq_len, 384]
-            let tokens = if shape.len() == 3 { shape[1] as usize } else { 1 };
-            let embed_dim = if shape.len() == 3 { shape[2] as usize } else { EMBED_DIM };
+            let tokens = if shape.len() == 3 {
+                shape[1] as usize
+            } else {
+                1
+            };
+            let embed_dim = if shape.len() == 3 {
+                shape[2] as usize
+            } else {
+                EMBED_DIM
+            };
             let mut pooled = vec![0f32; embed_dim.min(EMBED_DIM)];
             for t in 0..tokens {
                 for d in 0..pooled.len() {
@@ -306,7 +312,11 @@ pub fn similar_sessions_by_query(
     Ok(scored)
 }
 
-pub fn similar_sessions(conn: &Connection, session_pk: i64, top_k: usize) -> Result<Vec<(i64, f32)>> {
+pub fn similar_sessions(
+    conn: &Connection,
+    session_pk: i64,
+    top_k: usize,
+) -> Result<Vec<(i64, f32)>> {
     crate::db::ensure_schema(conn)?;
     let self_blob: Option<Vec<u8>> = conn
         .query_row(

@@ -1,0 +1,33 @@
+---
+description: Humanized UI copy without em dashes or stiff punctuation
+alwaysApply: true
+---
+
+# Humanized UI copy
+
+All user-facing strings in this project (dashboard HTML tabs, JS labels, empty states, tooltips, commit messages to users) must read like a person talking, not a spec sheet.
+
+## Do not use
+
+- Em dashes (`—`) or double hyphens as punctuation (`--`)
+- Arrow glyphs in prose (`→`) unless they are literal UI affordances
+- Middle dots as bullet chains (`·`) in sentences
+- Stiff labels like "Primary KPI" when plain English works ("What we're measuring")
+
+## Prefer instead
+
+- Short sentences. Periods. Commas. "and" / "so" / "because"
+- Empty values: `n/a`, `none`, or `not yet` (never `—`)
+- Concrete outcomes: "When filtering is on, ctx strips about 4 tools per turn" not "Ctx direct effect: −4 tools"
+
+## Examples
+
+```
+Bad:  "Extra prefix tokens are expected — you trade context for fewer back-and-forths."
+Good: "Extra prefix tokens are normal. You spend a little context up front to cut redirect turns."
+
+Bad:  "Profile filtering — tools stripped & token savings"
+Good: "Profile filtering strips tools and saves schema tokens before each API call."
+```
+
+Apply when editing the dashboard (`src/dashboard.html`) and any dashboard-facing Rust error strings.

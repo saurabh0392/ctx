@@ -162,7 +162,7 @@ The helper script runs `ctx setup --yes`, verifies the dashboard, runs initial i
 
 **What you get:** MCP tools in Desktop, the local dashboard, and session ingest/analytics.
 
-**What you do not get:** Per-request tracing, tool filtering, and dashboard savings from `filter.js`. Those need `NODE_OPTIONS` or traffic through `ctx proxy`, neither of which applies to standalone Desktop chat. Desktop does not expose a configurable API base URL, so its traffic cannot be pointed at ctx. For full features, use Claude Code (CLI or IDE). Desktop session data is available via `ctx ingest` when local-agent logs exist.
+**What you do not get:** Per-request tracing, tool filtering, and dashboard savings. Those run through Claude Code hooks and `permissions.deny`, which standalone Desktop chat does not support. Desktop does not expose a configurable API base URL either. For full features, use Claude Code (CLI or IDE). Desktop session data is available via `ctx ingest` when local-agent logs exist.
 
 ---
 
