@@ -328,6 +328,8 @@ pub enum HookCommand {
     PostToolUse,
     /// Cursor postToolUse: observe Cursor tool results and record cursor decisions (ADR 0018)
     CursorPostToolUse,
+    /// Cursor preToolUse: rewrite an earned Shell command to `ctx run <cmd>` (ADR 0024 / CTX-41)
+    CursorPreToolUse,
 }
 
 #[derive(Subcommand)]
