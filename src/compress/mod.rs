@@ -95,6 +95,13 @@ pub fn compress_tool_output(
         return None;
     }
 
+    // Floor guard (CTX-40): a strategy must never erase non-trivial output to empty. If it did,
+    // treat it as a no-op rather than handing the model an empty result. A genuinely empty input
+    // returned early above, so chars_in > 0 here means real content would be lost.
+    if result.chars_out == 0 && chars_in > 0 {
+        return None;
+    }
+
     if cfg.compress_sgr_enabled && sgr_arm {
         result = apply_sgr(
             result, cfg, session_id, cwd, tool_name, tool_input, raw_output,
@@ -178,9 +185,18 @@ fn tool_allowed(tool_name: &str, cfg: &Config) -> bool {
     if classify::is_mcp_tool(name) {
         return true;
     }
+    // Cursor's "Shell" is Claude's "Bash": the same surface under two names. Treat them as
+    // interchangeable so a config that allows one allows the other (matches the classify unification
+    // in CTX-41), otherwise the Cursor Shell `ctx run` path can never compress.
+    let aliases: &[&str] = if name.eq_ignore_ascii_case("shell") || name.eq_ignore_ascii_case("bash")
+    {
+        &["shell", "bash"]
+    } else {
+        std::slice::from_ref(&name)
+    };
     cfg.compress_tools
         .iter()
-        .any(|t| t.eq_ignore_ascii_case(name))
+        .any(|t| aliases.iter().any(|a| t.eq_ignore_ascii_case(a)))
 }
 
 #[cfg(test)]
@@ -205,6 +221,42 @@ mod tests {
             compress_adaptive_budget: true,
             ..test_cfg()
         }
+    }
+
+    #[test]
+    fn shell_is_allowed_like_bash() {
+        // Cursor names the shell tool "Shell"; the default config lists "Bash". The `ctx run` path
+        // must still be allowed to compress, or Cursor Shell output never compacts (CTX-41).
+        let cfg = test_cfg();
+        assert!(tool_allowed("Shell", &cfg));
+        assert!(tool_allowed("shell", &cfg));
+        assert!(tool_allowed("Bash", &cfg));
+        assert!(!tool_allowed("Write", &cfg));
+    }
+
+    #[test]
+    fn compresses_large_shell_git_log() {
+        // The exact Cursor path: tool_name "Shell", a big git log. Must classify as git-log and
+        // compress, not fall through to no-op.
+        let mut body = String::new();
+        for i in 0..400 {
+            body.push_str(&format!(
+                "commit {i:040x}\nAuthor: A <a@b.c>\nDate: today\n\n    message {i} with enough text to grow\n\n"
+            ));
+        }
+        let cfg = test_cfg();
+        let r = compress_tool_output(
+            "Shell",
+            &serde_json::json!({"command": "git log -n 400"}),
+            &body,
+            &cfg,
+            None,
+            "/tmp",
+            false,
+        )
+        .expect("Shell git log must compress");
+        assert!(r.chars_saved() > 1000, "should save a lot, saved {}", r.chars_saved());
+        assert_eq!(r.strategy, "git-log");
     }
 
     #[test]

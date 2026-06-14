@@ -12,9 +12,20 @@ recorded a `surface = "cursor"` decision per tool result and never changed what 
 CTX-34 (ADR 0020) then made "observe" honest by forcing `applied = false` on that path.
 
 Cursor's `postToolUse` can replace tool output, but only for MCP tools, via `updated_mcp_tool_output`.
-Built-in Read, Shell, and Grep cannot be rewritten by a hook. So the next honest step is to act on
-the one surface Cursor actually exposes (MCP), behind the same per-tool causal gate ctx uses on
-Claude (ADR 0012), and keep built-ins observe-only rather than fake parity.
+Built-in Read, Shell, and Grep output cannot be rewritten by a `postToolUse` hook (for non-MCP tools
+Cursor discards the hook response fire-and-forget; confirmed by the Cursor docs and Cursor staff).
+So the next honest step is to act on the one *output* channel Cursor exposes (MCP), behind the same
+per-tool causal gate ctx uses on Claude (ADR 0012), and keep built-ins observe-only on this path
+rather than fake parity.
+
+> **Later correction (CTX-39).** The original wording below said built-ins "cannot be rewritten by a
+> hook" and "stay observe-only on Cursor no matter what." That is accurate for the **`postToolUse`
+> output** path this ADR is about, but it overstates the platform limit. The **`preToolUse` input**
+> path can rewrite a Shell command before it runs (`git status` -> a ctx-wrapped compacted run), the
+> way RTK does, so the compacted result returns as Shell's own output. So Shell *is* reachable on
+> Cursor via input rewrite, just not via output rewrite. Read/Grep built-ins remain unreachable
+> either way. Whether ctx adopts the input path is a separate spike (CTX-39); the MCP-output
+> decision recorded here still stands unchanged.
 
 Two facts had to be confirmed against a real payload, because the docs alone misled us once already
 (the Shell `output` vs `stdout` discovery in ADR 0018):

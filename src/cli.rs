@@ -73,6 +73,16 @@ pub enum Commands {
         #[command(subcommand)]
         command: HookCommand,
     },
+    /// Run a shell command and compact its output before the agent reads it (CTX-41).
+    ///
+    /// Used by the Cursor preToolUse Shell hook: it rewrites `<cmd>` to `ctx run <cmd>` so the
+    /// compacted result returns as Shell's own output. The command's real exit code is preserved,
+    /// and output is left untouched unless the earn-it gate says trim and it actually saves chars.
+    Run {
+        /// The command to run, exactly as it would be typed in a shell.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
+    },
     /// Run as an MCP server over stdio (JSON-RPC). Exposes ctx data to LLM clients.
     Mcp,
     /// Dry-run a prompt through the ctx pipeline (no tokens consumed)
@@ -318,6 +328,8 @@ pub enum HookCommand {
     PostToolUse,
     /// Cursor postToolUse: observe Cursor tool results and record cursor decisions (ADR 0018)
     CursorPostToolUse,
+    /// Cursor preToolUse: rewrite an earned Shell command to `ctx run <cmd>` (ADR 0024 / CTX-41)
+    CursorPreToolUse,
     /// Cursor preCompact: record a live Cursor compaction event (ADR 0023 / CTX-31)
     CursorPreCompact,
 }

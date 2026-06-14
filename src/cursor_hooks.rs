@@ -9,17 +9,42 @@ use serde_json::{json, Value};
 
 /// ctx subcommand wired as the Cursor postToolUse command hook.
 pub const CTX_CURSOR_POST_TOOL_SUBCOMMAND: &str = "hook cursor-post-tool-use";
+/// ctx subcommand wired as the Cursor preToolUse Shell hook (CTX-41): it rewrites a Shell command
+/// to `ctx run <cmd>` so the compacted result returns as Shell's own output (the RTK approach).
+pub const CTX_CURSOR_PRE_TOOL_SUBCOMMAND: &str = "hook cursor-pre-tool-use";
 
 /// ctx subcommand wired as the Cursor preCompact command hook (CTX-31 / ADR 0023).
 pub const CTX_CURSOR_PRE_COMPACT_SUBCOMMAND: &str = "hook cursor-pre-compact";
 
-/// The Cursor hook events ctx owns, as (event name, ctx subcommand) pairs. postToolUse drives the
-/// live compress decisions (ADR 0018); preCompact records compaction events so Cursor graduates
-/// from honest-unknown on the compaction view (ADR 0023).
-fn ctx_cursor_hooks() -> [(&'static str, &'static str); 2] {
+/// One ctx-managed Cursor hook: which event it registers under, the ctx subcommand it runs, and an
+/// optional tool matcher (Cursor scopes a hook to a tool type via `matcher`).
+struct CtxCursorHook {
+    event: &'static str,
+    subcommand: &'static str,
+    matcher: Option<&'static str>,
+}
+
+/// Every Cursor hook ctx owns. postToolUse observes all tools (and trims MCP results); preToolUse is
+/// scoped to Shell so only shell commands are considered for the `ctx run` input rewrite (CTX-41);
+/// preCompact records compaction events so Cursor graduates from honest-unknown on the compaction
+/// view (ADR 0023 / CTX-31).
+fn ctx_cursor_hooks() -> [CtxCursorHook; 3] {
     [
-        ("postToolUse", CTX_CURSOR_POST_TOOL_SUBCOMMAND),
-        ("preCompact", CTX_CURSOR_PRE_COMPACT_SUBCOMMAND),
+        CtxCursorHook {
+            event: "postToolUse",
+            subcommand: CTX_CURSOR_POST_TOOL_SUBCOMMAND,
+            matcher: None,
+        },
+        CtxCursorHook {
+            event: "preToolUse",
+            subcommand: CTX_CURSOR_PRE_TOOL_SUBCOMMAND,
+            matcher: Some("Shell"),
+        },
+        CtxCursorHook {
+            event: "preCompact",
+            subcommand: CTX_CURSOR_PRE_COMPACT_SUBCOMMAND,
+            matcher: None,
+        },
     ]
 }
 
@@ -27,33 +52,36 @@ fn resolve_ctx_cursor_command(subcommand: &str) -> String {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(s) = exe.to_str() {
             if !s.is_empty() {
-                return format!("{} {}", s, subcommand);
+                return format!("{s} {subcommand}");
             }
         }
     }
-    format!("ctx {}", subcommand)
+    format!("ctx {subcommand}")
 }
 
-/// True when this Cursor hook entry is any ctx-managed command hook.
+/// True when this Cursor hook entry is any ctx-managed command hook. ctx subcommands are namespaced
+/// `hook cursor-...`, so matching that prefix catches every ctx entry across events.
 fn entry_is_ctx_cursor_hook(entry: &Value) -> bool {
     entry
         .get("command")
         .and_then(|c| c.as_str())
-        .map(|c| {
-            c.contains(CTX_CURSOR_POST_TOOL_SUBCOMMAND) || c.contains(CTX_CURSOR_PRE_COMPACT_SUBCOMMAND)
-        })
+        .map(|c| c.contains("hook cursor-"))
         .unwrap_or(false)
 }
 
-/// Remove every ctx-managed entry from the events ctx owns, pruning empty containers. Returns true
-/// if it changed anything. Leaves every non-ctx hook (and every other event) untouched.
+/// Remove every ctx-managed entry from every event, pruning empty containers. Returns true if it
+/// changed anything. Scanning all events (not just the ones ctx currently re-adds) means setup
+/// reconciles the file to exactly the hooks this ctx binary supports, so a stale ctx entry left by a
+/// different ctx version (e.g. a hook subcommand this binary no longer has) gets cleaned up instead
+/// of dangling. Every non-ctx hook is left untouched.
 pub fn strip_ctx_cursor_hook(doc: &mut Value) -> bool {
     let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return false;
     };
     let mut changed = false;
-    for (event, _) in ctx_cursor_hooks() {
-        let Some(arr) = hooks.get_mut(event).and_then(|a| a.as_array_mut()) else {
+    let event_keys: Vec<String> = hooks.keys().cloned().collect();
+    for event in event_keys {
+        let Some(arr) = hooks.get_mut(&event).and_then(|a| a.as_array_mut()) else {
             continue;
         };
         let before = arr.len();
@@ -62,15 +90,14 @@ pub fn strip_ctx_cursor_hook(doc: &mut Value) -> bool {
             changed = true;
         }
         if arr.is_empty() {
-            hooks.remove(event);
+            hooks.remove(&event);
         }
     }
     changed
 }
 
-/// Merge ctx's Cursor command hooks into the document, replacing any prior ctx entries first so
-/// repeated setups stay idempotent. No matchers: ctx observes every tool and every compaction, and
-/// each handler stays silent when there is nothing to do.
+/// Merge every ctx Cursor hook into the document, replacing any prior ctx entries first so repeated
+/// setups stay idempotent. Leaves the user's own hooks and events untouched.
 pub fn merge_ctx_cursor_hook(doc: &mut Value) -> Result<()> {
     if !doc.is_object() {
         *doc = json!({});
@@ -81,15 +108,18 @@ pub fn merge_ctx_cursor_hook(doc: &mut Value) -> Result<()> {
     }
     strip_ctx_cursor_hook(doc);
 
-    for (event, subcommand) in ctx_cursor_hooks() {
-        let entry = json!({ "command": resolve_ctx_cursor_command(subcommand) });
+    for hook in ctx_cursor_hooks() {
+        let mut entry = json!({ "command": resolve_ctx_cursor_command(hook.subcommand) });
+        if let Some(m) = hook.matcher {
+            entry["matcher"] = json!(m);
+        }
         doc["hooks"]
             .as_object_mut()
             .context("hooks must be an object")?
-            .entry(event.to_string())
+            .entry(hook.event.to_string())
             .or_insert_with(|| json!([]))
             .as_array_mut()
-            .with_context(|| format!("hooks.{event} must be an array"))?
+            .with_context(|| format!("hooks.{} must be an array", hook.event))?
             .push(entry);
     }
     Ok(())
@@ -159,22 +189,58 @@ mod tests {
         let mut doc = json!({});
         merge_ctx_cursor_hook(&mut doc).unwrap();
         assert_eq!(doc["version"], json!(1));
+
         let post = doc["hooks"]["postToolUse"].as_array().unwrap();
         assert_eq!(post.len(), 1);
         assert!(post[0]["command"]
             .as_str()
             .unwrap()
             .contains(CTX_CURSOR_POST_TOOL_SUBCOMMAND));
-        let pre = doc["hooks"]["preCompact"].as_array().unwrap();
+
+        // preToolUse is registered, scoped to Shell via matcher.
+        let pre = doc["hooks"]["preToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 1);
         assert!(pre[0]["command"]
+            .as_str()
+            .unwrap()
+            .contains(CTX_CURSOR_PRE_TOOL_SUBCOMMAND));
+        assert_eq!(pre[0]["matcher"].as_str(), Some("Shell"));
+
+        // preCompact records compaction events (CTX-31), no matcher.
+        let compact = doc["hooks"]["preCompact"].as_array().unwrap();
+        assert_eq!(compact.len(), 1);
+        assert!(compact[0]["command"]
             .as_str()
             .unwrap()
             .contains(CTX_CURSOR_PRE_COMPACT_SUBCOMMAND));
 
         assert!(strip_ctx_cursor_hook(&mut doc));
         assert!(doc.get("hooks").and_then(|h| h.get("postToolUse")).is_none());
+        assert!(doc.get("hooks").and_then(|h| h.get("preToolUse")).is_none());
         assert!(doc.get("hooks").and_then(|h| h.get("preCompact")).is_none());
+    }
+
+    #[test]
+    fn strips_stale_ctx_entry_from_unmanaged_event() {
+        // A ctx entry left under an event this binary no longer manages (e.g. a preCompact hook from
+        // a different ctx version) must be reconciled away, not left dangling at a missing subcommand.
+        let mut doc = json!({
+            "version": 1,
+            "hooks": {
+                "preCompact": [{ "command": "/abs/ctx hook cursor-pre-compact" }],
+                "postToolUse": [{ "command": "./hooks/user-audit.sh" }]
+            }
+        });
+        assert!(strip_ctx_cursor_hook(&mut doc));
+        assert!(
+            doc["hooks"].get("preCompact").is_none(),
+            "stale ctx preCompact entry must be removed"
+        );
+        assert_eq!(
+            doc["hooks"]["postToolUse"].as_array().unwrap().len(),
+            1,
+            "user's own hook stays"
+        );
     }
 
     #[test]
@@ -183,6 +249,7 @@ mod tests {
         merge_ctx_cursor_hook(&mut doc).unwrap();
         merge_ctx_cursor_hook(&mut doc).unwrap();
         assert_eq!(doc["hooks"]["postToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["hooks"]["preToolUse"].as_array().unwrap().len(), 1);
         assert_eq!(doc["hooks"]["preCompact"].as_array().unwrap().len(), 1);
     }
 
@@ -192,6 +259,7 @@ mod tests {
             "version": 1,
             "hooks": {
                 "postToolUse": [{ "command": "./hooks/user-audit.sh" }],
+                "preToolUse": [{ "command": "./hooks/user-pre.sh" }],
                 "beforeShellExecution": [{ "command": "./hooks/guard.sh" }]
             }
         });
@@ -201,11 +269,16 @@ mod tests {
         assert!(post
             .iter()
             .any(|e| e["command"].as_str() == Some("./hooks/user-audit.sh")));
+        let pre = doc["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 2, "user's preToolUse hook must survive");
 
         assert!(strip_ctx_cursor_hook(&mut doc));
         let post = doc["hooks"]["postToolUse"].as_array().unwrap();
         assert_eq!(post.len(), 1);
         assert_eq!(post[0]["command"].as_str(), Some("./hooks/user-audit.sh"));
+        let pre = doc["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1, "stripping ctx leaves the user's preToolUse hook");
+        assert_eq!(pre[0]["command"].as_str(), Some("./hooks/user-pre.sh"));
         // The user's other event is never touched.
         assert!(doc["hooks"]["beforeShellExecution"].is_array());
     }
