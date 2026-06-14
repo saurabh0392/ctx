@@ -33,12 +33,18 @@ pub fn post_tool_use() -> Result<()> {
     if let Some(tr) = extract_cursor_tool_result(&payload) {
         let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
         let decision = crate::agent::decide(&cfg, &tr);
+        // Observe-only (increment 1): ctx never rewrites Cursor output here, so `applied` must be
+        // false no matter what the controller would do on Claude. Recording `decision.apply` would
+        // overstate ("trims applied" on Cursor) and wrongly drop these runs into the causal trimmed
+        // arm. The would-do retention still rides along in the shadow decision. Acting on Cursor MCP
+        // output is CTX-33; that increment will record a real apply.
+        let applied_on_cursor = false;
         crate::compress::record_shadow_decision(
             tr.session_id.as_deref(),
             &tr.tool_name,
             &command_or_path,
             decision.shadow.as_ref(),
-            decision.apply,
+            applied_on_cursor,
             decision.explore_arm,
             Some(CURSOR_SURFACE),
         );

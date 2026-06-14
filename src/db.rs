@@ -862,6 +862,87 @@ pub fn signal_audit_rows(conn: &Connection, signal: Option<&str>, cap: usize) ->
     }
 }
 
+/// One agent surface's activity, drawn from `compress_decisions` provenance (ADR 0018 / CTX-34).
+/// `seen` is false when ctx has recorded nothing for the surface, so the cross-surface view can
+/// say "not yet" instead of presenting zeros as a measured result. All counts are real rows;
+/// none are fabricated for an unseen surface.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct SurfaceSummary {
+    pub surface: String,
+    pub seen: bool,
+    /// Tool results ctx recorded a decision for on this surface.
+    pub decisions: i64,
+    /// Decisions where ctx actually shortened what the agent read back (applied = 1).
+    pub acted: i64,
+    /// Decisions ctx watched without changing anything (applied = 0).
+    pub observed: i64,
+    /// Decisions with a known outcome (a correction/re-read window that has closed).
+    pub joined: i64,
+    pub corrections: i64,
+    pub rereads: i64,
+    /// Characters removed from what the agent read back, summed over acted decisions.
+    pub chars_saved: i64,
+    pub today: i64,
+    /// Most recent decision timestamp (RFC3339), or `None` when the surface is unseen.
+    pub last_seen: Option<String>,
+}
+
+/// Per-surface activity for the cross-surface view (CTX-34). Always returns Claude Code and
+/// Cursor, in that order, so the UI renders both with an honest empty state for whichever ctx
+/// has not seen yet. A NULL `surface` is a Claude/legacy row (provenance predates the column),
+/// so it folds into claude-code. Read-only.
+pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let mut by_surface: std::collections::HashMap<String, SurfaceSummary> =
+        std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(surface,'claude-code') AS s,
+                COUNT(*),
+                SUM(CASE WHEN applied=1 THEN 1 ELSE 0 END),
+                SUM(COALESCE(outcome_joined,0)),
+                SUM(COALESCE(outcome_correction,0)),
+                SUM(COALESCE(outcome_reread,0)),
+                SUM(CASE WHEN applied=1 THEN (chars_in - would_chars_out) ELSE 0 END),
+                SUM(CASE WHEN substr(ts,1,10)=?1 THEN 1 ELSE 0 END),
+                MAX(ts)
+         FROM compress_decisions
+         GROUP BY s",
+    ) {
+        let rows = stmt.query_map(params![today], |r| {
+            let decisions: i64 = r.get(1)?;
+            let acted: i64 = r.get(2)?;
+            Ok(SurfaceSummary {
+                surface: r.get(0)?,
+                seen: decisions > 0,
+                decisions,
+                acted,
+                observed: decisions - acted,
+                joined: r.get(3)?,
+                corrections: r.get(4)?,
+                rereads: r.get(5)?,
+                chars_saved: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                today: r.get(7)?,
+                last_seen: r.get(8)?,
+            })
+        });
+        if let Ok(it) = rows {
+            for s in it.flatten() {
+                by_surface.insert(s.surface.clone(), s);
+            }
+        }
+    }
+    ["claude-code", "cursor"]
+        .iter()
+        .map(|id| {
+            by_surface.remove(*id).unwrap_or_else(|| SurfaceSummary {
+                surface: id.to_string(),
+                seen: false,
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
 /// A labeled decision row for training / benchmarking (Act 1 / Act 2).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LabeledDecision {
@@ -3419,6 +3500,60 @@ mod compress_decision_tests {
         assert_eq!(claude.compaction_events, Some(0));
         assert_eq!(claude.followed_by_correction, Some(0));
         assert_eq!(claude.sessions_with_compaction, Some(0));
+    }
+
+    #[test]
+    fn surface_summary_splits_by_provenance_with_honest_empty_state() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // A NULL-surface (legacy Claude) row that ctx acted on, and a live cursor row it observed.
+        let mut claude = decision("2026-06-14T10:00:00+00:00", "c1", "Read", "/a.rs");
+        claude.applied = true; // chars_in 5000, would_chars_out 2000 -> 3000 saved
+        insert_compress_decision(&conn, &claude).unwrap();
+
+        let mut cursor = decision("2026-06-14T11:00:00+00:00", "u1", "Grep", "fn main");
+        cursor.surface = Some("cursor");
+        cursor.applied = false; // observe-only
+        insert_compress_decision(&conn, &cursor).unwrap();
+
+        let out = surface_summary(&conn);
+        assert_eq!(out.len(), 2, "always reports both known surfaces");
+        let cc = out.iter().find(|s| s.surface == "claude-code").unwrap();
+        assert!(cc.seen);
+        assert_eq!(cc.decisions, 1);
+        assert_eq!(cc.acted, 1);
+        assert_eq!(cc.chars_saved, 3000);
+
+        let cu = out.iter().find(|s| s.surface == "cursor").unwrap();
+        assert!(cu.seen);
+        assert_eq!(cu.decisions, 1);
+        assert_eq!(cu.acted, 0);
+        assert_eq!(cu.observed, 1);
+    }
+
+    #[test]
+    fn surface_summary_unseen_surface_is_not_fabricated() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+        // Empty DB: both surfaces present, both unseen, zero counts, no last_seen.
+        let out = surface_summary(&conn);
+        assert_eq!(out.len(), 2);
+        for s in &out {
+            assert!(!s.seen, "{} should be unseen on an empty db", s.surface);
+            assert_eq!(s.decisions, 0);
+            assert!(s.last_seen.is_none());
+        }
     }
 }
 

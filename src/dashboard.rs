@@ -309,6 +309,9 @@ struct ContextView {
     compaction: Vec<crate::db::CompactionFollowups>,
     /// Accrual and per-tool stage for the loop-health view (ADR 0017 / CTX-26).
     loop_health: LoopHealthView,
+    /// Per-agent activity for the cross-surface view (ADR 0018 / CTX-34). Always Claude Code and
+    /// Cursor, each with a `seen` flag so the UI can show an honest empty state.
+    surfaces: Vec<crate::db::SurfaceSummary>,
 }
 
 /// GET /api/context — everything the Context home needs, drawn only from real data.
@@ -316,7 +319,7 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction, loop_health) = match open_ctx_db() {
+    let (stats, tools, feed, compaction, loop_health, surfaces) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
             let progress = crate::db::compress_tool_progress(&conn);
@@ -377,7 +380,8 @@ async fn api_context() -> Json<ContextView> {
                 by_day,
                 tools: lh_tools,
             };
-            (stats, tools, feed, compaction, loop_health)
+            let surfaces = crate::db::surface_summary(&conn);
+            (stats, tools, feed, compaction, loop_health, surfaces)
         }
         None => (
             Default::default(),
@@ -395,6 +399,7 @@ async fn api_context() -> Json<ContextView> {
                 by_day: Vec::new(),
                 tools: Vec::new(),
             },
+            Vec::new(),
         ),
     };
 
@@ -420,6 +425,7 @@ async fn api_context() -> Json<ContextView> {
         model,
         compaction,
         loop_health,
+        surfaces,
     })
 }
 
