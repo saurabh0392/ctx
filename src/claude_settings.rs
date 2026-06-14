@@ -475,7 +475,7 @@ pub fn write_observation_only_to_user_settings() -> Result<()> {
         json!({})
     };
     apply_observation_only_to_settings_doc(&mut doc)?;
-    crate::config::write_json_atomic(&path, &doc)?;
+    crate::config::write_json_atomic_if_changed(&path, &doc)?;
     Ok(())
 }
 
@@ -509,7 +509,10 @@ pub fn write_native_ctx_to_user_settings(active_slug: &str, dashboard_port: u16)
         json!({})
     };
     apply_native_ctx_to_settings_doc(&mut doc, active_slug, dashboard_port)?;
-    crate::config::write_json_atomic(&path, &doc)?;
+    // Cache-safety guard (CTX-28): only touch settings.json when the resulting deny/allow set
+    // actually changed. The soft-mode hook calls this on every prompt; skipping a no-op rewrite
+    // keeps the cached tools prefix byte-stable unless the effective tool set genuinely changes.
+    crate::config::write_json_atomic_if_changed(&path, &doc)?;
     Ok(())
 }
 

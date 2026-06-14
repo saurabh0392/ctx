@@ -1,9 +1,9 @@
 # Cache-safety spike (CTX-28)
 
-- Status: findings + measurement shipped (bucket + per-arm A/B view); simplified after the proxy was removed (CTX-29 / ADR 0015), so the only remaining prefix edit is system injection; injection control arm collecting
-- Date: 2026-06-13
+- Status: findings + measurement shipped; cache-safe write guard added (ADR 0025) so the cached prefix only changes when the tool set genuinely changes. Mechanism is code-verified; live audit shows no thrash. Auto-profile session-stickiness remains a documented, data-gated next step.
+- Date: 2026-06-13 (original); 2026-06-14 (post-wipe re-confirmation + guard)
 - Linear: CTX-28 (under the competitive-analysis epic CTX-24)
-- Related: `docs/competitive/competitors/prompt-caching.md`, `docs/competitive/90-open-questions.md`
+- Related: `docs/competitive/competitors/prompt-caching.md`, `docs/competitive/90-open-questions.md`, `docs/adr/0025-cache-safe-settings-writes.md`
 
 ## The question
 
@@ -190,3 +190,60 @@ verdict without a control arm. Flipping `inject_pct` to 50 starts that.
 - What is left: a clean verdict on system injection, the one remaining prefix edit. Its control
   arm is now being collected (`inject_pct = 50`); re-run the audit after a few days of use to
   compare the injection-on and injection-off arms.
+
+## Post-wipe re-confirmation and the cache-safe write guard (2026-06-14)
+
+The corpus behind the numbers above was wiped when the user reset to a new-user state, so the
+strong before/after A/B (filter-on ~14% cheaper) no longer has data on this machine. Two things
+changed and both are now handled.
+
+### The fresh config re-armed the #1 risk
+
+After a clean `ctx setup`, `auto_profile_enabled = true` (it was `false` when the original numbers
+were taken). That arms the oscillation risk this doc flagged: in soft mode every `UserPromptSubmit`
+resyncs `permissions.deny`, and auto-profile re-picks a profile per prompt. If the picked profile
+flipped turn to turn, the `tools` block Claude Code assembles would oscillate and force a cache write
+each request.
+
+### What the live audit says now
+
+`ctx context cache-audit` on the fresh corpus (n=30):
+
+| bucket | requests | cache-read | cache-write | fresh |
+| --- | --- | --- | --- | --- |
+| system-injected | 27 | 98.6% | 1.1% | 0.2% |
+| tools+system | 3 | 99.7% | 0.2% | 0.1% |
+
+If auto-profile were flipping the tool set per prompt, the cache-write share would be high. It is
+about 1%. So the risk is armed but dormant: single-repo work keeps the similarity pick on one
+profile, the deny set is stable, and the prefix caches normally. This is a smell test on a small,
+correlational sample, not a controlled verdict.
+
+### The guard we shipped (ADR 0025)
+
+`write_native_ctx_to_user_settings` used to rewrite `~/.claude/settings.json` on every prompt even
+when the deny set was byte-identical. We made the write idempotent
+(`config::write_json_atomic_if_changed`): it compares the serialized document to what is on disk and
+skips the write entirely when they match. So the settings file, and therefore the cached `tools`
+prefix, changes only when the effective tool set genuinely changes. A stable profile across a
+session now produces zero settings writes by construction.
+
+Honest scope of the guard: it does not raise the cache hit rate, because the skipped writes were
+already producing identical content (Claude Code sent the same `tools` block either way). Its value
+is that cache safety is now a code-enforced invariant instead of an observed property of the data,
+and the per-prompt settings churn is gone.
+
+### The documented rule
+
+1. **Tool-output trimming is cache-safe by position.** It edits content after the prefix. Leave it.
+2. **MCP schema filtering is cache-safe as long as the deny set is stable.** The idempotent write
+   guarantees we never perturb the prefix on a no-op resync. A genuine profile change pays one cache
+   write and then reads the new, smaller prefix at 0.1x, which is a net win.
+3. **System injection costs one cache write on the turn the system text changes.** The always-on
+   static prefix is stable; the intermittent coach and budget hints change the system block only when
+   they fire, and they fire precisely when something is already going wrong, so the one-time write is
+   worth it. If the audit ever shows injection dominating cache writes, move the intermittent hints
+   outside the cached prefix or gate them on expected benefit beating one write.
+4. **Gated next step (not yet needed):** if `cache-audit` ever shows the cache-write share climbing
+   in the tools-filtered buckets, pin the auto-profile decision per session so the kept tool set
+   cannot flip inside a cache window. The data does not justify that behavioral change today.
