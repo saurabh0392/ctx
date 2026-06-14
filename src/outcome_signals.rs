@@ -164,6 +164,40 @@ pub fn has_negative_cue(raw_lower: &str) -> bool {
     NEGATIVE_CUES.iter().any(|c| raw_lower.contains(c))
 }
 
+/// Window, in transcript turns, within which a structural follow-up (re-edit, retry) still
+/// counts as caused by the call it follows. Matches the correction window the join uses, so
+/// every structural signal reads the timeline the same way `reread` does.
+pub const STRUCTURAL_WINDOW_TURNS: u32 = 3;
+
+/// Structural outcome signals derived from the tool-call timeline rather than user language
+/// (ADR 0019 / CTX-32). These are pure and unit-testable: the join supplies the ordinals. They
+/// are observation-only by design and must not feed the activation gate until a per-signal
+/// precision spot-check promotes them; recording them is safe, voting with them is not.
+///
+/// A file the agent just read or wrote, then edited again within `window` turns: the first
+/// result was not enough to act on, a churn signal. `touch_ordinal` is the read/write; the
+/// `edit_ordinals` are later edits of the *same* path (the caller resolves "same path").
+pub fn is_immediate_reedit(touch_ordinal: u32, edit_ordinals: &[u32], window: u32) -> bool {
+    edit_ordinals
+        .iter()
+        .any(|&o| o > touch_ordinal && o <= touch_ordinal.saturating_add(window))
+}
+
+/// A tool call that failed, then was retried within `window` turns (the retry is another call
+/// with the same input fingerprint, which the caller resolves). Only counts when the first call
+/// actually failed: a clean call followed by a benign repeat is a re-read, not an error-retry.
+pub fn is_error_then_retry(
+    failed: bool,
+    call_ordinal: u32,
+    retry_ordinals: &[u32],
+    window: u32,
+) -> bool {
+    failed
+        && retry_ordinals
+            .iter()
+            .any(|&o| o > call_ordinal && o <= call_ordinal.saturating_add(window))
+}
+
 /// Whether a user turn is actually an interrupt marker: the user pressed ESC to stop the
 /// agent mid-action ("[Request interrupted by user]" / "...for tool use"). This is a
 /// distinct, high-precision dissatisfaction signal from explicit complaint language: the
@@ -298,6 +332,32 @@ mod tests {
                 "should be terse: {s:?}"
             );
         }
+    }
+
+    #[test]
+    fn reedit_only_inside_window_and_after_touch() {
+        let w = STRUCTURAL_WINDOW_TURNS;
+        // Edit one turn after the read: churn.
+        assert!(is_immediate_reedit(10, &[11], w));
+        // Edit exactly at the window edge counts; just past it does not.
+        assert!(is_immediate_reedit(10, &[13], w));
+        assert!(!is_immediate_reedit(10, &[14], w));
+        // An edit before the touch is unrelated; no edits means no signal.
+        assert!(!is_immediate_reedit(10, &[9], w));
+        assert!(!is_immediate_reedit(10, &[], w));
+    }
+
+    #[test]
+    fn error_retry_requires_a_failure_and_a_retry_in_window() {
+        let w = STRUCTURAL_WINDOW_TURNS;
+        // Failed, then retried next turn: signal.
+        assert!(is_error_then_retry(true, 5, &[6], w));
+        // Retry past the window does not count.
+        assert!(!is_error_then_retry(true, 5, &[9], w));
+        // A clean call retried is a re-read, not an error-retry.
+        assert!(!is_error_then_retry(false, 5, &[6], w));
+        // Failed but never retried: no churn signal (the agent moved on).
+        assert!(!is_error_then_retry(true, 5, &[], w));
     }
 
     #[test]
