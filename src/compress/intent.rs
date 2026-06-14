@@ -131,7 +131,11 @@ pub fn recent_intent_text_from_transcript(content: &str, max_blocks: usize) -> O
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+        // Claude Code rows are tagged `{"type":"assistant",...}`; Cursor rows are
+        // `{"role":"assistant","message":{...}}`. Accept either so one reader serves both.
+        let is_assistant = v.get("type").and_then(|t| t.as_str()) == Some("assistant")
+            || v.get("role").and_then(|t| t.as_str()) == Some("assistant");
+        if !is_assistant {
             continue;
         }
         let Some(arr) = v
@@ -163,18 +167,57 @@ pub fn recent_intent_text_from_transcript(content: &str, max_blocks: usize) -> O
     Some(blocks[start..].join("\n"))
 }
 
-/// Read the recent narration referenced by a PostToolUse payload's `transcript_path`. Returns
-/// `None` (never errors out the hook) when the path is absent, unreadable, or carries no readable
-/// narration.
+/// Read the recent narration a PostToolUse payload points at. Tries the explicit
+/// `transcript_path` first (Claude Code always supplies it; Cursor when present), then falls back
+/// to deriving the Cursor transcript path from the session UUID and cwd. Returns `None` (never
+/// errors out the hook) when nothing readable is found.
 pub fn recent_intent_text_for_payload(payload: &Value) -> Option<String> {
-    let path = payload
+    if let Some(text) = payload
         .get("transcript_path")
         .or_else(|| payload.get("transcriptPath"))
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .filter(|p| !p.is_empty())?;
-    let content = read_tail(Path::new(path), TAIL_BYTES).ok()?;
+        .filter(|p| !p.is_empty())
+        .and_then(|p| read_tail(Path::new(p), TAIL_BYTES).ok())
+        .and_then(|c| recent_intent_text_from_transcript(&c, DEFAULT_MAX_BLOCKS))
+    {
+        return Some(text);
+    }
+    // Cursor surface: no transcript_path in the payload, but the session UUID plus cwd locate the
+    // transcript on disk the same way `surface::cursor` discovers sessions.
+    let session_id = payload
+        .get("session_id")
+        .or_else(|| payload.get("sessionId"))
+        .and_then(|v| v.as_str())?;
+    let cwd = payload.get("cwd").and_then(|v| v.as_str())?;
+    let path = cursor_transcript_path(session_id, cwd)?;
+    let content = read_tail(&path, TAIL_BYTES).ok()?;
     recent_intent_text_from_transcript(&content, DEFAULT_MAX_BLOCKS)
+}
+
+/// Locate a Cursor agent transcript from its session UUID and cwd. Cursor encodes the workspace
+/// path by dropping the leading slash and replacing `/` with `-`, then stores the main session
+/// transcript at `~/.cursor/projects/<encoded>/agent-transcripts/<uuid>/<uuid>.jsonl`. Returns the
+/// path only when the file exists.
+fn cursor_transcript_path(session_id: &str, cwd: &str) -> Option<std::path::PathBuf> {
+    if session_id.is_empty() || cwd.is_empty() {
+        return None;
+    }
+    let encoded = cwd
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .replace('/', "-");
+    if encoded.is_empty() {
+        return None;
+    }
+    let path = dirs::home_dir()?
+        .join(".cursor")
+        .join("projects")
+        .join(encoded)
+        .join("agent-transcripts")
+        .join(session_id)
+        .join(format!("{session_id}.jsonl"));
+    path.is_file().then_some(path)
 }
 
 /// Read up to `max_bytes` from the end of a file as lossy UTF-8. When the read started mid file,
@@ -241,6 +284,21 @@ mod tests {
     fn no_readable_narration_returns_none() {
         let transcript = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"","signature":"sig"}]}}"#;
         assert!(recent_intent_text_from_transcript(transcript, 3).is_none());
+    }
+
+    #[test]
+    fn parses_cursor_role_tagged_assistant_rows() {
+        // Cursor rows use `role` not `type`, and interleave text with tool_use blocks.
+        let transcript = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"fix the bug"}]}}"#.to_string(),
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Let me edit src/agent.rs to add the guard."},{"type":"tool_use","name":"Read","input":{"path":"src/agent.rs"}}]}}"#.to_string(),
+        ]
+        .join("\n");
+        let got = recent_intent_text_from_transcript(&transcript, 3).expect("cursor narration parsed");
+        assert!(got.contains("edit src/agent.rs"));
+        // The same narration drives the protective intent signal, surface-agnostic.
+        let intent = IntentSignal::from_text(Some(&got), Some("src/agent.rs"));
+        assert!(intent.edit_intent_for_path());
     }
 
     #[test]
