@@ -156,6 +156,57 @@
   .arm-n { font-size: 13px; color: var(--t1); margin-top: 4px; }
   .arm-n span { color: var(--t4); }
   .arm-s { font-size: 12.5px; color: var(--t3); margin-top: 3px; }
+  .tool-progress { margin-top: 14px; max-width: 740px; }
+  .tp-bar { height: 6px; border-radius: 999px; background: var(--surface3); overflow: hidden; }
+  .tp-fill { height: 100%; border-radius: 999px; background: var(--amber); transition: width .3s; }
+  .tp-fill.earned { background: var(--primary-lt); }
+  .tp-label { font-size: 12.5px; color: var(--t3); margin-top: 8px; line-height: 1.5; }
+  .ev-toggle { font-size: 12.5px; font-weight: 600; color: var(--t3); cursor: pointer; background: none; border: none; padding: 8px 0; text-decoration: underline; text-underline-offset: 3px; }
+  .ev-toggle:hover { color: var(--t1); }
+  .tool-evidence { display: none; }
+  .tool-evidence.ev-open { display: block; }
+  .ev-lead { font-size: 12.5px; color: var(--t3); line-height: 1.65; margin-top: 16px; max-width: 740px; }
+  .ev-lead b { color: var(--t1); }
+  .ev-sec { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--t4); margin-top: 18px; }
+  .sec-note { font-size: 13px; color: var(--t3); line-height: 1.6; margin: 4px 0 0; max-width: 720px; }
+
+  /* snapshot: summary + savings, side by side at the top */
+  .snapshot { margin-top: 26px; display: grid; grid-template-columns: 1.7fr 1fr; gap: 14px; align-items: stretch; }
+  .snapshot .status { margin-top: 0; height: 100%; }
+  .savings { background: linear-gradient(150deg, #0f2920 0%, var(--surface) 75%); border: 1px solid #1e3b30; border-radius: var(--radius); padding: 18px 20px; display: flex; flex-direction: column; justify-content: center; }
+  .savings.muted { background: var(--surface); border-color: var(--border); }
+  .sv-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--primary-lt); }
+  .savings.muted .sv-label { color: var(--t4); }
+  .sv-val { font-size: 32px; font-weight: 800; letter-spacing: -1px; margin-top: 6px; color: var(--primary-lt); font-variant-numeric: tabular-nums; line-height: 1; }
+  .savings.muted .sv-val { color: var(--t3); font-size: 22px; }
+  .sv-unit { font-size: 14px; font-weight: 600; color: var(--t3); margin-left: 6px; letter-spacing: 0; }
+  .sv-sub { font-size: 12px; color: var(--t2); margin-top: 9px; line-height: 1.55; }
+  @media (max-width: 720px) { .snapshot { grid-template-columns: 1fr; } }
+
+  /* board: the four-stage ladder */
+  .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+  .bcard { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 17px 16px 16px; cursor: pointer; transition: border-color .15s, transform .15s; display: flex; flex-direction: column; }
+  .bcard::before { content: ""; position: absolute; top: 0; left: 14px; right: 14px; height: 2px; border-radius: 0 0 2px 2px; }
+  .bcard.earned::before { background: var(--primary-lt); }
+  .bcard.test::before { background: var(--amber); }
+  .bcard.off::before { background: var(--danger); }
+  .bcard.watch::before { background: var(--t4); }
+  .bcard:hover { border-color: var(--border2); transform: translateY(-1px); }
+  .bc-head { display: flex; align-items: baseline; gap: 8px; }
+  .bc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; align-self: center; }
+  .bc-dot.earned { background: var(--primary-lt); }
+  .bc-dot.test { background: var(--amber); }
+  .bc-dot.off { background: var(--danger); }
+  .bc-dot.watch { background: var(--t4); }
+  .bc-title { font-size: 12.5px; font-weight: 700; color: var(--t1); }
+  .bc-count { margin-left: auto; font-size: 22px; font-weight: 800; color: var(--t1); font-variant-numeric: tabular-nums; line-height: 1; }
+  .bc-desc { font-size: 11.5px; color: var(--t3); line-height: 1.5; margin: 10px 0 12px; }
+  .bc-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; }
+  .bc-chip { font-size: 10.5px; font-family: "SF Mono", ui-monospace, monospace; background: var(--surface3); color: var(--t2); padding: 3px 7px; border-radius: 6px; white-space: nowrap; }
+  .bc-more { font-size: 10.5px; color: var(--t4); padding: 3px 4px; align-self: center; }
+  .bc-empty { font-size: 11px; color: var(--t4); font-style: italic; }
+  @media (max-width: 880px) { .board { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 480px) { .board { grid-template-columns: 1fr; } }
 
   /* ── payoff ── */
   .payoff { border-radius: var(--radius); padding: 28px; max-width: 760px; }
@@ -258,35 +309,27 @@
       <div class="hero">
         <div class="eyebrow"><span class="pip"></span> Context truth and safety layer</div>
         <h1 class="title">ctx makes your agent leaner without losing the thread.</h1>
-        <p class="lede">It watches your AI coding agent, learns what your work actually needs, and only trims context after it proves, on your own sessions, that trimming is safe. The full output always stays in your transcript.</p>
-        <div class="status"><span class="pip"></span><div class="big" id="home-status">Getting your numbers.</div></div>
+        <p class="lede">Your coding agent drags around tool output it stops needing. ctx clears the dead weight from its context, but only the parts your own sessions prove are safe to drop. The tool still runs in full; ctx just shortens what the agent reads back.</p>
+        <div class="snapshot">
+          <div class="status"><span class="pip"></span><div class="big" id="home-status">Getting your numbers.</div></div>
+          <div class="savings" id="home-savings"></div>
+        </div>
         <div class="control" id="home-control"></div>
       </div>
 
       <div class="sec">
-        <div class="sec-eyebrow">Why you can trust it</div>
+        <div class="sec-eyebrow">Where each of your tools stands</div>
+        <p class="sec-note">Every tool climbs the same ladder, left to right. ctx leaves a tool's output whole until it reaches "trimming for real", and only then does it start cutting. Tap any stage for the tool-by-tool detail.</p>
+        <div class="board" id="home-board"></div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-eyebrow">How ctx decides, in three rules</div>
         <div class="pillars">
-          <div class="pillar"><div class="pn">1</div><div class="pt">Learns you, not the average</div><div class="pb">The platform compacts for the median user. ctx learns what matters in your repos, for your kind of work, from your own corrections and re-reads.</div></div>
-          <div class="pillar"><div class="pn">2</div><div class="pt">Proves before it acts</div><div class="pb">A tool only trims after your own sessions show that trimming it did not make you re-read or correct more. Until then, ctx just watches.</div></div>
-          <div class="pillar"><div class="pn">3</div><div class="pt">Never hides anything</div><div class="pb">Even when it trims, the full output stays in your transcript. ctx changes what the model re-reads, never what you can see.</div></div>
+          <div class="pillar"><div class="pn">1</div><div class="pt">Cuts the bloat two ways</div><div class="pb">It filters MCP tools you rarely call before they reach the model, and shortens long tool output once a tool has earned it. Errors and the parts that matter are kept.</div></div>
+          <div class="pillar"><div class="pn">2</div><div class="pt">Proves before it trims for real</div><div class="pb">A tool only starts trimming for keeps after your own sessions show that trimming it did not make the agent re-read or correct more. Before that it watches, then tests quietly.</div></div>
+          <div class="pillar"><div class="pn">3</div><div class="pt">A trim is never a dead end</div><div class="pb">The tool still runs in full. ctx only shortens what the agent reads back, and if it needs the detail again it reads it again, which ctx counts and learns from.</div></div>
         </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-eyebrow">What it is doing for you right now</div>
-        <div class="strip">
-          <div class="stat"><div class="v" id="st-watched">0</div><div class="l">decisions watched</div></div>
-          <div class="stat"><div class="v" id="st-judged">0</div><div class="l">judged by what you did next</div></div>
-          <div class="stat"><div class="v" id="st-today">0</div><div class="l">recorded today</div></div>
-        </div>
-        <div class="exp-line" id="home-exp"></div>
-        <div id="home-tools" style="margin-top:16px"></div>
-        <div class="exp-line" id="home-tools-link" style="display:none;margin-top:14px">Want the receipts? See it <b class="link" onclick="go('tools')">tool by tool, with the full before and after</b>.</div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-eyebrow">The payoff</div>
-        <div id="home-payoff"></div>
       </div>
 
       <div class="footer">
@@ -300,7 +343,7 @@
     <section class="view" id="view-tools">
       <div style="padding-top:40px">
         <div class="page-title">Tools, tool by tool</div>
-        <p class="page-sub">Every tool is somewhere on the path from just watching to earning the right to trim. ctx proves each one on your own work, with a live experiment that keeps some output untrimmed at random so the comparison is fair. Plain English leads, the numbers are one click away.</p>
+        <p class="page-sub">Every tool is somewhere on the path from just watching to earning the right to trim. ctx watches until there is enough evidence, then tests by trimming for a bounded run, then keeps trimming only if your re-reads and corrections did not rise. Plain English leads, the numbers are one click away.</p>
       </div>
       <div class="tally" id="tools-tally"></div>
       <div id="tools-list"></div>
@@ -310,7 +353,7 @@
     <section class="view" id="view-activity">
       <div style="padding-top:40px">
         <div class="page-title">Activity</div>
-        <p class="page-sub">The most recent tool results ctx looked at, tool by tool. This is the running record behind every decision. Watching means nothing changed. Trimmed means a tool that earned it, with the full output still in your transcript.</p>
+        <p class="page-sub">The most recent tool results ctx looked at, tool by tool. This is the running record behind every decision. Watching means nothing changed. Trimmed means a tool that earned it; the tool still ran in full, ctx only shortened what the agent read back.</p>
       </div>
       <div id="activity-list" style="margin-top:24px"></div>
     </section>
@@ -377,8 +420,8 @@
     if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Earned it. Across ${runs} of your runs, trimming did not make you re-read or correct more.`; }
     if (stage === "off") return "Tested and it cost you re-reads, so ctx keeps it whole.";
     if (stage === "test") {
-      if (p && p.verdict === "unclear") return "Close, but not conclusive yet. A few more trimmed runs will settle it.";
-      return `On trial. Trimmed ${p ? p.trimmed_n || 0 : 0} times, left whole ${p ? p.baseline_n || 0 : 0}. A few more runs settle it.`;
+      if (p && p.verdict === "unclear") return "Close to a verdict. A few more runs settle it.";
+      return "On trial. ctx is testing whether it is safe to trim, and your output is unchanged.";
     }
     if (p && p.verdict === "not_tested" && (p.baseline_n || 0) > 0) return `Watching. ctx has wanted to trim this ${p.baseline_n} times and left it whole every time.`;
     const j = (c && c.joined) || 0, n = (c && c.need) || 30;
@@ -394,69 +437,84 @@
 
   // ════ HOME ════
   async function loadHome() {
-    let ctx, proof, mp;
-    try { [ctx, proof, mp] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/model-progress").catch(() => null)]); setHealth(true); }
+    let ctx, proof;
+    try { [ctx, proof] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] }))]); setHealth(true); }
     catch (e) { setHealth(false); $("home-status").textContent = "Could not reach ctx. Is the dashboard running?"; return; }
 
     const stats = ctx.stats || {};
     const on = (ctx.preset || "off") !== "off";
     const earned = (ctx.tools || []).filter((t) => t.earned);
 
-    // status
+    // group every tool by where it sits on the ladder
+    const rows = mergeTools(ctx, proof);
+    const g = { earned: [], test: [], off: [], watch: [] };
+    rows.forEach((r) => g[r.stage].push(r.tool));
     const total = stats.total || 0;
+
+    // plain status sentence: exactly what is happening, in order
     if (!total) {
-      $("home-status").innerHTML = "Right now ctx is <b>watching</b> your work. No decisions recorded yet, so nothing is being changed. Run a few agent turns and the numbers start here.";
+      $("home-status").innerHTML = "ctx just started and has not seen any tool output yet, so it is not changing anything. Run a few agent turns and the picture fills in below.";
     } else {
-      const counts = `${num(total)} decisions watched, ${num(stats.joined)} judged by what you did next`;
-      if (earned.length) {
-        const names = earned.map((t) => `<b>${esc(t.tool)}</b>`).join(" and ");
-        $("home-status").innerHTML = `Right now ctx is trimming ${names} on your work, proven safe on your own sessions. It turned each one on by itself, the moment it earned it. ${counts}.`;
-      } else if (on) {
-        $("home-status").innerHTML = `Right now ctx is watching ${counts}, and running a safe test to learn what is safe to trim. It still has not changed your context, because nothing has earned it yet.`;
-      } else {
-        $("home-status").innerHTML = `Right now ctx is <b>watching</b>: ${counts}. It has not changed a single thing, because nothing has earned it yet. That is the point.`;
-      }
+      const parts = [`ctx has watched <b>${num(total)}</b> tool results and scored <b>${num(stats.joined)}</b> of them by what you did next.`];
+      if (g.earned.length) parts.push(`It has proven <b>${g.earned.length}</b> safe to trim (${g.earned.map((x) => esc(prettyTool(x))).join(", ")}) and is trimming ${g.earned.length > 1 ? "those" : "that one"} now. The tool still ran in full.`);
+      else parts.push(`Nothing has earned trimming yet, so your context is still untouched.`);
+      if (g.test.length) parts.push(`<b>${g.test.length}</b> ${g.test.length > 1 ? "are" : "is"} on trial right now (${g.test.map((x) => esc(prettyTool(x))).join(", ")}); everything else is still being watched.`);
+      $("home-status").innerHTML = parts.join(" ");
     }
 
     // control
     $("home-control").innerHTML = on
       ? `<div class="autoline"><span class="dot"></span><span>Autopilot is on. ctx turns on each tool by itself, the moment it proves safe on your work, and never before. You can pause it any time in <b class="link" onclick="go('settings')">Settings</b>.</span></div>`
-      : `<div class="optin"><button class="cta" onclick="setPreset('full')">Turn on autopilot</button><span class="optin-sub">One yes, then it is hands-off. ctx will only ever trim a tool after your own work proves it is safe, and the full output always stays in your transcript.</span></div>`;
+      : `<div class="optin"><button class="cta" onclick="setPreset('full')">Turn on autopilot</button><span class="optin-sub">One yes, then it is hands-off. ctx will only ever trim a tool after your own work proves it is safe, and the tool always runs in full.</span></div>`;
 
-    // stats
-    $("st-watched").textContent = num(stats.total);
-    $("st-judged").textContent = num(stats.joined);
-    $("st-today").textContent = num(stats.today);
+    // the ladder, made literal
+    const board = [
+      ["earned", "Trimming for real", "Proven safe on your work, so ctx cuts these now."],
+      ["test", "Testing now", "Trimming on some runs to check it is safe. Not decided yet."],
+      ["watch", "Just watching", "Not enough evidence yet. Left whole, nothing changed."],
+      ["off", "Kept off", "Trimming cost you re-reads, so ctx keeps these whole."],
+    ];
+    const CHIP_CAP = 7;
+    $("home-board").innerHTML = board.map(([s, title, desc]) => {
+      const t = g[s];
+      let chips;
+      if (!t.length) chips = `<span class="bc-empty">none yet</span>`;
+      else {
+        const shown = t.slice(0, CHIP_CAP).map((x) => `<span class="bc-chip">${esc(prettyTool(x))}</span>`).join("");
+        chips = shown + (t.length > CHIP_CAP ? `<span class="bc-more">+${t.length - CHIP_CAP} more</span>` : "");
+      }
+      return `<div class="bcard ${s}" onclick="go('tools')"><div class="bc-head"><span class="bc-dot ${s}"></span><span class="bc-title">${title}</span><span class="bc-count">${t.length}</span></div><div class="bc-desc">${desc}</div><div class="bc-tools">${chips}</div></div>`;
+    }).join("");
 
-    // experiment line
-    if (mp && mp.explore_active) {
-      const rate = Math.round((mp.explore_rate || 0) * 100);
-      $("home-exp").innerHTML = `To learn safely, ctx leaves <b>${rate}%</b> of trim-eligible results untouched at random and compares what happens. That is the only honest way to prove a trim never costs you a re-read, before it relies on it.`;
-    } else {
-      $("home-exp").innerHTML = "ctx records what it would trim on every result and checks it against what you actually needed next. That running tally is how a tool earns the right to trim.";
-    }
-
-    // tool mini list
-    const rows = mergeTools(ctx, proof);
-    const wrap = $("home-tools");
-    if (!rows.length) {
-      wrap.innerHTML = `<div class="empty">No tools yet. As your agent returns output, each tool shows up here and starts its climb from watching toward earning the right to trim.</div>`;
-      $("home-tools-link").style.display = "none";
-    } else {
-      wrap.innerHTML = rows.slice(0, 6).map((r) => `<div class="tool"><div class="tool-head" onclick="go('tools')"><span class="tool-name">${esc(r.tool)}</span><span class="pill ${r.stage}">${STAGE_LABEL[r.stage]}</span><span class="tool-msg">${shortMsg(r.stage, r.p, r.c)}</span><span class="chev">&#9654;</span></div></div>`).join("");
-      $("home-tools-link").style.display = "";
-    }
-
-    // payoff
+    // savings, up top beside the summary
     const safe = proof.safe_chars_saved || 0, trial = proof.trial_chars_saved || 0;
+    // honest harm figure: corrections and re-reads on the trimmed results ctx could check against
+    // what you did next. Spans earned and testing trims, so it is the real "on trimmed calls" rate.
+    const tn = proof.trimmed_n_total || 0, tc = proof.trimmed_corrections_total || 0, tr = proof.trimmed_rereads_total || 0;
+    const harmLine = tn > 0
+      ? `On the ${num(tn)} trimmed results ctx could check, the agent corrected ${tc} and re-read ${tr}. That is ${pct((tc + tr) / tn)} of trimmed calls.`
+      : "";
     if (safe > 0) {
-      $("home-payoff").innerHTML = `<div class="payoff earned"><div class="pe">Savings, only what earned it</div><div class="pv">~${fmtK(tok(safe))} tokens</div><div class="pu">of context kept out of your window so far, about ${usd(safe)} and counting. A conservative estimate that compounds, because a trimmed result stays out of context on every later turn too. It only counts tools that earned it.</div></div>`;
+      $("home-savings").className = "savings";
+      $("home-savings").innerHTML = `<div class="sv-label">Saved so far</div><div class="sv-val">~${fmtK(tok(safe))}<span class="sv-unit">tokens</span></div><div class="sv-sub">About ${usd(safe)} of context kept out of your window, and counting. It compounds, because a trimmed result stays out on every later turn.${harmLine ? " " + harmLine : ""}</div>`;
     } else {
       const tail = trial > 0
-        ? "ctx has trimmed some output while testing, but it does not count a single character as savings until the proof clears. No fake numbers."
-        : "The moment a tool clears its proof, your savings show up here in tokens and dollars, and they compound, because a trimmed result stays out of context on every later turn too.";
-      $("home-payoff").innerHTML = `<div class="payoff empty"><div class="pe">Savings</div><div class="pv">none yet</div><div class="pu">No tool has earned trimming yet, so there is nothing to bank. ${tail}</div></div>`;
+        ? `Output is being trimmed while ctx tests it, but nothing counts as saved until a tool clears its proof.${harmLine ? " " + harmLine : ""}`
+        : "The moment a tool clears its proof, savings show up here in tokens and dollars.";
+      $("home-savings").className = "savings muted";
+      $("home-savings").innerHTML = `<div class="sv-label">Saved so far</div><div class="sv-val">none yet</div><div class="sv-sub">${tail}</div>`;
     }
+  }
+
+  // Tidy a raw tool name for a chip: "mcp__claude_ai_Linear__save_issue" -> "Linear: save issue".
+  function prettyTool(name) {
+    if (name && name.startsWith("mcp__")) {
+      const parts = name.split("__");
+      const prov = (parts[1] || "").split("_").pop();
+      const method = (parts[2] || "").replace(/_/g, " ");
+      return prov ? `${prov}: ${method}` : method;
+    }
+    return name;
   }
 
   async function setPreset(p) { await post("/api/context/preset", { preset: p }); loadHome(); }
@@ -489,9 +547,17 @@
 
   function longStory(r) {
     const p = r.p, c = r.c, runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
-    if (r.stage === "earned") return `<b>${esc(r.tool)}</b> earned it. Across <b>${runs}</b> of your runs, trimming it did <span class="good">not</span> make you re-read or correct any more often than leaving it whole. So ctx trims it now, and the full output still lands in your transcript.`;
+    if (r.stage === "earned") return `<b>${esc(r.tool)}</b> earned it. Across <b>${runs}</b> of your runs, trimming it did <span class="good">not</span> make you re-read or correct any more often than leaving it whole. So ctx trims it now. The tool still runs in full; only what the agent reads back is shorter.`;
     if (r.stage === "off") return `ctx tested <b>${esc(r.tool)}</b> and it backfired. When it trimmed it, you re-read or corrected <span class="bad">noticeably more often</span> than when it left the output whole. So ctx keeps it off. That is the safety layer doing its job.`;
-    if (r.stage === "test") return `<b>${esc(r.tool)}</b> is on trial: ctx is trimming it on some of your runs and watching what happens next. So far ${p ? p.trimmed_n || 0 : 0} trimmed against ${p ? p.baseline_n || 0 : 0} left whole. It needs about <b>30</b> trimmed runs before it can give a straight answer.`;
+    if (r.stage === "test") {
+      let lean = "";
+      const rd = p && p.reread_delta, cd = p && p.correction_delta;
+      if (rd || cd) {
+        const bad = (rd && rd.diff > 0) || (cd && cd.diff > 0);
+        lean = bad ? " So far it looks like trimming might be costing you, so ctx is being careful." : " <span class=\"good\">Early signs look good</span>, but it is not conclusive yet.";
+      }
+      return `<b>${esc(r.tool)}</b> is on trial. ctx is trimming it on some of your runs and watching whether cutting it ever makes you re-read or fix something.${lean} The tool still runs in full while it tests.`;
+    }
     if (p && p.verdict === "not_tested" && (p.baseline_n || 0) > 0) return `ctx has wanted to trim <b>${esc(r.tool)}</b> on <b>${p.baseline_n}</b> of your runs and left it whole every time. Put it on trial and ctx will trim it for real, then measure whether cutting it ever costs you a re-read or a correction.`;
     const j = (c && c.joined) || 0, n = (c && c.need) || 30;
     return `<b>${esc(r.tool)}</b> is still in watching mode. ctx records what it would trim and checks it against what you needed next. So far <b>${j} of about ${n}</b> runs have a verdict, and nothing in your output has changed.`;
@@ -511,10 +577,10 @@
 
   function armsBlock(e, minArm) {
     if (!e || (e.control_collected + e.treatment_collected) <= 0) return "";
-    const arm = (label, n, coll, corr, rr) => `<div class="arm"><div class="arm-h">${label}</div><div class="arm-n">${num(n)} judged <span>/ ${num(coll)} set aside</span></div><div class="arm-s">${n > 0 ? `corrected ${pct(corr)}, re-read ${pct(rr)}` : "no judged samples yet"}</div></div>`;
-    let effect = `<div class="ba-note">Needs about ${minArm || 20} judged on each side before a leaning shows.</div>`;
-    if (e.reread_delta != null) { const sign = e.reread_delta <= 0 ? "no more" : "more"; effect = `<div class="ba-note">Trimming led to <b style="color:${e.reread_delta <= 0 ? "var(--primary-lt)" : "var(--danger)"}">${sign} re-reads</b> (${signedPts(e.reread_delta)}) and ${signedPts(e.correction_delta)} corrections, measured against the untrimmed control.</div>`; }
-    return `<div style="margin-top:16px"><div class="ba-label" style="margin-bottom:8px">The live experiment, trimmed vs kept</div><div class="arms">${arm("Trimmed (treatment)", e.treatment_n, e.treatment_collected, e.treatment_correction, e.treatment_reread)}${arm("Kept (control)", e.control_n, e.control_collected, e.control_correction, e.control_reread)}</div>${effect}</div>`;
+    const arm = (label, n, coll, corr, rr) => `<div class="arm"><div class="arm-h">${label}</div><div class="arm-n">${num(n)} scored <span>/ ${num(coll)} trimmed</span></div><div class="arm-s">${n > 0 ? `corrected ${pct(corr)}, re-read ${pct(rr)}` : "no scored runs yet"}</div></div>`;
+    let effect = `<div class="ba-note">"Scored" means ctx could tell from your next move whether you needed the trimmed text. It needs about ${minArm || 20} scored on each side before it will even lean.</div>`;
+    if (e.reread_delta != null) { const sign = e.reread_delta <= 0 ? "no more" : "more"; effect = `<div class="ba-note">Trimming led to <b style="color:${e.reread_delta <= 0 ? "var(--primary-lt)" : "var(--danger)"}">${sign} re-reads</b> (${signedPts(e.reread_delta)}) and ${signedPts(e.correction_delta)} corrections, compared with the runs ctx left alone.</div>`; }
+    return `<div style="margin-top:18px"><div class="ev-sec" style="margin-bottom:8px">The clean test, a random sample</div><div class="arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_correction, e.treatment_reread)}${arm("Left alone", e.control_n, e.control_collected, e.control_correction, e.control_reread)}</div>${effect}</div>`;
   }
 
   function toolActions(r) {
@@ -525,9 +591,49 @@
     return "";
   }
 
+  function progressBlock(r, minB, minT) {
+    const p = r.p;
+    if (r.stage === "test") {
+      const done = p ? p.trimmed_n || 0 : 0, need = minT || 30;
+      const w = Math.min(100, Math.round((done / need) * 100));
+      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${done} of about ${need} test runs done. ctx will not rely on this until the test fills up.</div></div>`;
+    }
+    if (r.stage === "watch") {
+      const c = r.c, j = (c && c.joined) || 0, need = (c && c.need) || 30;
+      const w = Math.min(100, Math.round((j / need) * 100));
+      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${j} of about ${need} runs scored so far. ctx is only watching, nothing in your output has changed.</div></div>`;
+    }
+    if (r.stage === "earned") {
+      const runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
+      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill earned" style="width:100%"></div></div><div class="tp-label">Proven across ${runs} of your runs. ctx trims it now; the tool still runs in full.</div></div>`;
+    }
+    return "";
+  }
+
+  function evidenceBlock(r, e, minT) {
+    const p = r.p, hasNums = !!(p && (p.baseline_n || p.trimmed_n));
+    const hasExp = !!(e && (e.control_collected + e.treatment_collected) > 0);
+    let out = hasExp
+      ? `<div class="ev-lead">Two ways to look at it. The <b>rough tally</b> is everything ctx has seen so far. The <b>clean test</b> below is a random sample, so trust that one most.</div>`
+      : `<div class="ev-lead">This is the <b>rough tally</b>: every run ctx scored by what you did next, split by whether it trimmed the output or left it whole.</div>`;
+    if (hasNums) {
+      out += `<div class="ev-sec">The rough tally so far</div>`;
+      out += deltaLine(r);
+      out += `<div class="ba">${baCol("When ctx kept it whole", p.baseline_n, p.baseline_corrections, p.baseline_rereads)}${baCol("When ctx trimmed it", p.trimmed_n, p.trimmed_corrections, p.trimmed_rereads)}</div>`;
+      out += `<div class="ba-note">Each grey range is how sure ctx is: 95% of the time the real rate sits inside it. Fewer runs means a wider range.</div>`;
+    }
+    if (hasExp) out += armsBlock(e, minT);
+    return out;
+  }
+
   function toolCard(r, i, minB, minT, e) {
     const p = r.p, hasNums = !!(p && (p.baseline_n || p.trimmed_n));
-    const nums = hasNums ? `<div class="ba">${baCol("When ctx left it whole", p.baseline_n, p.baseline_corrections, p.baseline_rereads)}${baCol("When ctx trimmed it", p.trimmed_n, p.trimmed_corrections, p.trimmed_rereads)}</div><div class="ba-note">The small range under each number is how sure ctx is: 95% of the time the true rate sits in there. The wider the range, the fewer runs it has seen.</div>` : "";
+    const hasExp = !!(e && (e.control_collected + e.treatment_collected) > 0);
+    const showEvidence = hasNums || hasExp;
+    const evToggle = showEvidence
+      ? `<button class="ev-toggle" onclick="event.stopPropagation();var x=document.getElementById('te${i}');x.classList.toggle('ev-open');this.textContent=x.classList.contains('ev-open')?'Hide the evidence':'Show the evidence'">Show the evidence</button>`
+      : "";
+    const evBody = showEvidence ? `<div class="tool-evidence" id="te${i}">${evidenceBlock(r, e, minT)}</div>` : "";
     return `<div class="tool" id="tc${i}">
       <div class="tool-head" onclick="document.getElementById('tc${i}').classList.toggle('open')">
         <span class="tool-name">${esc(r.tool)}</span>
@@ -537,10 +643,9 @@
       </div>
       <div class="tool-draw">
         <div class="tool-story">${longStory(r)}</div>
-        ${deltaLine(r)}
-        ${nums}
-        ${armsBlock(e, minT)}
-        <div class="draw-actions">${toolActions(r)}</div>
+        ${progressBlock(r, minB, minT)}
+        <div class="draw-actions">${toolActions(r)}${evToggle}</div>
+        ${evBody}
       </div>
     </div>`;
   }
@@ -574,7 +679,7 @@
         what = `Looked at this and kept <span class="keep">all ${total} lines</span>. Nothing worth trimming.`;
         tag = "watched"; tagcss = "background:var(--surface3);color:var(--t3)";
       } else if (r.applied) {
-        what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. Full output still in your transcript.`;
+        what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. The tool still ran in full.`;
         tag = "trimmed"; tagcss = "background:var(--primary-dim);color:var(--primary-lt)";
       } else {
         what = `Would set aside <span class="drop">${drop} lines</span>, keep <span class="keep">${r.lines_keep || 0}</span>. Still only watching this tool.`;
@@ -603,7 +708,7 @@
         <div class="card-h">Autopilot</div>
         <div class="card-sub">When autopilot is on, ctx trims a tool the moment it proves safe on your own work, and never before. Pausing keeps ctx watching and proving, but stops it changing any output.</div>
         <div class="card-body">
-          <div class="autoline" style="margin-bottom:16px"><span class="dot" style="background:${on ? "var(--primary)" : "var(--t4)"}"></span><span>${on ? 'Autopilot is <b style="color:var(--primary-lt)">on</b>. ctx trims each tool that has earned it, and the full output still lands in your transcript.' : "Autopilot is <b>off</b>. ctx is only watching and proving. It will not change any output until you turn it on."}</span></div>
+          <div class="autoline" style="margin-bottom:16px"><span class="dot" style="background:${on ? "var(--primary)" : "var(--t4)"}"></span><span>${on ? 'Autopilot is <b style="color:var(--primary-lt)">on</b>. ctx trims each tool that has earned it, and the tool still runs in full.' : "Autopilot is <b>off</b>. ctx is only watching and proving. It will not change any output until you turn it on."}</span></div>
           ${on ? `<button class="cta danger" onclick="setPresetFrom('off')">Pause autopilot</button>` : `<button class="cta" onclick="setPresetFrom('full')">Turn on autopilot</button>`}
         </div>
       </div>

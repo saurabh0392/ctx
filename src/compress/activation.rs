@@ -22,8 +22,15 @@ pub struct CausalThresholds {
     /// Minimum would-trim runs actually cut (trimmed arm). Without these the gate fails closed.
     pub min_trimmed: i64,
     /// The upper end of the 95% interval for (trimmed rate minus baseline rate) must sit at or
-    /// below this for BOTH corrections and re-reads. A small positive slack absorbs noise; the
-    /// claim is "not measurably worse", not "provably better".
+    /// below this for BOTH corrections and re-reads. The claim is "not measurably worse by more
+    /// than this margin", not "provably better".
+    ///
+    /// Calibration matters here. With only `min_trimmed` runs the Newcombe interval is wide
+    /// (about ±0.09 at 30 to 40 trimmed runs), so a margin of 0.05 is unreachable: even a tool
+    /// with zero observed harm across 37 runs cannot clear it, and nothing ever earns. 0.10 is
+    /// the smallest margin a genuinely clean tool can clear at this sample size, while a clearly
+    /// harmful tool (say a 40-point jump) still sits far above it and stays closed. The interval
+    /// shrinks as more trimmed runs land, so the effective bar tightens on its own over time.
     pub max_harm_delta: f64,
 }
 
@@ -32,10 +39,17 @@ impl Default for CausalThresholds {
         Self {
             min_baseline: 30,
             min_trimmed: 30,
-            max_harm_delta: 0.05,
+            max_harm_delta: 0.10,
         }
     }
 }
+
+/// Entry sanity fuse for automatic burn-in (ADR 0012). Do not start trimming a tool whose
+/// left-alone (baseline) correction rate is already this high or higher: that is a tool where the
+/// output clearly matters, so it should not be trimmed on autopilot without a deliberate trial.
+/// Re-reads are intentionally not fused here: a high baseline re-read rate reflects task
+/// difficulty, and the causal gate compares the trimmed arm against that same baseline directly.
+pub const BURN_IN_MAX_BASELINE_CORR: f64 = 0.25;
 
 /// Legacy absolute bars, kept only for the training-readiness diagnostic in `learn.rs`
 /// (PerToolGate). This is NOT the live trimming gate and never was the honest causal one.
@@ -78,6 +92,44 @@ pub fn tool_activated(cfg: &Config, tool_name: &str, _kind_label: &str) -> bool 
         return false;
     };
     causal_clears_bar(&o, &th)
+}
+
+/// Whether a tool should be auto-trialed (in burn-in) right now: it has a solid clean baseline but
+/// no full trimmed arm yet, so it starts trimming to build the "after" arm the causal gate needs.
+/// This is the autopilot on-ramp (ADR 0012 / CTX-23) that replaces the hand-written
+/// `compress_trial_tools` list. The caller has already confirmed the preset allows the kind, so
+/// burn-in never trims when autopilot is off. Off when `compress_auto_trial` is disabled.
+pub fn tool_in_burn_in(cfg: &Config, tool_name: &str) -> bool {
+    if !cfg.compress_enabled || !cfg.compress_auto_trial {
+        return false;
+    }
+    let Ok(conn) = crate::db::open_db() else {
+        return false;
+    };
+    if crate::db::ensure_schema(&conn).is_err() {
+        return false;
+    }
+    let outcomes = crate::db::causal_tool_outcomes(&conn, Some(tool_name));
+    let Some(o) = outcomes.into_iter().find(|o| o.tool_name == tool_name) else {
+        return false;
+    };
+    burn_in_clears(&o, &CausalThresholds::default())
+}
+
+/// Pure burn-in entry decision, extracted for tests. Start a bounded trial when there is enough
+/// baseline evidence to justify it, the trimmed arm is not yet full (so the causal gate cannot
+/// judge it yet), and the baseline correction rate is not pathological. Once the trimmed arm fills
+/// (`trimmed_n >= min_trimmed`) this returns false and `causal_clears_bar` takes over: clean tools
+/// stay trimming as earned, harmful tools stop.
+pub fn burn_in_clears(o: &crate::db::CausalToolOutcome, th: &CausalThresholds) -> bool {
+    if o.baseline_n < th.min_baseline {
+        return false;
+    }
+    if o.trimmed_n >= th.min_trimmed {
+        return false;
+    }
+    let corr_rate = o.baseline_corrections as f64 / o.baseline_n as f64;
+    corr_rate <= BURN_IN_MAX_BASELINE_CORR
 }
 
 /// Pure causal decision over a tool's before/after outcome. Extracted so the live gate, the
@@ -203,5 +255,65 @@ mod tests {
         // Clean but tiny trimmed arm stays closed: too few runs to claim safety.
         let o = outcome(400, 0, 0, 5, 0, 0);
         assert!(!causal_clears_bar(&o, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn causal_gate_earns_a_clean_tool_at_realistic_volume() {
+        // The calibration target: a tool that trimmed 37 times with zero corrections and zero
+        // re-reads, against a low-harm baseline, must actually earn. At the old 0.05 margin this
+        // failed forever; at the calibrated 0.10 margin it clears.
+        let o = outcome(83, 2, 0, 37, 0, 0);
+        assert!(causal_clears_bar(&o, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn causal_gate_still_blocks_real_harm_at_calibrated_margin() {
+        // A 40-point jump in corrections stays far above the margin and remains closed.
+        let o = outcome(200, 4, 4, 200, 84, 4);
+        assert!(!causal_clears_bar(&o, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn burn_in_starts_with_clean_baseline_and_empty_after_arm() {
+        // Solid baseline, no trimmed runs yet: this is exactly the tool that should auto-trial so
+        // it can build an "after" arm. The chicken-and-egg ADR 0012 fixes.
+        let o = outcome(60, 1, 9, 0, 0, 0);
+        assert!(burn_in_clears(&o, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn burn_in_waits_for_enough_baseline() {
+        // Too little baseline evidence to justify trimming on autopilot yet.
+        let o = outcome(10, 0, 0, 0, 0, 0);
+        assert!(!burn_in_clears(&o, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn burn_in_stops_once_after_arm_is_full() {
+        // Trimmed arm is full: burn-in hands off to the causal gate, so it must no longer report
+        // "in burn-in" (otherwise it would trim forever regardless of the gate verdict).
+        let o = outcome(60, 0, 0, 30, 0, 0);
+        assert!(!burn_in_clears(&o, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn burn_in_fuse_blocks_pathological_baseline_corrections() {
+        // Baseline correction rate above the fuse (here 40%): do not auto-trim a tool whose
+        // output clearly matters. A deliberate trial is still allowed via compress_trial_tools.
+        let o = outcome(50, 20, 0, 0, 0, 0);
+        assert!(!burn_in_clears(&o, &CausalThresholds::default()));
+    }
+
+    #[test]
+    fn burn_in_then_gate_handoff_is_continuous() {
+        // A clean tool mid-burn-in (some trimmed runs, not yet full) keeps trimming via burn-in,
+        // and the causal gate is not yet satisfied because the arm is below min_trimmed.
+        let mid = outcome(60, 1, 2, 20, 0, 0);
+        assert!(burn_in_clears(&mid, &CausalThresholds::default()));
+        assert!(!causal_clears_bar(&mid, &CausalThresholds::default()));
+        // Once the arm fills cleanly, burn-in stops and the gate earns it.
+        let full = outcome(60, 1, 2, 30, 0, 0);
+        assert!(!burn_in_clears(&full, &CausalThresholds::default()));
+        assert!(causal_clears_bar(&full, &CausalThresholds::default()));
     }
 }
