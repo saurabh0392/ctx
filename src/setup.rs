@@ -56,14 +56,15 @@ fn autorun_summary(periodic_ingest: bool) -> String {
 fn setup_preview_lines(periodic_ingest: bool) -> Vec<String> {
     vec![
         format!(
-            "Create {} and write config (soft filter mode by default)",
+            "Create {} and write config (MCP filtering off by default)",
             crate::config::ctx_dir().display()
         ),
         crate::daemon::dashboard_ingest_summary(DASHBOARD_PORT, periodic_ingest),
-        "Merge permissions.deny + hooks into ~/.claude/settings.json (unless --no-install)".to_string(),
-        "Index ~/.claude/projects/**/*.jsonl into ~/.ctx/ctx.db and generate MCP profiles from usage history"
+        "Merge ctx hooks into ~/.claude/settings.json, with no MCP filter rules (unless --no-install)"
             .to_string(),
-        "Activate the best-matching profile when history exists, otherwise stay on `all`".to_string(),
+        "Index ~/.claude/projects/**/*.jsonl into ~/.ctx/ctx.db so the dashboard and learning have history"
+            .to_string(),
+        "Keep all tools available; profile filtering stays an opt-in (`ctx use <profile>`)".to_string(),
     ]
 }
 
@@ -157,12 +158,16 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
     }
     crate::filter_hook::write_filter_js()?;
 
-    // Ensure soft filter mode default on fresh installs.
+    // Fresh installs ship with profile filtering off (CTX-43, ADR 0027). ctx earns its keep with
+    // proof-gated output trimming and the cross-surface view, not by stripping MCP tools on a
+    // heuristic. Filtering stays available as an opt-in; it is just not on by default.
     {
         let cfg_path = crate::config::ctx_dir().join("config.toml");
         if !cfg_path.exists() {
             let mut cfg = crate::config::Config::load();
-            cfg.filter_mode = crate::config::FilterMode::Soft;
+            cfg.filter_mode = crate::config::FilterMode::Off;
+            cfg.active_profile = Some("all".to_string());
+            cfg.auto_profile_enabled = false;
             cfg.dashboard_port = Some(DASHBOARD_PORT);
             cfg.experiment_hooks_enabled = true;
             let _ = cfg.save();
@@ -290,22 +295,30 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
         println!("  ctx use <profile>");
         println!("Then reload Claude Code so hooks and filter rules apply.");
     } else if host.supports_node_options() {
-        println!(
-            "{} Wiring Claude Code (soft filter + hooks)...",
-            "->".cyan()
-        );
+        println!("{} Wiring Claude Code (hooks)...", "->".cyan());
         let cfg = crate::config::Config::load();
         let slug = cfg.active_profile.as_deref().unwrap_or("all");
         crate::config::install_statusline_script(DASHBOARD_PORT)?;
         crate::claude_settings::write_native_ctx_to_user_settings(slug, DASHBOARD_PORT)?;
         let _ = crate::claude_settings::sync_experiment_hooks_from_config();
         println!();
-        println!("  Filter:     soft (permissions.deny — MCP servers stay connected)");
+        let filter_line = match cfg.filter_mode {
+            crate::config::FilterMode::Off => {
+                "off by default (no MCP rules; every tool stays available)".to_string()
+            }
+            crate::config::FilterMode::Soft => {
+                "soft (permissions.deny — MCP servers stay connected)".to_string()
+            }
+            crate::config::FilterMode::Strict => {
+                "strict (non-allowlisted MCP servers disconnected)".to_string()
+            }
+        };
+        println!("  Filter:     {filter_line}");
         println!("  Hooks:      UserPromptSubmit + dashboard telemetry");
         println!("  Allowance:  statusLine → dashboard (Pro/Max rate limits)");
         println!("  Dashboard:  http://127.0.0.1:{DASHBOARD_PORT}");
         println!("  Autorun:    {}", autorun_summary(periodic_ingest));
-        println!("  Strict mode: `ctx filter mode strict` (disconnects non-allowlisted servers)");
+        println!("  Filtering:  opt-in if you want it (`ctx use <profile>`); off by default");
         println!();
         println!("Dashboard: open http://127.0.0.1:{DASHBOARD_PORT} to see spend, insights, and session similarity.");
     } else {
@@ -321,9 +334,9 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
         println!("  Autorun:    {}", autorun_summary(periodic_ingest));
         println!();
         println!(
-            "  MCP filtering requires Claude Code (CLI or IDE). Desktop gets ingest + dashboard."
+            "  Optional MCP filtering requires Claude Code (CLI or IDE). Desktop gets ingest + dashboard."
         );
-        println!("  Install Claude Code and re-run `ctx setup` for soft filter + hooks.");
+        println!("  Install Claude Code and re-run `ctx setup` for hooks (filtering stays opt-in).");
     }
 
     wire_mcp_server(&*host)?;

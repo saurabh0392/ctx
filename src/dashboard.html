@@ -391,7 +391,7 @@
       <div class="sec">
         <div class="sec-eyebrow">How ctx decides, in three rules</div>
         <div class="pillars">
-          <div class="pillar"><div class="pn">1</div><div class="pt">Cuts the bloat two ways</div><div class="pb">It filters MCP tools you rarely call before they reach the model, and shortens long tool output once a tool has earned it. Errors and the parts that matter are kept.</div></div>
+          <div class="pillar"><div class="pn">1</div><div class="pt">Shortens what the agent reads back</div><div class="pb">When a tool's output runs long, ctx trims it to what matters and keeps the errors. It does this across the agents it watches, Claude Code and Cursor. Trimming MCP tools you rarely call is available too, but it is off by default until you turn it on.</div></div>
           <div class="pillar"><div class="pn">2</div><div class="pt">Proves before it trims for real</div><div class="pb">A tool only starts trimming for keeps after your own sessions show that trimming it did not make the agent re-read or correct more. Before that it watches, then tests quietly.</div></div>
           <div class="pillar"><div class="pn">3</div><div class="pt">A trim is never a dead end</div><div class="pb">The tool still runs in full. ctx only shortens what the agent reads back, and if it needs the detail again it reads it again, which ctx counts and learns from.</div></div>
         </div>

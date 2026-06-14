@@ -816,8 +816,13 @@ impl Config {
         let path = ctx_dir().join("config.toml");
         let mut cfg = if !path.exists() {
             Self {
-                filter_mode: FilterMode::Soft,
-                auto_profile_enabled: true,
+                // Profile filtering is off by default (CTX-43, ADR 0027). It is the one pillar ctx
+                // never proved safe on the user's own work, it saved ~nothing in practice, and it
+                // could strip a tool the agent then needed. It stays available as an opt-in
+                // (`ctx use <profile>` / `ctx filter mode soft`), just not the shipped default.
+                filter_mode: FilterMode::Off,
+                active_profile: Some("all".to_string()),
+                auto_profile_enabled: false,
                 inject_enabled: true,
                 coaching_enabled: true,
                 adaptive_prefix_enabled: true,
@@ -932,6 +937,28 @@ mod hook_strip_tests {
         assert!(
             cfg.compress_shadow_enabled,
             "fresh install must collect shadow decisions by default"
+        );
+    }
+
+    #[test]
+    fn fresh_install_ships_with_filtering_off() {
+        // Profile filtering is deprecated as a default (CTX-43, ADR 0027): a fresh install must
+        // not strip any MCP tools. It stays available as an opt-in, just not on out of the box.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let cfg = Config::load();
+        assert_eq!(
+            cfg.filter_mode,
+            FilterMode::Off,
+            "fresh install must not filter MCP tools"
+        );
+        assert_eq!(cfg.active_profile.as_deref(), Some("all"));
+        assert!(
+            !cfg.auto_profile_enabled,
+            "auto-profile selection stays off so filtering never turns itself on"
         );
     }
 

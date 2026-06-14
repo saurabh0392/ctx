@@ -216,6 +216,12 @@ pub struct QualityAlert {
 
 pub fn quality_alerts() -> Result<Vec<QualityAlert>> {
     let mut out = Vec::new();
+    // These alerts are about profile filtering removing a tool the agent then missed. With filtering
+    // off (the default since ADR 0027), no tools are removed, so the advice to re-enable a server is
+    // dead and misleading. Only surface it for users who have opted back into filtering.
+    if crate::config::Config::load().filter_mode == crate::config::FilterMode::Off {
+        return Ok(out);
+    }
     let Ok(conn) = crate::db::open_db() else {
         return Ok(out);
     };
