@@ -124,6 +124,7 @@
   .pill.test { background: var(--amber-dim); color: var(--amber); }
   .pill.off { background: var(--danger-dim); color: var(--danger); }
   .pill.watch { background: var(--surface3); color: var(--t3); }
+  .pill.parked { background: var(--surface3); color: var(--t3); }
   .chev { color: var(--t4); font-size: 12px; transition: transform .2s; flex-shrink: 0; }
   .tool.open .chev { transform: rotate(90deg); }
   .tool-draw { display: none; padding: 0 16px 18px; border-top: 1px solid var(--border); }
@@ -513,6 +514,16 @@
     const need = (c && c.need) || minB || 30;
     return before >= need ? "wait" : "gather";
   }
+  // A read tool whose meaningful trims were all held by the edit guard. ctx only trims reference
+  // reads (dependencies, vendored code, files you're not editing); it never trims files you're
+  // working in. With nothing it's allowed to trim, the tool can't build a trimmed half and can't
+  // graduate, no matter how long it watches. So we say it's correctly parked, not on its way to
+  // trimming, instead of promising a proof the guard will never let it finish (CTX-44).
+  function guardHeld(r) {
+    const held = (r && r.read_guard_held) || 0;
+    const trimmed = (r && r.p && r.p.trimmed_n) || 0;
+    return held > 0 && trimmed === 0;
+  }
   function shortMsg(r, autopilot, minB) {
     const { stage, p, c } = r;
     if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Earned it. Across ${runs} of your runs, trimming did not make you re-read or correct more.`; }
@@ -520,6 +531,9 @@
     if (stage === "test") {
       if (p && p.verdict === "unclear") return "Close to a verdict. A few more runs settle it.";
       return "On trial. ctx is testing whether it is safe to trim, and your output is unchanged.";
+    }
+    if (guardHeld(r)) {
+      return "Parked on purpose. It only trims reference files, and your reads are files you're editing, which ctx never trims.";
     }
     if (watchKind(r, minB) === "wait") {
       return autopilot
@@ -641,6 +655,10 @@
       }
       return `<b>${esc(r.tool)}</b> is on trial. ctx is trimming it on some of your runs and watching whether cutting it ever makes you re-read or fix something.${lean} The tool still runs in full while it tests.`;
     }
+    if (guardHeld(r)) {
+      const held = r.read_guard_held || 0;
+      return `<b>${esc(r.tool)}</b> only trims reference files, things like dependencies or vendored code that you are not editing. Almost all of your reads have been files you are working in, and ctx never trims those, so it kept <b>${num(held)}</b> of them whole. That is the safety guard doing its job. There is nothing here for it to prove, so ${esc(r.tool)} stays in watching. That is correct, not stuck.`;
+    }
     if (watchKind(r, minB) === "wait") {
       const before = p ? (p.baseline_n || 0) : ((c && c.joined) || 0);
       const lead = `<b>${esc(r.tool)}</b> already has the before-data: ctx has watched about <b>${num(before)}</b> of your runs where it left the output whole. To earn trimming it also needs runs where it actually trimmed, then it compares your re-reads and corrections across the two. It has <span class="bad">none of those yet</span>.`;
@@ -675,6 +693,9 @@
 
   function toolActions(r) {
     const t = esc(r.tool);
+    // No "Put on trial" for a guard-held read tool: a trial still runs through the edit guard, so it
+    // would collect nothing and the button would promise something ctx can't deliver (CTX-44).
+    if (guardHeld(r)) return "";
     if (r.stage === "watch") return `<button class="mini-btn go" onclick="event.stopPropagation();trial('${t}',true)">Put on trial</button>`;
     if (r.stage === "test") return `<button class="mini-btn" onclick="event.stopPropagation();trial('${t}',false)">Stop the test</button>`;
     if (r.stage === "off") return `<button class="mini-btn" onclick="event.stopPropagation();trial('${t}',true)">Run the test again</button>`;
@@ -690,6 +711,9 @@
     }
     if (r.stage === "watch") {
       const c = r.c, need = (c && c.need) || minB || 30;
+      if (guardHeld(r)) {
+        return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill wait" style="width:100%"></div></div><div class="tp-label">Held whole by the safety guard. These were files you're editing, which ctx never trims, so there's nothing to compare.</div></div>`;
+      }
       if (watchKind(r, minB) === "wait") {
         return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill wait" style="width:50%"></div></div><div class="tp-label">Before-data is ready. ctx has no trimmed runs to compare against yet${autopilot ? "" : ", because autopilot is off"}, so the proof can't finish.</div></div>`;
       }
@@ -731,7 +755,7 @@
     return `<div class="tool" id="tc${i}">
       <div class="tool-head" onclick="document.getElementById('tc${i}').classList.toggle('open')">
         <span class="tool-name">${esc(r.tool)}</span>
-        <span class="pill ${r.stage}">${STAGE_LABEL[r.stage]}</span>
+        <span class="pill ${guardHeld(r) ? "parked" : r.stage}">${guardHeld(r) ? "Reference only" : STAGE_LABEL[r.stage]}</span>
         <span class="tool-msg">${shortMsg(r, autopilot, minB)}</span>
         <span class="chev">&#9654;</span>
       </div>

@@ -272,6 +272,13 @@ struct LoopHealthToolView {
     outcome: crate::db::CausalToolOutcome,
     #[serde(flatten)]
     stage: crate::compress::activation::ToolStage,
+    /// For read-kind tools only: how many reads the edit-intent guard held whole because they were
+    /// files the agent might edit (ADR 0001). When this is non-trivial and `trimmed_n` is zero, the
+    /// tool only trims reference reads the user does not have, so the view says it is correctly
+    /// parked rather than promising trimming the guard will never allow (CTX-44). `None` for tools
+    /// the guard does not touch (Bash, Grep, MCP).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    read_guard_held: Option<i64>,
 }
 
 /// Honest accrual picture for the loop-health view (CTX-26 / ADR 0017): how much signal exists,
@@ -356,11 +363,13 @@ async fn api_context() -> Json<ContextView> {
             // wall of identical "0 of 30" rows buries the tools that are really moving. They count
             // toward the totals above; they just aren't on the path until there is something to
             // measure.
+            let guard_held = crate::db::read_guard_held_by_tool(&conn);
             let lh_tools = causal
                 .iter()
                 .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0)
                 .map(|o| LoopHealthToolView {
                     stage: tool_stage(o, &th),
+                    read_guard_held: guard_held.get(&o.tool_name).copied(),
                     outcome: o.clone(),
                 })
                 .collect();

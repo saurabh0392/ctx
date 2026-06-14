@@ -1274,6 +1274,34 @@ pub fn causal_tool_outcomes(
     }
 }
 
+/// Per read-kind tool, the number of reads the edit-intent guard (ADR 0001) held: ctx wanted to
+/// trim them (`lines_drop > 0`) but they were files the agent might edit, so it kept them whole. A
+/// read tool only ever builds its trimmed arm from *reference* reads (dependencies, vendored code,
+/// files outside the working tree), so a non-trivial held count with zero trimmed runs means the
+/// tool cannot graduate on this usage. The loop-health view keys off this to say so honestly (CTX-44)
+/// instead of promising trimming that the guard will never allow. Clean corpus only (excludes ctx
+/// self-dev). Only read-kind tools set `read_protected`, so any tool present here is a read tool.
+pub fn read_guard_held_by_tool(conn: &Connection) -> std::collections::HashMap<String, i64> {
+    let sql = format!(
+        "SELECT tool_name, COUNT(*)
+         FROM compress_decisions
+         WHERE lines_drop > 0
+           AND COALESCE(features_json,'') LIKE '%\"read_protected\":true%'{EXCLUDE_SELF_DEV}
+         GROUP BY tool_name"
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    });
+    match rows {
+        Ok(it) => it.filter_map(|x| x.ok()).collect(),
+        Err(_) => std::collections::HashMap::new(),
+    }
+}
+
 /// Phase 2 randomized per-tool outcome counts (ADR 0009). Unlike `causal_tool_outcomes`, which
 /// compares observational shadow vs applied rows, this compares only rows that entered the
 /// randomized experiment (`explore_arm` set): control (deliberately kept) vs treatment (trimmed).
@@ -3400,6 +3428,42 @@ mod compress_decision_tests {
             .map(|c| c.baseline_n)
             .sum();
         assert_eq!(baseline_n, 1, "self-dev row must be excluded from the gate");
+    }
+
+    #[test]
+    fn read_guard_held_counts_protected_reads_and_excludes_self_dev() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // Two reads the guard held (lines_drop>0, read_protected), one self-dev (excluded), one
+        // protected read with nothing to cut (lines_drop=0, not counted), and a Bash row that never
+        // carries read_protected (a guard-free tool must not appear at all).
+        let mut held1 = decision("2026-05-31T10:01:00+00:00", "s", "Read", "app/main.rs");
+        held1.features_json = r#"{"read_protected":true}"#;
+        insert_compress_decision(&conn, &held1).unwrap();
+        let mut held2 = decision("2026-05-31T10:02:00+00:00", "s", "Read", "app/lib.rs");
+        held2.features_json = r#"{"read_protected":true}"#;
+        insert_compress_decision(&conn, &held2).unwrap();
+        let mut dev = decision("2026-05-31T10:03:00+00:00", "s", "Read", "ctx/src.rs");
+        dev.features_json = r#"{"read_protected":true,"self_dev":true}"#;
+        insert_compress_decision(&conn, &dev).unwrap();
+        let mut nodrop = decision("2026-05-31T10:04:00+00:00", "s", "Read", "tiny.rs");
+        nodrop.lines_drop = 0;
+        nodrop.features_json = r#"{"read_protected":true}"#;
+        insert_compress_decision(&conn, &nodrop).unwrap();
+        let mut bash = decision("2026-05-31T10:05:00+00:00", "s", "Bash", "ls");
+        bash.kind = "command";
+        bash.features_json = "{}";
+        insert_compress_decision(&conn, &bash).unwrap();
+
+        let held = read_guard_held_by_tool(&conn);
+        assert_eq!(held.get("Read").copied(), Some(2), "only the two real guard-held reads count");
+        assert!(held.get("Bash").is_none(), "guard-free tools must not appear");
     }
 
     #[test]
