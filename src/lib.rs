@@ -116,6 +116,7 @@ pub async fn run() -> Result<()> {
             HookCommand::PostToolUse => compress::post_tool_use()?,
             HookCommand::CursorPostToolUse => cursor_hook::post_tool_use()?,
             HookCommand::CursorPreToolUse => cursor_hook::pre_tool_use()?,
+            HookCommand::CursorPreCompact => cursor_hook::pre_compact()?,
         },
         Commands::Run { command } => cmd_run::exec(command)?,
         Commands::Mcp => mcp::serve_stdio()?,

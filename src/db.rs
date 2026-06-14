@@ -334,6 +334,67 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     );
 }
 
+/// Cursor compaction events captured live from the `preCompact` hook (CTX-31, ADR 0023).
+/// Cursor's transcript carries no compaction marker, so unlike Claude Code (whose compactions
+/// are read from the `turns` table) Cursor's are recorded here as they happen. `message_count`
+/// is the conversation position Cursor reports, kept for the later correction-followup join.
+fn migrate_cursor_compactions_table(conn: &Connection) {
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS cursor_compactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            trigger TEXT,
+            context_usage_percent REAL,
+            context_tokens INTEGER,
+            context_window_size INTEGER,
+            message_count INTEGER,
+            messages_to_compact INTEGER,
+            is_first_compaction INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_cursor_compactions_session ON cursor_compactions(session_id);
+        CREATE INDEX IF NOT EXISTS idx_cursor_compactions_ts ON cursor_compactions(ts);
+        "#,
+    );
+}
+
+/// A Cursor compaction event from the `preCompact` hook, ready to persist.
+#[derive(Debug, Clone, Default)]
+pub struct CursorCompaction {
+    pub ts: String,
+    pub session_id: Option<String>,
+    pub trigger: Option<String>,
+    pub context_usage_percent: Option<f64>,
+    pub context_tokens: Option<i64>,
+    pub context_window_size: Option<i64>,
+    pub message_count: Option<i64>,
+    pub messages_to_compact: Option<i64>,
+    pub is_first_compaction: Option<bool>,
+}
+
+/// Record one live Cursor compaction. Best-effort: the hook never fails the Cursor session.
+pub fn insert_cursor_compaction(conn: &Connection, c: &CursorCompaction) -> Result<()> {
+    conn.execute(
+        r#"INSERT INTO cursor_compactions
+            (ts, session_id, trigger, context_usage_percent, context_tokens,
+             context_window_size, message_count, messages_to_compact, is_first_compaction)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
+        params![
+            c.ts,
+            c.session_id,
+            c.trigger,
+            c.context_usage_percent,
+            c.context_tokens,
+            c.context_window_size,
+            c.message_count,
+            c.messages_to_compact,
+            c.is_first_compaction.map(|b| if b { 1i64 } else { 0i64 }),
+        ],
+    )?;
+    Ok(())
+}
+
 /// One shadow/active retention decision recorded for forward label collection.
 #[derive(Debug, Clone)]
 pub struct CompressDecision<'a> {
@@ -1305,11 +1366,15 @@ pub const COMPACTION_FOLLOWUP_WINDOW_TURNS: i64 = 5;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CompactionFollowups {
     pub surface: String,
-    /// "observed" when this surface has persisted turns, "unknown" when it does not.
+    /// "observed" when this surface has the full signal (compaction events and the correction
+    /// follow-up, like Claude Code). "observed_low" when we count real compaction events live but
+    /// can't yet compute the follow-up (Cursor, captured from the `preCompact` hook; the
+    /// correction join is a named follow-up). "unknown" when the surface has no signal at all.
     pub confidence: String,
-    /// Compaction events (pre_compact turns) observed. `None` for an unknown surface.
+    /// Compaction events observed. `None` for an unknown surface.
     pub compaction_events: Option<i64>,
-    /// Compaction events with at least one correction within the window after them.
+    /// Compaction events with at least one correction within the window after them. `None` when
+    /// we count compactions but don't compute the follow-up yet (an "observed_low" surface).
     pub followed_by_correction: Option<i64>,
     /// Distinct sessions in which at least one compaction occurred.
     pub sessions_with_compaction: Option<i64>,
@@ -1320,15 +1385,60 @@ pub struct CompactionFollowups {
 /// Per-surface count of corrections that followed a native compaction within
 /// `COMPACTION_FOLLOWUP_WINDOW_TURNS`. Read-only. Claude Code is computed from the persisted
 /// `turns` table (compaction = a `pre_compact` flagged turn, the exchange right before a
-/// `compactMetadata` system row). Cursor and Codex are reported as `unknown` until their
-/// compaction turns are persisted. Never reports a causal claim (ADR 0016 / CTX-25).
+/// `compactMetadata` system row). Cursor is computed from `cursor_compactions`, captured live
+/// from the `preCompact` hook, at lower confidence (no correction follow-up yet). Codex is still
+/// `unknown` until it exposes a compaction signal. Never reports a causal claim (ADR 0016 / 0023).
 pub fn compaction_followups(conn: &Connection) -> Vec<CompactionFollowups> {
     let window = COMPACTION_FOLLOWUP_WINDOW_TURNS;
     vec![
         claude_compaction_followups(conn, window),
-        unknown_surface("cursor", window),
+        cursor_compaction_followups(conn, window),
         unknown_surface("codex", window),
     ]
+}
+
+/// Cursor arm of [`compaction_followups`] (CTX-31 increment 1, ADR 0023). Cursor compactions are
+/// captured live from the `preCompact` hook into `cursor_compactions` (its transcript has no
+/// compaction marker). We report a real count at `observed_low` confidence: we see the events, but
+/// the correction follow-up isn't computed yet, so `followed_by_correction` is `None`. A surface
+/// is `unknown` only when we've seen no Cursor activity at all; once ctx has observed any live
+/// Cursor tool decision, zero compactions is a real "none seen yet" (parallel to Claude), not an
+/// honest-unknown.
+fn cursor_compaction_followups(conn: &Connection, window: i64) -> CompactionFollowups {
+    let events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cursor_compactions", [], |r| r.get(0))
+        .unwrap_or(0);
+    let sessions: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM cursor_compactions WHERE session_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    // Have we ever observed Cursor live? A cursor-surface decision row means yes, even with zero
+    // compactions, which lets us show an honest "none yet" instead of "not visible yet".
+    let seen_cursor: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM compress_decisions WHERE surface = 'cursor')",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n == 1)
+        .unwrap_or(false);
+
+    if events == 0 && !seen_cursor {
+        return unknown_surface("cursor", window);
+    }
+
+    CompactionFollowups {
+        surface: "cursor".to_string(),
+        confidence: "observed_low".to_string(),
+        compaction_events: Some(events),
+        // Increment 2 (the correction follow-up join) isn't built yet; be explicit, not a fake 0.
+        followed_by_correction: None,
+        sessions_with_compaction: Some(sessions),
+        window_turns: window,
+    }
 }
 
 fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
@@ -1550,6 +1660,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     migrate_allowance_snapshots_table(conn);
     migrate_compress_events_table(conn);
     migrate_compress_decisions_table(conn);
+    migrate_cursor_compactions_table(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -3500,6 +3611,81 @@ mod compress_decision_tests {
         assert_eq!(claude.compaction_events, Some(0));
         assert_eq!(claude.followed_by_correction, Some(0));
         assert_eq!(claude.sessions_with_compaction, Some(0));
+    }
+
+    #[test]
+    fn cursor_compaction_observed_low_when_event_recorded() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_cursor_compaction(
+            &conn,
+            &CursorCompaction {
+                ts: "2026-06-14T10:00:00Z".to_string(),
+                session_id: Some("conv-1".to_string()),
+                trigger: Some("auto".to_string()),
+                context_usage_percent: Some(92.0),
+                message_count: Some(120),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let out = compaction_followups(&conn);
+        let cursor = out.iter().find(|s| s.surface == "cursor").unwrap();
+        // We saw the compaction live, so it's a real count, but lower confidence: the correction
+        // follow-up isn't computed yet, so it must be None (not a fake 0), never "observed".
+        assert_eq!(cursor.confidence, "observed_low");
+        assert_eq!(cursor.compaction_events, Some(1));
+        assert_eq!(cursor.followed_by_correction, None);
+        assert_eq!(cursor.sessions_with_compaction, Some(1));
+    }
+
+    #[test]
+    fn cursor_compaction_observed_low_zero_once_cursor_seen() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // A Cursor decision exists but no compaction yet: this is an honest "none seen yet" at
+        // lower confidence, parallel to Claude's observed-zero, not "not visible yet".
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-14T10:00:00Z",
+                session_id: Some("conv-1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "all",
+                lines_total: 10,
+                lines_keep: 10,
+                lines_drop: 0,
+                chars_in: 100,
+                would_chars_out: 100,
+                features_json: "{}",
+                command_or_path: "",
+                applied: false,
+                explore_arm: None,
+                surface: Some("cursor"),
+            },
+        )
+        .unwrap();
+
+        let out = compaction_followups(&conn);
+        let cursor = out.iter().find(|s| s.surface == "cursor").unwrap();
+        assert_eq!(cursor.confidence, "observed_low");
+        assert_eq!(cursor.compaction_events, Some(0));
+        assert_eq!(cursor.followed_by_correction, None);
     }
 
     #[test]

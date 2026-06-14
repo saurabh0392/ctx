@@ -221,6 +221,7 @@
   .cf-surface { font-size: 13px; font-weight: 700; color: var(--t1); }
   .cf-conf { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-top: 7px; }
   .cf-conf.observed { color: var(--primary-lt); }
+  .cf-conf.low { color: #d9a441; }
   .cf-conf.unknown { color: var(--t4); }
   .cf-num { font-size: 26px; font-weight: 800; color: var(--t1); font-variant-numeric: tabular-nums; margin-top: 12px; line-height: 1; }
   .cf-note { font-size: 12px; color: var(--t3); line-height: 1.5; margin-top: 9px; }
@@ -874,13 +875,25 @@
 
     const card = (s) => {
       const name = SURFACE_NAME[s.surface] || s.surface;
-      if (s.confidence !== "observed") {
-        return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf unknown">not visible yet</div><div class="cf-num">&mdash;</div><div class="cf-note">${esc(name)} manages its own context and doesn't expose its compaction to ctx the way Claude Code does. We show nothing rather than guess.</div></div>`;
+      const sess = s.sessions_with_compaction || 0;
+      const sessLbl = `${num(sess)} session${sess === 1 ? "" : "s"}`;
+      // Surfaces ctx can't see at all (e.g. Codex today): show nothing, not a zero.
+      if (s.confidence === "unknown") {
+        return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf unknown">not visible yet</div><div class="cf-num">&mdash;</div><div class="cf-note">ctx hasn't recorded a compaction from ${esc(name)} yet, so there's nothing to show. We'd rather show nothing than guess.</div></div>`;
+      }
+      // Cursor: we see real compaction events live (preCompact hook), but the correction follow-up
+      // isn't computed yet, so we show the count honestly at lower confidence, not a fake "of N".
+      if (s.confidence === "observed_low") {
+        const n = s.compaction_events || 0;
+        const body = n === 0
+          ? `<div class="cf-num">none yet</div><div class="cf-note">ctx is watching ${esc(name)}'s compactions live. None recorded yet.</div>`
+          : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} recorded live across ${sessLbl}. Whether a correction followed is coming next.</div>`;
+        return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf low">watching live</div>${body}</div>`;
       }
       const n = s.compaction_events || 0, m = s.followed_by_correction || 0;
       const body = n === 0
-        ? `<div class="cf-num">none</div><div class="cf-note">No compaction seen across ${num(s.sessions_with_compaction || 0)} session${(s.sessions_with_compaction || 0) === 1 ? "" : "s"}.</div>`
-        : `<div class="cf-num">${num(m)} <span style="font-size:14px;color:var(--t3);font-weight:600">of ${num(n)}</span></div><div class="cf-note">compactions were followed by a correction within ${w} turns, across ${num(s.sessions_with_compaction || 0)} session${(s.sessions_with_compaction || 0) === 1 ? "" : "s"}.</div>`;
+        ? `<div class="cf-num">none</div><div class="cf-note">No compaction seen across ${sessLbl}.</div>`
+        : `<div class="cf-num">${num(m)} <span style="font-size:14px;color:var(--t3);font-weight:600">of ${num(n)}</span></div><div class="cf-note">compactions were followed by a correction within ${w} turns, across ${sessLbl}.</div>`;
       return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf observed">observed here</div>${body}</div>`;
     };
 
@@ -893,7 +906,7 @@
 
     $("compaction-body").innerHTML =
       lead +
-      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">ctx can only measure an agent whose sessions it sees. Claude Code exposes its compaction, so that count is real. The others are not visible yet, which we show plainly instead of as a zero.</p><div class="cf-grid">${cards}</div></div>`;
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">ctx can only measure an agent whose sessions it sees. Claude Code exposes its compaction in the transcript, so its count is full. Cursor reports each compaction live as it happens, so its count is real but lower confidence until we line up what came after. Anything ctx can't see yet shows as not visible, never as a zero.</p><div class="cf-grid">${cards}</div></div>`;
   }
 
   // ════ SURFACES ════
