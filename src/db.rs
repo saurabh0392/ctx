@@ -891,15 +891,17 @@ pub struct SignalAuditRow {
 /// stored JSON array). `cap` bounds how many rows are read. Read-only; never touches the gate.
 pub fn signal_audit_rows(conn: &Connection, signal: Option<&str>, cap: usize) -> Vec<SignalAuditRow> {
     let like = signal.map(|s| format!("%\"{s}\"%"));
-    let sql = "SELECT ts, tool_name, command_or_path, surface, kind, outcome_signals,
+    let sql = format!(
+        "SELECT ts, tool_name, command_or_path, surface, kind, outcome_signals,
                       outcome_correction, outcome_reread
                FROM compress_decisions
                WHERE outcome_joined = 1 AND outcome_signals IS NOT NULL
                      AND outcome_signals != '[]'
-                     AND (?1 IS NULL OR outcome_signals LIKE ?1)
+                     AND (?1 IS NULL OR outcome_signals LIKE ?1){EXCLUDE_SELF_DEV}
                ORDER BY ts DESC
-               LIMIT ?2";
-    let mut stmt = match conn.prepare(sql) {
+               LIMIT ?2"
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -1025,10 +1027,10 @@ pub struct LabeledDecision {
 /// could never join before provenance existed), so it stays in.
 pub fn load_joined_decisions(conn: &Connection) -> Vec<LabeledDecision> {
     let mut stmt = match conn.prepare(
-        "SELECT tool_name, kind, lines_total, lines_drop, chars_in, would_chars_out,
+        &format!("SELECT tool_name, kind, lines_total, lines_drop, chars_in, would_chars_out,
                 features_json, COALESCE(outcome_correction,0), COALESCE(outcome_reread,0)
          FROM compress_decisions
-         WHERE outcome_joined = 1 AND COALESCE(surface,'') != 'cursor'",
+         WHERE outcome_joined = 1 AND COALESCE(surface,'') != 'cursor'{EXCLUDE_SELF_DEV}"),
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -1096,11 +1098,13 @@ pub fn audit_labeled_decisions(
     limit: usize,
 ) -> Vec<LabelAuditRow> {
     let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
-    let base_sql = "SELECT id, ts, session_id, tool_name, kind, command_or_path,
+    let base_sql = format!(
+        "SELECT id, ts, session_id, tool_name, kind, command_or_path,
                 COALESCE(outcome_correction,0), COALESCE(outcome_reread,0), surface
          FROM compress_decisions
          WHERE outcome_joined = 1
-           AND (COALESCE(outcome_correction,0) = 1 OR COALESCE(outcome_reread,0) = 1)";
+           AND (COALESCE(outcome_correction,0) = 1 OR COALESCE(outcome_reread,0) = 1){EXCLUDE_SELF_DEV}"
+    );
     let sql = match tool_filter {
         Some(_) => format!("{base_sql} AND tool_name = ?2 ORDER BY id DESC LIMIT ?1"),
         None => format!("{base_sql} ORDER BY id DESC LIMIT ?1"),
@@ -1196,11 +1200,19 @@ pub fn audit_labeled_decisions(
     rows
 }
 
+/// SQL fragment that drops ctx's own development activity from a corpus query (CTX-32). Decisions
+/// made inside ctx's source repo are tagged `"self_dev":true` in `features_json` (see
+/// `agent::is_self_dev_repo`); building and editing ctx is the developer's churn, not user behavior,
+/// so it must not bias the gate, the learned model, or the precision audit. The token is the exact
+/// compact serialization of `ShadowFeatures::self_dev = Some(true)`; a unit test guards against drift.
+pub(crate) const EXCLUDE_SELF_DEV: &str =
+    " AND COALESCE(features_json,'') NOT LIKE '%\"self_dev\":true%'";
+
 /// Causal before/after counts for one tool (SAU-150). The control and treatment share the
 /// same selection (the heuristic wanted to drop lines, `lines_drop > 0`) and differ only on
 /// whether the trim was actually applied. Comparing these isolates the effect of trimming,
 /// which an absolute rate on shadow decisions cannot do. `trimmed_*` stays zero until the
-/// tool is deliberately activated and real trimmed usage accrues.
+/// tool is deliberately activated and real trimmed usage accrues. Excludes ctx self-dev rows.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct CausalToolOutcome {
     pub tool_name: String,
@@ -1218,7 +1230,8 @@ pub fn causal_tool_outcomes(
     conn: &Connection,
     tool_filter: Option<&str>,
 ) -> Vec<CausalToolOutcome> {
-    let base = "SELECT tool_name,
+    let base = format!(
+        "SELECT tool_name,
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0),
@@ -1226,7 +1239,8 @@ pub fn causal_tool_outcomes(
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
-         WHERE outcome_joined = 1";
+         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}"
+    );
     let sql = match tool_filter {
         Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
         None => format!(
@@ -1284,7 +1298,8 @@ pub fn explore_tool_outcomes(
     conn: &Connection,
     tool_filter: Option<&str>,
 ) -> Vec<ExploreToolOutcome> {
-    let base = "SELECT tool_name,
+    let base = format!(
+        "SELECT tool_name,
             COALESCE(SUM(CASE WHEN explore_arm='control' THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
@@ -1294,7 +1309,8 @@ pub fn explore_tool_outcomes(
             COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
-         WHERE explore_arm IS NOT NULL";
+         WHERE explore_arm IS NOT NULL{EXCLUDE_SELF_DEV}"
+    );
     let sql = match tool_filter {
         Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
         None => format!("{base} GROUP BY tool_name ORDER BY COUNT(*) DESC"),
@@ -1646,6 +1662,57 @@ pub fn compress_totals_today(
     (row.0.max(0) as usize, row.1.max(0) as usize)
 }
 
+/// One-time backfill of the `self_dev` tag for decisions recorded before CTX-32. Going forward the
+/// controller tags rows at record time (`agent::is_self_dev_repo`), but rows already in the log are
+/// untagged, so without this the live gate stays polluted by ctx's own development until those rows
+/// age out. For each repo the log has seen, if that path is ctx's own source repo today, its rows
+/// are tagged so the corpus filter excludes them now. Guarded by a meta key so the filesystem scan
+/// runs at most once; idempotent and safe under concurrent opens. Repos no longer on disk are left
+/// untagged (conservative: kept in the corpus).
+fn backfill_self_dev_tag(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row("SELECT 1 FROM meta WHERE k='self_dev_backfill_v1'", [], |_| {
+            Ok(())
+        })
+        .is_ok();
+    if already_done {
+        return;
+    }
+
+    let repos: Vec<String> = match conn.prepare(
+        "SELECT DISTINCT json_extract(features_json,'$.repo_key')
+         FROM compress_decisions
+         WHERE json_extract(features_json,'$.repo_key') IS NOT NULL",
+    ) {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| r.get::<_, Option<String>>(0))
+            .map(|it| it.filter_map(|x| x.ok().flatten()).collect())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+
+    for repo in repos {
+        if crate::agent::is_self_dev_repo(&repo) {
+            let _ = conn.execute(
+                "UPDATE compress_decisions
+                 SET features_json = json_set(features_json,'$.self_dev', json('true'))
+                 WHERE json_extract(features_json,'$.repo_key') = ?1
+                   AND COALESCE(features_json,'') NOT LIKE '%\"self_dev\":true%'",
+                params![repo],
+            );
+        }
+    }
+
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('self_dev_backfill_v1', '1')",
+        [],
+    );
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
@@ -1661,6 +1728,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     migrate_compress_events_table(conn);
     migrate_compress_decisions_table(conn);
     migrate_cursor_compactions_table(conn);
+    backfill_self_dev_tag(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -3295,6 +3363,43 @@ mod compress_decision_tests {
             explore_arm: None,
             surface: None,
         }
+    }
+
+    #[test]
+    fn corpus_queries_exclude_ctx_self_dev_rows() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // A real user row and a ctx self-dev row, same tool, both joined with a reread signal.
+        let mut user = decision("2026-05-31T10:01:00+00:00", "s-user", "Read", "user.rs");
+        user.features_json = r#"{"repo_key":"/home/me/app"}"#;
+        insert_compress_decision(&conn, &user).unwrap();
+        let mut dev = decision("2026-05-31T10:02:00+00:00", "s-dev", "Read", "dev.rs");
+        dev.features_json = r#"{"repo_key":"/home/me/ctx","self_dev":true}"#;
+        insert_compress_decision(&conn, &dev).unwrap();
+        conn.execute(
+            "UPDATE compress_decisions
+             SET outcome_joined=1, outcome_reread=1, surface='cursor', outcome_signals='[\"reread\"]'",
+            [],
+        )
+        .unwrap();
+
+        // Precision audit: the self-dev row is gone.
+        let audit = signal_audit_rows(&conn, None, 100);
+        assert_eq!(audit.len(), 1, "self-dev row must be excluded from the audit");
+        assert_eq!(audit[0].command_or_path.as_deref(), Some("user.rs"));
+
+        // Causal gate corpus: only the user row is counted as a baseline decision.
+        let baseline_n: i64 = causal_tool_outcomes(&conn, Some("Read"))
+            .iter()
+            .map(|c| c.baseline_n)
+            .sum();
+        assert_eq!(baseline_n, 1, "self-dev row must be excluded from the gate");
     }
 
     #[test]

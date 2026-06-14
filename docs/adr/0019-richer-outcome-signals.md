@@ -103,3 +103,19 @@ hook where failure data exists.
   and a human precision pass. That is the honest cost of not corrupting the gate, and it is the
   point of the ticket. Increment 1 (observe) and the audit (step 2 tooling) ship first and stand on
   their own.
+
+## Precision spot-check (CTX-32 increment 2, 2026-06-14)
+
+Running the spot-check first exposed why it could not be trusted: the corpus was dominated by the
+developer building ctx itself. We fixed that root cause before judging precision by excluding ctx
+self-development from the corpus (ADR 0026), then re-ran the audit on the clean data.
+
+Verdict: do not promote any signal. After exclusion only 15 joined decisions carry a candidate
+signal (reread 12, correction 3), well below the bar of 20 hand-labeled samples per signal. Hand
+labeling those 15 found zero genuine trimming-harm events: every one was residual ctx-dev activity
+(reading ctx source, running `ctx gain` / `sqlite3 ~/.ctx`) that escaped the repo filter only
+because it was recorded with no working directory. On a developer who has so far used Cursor almost
+entirely to build ctx, there is effectively no clean user-signal data yet. The proof gate correctly
+blocks promotion; it stays blocked until real, non-dev usage accrues enough labeled positives. The
+audit (`ctx context signal-audit`) now excludes self-dev rows, states the promotion bar, and shows
+per-signal readiness, so the next pass is a re-run, not a rebuild.

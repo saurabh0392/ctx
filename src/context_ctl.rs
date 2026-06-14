@@ -377,9 +377,20 @@ pub fn signal_audit(signal: Option<&str>, limit: usize, json: bool) -> Result<()
     println!("None of these vote in the gate yet. Hand-label a sample and check precision per signal");
     println!("before promoting any of them (ADR 0019). A false positive here is worse than no signal.");
     println!();
-    println!("How often each signal fired:");
+    println!("This corpus excludes ctx's own development activity (CTX-32), so these are your real");
+    println!("sessions, not the churn of building ctx. To promote a signal it needs at least 0.8");
+    println!("precision on at least 20 hand-labeled samples, and it has to add positives that");
+    println!("corrections alone miss.");
+    println!();
+    println!("How often each signal fired (and whether there is enough to label yet):");
+    const PROMOTE_MIN_SAMPLES: usize = 20;
     for (name, n) in &counts {
-        println!("   {name:<22} {n}");
+        let status = if *n >= PROMOTE_MIN_SAMPLES {
+            "enough to start labeling".to_string()
+        } else {
+            format!("not yet, need {} more", PROMOTE_MIN_SAMPLES.saturating_sub(*n))
+        };
+        println!("   {name:<22} {n:>4}   {status}");
     }
     println!();
 

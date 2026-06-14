@@ -88,6 +88,15 @@ pub struct ShadowFeatures {
     /// in this phase.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub would_model_apply: Option<bool>,
+    /// `Some(true)` when this decision happened inside ctx's own source repo (a Cargo.toml with
+    /// package name "ctx" at the repo root). Building ctx, re-editing its files, and running its
+    /// commands is the developer's own churn, not user behavior, so it must not feed the learning
+    /// corpus, the causal gate, or the precision audit (CTX-32). The row is still recorded so the
+    /// Activity feed stays complete; the corpus queries exclude it. Set by the controller in
+    /// `agent::decide`; compute_shadow_decision leaves it None. Serializes to the exact token
+    /// `"self_dev":true`, which the corpus-exclusion SQL matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_dev: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +238,7 @@ pub fn compute_shadow_decision(
             file_ext: None,
             model_score: None,
             would_model_apply: None,
+            self_dev: None,
         },
     })
 }
@@ -288,5 +298,29 @@ mod tests {
             Some("mcp__linear")
         );
         assert_eq!(server_prefix_of("Bash"), None);
+    }
+
+    // The corpus-exclusion SQL (db::EXCLUDE_SELF_DEV) keys off the exact compact serialization of
+    // self_dev = Some(true). If serde ever renamed the field or changed spacing, the filter would
+    // silently stop excluding ctx's own dev activity, re-polluting the gate. This pins both ends.
+    #[test]
+    fn self_dev_serializes_to_the_token_the_corpus_filter_matches() {
+        let mut d = compute_shadow_decision(
+            "Read",
+            &serde_json::json!({"file_path": "src/foo.rs"}),
+            "one\ntwo\nthree\n",
+            &cfg(),
+            None,
+            "/tmp/project",
+        )
+        .expect("decision");
+        assert!(
+            !d.features_json().contains("self_dev"),
+            "absent by default so the JSON stays small and the filter never matches user rows"
+        );
+        d.features.self_dev = Some(true);
+        let js = d.features_json();
+        assert!(js.contains("\"self_dev\":true"), "serialized features: {js}");
+        assert!(crate::db::EXCLUDE_SELF_DEV.contains("\"self_dev\":true"));
     }
 }
