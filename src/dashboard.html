@@ -762,7 +762,11 @@
     const feed = ctx.feed || [];
     if (!feed.length) { $("activity-list").innerHTML = `<div class="empty">No tool results recorded yet. Run a few agent turns and they show up here. If nothing appears after a few turns, run <code>ctx ingest</code>.</div>`; return; }
     $("activity-list").innerHTML = feed.map((r) => {
-      const label = (r.kind && r.kind.startsWith("git")) ? "git" : (r.kind || (r.tool_name || "tool")).toString().slice(0, 10).toLowerCase();
+      // Label with the meaningful kind (read, grep, mcp, git), but for the generic/empty bucket
+      // show the real tool (shell, write, bash) instead of the internal word "generic" (CTX-38).
+      const meaningfulKind = r.kind && r.kind !== "generic";
+      const rawLabel = (r.kind && r.kind.startsWith("git")) ? "git" : (meaningfulKind ? r.kind : (r.tool_name || "tool"));
+      const label = rawLabel.toString().slice(0, 10).toLowerCase();
       const drop = r.lines_drop || 0, total = r.lines_total || 0;
       let what, tag, tagcss;
       if (r.protected && drop > 0) {

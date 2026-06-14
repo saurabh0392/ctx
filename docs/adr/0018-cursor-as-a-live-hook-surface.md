@@ -66,6 +66,22 @@ Confirmed by capturing real hook payloads from a running Cursor agent, not just 
 - The payload also carries `generation_id` (per user message / turn) and `transcript_path`, which
   later increments can use for turn-level joins and Cursor narration.
 
+## One owner per tool call across hook systems (CTX-37)
+
+Registering ctx on both `~/.cursor/hooks.json` and `~/.claude/settings.json` creates a real
+collision: a Claude model running inside Cursor honors **both** hook systems, so a single tool
+call fires the Cursor `postToolUse` hook *and* the Claude `post-tool-use` hook. Left alone, each
+event is recorded twice, once as `surface = "cursor"` and once as `surface = null`, which doubled
+every per-tool count and poisoned the signal corpus the precision work (CTX-32) depends on. A live
+probe confirmed Cursor fires `postToolUse` exactly once per call, so this was ours to fix, not a
+Cursor double-fire.
+
+Rule: the Cursor hook owns Cursor tool calls. The Claude `post_tool_use` handler bails when the
+payload is Cursor-shaped (it carries `cursor_version` / `conversation_id`, which a native Claude
+Code CLI payload never does). This is source-based, not a time-window dedup, so it never suppresses
+a genuine rapid re-read (which is itself a signal we measure). A real Claude Code session, in a
+plain terminal or another repo, has no Cursor fields and keeps recording normally.
+
 ## Alternatives considered
 
 - Stay ingest-only and just harden the transcript adapter. Rejected as the primary path: it keeps
