@@ -149,7 +149,11 @@ pub fn compress_git_diff(
     if text.chars().count() > opts.target_chars {
         text = truncate_to_budget(&text, opts.target_chars, 60);
     }
-    if text.chars().count() >= chars_in {
+    // A diff with no recognizable hunks (`--stat`, `--name-only`, `--summary`) parses to an empty
+    // `out`, which would erase the whole output. Fall back to generic compaction, which truncates
+    // to budget while keeping content, so the summary survives instead of vanishing (CTX-40). The
+    // `>= chars_in` check catches the case where structured parsing didn't actually save anything.
+    if text.trim().is_empty() || text.chars().count() >= chars_in {
         return compress_generic(input, opts, ctx, "git-diff-generic");
     }
 
@@ -181,6 +185,56 @@ fn flush_hunk(out: &mut Vec<String>, file: &str, hunk: &mut Vec<String>, opts: &
         out.extend(kept);
     } else {
         out.extend(hunk.drain(..));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_diff_stat_is_not_erased() {
+        // `git diff --stat` has no `diff --git`/`@@`/`+`/`-` line starts, so the structured parser
+        // produces nothing. Before CTX-40 that returned empty text (silent data loss). It must now
+        // fall back to generic compaction and keep the summary.
+        let mut input = String::new();
+        for i in 0..400 {
+            input.push_str(&format!(" src/module_{i}/file_{i}.rs | {} ++++----\n", i % 30));
+        }
+        input.push_str(" 400 files changed, 1234 insertions(+), 567 deletions(-)\n");
+        assert!(input.chars().count() > 2_500, "input must exceed target");
+
+        let opts = CompressOptions::default();
+        let ctx = CompressContext::default();
+        let r = compress_git_diff(&input, &opts, &ctx);
+
+        assert!(r.chars_out > 0, "must never erase a --stat summary to empty");
+        assert!(!r.text.trim().is_empty(), "text must carry content");
+        assert!(
+            r.text.contains("file_0.rs") || r.text.contains("files changed"),
+            "the stat content must survive, got: {}",
+            r.text
+        );
+        assert_eq!(
+            r.strategy, "git-diff-generic",
+            "no hunks means it should fall back to generic, not the hunk path"
+        );
+        assert!(r.chars_out < r.chars_in, "it should still compress");
+    }
+
+    #[test]
+    fn git_diff_with_hunks_still_uses_structured_path() {
+        // A real diff with hunks must still take the structured git-diff path, not the fallback.
+        let mut input = String::from("diff --git a/src/x.rs b/src/x.rs\n+++ b/src/x.rs\n@@ -1,3 +1,3 @@\n");
+        for i in 0..400 {
+            input.push_str(&format!("+added line {i} with some content to grow the hunk\n"));
+            input.push_str(&format!("-removed line {i} with some content to grow the hunk\n"));
+        }
+        let opts = CompressOptions::default();
+        let ctx = CompressContext::default();
+        let r = compress_git_diff(&input, &opts, &ctx);
+        assert_eq!(r.strategy, "git-diff");
+        assert!(r.chars_out > 0 && r.chars_out < r.chars_in);
     }
 }
 
