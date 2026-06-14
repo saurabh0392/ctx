@@ -345,6 +345,10 @@ pub struct CompressDecision<'a> {
     /// Phase 2 exploration arm (ADR 0009): Some("treatment"|"control") when the decision was part
     /// of the randomized experiment, None otherwise.
     pub explore_arm: Option<&'a str>,
+    /// Originating agent surface, stamped at insert for surfaces ctx observes live (e.g. "cursor"
+    /// from the Cursor postToolUse hook, ADR 0018). `None` for Claude Code, whose surface is
+    /// stamped at outcome-join time so legacy rows keep their existing behaviour.
+    pub surface: Option<&'a str>,
 }
 
 pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> Result<()> {
@@ -352,8 +356,8 @@ pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> 
         r#"INSERT INTO compress_decisions
             (ts, session_id, tool_name, server_prefix, kind, task_mode,
              lines_total, lines_keep, lines_drop, chars_in, would_chars_out,
-             features_json, command_or_path, applied, explore_arm)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+             features_json, command_or_path, applied, explore_arm, surface)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
         params![
             d.ts,
             d.session_id,
@@ -370,6 +374,7 @@ pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> 
             d.command_or_path,
             if d.applied { 1 } else { 0 },
             d.explore_arm,
+            d.surface,
         ],
     )?;
     Ok(())
@@ -3029,6 +3034,7 @@ mod compress_decision_tests {
             command_or_path: cmd,
             applied: false,
             explore_arm: None,
+            surface: None,
         }
     }
 
@@ -3210,6 +3216,7 @@ mod compress_decision_tests {
             command_or_path: "a.rs",
             applied,
             explore_arm: arm,
+            surface: None,
         };
         // 2 treatment, 2 control, and 1 ordinary (non-experiment) row that must be excluded even
         // though it is the same tool and applied=0 like a control.

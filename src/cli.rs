@@ -304,6 +304,8 @@ pub enum HookCommand {
     UserPromptSubmit,
     /// PostToolUse: compress tool output via updatedToolOutput
     PostToolUse,
+    /// Cursor postToolUse: observe Cursor tool results and record cursor decisions (ADR 0018)
+    CursorPostToolUse,
 }
 
 #[derive(Subcommand)]
