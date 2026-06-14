@@ -160,6 +160,7 @@
   .tp-bar { height: 6px; border-radius: 999px; background: var(--surface3); overflow: hidden; }
   .tp-fill { height: 100%; border-radius: 999px; background: var(--amber); transition: width .3s; }
   .tp-fill.earned { background: var(--primary-lt); }
+  .tp-fill.wait { background: var(--amber); opacity: .35; }
   .tp-label { font-size: 12.5px; color: var(--t3); margin-top: 8px; line-height: 1.5; }
   .ev-toggle { font-size: 12.5px; font-weight: 600; color: var(--t3); cursor: pointer; background: none; border: none; padding: 8px 0; text-decoration: underline; text-underline-offset: 3px; }
   .ev-toggle:hover { color: var(--t1); }
@@ -498,16 +499,34 @@
   }
   const STAGE_LABEL = { earned: "Earned", test: "Testing", off: "Kept off", watch: "Watching" };
   const STAGE_ORDER = { earned: 0, test: 1, off: 2, watch: 3 };
-  function shortMsg(stage, p, c) {
+  // Within "watch", tell two states apart: still gathering the left-alone baseline ("gather"), vs
+  // already having enough baseline but no trimmed "after" runs to compare against ("wait"). A tool
+  // can't earn without both halves, and the trimmed half never accrues while autopilot is off and
+  // the tool isn't on trial. This is what makes "272 of about 30, still watching" honest instead
+  // of looking stuck for no reason (CTX-36).
+  function watchKind(r, minB) {
+    const c = r.c, p = r.p;
+    const baseline = p ? (p.baseline_n || 0) : 0;
+    const joined = (c && c.joined) || 0;
+    const before = Math.max(baseline, joined);
+    const need = (c && c.need) || minB || 30;
+    return before >= need ? "wait" : "gather";
+  }
+  function shortMsg(r, autopilot, minB) {
+    const { stage, p, c } = r;
     if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Earned it. Across ${runs} of your runs, trimming did not make you re-read or correct more.`; }
     if (stage === "off") return "Tested and it cost you re-reads, so ctx keeps it whole.";
     if (stage === "test") {
       if (p && p.verdict === "unclear") return "Close to a verdict. A few more runs settle it.";
       return "On trial. ctx is testing whether it is safe to trim, and your output is unchanged.";
     }
-    if (p && p.verdict === "not_tested" && (p.baseline_n || 0) > 0) return `Watching. ctx has wanted to trim this ${p.baseline_n} times and left it whole every time.`;
-    const j = (c && c.joined) || 0, n = (c && c.need) || 30;
-    return `Watching. ${j} of about ${n} runs judged so far.`;
+    if (watchKind(r, minB) === "wait") {
+      return autopilot
+        ? "Watching. It has the before-data; ctx will trim it on a few runs to finish the proof."
+        : "Watching. It has the before-data, but ctx must trim it to prove it, and autopilot is off.";
+    }
+    const j = (c && c.joined) || 0, n = (c && c.need) || minB || 30;
+    return `Watching. ${Math.min(j, n)} of about ${n} runs judged so far.`;
   }
   function mergeTools(ctx, proof) {
     const pBy = {}; (proof.tools || []).forEach((p) => (pBy[p.tool] = p));
@@ -608,7 +627,7 @@
     return `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">${n} runs</div>${metricLine("You had to fix it", corr)}${metricLine("You re-read it", rr)}</div>`;
   }
 
-  function longStory(r) {
+  function longStory(r, autopilot, minB) {
     const p = r.p, c = r.c, runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
     if (r.stage === "earned") return `<b>${esc(r.tool)}</b> earned it. Across <b>${runs}</b> of your runs, trimming it did <span class="good">not</span> make you re-read or correct any more often than leaving it whole. So ctx trims it now. The tool still runs in full; only what the agent reads back is shorter.`;
     if (r.stage === "off") return `ctx tested <b>${esc(r.tool)}</b> and it backfired. When it trimmed it, you re-read or corrected <span class="bad">noticeably more often</span> than when it left the output whole. So ctx keeps it off. That is the safety layer doing its job.`;
@@ -621,9 +640,16 @@
       }
       return `<b>${esc(r.tool)}</b> is on trial. ctx is trimming it on some of your runs and watching whether cutting it ever makes you re-read or fix something.${lean} The tool still runs in full while it tests.`;
     }
-    if (p && p.verdict === "not_tested" && (p.baseline_n || 0) > 0) return `ctx has wanted to trim <b>${esc(r.tool)}</b> on <b>${p.baseline_n}</b> of your runs and left it whole every time. Put it on trial and ctx will trim it for real, then measure whether cutting it ever costs you a re-read or a correction.`;
-    const j = (c && c.joined) || 0, n = (c && c.need) || 30;
-    return `<b>${esc(r.tool)}</b> is still in watching mode. ctx records what it would trim and checks it against what you needed next. So far <b>${j} of about ${n}</b> runs have a verdict, and nothing in your output has changed.`;
+    if (watchKind(r, minB) === "wait") {
+      const before = p ? (p.baseline_n || 0) : ((c && c.joined) || 0);
+      const lead = `<b>${esc(r.tool)}</b> already has the before-data: ctx has watched about <b>${num(before)}</b> of your runs where it left the output whole. To earn trimming it also needs runs where it actually trimmed, then it compares your re-reads and corrections across the two. It has <span class="bad">none of those yet</span>.`;
+      const why = autopilot
+        ? ` Autopilot is on, so ctx will start trimming it on a few runs and finish the proof on its own.`
+        : ` ctx never trims while autopilot is off, so this can't finish on its own. Turn on autopilot, or put this one tool on trial, to collect the trimmed half.`;
+      return lead + why;
+    }
+    const j = (c && c.joined) || 0, n = (c && c.need) || minB || 30;
+    return `<b>${esc(r.tool)}</b> is still gathering its baseline. ctx records what it would trim and checks it against what you needed next. So far <b>${Math.min(j, n)} of about ${n}</b> runs have a verdict, and nothing in your output has changed.`;
   }
 
   function deltaLine(r) {
@@ -654,7 +680,7 @@
     return "";
   }
 
-  function progressBlock(r, minB, minT) {
+  function progressBlock(r, minB, minT, autopilot) {
     const p = r.p;
     if (r.stage === "test") {
       const done = p ? p.trimmed_n || 0 : 0, need = minT || 30;
@@ -662,9 +688,13 @@
       return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${done} of about ${need} test runs done. ctx will not rely on this until the test fills up.</div></div>`;
     }
     if (r.stage === "watch") {
-      const c = r.c, j = (c && c.joined) || 0, need = (c && c.need) || 30;
+      const c = r.c, need = (c && c.need) || minB || 30;
+      if (watchKind(r, minB) === "wait") {
+        return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill wait" style="width:50%"></div></div><div class="tp-label">Before-data is ready. ctx has no trimmed runs to compare against yet${autopilot ? "" : ", because autopilot is off"}, so the proof can't finish.</div></div>`;
+      }
+      const j = (c && c.joined) || 0;
       const w = Math.min(100, Math.round((j / need) * 100));
-      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${j} of about ${need} runs scored so far. ctx is only watching, nothing in your output has changed.</div></div>`;
+      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${Math.min(j, need)} of about ${need} runs scored so far. ctx is only watching, nothing in your output has changed.</div></div>`;
     }
     if (r.stage === "earned") {
       const runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
@@ -689,7 +719,7 @@
     return out;
   }
 
-  function toolCard(r, i, minB, minT, e) {
+  function toolCard(r, i, minB, minT, e, autopilot) {
     const p = r.p, hasNums = !!(p && (p.baseline_n || p.trimmed_n));
     const hasExp = !!(e && (e.control_collected + e.treatment_collected) > 0);
     const showEvidence = hasNums || hasExp;
@@ -701,12 +731,12 @@
       <div class="tool-head" onclick="document.getElementById('tc${i}').classList.toggle('open')">
         <span class="tool-name">${esc(r.tool)}</span>
         <span class="pill ${r.stage}">${STAGE_LABEL[r.stage]}</span>
-        <span class="tool-msg">${shortMsg(r.stage, r.p, r.c)}</span>
+        <span class="tool-msg">${shortMsg(r, autopilot, minB)}</span>
         <span class="chev">&#9654;</span>
       </div>
       <div class="tool-draw">
-        <div class="tool-story">${longStory(r)}</div>
-        ${progressBlock(r, minB, minT)}
+        <div class="tool-story">${longStory(r, autopilot, minB)}</div>
+        ${progressBlock(r, minB, minT, autopilot)}
         <div class="draw-actions">${toolActions(r)}${evToggle}</div>
         ${evBody}
       </div>
@@ -799,6 +829,7 @@
     // Per-tool evidence + controls, the rich cards that used to live on the Tools tab.
     const rows = mergeTools(ctx, proof);
     const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
+    const autopilot = (ctx.preset || "off") !== "off";
     const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
     const count = (s) => rows.filter((r) => r.stage === s).length;
     const chip = (s, word) => count(s) ? `<span class="chip"><span class="d ${s}"></span><b>${count(s)}</b> ${word}</span>` : "";
@@ -808,7 +839,7 @@
     if (!rows.length) {
       toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">No tool has enough labeled, trim-eligible runs yet to place on the path. As outcomes land, each tool appears here and climbs from watching, to testing real trims, to earned.</p></div>`;
     } else {
-      const cards = rows.map((r, i) => toolCard(r, i, minB, minT, expBy[r.tool])).join("");
+      const cards = rows.map((r, i) => toolCard(r, i, minB, minT, expBy[r.tool], autopilot)).join("");
       toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">Every tool climbs the same ladder. ctx watches until there is enough evidence, then tests by trimming for a bounded run, and keeps trimming only if your re-reads and corrections did not rise. It looks for about ${minB} left-alone and ${minT} trimmed runs per tool. Open any tool for the evidence.</p>${tally ? `<div class="tally">${tally}</div>` : ""}${cards}</div>`;
     }
 
