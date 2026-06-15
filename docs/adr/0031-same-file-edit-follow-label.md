@@ -52,10 +52,31 @@ It is not a harm label and never becomes one:
   trim-eligible. The trim still goes through burn-in and the causal gate before it is trusted. No
   model score alone can apply a trim.
 
+## Making edits observable on the Claude surface (the real blocker)
+
+The first live run showed zero edit-follow positives because the corpus had no edit decisions on the
+training surface at all. Root cause: ctx's Claude `PostToolUse` hook was registered with the matcher
+`Bash|Read|Grep|Glob|mcp__.*`, so Claude Code never invoked the hook for `Edit`/`Write`/`MultiEdit`.
+Reads were recorded; edits were invisible. (The user edits via the Claude Code extension, so this
+was a real gap, not just a workflow artifact.)
+
+Decision: add `Edit|Write|MultiEdit` to the matcher so the hook observes edits, with a hard
+guarantee that ctx **never trims an edit result** (`agent::decide_inner` forces edit tools
+record-only regardless of preset, trial, or gate). An altered edit result could make the agent
+misread what it just wrote, so observe-only is the only safe contract.
+
+Edits are recorded into `compress_decisions` purely as timeline events for the join. Because ctx
+never trims them, they must not pollute the trim model or the trim ladder, so a shared
+`db::EXCLUDE_EDIT_TOOLS` fragment (pinned by test to `outcome_signals::EDIT_TOOL_NAMES`) drops edit
+rows from training (`load_joined_decisions`), the per-tool activation gate
+(`compress_tool_progress`), and the causal ladder (`causal_tool_outcomes`). Edits never get an
+explore arm (they are never trim-eligible), so the randomized view excludes them naturally.
+
 ## Scope of this increment
 
 In: the column and its migration, both joins, the shared edit-tool set and its SQL form, the label
-on `LabeledDecision`, and tests pinning that an edit sets the label while a plain re-read does not.
+on `LabeledDecision`, the `PostToolUse` matcher fix plus the never-trim guarantee and the
+trim-corpus exclusion for edit tools, and tests pinning all of the above.
 
 Out (CTX-46 increment 3): switching the model's training target from P(correction) to the
 observational P(needed whole), per-repo gating, the offline benchmark versus the kind-only model,
@@ -80,27 +101,22 @@ validated until labeled, file-tagged data accrues.
   differently, and `ctx learn` reports the same honest "not enough signal yet" until the target
   switch and enough data land.
 
-### Empirical finding on first run (the honest blocker for increment 3)
+### Empirical finding on first run, and the fix
 
 Backfilling and re-joining the live corpus (1108 decisions, 848 joined) produced **zero** edit-follow
-positives, while re-reads produced 198. The cause is not a bug in the label: it is that **every edit
-decision in the corpus is on the Cursor surface** (138 `Write`, all `surface = 'cursor'`), and the
-Claude/legacy surface that training reads has no edit decisions at all. Claude Code's `Edit`/`Write`
-PostToolUse results are not landing as recorded decisions in this user's usage, so the timestamp
-self-join can never find a same-path edit.
+positives, while re-reads produced 198. Investigation traced it to the `PostToolUse` matcher above:
+edits never reached ctx on the Claude surface, so no same-path edit existed for the join to find.
+Adding `Edit|Write|MultiEdit` to the matcher (this ADR) closes that gap; edits now record as
+timeline events and the label can fire as new sessions land.
 
-So the edit-follow target has signal only where ctx sees the full tool timeline (Cursor), and that
-surface is excluded from training because its *correction* labels are language-derived and unproven.
-That exclusion rationale does not obviously extend to this label: edit-follow is structural (we
-observed a `Write` to the same path), not a language guess, so it is high-precision regardless of
-surface.
+Two honesty notes that remain true:
 
-Increment 3 must therefore resolve, with a decision recorded in its own ADR, one of:
+- Edit-follow is structural (we observed a `Write` to the same path), not a language guess, so it is
+  high-precision wherever ctx sees the tool. This is why it is safe to use as an observational
+  target even though Cursor's *correction* labels are excluded from training.
+- The matcher change only populates the label going forward. Existing joined rows predate any edit
+  decision, so the one-time backfill leaves them at 0; that is correct (there were no observed
+  edits then), not a hidden under-count.
 
-1. Admit Cursor rows for the observational edit-follow target specifically (keep excluding their
-   correction labels from the causal gate), since the structural signal is trustworthy; or
-2. Record Claude `Edit`/`Write` results as decisions so edits enter the training corpus directly.
-
-Until then the label is correct but all-zero for training, and `ctx learn` stays honestly untrained.
-This increment ships the plumbing and surfaces the blocker rather than hiding a label that cannot yet
-teach the model anything.
+Increment 3 (the model target switch, per-repo gating, benchmark) stays separate and is unblocked
+once edit-follow positives accrue from real Claude-extension editing.

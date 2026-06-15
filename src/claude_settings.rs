@@ -156,8 +156,11 @@ pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Resu
         .push(ups_entry);
 
     let post_tool_cmd = resolve_ctx_post_tool_command();
+    // Edit|Write|MultiEdit are matched so the hook observes edits as timeline events for the
+    // same-file edit-follow label (CTX-46 / ADR 0031). ctx never trims an edit result (see
+    // agent::decide_inner); matching them only records that an edit happened, on the same path.
     let post_tool_entry = json!({
-        "matcher": "Bash|Read|Grep|Glob|mcp__.*",
+        "matcher": "Bash|Read|Grep|Glob|Edit|Write|MultiEdit|mcp__.*",
         "hooks": [{
             "type": "command",
             "command": post_tool_cmd,

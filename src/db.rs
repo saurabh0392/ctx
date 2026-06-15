@@ -555,7 +555,7 @@ pub struct CompressToolProgress {
 
 pub fn compress_tool_progress(conn: &Connection) -> Vec<CompressToolProgress> {
     let mut stmt = match conn.prepare(
-        "SELECT tool_name,
+        &format!("SELECT tool_name,
                 COUNT(*),
                 COALESCE(SUM(outcome_joined), 0),
                 COALESCE(SUM(CASE WHEN outcome_joined = 1 AND COALESCE(outcome_correction,0) = 0
@@ -564,8 +564,9 @@ pub fn compress_tool_progress(conn: &Connection) -> Vec<CompressToolProgress> {
                 COALESCE(SUM(COALESCE(outcome_reread,0)), 0),
                 COALESCE(MAX(applied), 0)
          FROM compress_decisions
+         WHERE 1=1{EXCLUDE_EDIT_TOOLS}
          GROUP BY tool_name
-         ORDER BY COUNT(*) DESC",
+         ORDER BY COUNT(*) DESC"),
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -1097,7 +1098,7 @@ pub fn load_joined_decisions(conn: &Connection) -> Vec<LabeledDecision> {
                 features_json, COALESCE(outcome_correction,0), COALESCE(outcome_reread,0),
                 COALESCE(outcome_edit_follow,0)
          FROM compress_decisions
-         WHERE outcome_joined = 1 AND COALESCE(surface,'') != 'cursor'{EXCLUDE_SELF_DEV}"),
+         WHERE outcome_joined = 1 AND COALESCE(surface,'') != 'cursor'{EXCLUDE_SELF_DEV}{EXCLUDE_EDIT_TOOLS}"),
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -1276,6 +1277,12 @@ pub fn audit_labeled_decisions(
 pub(crate) const EXCLUDE_SELF_DEV: &str =
     " AND COALESCE(features_json,'') NOT LIKE '%\"self_dev\":true%'";
 
+/// SQL fragment that drops edit/write tool rows from trim-facing corpus queries (CTX-46 / ADR
+/// 0031). Edits are recorded as timeline events so the edit-follow label can find them, but ctx
+/// never trims an edit, so they must not train the trim model or appear as trimmable tools on the
+/// ladder/gate. The list mirrors `outcome_signals::EDIT_TOOL_NAMES`; a test pins the two together.
+pub(crate) const EXCLUDE_EDIT_TOOLS: &str = " AND LOWER(TRIM(tool_name)) NOT IN ('write','edit','multiedit','str_replace','str_replace_editor','create_file','applypatch','apply_patch','searchreplace','search_replace')";
+
 /// Causal before/after counts for one tool (SAU-150). The control and treatment share the
 /// same selection (the heuristic wanted to drop lines, `lines_drop > 0`) and differ only on
 /// whether the trim was actually applied. Comparing these isolates the effect of trimming,
@@ -1307,7 +1314,7 @@ pub fn causal_tool_outcomes(
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
-         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}"
+         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}{EXCLUDE_EDIT_TOOLS}"
     );
     let sql = match tool_filter {
         Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
@@ -3558,6 +3565,18 @@ mod compress_decision_tests {
         assert_eq!(read.joined, 1);
         assert_eq!(read.corrections, 1);
         assert_eq!(read.clean_runs, 0);
+    }
+
+    #[test]
+    fn exclude_edit_tools_fragment_covers_every_edit_tool_name() {
+        // The trim-corpus exclusion must list exactly the shared edit-tool set, or an edit tool
+        // could leak into training / the ladder. Pin them together (CTX-46 / ADR 0031).
+        for name in crate::outcome_signals::EDIT_TOOL_NAMES {
+            assert!(
+                EXCLUDE_EDIT_TOOLS.contains(&format!("'{name}'")),
+                "EXCLUDE_EDIT_TOOLS is missing {name}"
+            );
+        }
     }
 
     #[test]
