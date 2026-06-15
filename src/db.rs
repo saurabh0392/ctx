@@ -332,6 +332,16 @@ fn migrate_compress_decisions_table(conn: &Connection) {
         "ALTER TABLE compress_decisions ADD COLUMN outcome_signals TEXT",
         [],
     );
+    // Same-file edit-follow label (CTX-46 / ADR 0031): 1 when the same file this read touched was
+    // edited (an edit/write tool) within the outcome window, NULL/0 otherwise. Distinct from
+    // `outcome_reread` (which counts any later same-path touch, read or edit) and from
+    // `outcome_correction` (the causal harm label). This is the observational "the agent needed
+    // this read whole" signal the file-aware retention model will train on (CTX-46 increment 3);
+    // recording it here is safe and never feeds the causal gate.
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN outcome_edit_follow INTEGER",
+        [],
+    );
 }
 
 /// Cursor compaction events captured live from the `preCompact` hook (CTX-31, ADR 0023).
@@ -737,8 +747,13 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
     // timestamp shapes (offset vs `Z`, varying fractional digits) that a string compare
     // would get wrong.
     let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    // Edit-follow reuses the re-read attribution exactly, but the later same-path touch must be an
+    // edit/write tool. Shared with the one-time backfill so both compute the label identically
+    // (CTX-46 / ADR 0031).
+    let edit_follow = edit_follow_value_sql();
     let n = conn.execute(
-        r#"
+        &format!(
+            r#"
         UPDATE compress_decisions
         SET outcome_correction = (
                 -- Nearest-preceding attribution: a correction turn is caused by the most
@@ -783,6 +798,10 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
                       )
                 ) THEN 1 ELSE 0 END
             ),
+            -- Same nearest-preceding rule as the re-read, but only a later *edit* of the same path
+            -- counts: the agent acted on the file, the strongest "needed it whole" signal. A plain
+            -- re-read does not set this; it sets outcome_reread (CTX-46 / ADR 0031).
+            outcome_edit_follow = {edit_follow},
             outcome_joined = 1,
             surface = 'claude-code'
         WHERE outcome_joined = 0
@@ -808,9 +827,43 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
               )
           )
         "#,
+            edit_follow = edit_follow
+        ),
         params![window_days],
     )?;
     Ok(n)
+}
+
+/// The `outcome_edit_follow` value subquery (CTX-46 / ADR 0031): 1 when the same file was edited
+/// (an edit/write tool) within the window after a decision, using the same nearest-preceding
+/// attribution as the re-read so one edit is owned by the last same-path read before it. Shared by
+/// the live join and the one-time backfill so they can never compute the label differently. `?1`
+/// is the window in days; the edit-tool predicate comes from the one shared edit-tool set.
+fn edit_follow_value_sql() -> String {
+    let edit_is_d2 = crate::outcome_signals::edit_tool_sql_in_list("d2.tool_name");
+    format!(
+        r#"(
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM compress_decisions d2
+                    WHERE d2.session_id = compress_decisions.session_id
+                      AND d2.command_or_path = compress_decisions.command_or_path
+                      AND d2.command_or_path IS NOT NULL
+                      AND d2.id <> compress_decisions.id
+                      AND {edit_is_d2}
+                      AND julianday(d2.ts) > julianday(compress_decisions.ts)
+                      AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM compress_decisions d3
+                          WHERE d3.session_id = compress_decisions.session_id
+                            AND d3.command_or_path = compress_decisions.command_or_path
+                            AND d3.id <> compress_decisions.id
+                            AND julianday(d3.ts) > julianday(compress_decisions.ts)
+                            AND julianday(d3.ts) < julianday(d2.ts)
+                      )
+                ) THEN 1 ELSE 0 END
+            )"#,
+        edit_is_d2 = edit_is_d2
+    )
 }
 
 /// A shadow decision still awaiting an outcome, with the fields a transcript-based join
@@ -851,22 +904,31 @@ pub fn unjoined_decisions_for_session(
 /// transcript (ordinal) join; the timestamp join uses a bulk UPDATE instead.
 ///
 /// `signals_json` is the observation-only richer-signal set for this decision (ADR 0019), a JSON
-/// array of signal names, or `None` to leave it unset. It never changes `outcome_correction`,
-/// which is the only label the gate reads; recording is decoupled from voting on purpose.
+/// array of signal names, or `None` to leave it unset. `edit_follow` is the same-file edit-follow
+/// label (CTX-46 / ADR 0031): the same path was edited within the window. None of these feed the
+/// causal gate, which reads only `outcome_correction`; recording is decoupled from voting.
 pub fn set_decision_outcome(
     conn: &Connection,
     id: i64,
     correction: bool,
     reread: bool,
+    edit_follow: bool,
     surface: &str,
     signals_json: Option<&str>,
 ) -> Result<()> {
     conn.execute(
         "UPDATE compress_decisions
-         SET outcome_correction = ?2, outcome_reread = ?3, outcome_joined = 1, surface = ?4,
-             outcome_signals = ?5
+         SET outcome_correction = ?2, outcome_reread = ?3, outcome_edit_follow = ?4,
+             outcome_joined = 1, surface = ?5, outcome_signals = ?6
          WHERE id = ?1",
-        params![id, correction as i64, reread as i64, surface, signals_json],
+        params![
+            id,
+            correction as i64,
+            reread as i64,
+            edit_follow as i64,
+            surface,
+            signals_json
+        ],
     )?;
     Ok(())
 }
@@ -1018,6 +1080,10 @@ pub struct LabeledDecision {
     pub features_json: String,
     pub correction: i64,
     pub reread: i64,
+    /// Same-file edit-follow label (CTX-46 / ADR 0031): the file was edited within the window.
+    /// The observational "needed this read whole" target the file-aware model trains on in a later
+    /// increment. Distinct from `correction` (causal harm) and `reread` (any later same-path touch).
+    pub edit_follow: i64,
 }
 
 /// All decisions that have been joined to an outcome and are trustworthy enough to train
@@ -1028,7 +1094,8 @@ pub struct LabeledDecision {
 pub fn load_joined_decisions(conn: &Connection) -> Vec<LabeledDecision> {
     let mut stmt = match conn.prepare(
         &format!("SELECT tool_name, kind, lines_total, lines_drop, chars_in, would_chars_out,
-                features_json, COALESCE(outcome_correction,0), COALESCE(outcome_reread,0)
+                features_json, COALESCE(outcome_correction,0), COALESCE(outcome_reread,0),
+                COALESCE(outcome_edit_follow,0)
          FROM compress_decisions
          WHERE outcome_joined = 1 AND COALESCE(surface,'') != 'cursor'{EXCLUDE_SELF_DEV}"),
     ) {
@@ -1046,6 +1113,7 @@ pub fn load_joined_decisions(conn: &Connection) -> Vec<LabeledDecision> {
             features_json: r.get(6)?,
             correction: r.get(7)?,
             reread: r.get(8)?,
+            edit_follow: r.get(9)?,
         })
     });
     match rows {
@@ -1713,6 +1781,47 @@ fn backfill_self_dev_tag(conn: &Connection) {
     );
 }
 
+/// One-time backfill of the same-file edit-follow label (CTX-46 / ADR 0031) for timestamp-joined
+/// decisions recorded before the column existed. Going forward `join_compress_outcomes` sets it as
+/// rows join; this fills already-joined Claude/legacy rows so the training corpus carries the label
+/// on existing usage, not only future rows. Cursor rows are skipped: their edit detection needs the
+/// transcript, not a self-join, and they are excluded from training anyway. Uses the exact shared
+/// subquery the live join uses. Meta-guarded so the pass runs at most once; idempotent.
+fn backfill_edit_follow_label(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='edit_follow_backfill_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    let edit_follow = edit_follow_value_sql();
+    let _ = conn.execute(
+        &format!(
+            "UPDATE compress_decisions
+             SET outcome_edit_follow = {edit_follow}
+             WHERE outcome_joined = 1
+               AND outcome_edit_follow IS NULL
+               AND session_id IS NOT NULL
+               AND COALESCE(surface,'') != 'cursor'",
+            edit_follow = edit_follow
+        ),
+        params![window_days],
+    );
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('edit_follow_backfill_v1', '1')",
+        [],
+    );
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
@@ -1729,6 +1838,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     migrate_compress_decisions_table(conn);
     migrate_cursor_compactions_table(conn);
     backfill_self_dev_tag(conn);
+    backfill_edit_follow_label(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -3448,6 +3558,81 @@ mod compress_decision_tests {
         assert_eq!(read.joined, 1);
         assert_eq!(read.corrections, 1);
         assert_eq!(read.clean_runs, 0);
+    }
+
+    #[test]
+    fn join_sets_edit_follow_for_same_file_edit_but_not_for_a_plain_reread() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-ef', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-ef'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // A plain turn past the window closes every decision so they score as final.
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        // a.rs: read, then edited within the window -> edit-follow (and a re-read, since an edit is
+        // a later same-path touch).
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:01:00+00:00", "sess-ef", "Read", "a.rs"),
+        )
+        .unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:03:00+00:00", "sess-ef", "Edit", "a.rs"),
+        )
+        .unwrap();
+        // b.rs: read, then read again within the window -> re-read only, never edit-follow.
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:01:00+00:00", "sess-ef", "Read", "b.rs"),
+        )
+        .unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:04:00+00:00", "sess-ef", "Read", "b.rs"),
+        )
+        .unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let label = |path: &str| -> (i64, i64) {
+            conn.query_row(
+                "SELECT COALESCE(outcome_edit_follow,0), COALESCE(outcome_reread,0)
+                 FROM compress_decisions
+                 WHERE command_or_path = ?1 AND tool_name = 'Read'",
+                params![path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+
+        let (a_edit, a_reread) = label("a.rs");
+        assert_eq!(a_edit, 1, "a.rs read was followed by an edit of the same file");
+        assert_eq!(a_reread, 1, "an edit is also a later same-path touch");
+
+        let (b_edit, b_reread) = label("b.rs");
+        assert_eq!(b_edit, 0, "b.rs was only re-read, never edited");
+        assert_eq!(b_reread, 1, "b.rs was read again within the window");
     }
 
     #[test]

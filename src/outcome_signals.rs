@@ -183,16 +183,38 @@ pub fn is_immediate_reedit(touch_ordinal: u32, edit_ordinals: &[u32], window: u3
         .any(|&o| o > touch_ordinal && o <= touch_ordinal.saturating_add(window))
 }
 
+/// The tool names ctx treats as an edit/write of a file, across every surface, lowercased. The
+/// single source of truth for both [`is_edit_tool`] (used by the transcript join) and
+/// [`edit_tool_sql_in_list`] (used by the timestamp join's SQL), so the same-file edit-follow
+/// label means the same thing on both paths.
+pub const EDIT_TOOL_NAMES: &[&str] = &[
+    "write",
+    "edit",
+    "multiedit",
+    "str_replace",
+    "str_replace_editor",
+    "create_file",
+    "applypatch",
+    "apply_patch",
+    "searchreplace",
+    "search_replace",
+];
+
 /// Whether a tool name is an edit/write of a file (as opposed to a read or a shell/MCP call).
 /// Used to tell an immediate re-edit apart from a benign re-read of the same path. Matched
 /// case-insensitively against the tool names ctx sees across surfaces.
 pub fn is_edit_tool(tool_name: &str) -> bool {
     let n = tool_name.trim().to_ascii_lowercase();
-    matches!(
-        n.as_str(),
-        "write" | "edit" | "multiedit" | "str_replace" | "str_replace_editor" | "create_file"
-            | "applypatch" | "apply_patch" | "searchreplace" | "search_replace"
-    )
+    EDIT_TOOL_NAMES.contains(&n.as_str())
+}
+
+/// A SQL boolean fragment `LOWER(TRIM(<col>)) IN ('write','edit',...)` over [`EDIT_TOOL_NAMES`],
+/// so the timestamp join (which cannot call [`is_edit_tool`] from SQL) classifies an edit the
+/// same way the transcript join does. `col` is a fixed internal column reference and the names
+/// are static identifiers with no quotes, so the interpolation carries no injectable input.
+pub fn edit_tool_sql_in_list(col: &str) -> String {
+    let quoted: Vec<String> = EDIT_TOOL_NAMES.iter().map(|n| format!("'{n}'")).collect();
+    format!("LOWER(TRIM({col})) IN ({})", quoted.join(", "))
 }
 
 /// A tool call that failed, then was retried within `window` turns (the retry is another call
@@ -353,6 +375,18 @@ mod tests {
         }
         for t in ["Read", "Grep", "Shell", "Bash", "MCP:save_issue", "Glob"] {
             assert!(!is_edit_tool(t), "should not be an edit tool: {t}");
+        }
+    }
+
+    #[test]
+    fn edit_tool_sql_in_list_matches_the_edit_tool_set() {
+        let sql = edit_tool_sql_in_list("d2.tool_name");
+        assert!(sql.starts_with("LOWER(TRIM(d2.tool_name)) IN ("));
+        // Every name in the shared set appears, lowercased and quoted, so the timestamp join
+        // classifies an edit exactly as is_edit_tool does.
+        for name in EDIT_TOOL_NAMES {
+            assert!(sql.contains(&format!("'{name}'")), "missing {name} in: {sql}");
+            assert!(is_edit_tool(name));
         }
     }
 

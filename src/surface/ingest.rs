@@ -136,6 +136,9 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
             d.id,
             correction,
             reread,
+            // `reedit` is already a same-path edit within the window, the transcript analogue of the
+            // timestamp join's edit-follow label (CTX-46 / ADR 0031).
+            reedit,
             parsed.session.surface.as_str(),
             signals_json.as_deref(),
         )
@@ -245,14 +248,18 @@ mod tests {
         let newly = join_one(&conn, &parsed);
         assert_eq!(newly, 1, "the decision should join once the window closed");
 
-        let (correction, signals): (i64, String) = conn
+        let (correction, edit_follow, signals): (i64, i64, String) = conn
             .query_row(
-                "SELECT outcome_correction, COALESCE(outcome_signals,'') FROM compress_decisions WHERE command_or_path = '/a.rs'",
+                "SELECT outcome_correction, COALESCE(outcome_edit_follow,0), COALESCE(outcome_signals,'') FROM compress_decisions WHERE command_or_path = '/a.rs'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         assert_eq!(correction, 0, "no correction turn, so the gate label stays 0");
+        assert_eq!(
+            edit_follow, 1,
+            "the same file was edited next turn, so edit-follow is set"
+        );
         assert!(signals.contains("reread"), "signals: {signals}");
         assert!(signals.contains("reedit"), "signals: {signals}");
         assert!(

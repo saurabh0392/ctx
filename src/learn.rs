@@ -627,6 +627,7 @@ mod tests {
             features_json: r#"{"risky_drops":2,"drop":{"failure":1}}"#.into(),
             correction: 0,
             reread: 0,
+            edit_follow: 0,
         };
         let via_decision = score_decision(&m, &d);
         let via_shared =
