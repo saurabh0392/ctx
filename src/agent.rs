@@ -162,7 +162,36 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         }
     }
 
-    let trim_eligible = base_apply && !read_guard_blocks;
+    // Model proposal (ADR 0032 / CTX-46 increment 3), default off. When the flag is on, the
+    // file-aware model may *propose* trimming a working read the static guard would otherwise hold
+    // back, but only for a read, only when the model beat its kind-only twin, only in a repo that
+    // cleared its own label gate, and only when it is confident the read is throwaway. This can
+    // unblock the read guard; it can never satisfy `base_apply`, so a proposal alone never trims:
+    // the preset, burn-in, and causal activation gate still govern (see `trim_eligible` below).
+    let model_proposes = cfg.compress_model_propose
+        && is_read
+        && read_guard_blocks
+        && shadow
+            .as_ref()
+            .map(|d| {
+                crate::learn::model_proposes_safe_trim(
+                    &kind_label,
+                    d.lines_total as i64,
+                    d.lines_drop as i64,
+                    &d.features_json(),
+                    d.features.repo_key.as_deref(),
+                )
+            })
+            .unwrap_or(false);
+    if model_proposes {
+        if let Some(d) = shadow.as_mut() {
+            d.features.model_proposed = Some(true);
+        }
+    }
+
+    // A proposal can only lift the read guard. `base_apply` (preset + activation/burn-in, and never
+    // an edit tool) is still required, so the model alone can never make a trim apply.
+    let trim_eligible = base_apply && (!read_guard_blocks || model_proposes);
     // Only decisions that would actually drop lines are worth experimenting on; keeping a no-op
     // "trim" tells us nothing, so it never enters the experiment.
     let would_drop = shadow.as_ref().map(|d| d.lines_drop > 0).unwrap_or(false);
@@ -430,6 +459,96 @@ mod tests {
             );
             assert!(d.explore_arm.is_none(), "{tool} must not enter exploration");
         }
+    }
+
+    /// Write a served model that would propose trimming any read in repo `/proj`, so the propose
+    /// path is live. Returns nothing; the model lands at the CTX_HOME-scoped model path.
+    fn write_proposing_model() {
+        let n = crate::learn::feature_count();
+        let model = crate::learn::RetentionModel {
+            version: 3,
+            trained_at: "2026-06-19T00:00:00Z".into(),
+            target: "needed_whole".into(),
+            n_train: 200,
+            n_holdout: 40,
+            feature_names: vec!["f".into(); n],
+            // Large negative bias drives P(needed whole) far below the act threshold, so the model
+            // is maximally confident the read is throwaway.
+            weights: vec![0.0; n],
+            bias: -6.0,
+            holdout_auc: 0.72,
+            kind_only_auc: 0.64,
+            file_aware_wins: true,
+            holdout_accuracy: 0.7,
+            base_correction_rate: 0.05,
+            base_need_rate: 0.4,
+            per_tool: vec![],
+            per_repo: vec![crate::learn::PerRepoReadiness {
+                repo_key: "/proj".into(),
+                joined: 120,
+                positives: 50,
+                ready: true,
+            }],
+        };
+        crate::config::ensure_dir().unwrap();
+        let json = serde_json::to_value(&model).unwrap();
+        crate::config::write_json_atomic(&crate::config::retention_model_path(), &json).unwrap();
+    }
+
+    #[test]
+    fn a_model_proposal_can_lift_the_read_guard_but_never_applies_without_base_apply() {
+        // The increment-3 contract (ADR 0032): the file-aware model may *propose* trimming a
+        // working read the guard would keep, but a proposal alone can never trim. `base_apply`
+        // (preset + activation/burn-in) is still required, and the flag is off by default.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        write_proposing_model();
+
+        // Preset OFF and the read is not trialed: base_apply is false. Even with the propose flag
+        // on and a maximally-confident proposing model, the read must not trim.
+        let cfg_off = Config {
+            compress_enabled: true,
+            compress_preset: crate::config::CompressPreset::Off,
+            compress_read_edit_guard: true,
+            compress_model_propose: true,
+            ..Default::default()
+        };
+        let d = decide(&cfg_off, &read_tr("src/foo.rs"));
+        assert!(
+            !d.apply,
+            "a model proposal must never apply without base_apply (preset off)"
+        );
+
+        // Now the read is trialed, so base_apply is true. The guard would still block this working
+        // read, but the proposal lifts it: with the flag on, the read trims.
+        let cfg_trial_on = Config {
+            compress_model_propose: true,
+            ..read_trial_cfg(true)
+        };
+        let d_on = decide(&cfg_trial_on, &read_tr("src/foo.rs"));
+        assert!(
+            d_on.apply,
+            "with base_apply met, a confident proposal should lift the guard"
+        );
+        assert_eq!(
+            d_on.shadow.as_ref().and_then(|s| s.features.model_proposed),
+            Some(true),
+            "the lifted-guard proposal must be recorded for audit"
+        );
+
+        // Same trialed read, flag OFF: the guard holds and nothing trims. Proves the proposal, not
+        // some other path, is what lifted the guard above.
+        let cfg_trial_off = read_trial_cfg(true);
+        let d_off = decide(&cfg_trial_off, &read_tr("src/foo.rs"));
+        assert!(
+            !d_off.apply,
+            "with the propose flag off, the guard must still block the working read"
+        );
+
+        std::env::remove_var("CTX_HOME");
     }
 
     fn read_trial_cfg(guard: bool) -> Config {

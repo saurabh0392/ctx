@@ -616,6 +616,14 @@ pub struct Config {
     /// 0.0 disables exploration. Default 0.20.
     #[serde(default = "default_explore_rate")]
     pub compress_explore_rate: f64,
+    /// Let the file-aware retention model propose a trim for a working read the static guard would
+    /// hold back (ADR 0032 / CTX-46 increment 3). Default OFF. Even when on, the model can only
+    /// *propose*: the proposed read still has to clear the same preset, burn-in, and causal
+    /// activation gate as any other trim, and a model score alone can never make a trim apply. The
+    /// proposal is also confined to repos that have enough of their own labels and to a model that
+    /// has beaten the kind-only twin on holdout AUC. Off until the per-repo signal is proven.
+    #[serde(default)]
+    pub compress_model_propose: bool,
     /// Session-grounded retention (v2): score lines by task frame after v1 format pass.
     #[serde(default)]
     pub compress_sgr_enabled: bool,

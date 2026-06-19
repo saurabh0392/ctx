@@ -257,9 +257,21 @@ struct ContextToolView {
 struct ContextModelView {
     version: u32,
     trained_at: String,
+    /// What the model predicts ("needed_whole" as of increment 3), so the UI never mislabels the
+    /// AUC as a correction model.
+    target: String,
     holdout_auc: f64,
+    /// Holdout AUC of the kind-only twin, and whether file-awareness beat it. Lets the UI show the
+    /// model only earns the right to steer once knowing the file actually helps.
+    kind_only_auc: f64,
+    file_aware_wins: bool,
     holdout_accuracy: f64,
     base_correction_rate: f64,
+    base_need_rate: f64,
+    /// Repos where the model has enough of their own labels to propose, newest math straight from
+    /// the trainer so the dashboard and `ctx context learn` agree.
+    repos_ready: usize,
+    repos_seen: usize,
     history: Vec<serde_json::Value>,
 }
 
@@ -408,9 +420,15 @@ async fn api_context() -> Json<ContextView> {
         ContextModelView {
             version: m.version,
             trained_at: m.trained_at,
+            target: m.target,
             holdout_auc: m.holdout_auc,
+            kind_only_auc: m.kind_only_auc,
+            file_aware_wins: m.file_aware_wins,
             holdout_accuracy: m.holdout_accuracy,
             base_correction_rate: m.base_correction_rate,
+            base_need_rate: m.base_need_rate,
+            repos_ready: m.per_repo.iter().filter(|r| r.ready).count(),
+            repos_seen: m.per_repo.len(),
             history,
         }
     });

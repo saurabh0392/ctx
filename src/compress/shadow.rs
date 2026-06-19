@@ -88,6 +88,13 @@ pub struct ShadowFeatures {
     /// in this phase.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub would_model_apply: Option<bool>,
+    /// `Some(true)` when the file-aware model proposed trimming this working read that the static
+    /// guard would otherwise have kept (ADR 0032 / CTX-46 increment 3). Only set when
+    /// `compress_model_propose` is on and the proposal actually lifted the guard. The proposal still
+    /// has to clear the preset, burn-in, and causal gate to be applied, so this records intent, not
+    /// a guaranteed trim. Set by the controller in `agent::decide`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_proposed: Option<bool>,
     /// `Some(true)` when this decision happened inside ctx's own source repo (a Cargo.toml with
     /// package name "ctx" at the repo root). Building ctx, re-editing its files, and running its
     /// commands is the developer's own churn, not user behavior, so it must not feed the learning
@@ -238,6 +245,7 @@ pub fn compute_shadow_decision(
             file_ext: None,
             model_score: None,
             would_model_apply: None,
+            model_proposed: None,
             self_dev: None,
         },
     })
