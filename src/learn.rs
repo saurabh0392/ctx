@@ -208,6 +208,13 @@ fn needed_whole(d: &LabeledDecision) -> bool {
     d.reread > 0 || d.edit_follow > 0
 }
 
+/// Reads where the shadow would not drop any lines cannot be trimmed, so they teach nothing about
+/// the retain/trim decision. Exclude them from training so the model learns from the population it
+/// may eventually steer (ADR 0032 follow-up). Non-read kinds stay in full.
+fn training_eligible(d: &LabeledDecision) -> bool {
+    d.kind != "read" || d.lines_drop > 0
+}
+
 /// Zero the trailing path-role one-hot block of a feature vector, yielding the kind-only twin's
 /// input. Fitting on these is the honest control: if file-awareness does not beat this on holdout,
 /// the role features are not earning their place and must not be allowed to steer a proposal.
@@ -447,13 +454,18 @@ pub fn train() -> Result<Option<RetentionModel>> {
     crate::db::ensure_schema(&conn)?;
     let rows = crate::db::load_joined_decisions(&conn);
     let per_tool = per_tool_gates(&rows);
+    let train_rows: Vec<LabeledDecision> = rows
+        .iter()
+        .filter(|d| training_eligible(d))
+        .cloned()
+        .collect();
 
     // Increment 3: the model is fit against the observational "needed whole" label, not
     // P(correction). It is far denser, which is what finally clears the positive-count gate, and it
     // is the right question for "is this read safe to drop" anyway. The causal correction gate is a
     // separate, stricter check that still governs every live trim.
-    let positives = rows.iter().filter(|d| needed_whole(d)).count();
-    if rows.len() < MIN_LABELS_TO_TRAIN || positives < MIN_POSITIVE_LABELS {
+    let positives = train_rows.iter().filter(|d| needed_whole(d)).count();
+    if train_rows.len() < MIN_LABELS_TO_TRAIN || positives < MIN_POSITIVE_LABELS {
         // Not enough trustworthy evidence to fit a model: too few labels overall, or too
         // few positives to learn what a needed-whole read looks like. Invalidate any model a
         // richer earlier run persisted (the label set can shrink, for example after a
@@ -470,7 +482,7 @@ pub fn train() -> Result<Option<RetentionModel>> {
     let mut train_y = Vec::new();
     let mut hold_x = Vec::new();
     let mut hold_y = Vec::new();
-    for (i, d) in rows.iter().enumerate() {
+    for (i, d) in train_rows.iter().enumerate() {
         let x = feature_row(d);
         let y = if needed_whole(d) { 1.0 } else { 0.0 };
         if i % 5 == 0 {
@@ -543,9 +555,9 @@ pub fn train() -> Result<Option<RetentionModel>> {
         file_aware_wins,
         holdout_accuracy,
         base_correction_rate: base_rate(&rows),
-        base_need_rate: positives as f64 / rows.len() as f64,
+        base_need_rate: positives as f64 / train_rows.len() as f64,
         per_tool,
-        per_repo: per_repo_readiness(&rows),
+        per_repo: per_repo_readiness(&train_rows),
     };
     save_model(&model)?;
     Ok(Some(model))
@@ -879,6 +891,21 @@ mod tests {
             reread,
             edit_follow,
         }
+    }
+
+    #[test]
+    fn training_eligible_excludes_reads_with_no_lines_to_drop() {
+        let mut read_no_drop = labeled("/r", 1, 0);
+        read_no_drop.lines_drop = 0;
+        assert!(!training_eligible(&read_no_drop));
+        read_no_drop.lines_drop = 3;
+        assert!(training_eligible(&read_no_drop));
+        let bash = LabeledDecision {
+            kind: "generic".into(),
+            lines_drop: 0,
+            ..read_no_drop
+        };
+        assert!(training_eligible(&bash));
     }
 
     #[test]

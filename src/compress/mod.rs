@@ -5,6 +5,7 @@ pub mod classify;
 mod context;
 pub mod edit_intent;
 mod generic;
+pub mod path_role;
 mod git;
 mod grep;
 mod hook_io;

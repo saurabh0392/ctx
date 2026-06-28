@@ -1829,6 +1829,56 @@ fn backfill_edit_follow_label(conn: &Connection) {
     );
 }
 
+/// One-time backfill of `path_role` on read decisions recorded before CTX-45 wired live logging.
+/// Uses `command_or_path`, the same path the activity feed shows. Meta-guarded, idempotent.
+fn backfill_path_role(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='path_role_backfill_v2'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+
+    let rows: Vec<(i64, String)> = match conn.prepare(
+        "SELECT id, command_or_path FROM compress_decisions
+         WHERE kind = 'read'
+           AND command_or_path IS NOT NULL
+           AND TRIM(command_or_path) != ''
+           AND json_extract(COALESCE(features_json,'{}'), '$.path_role') IS NULL",
+    ) {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+
+    for (id, path) in rows {
+        let Some(role) = crate::agent::path_role_of(&path) else {
+            continue;
+        };
+        let _ = conn.execute(
+            "UPDATE compress_decisions
+             SET features_json = json_set(COALESCE(features_json,'{}'), '$.path_role', ?2)
+             WHERE id = ?1",
+            params![id, role],
+        );
+    }
+
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('path_role_backfill_v2', '1')",
+        [],
+    );
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
@@ -1846,6 +1896,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     migrate_cursor_compactions_table(conn);
     backfill_self_dev_tag(conn);
     backfill_edit_follow_label(conn);
+    backfill_path_role(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -4111,6 +4162,56 @@ mod compress_attach_tests {
         assert_eq!(first.compress_event_count, 1);
         assert_eq!(second.compress_chars_saved, 5000 - 800);
         assert_eq!(second.compress_event_count, 1);
+    }
+
+    #[test]
+    fn backfill_path_role_tags_historical_reads_from_command_or_path() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-19T10:00:00+00:00",
+                session_id: Some("s1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "default",
+                lines_total: 20,
+                lines_keep: 10,
+                lines_drop: 10,
+                chars_in: 100,
+                would_chars_out: 50,
+                features_json: r#"{"repo_key":"/proj"}"#,
+                command_or_path: "src/main.rs",
+                applied: false,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+
+        conn.execute(
+            "DELETE FROM meta WHERE k='path_role_backfill_v2'",
+            [],
+        )
+        .unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let role: Option<String> = conn
+            .query_row(
+                "SELECT json_extract(features_json,'$.path_role') FROM compress_decisions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(role.as_deref(), Some("src"));
     }
 }
 

@@ -150,6 +150,10 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         // (CTX-32). Developing ctx is not user behavior; left in, it dominates and biases the gate.
         d.features.self_dev = is_self_dev_repo(&tr.cwd).then_some(true);
         d.features.file_ext = read_file_path(&tr.tool_input).and_then(file_ext_of);
+        if is_read {
+            d.features.path_role = read_file_path(&tr.tool_input)
+                .and_then(|p| path_role_of(p).map(str::to_string));
+        }
         let features_json = d.features_json();
         if let Some(score) = crate::learn::score_parts(
             &kind_label,
@@ -203,8 +207,9 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     // user's own work. Exploration can only ever withhold a trim, never add one.
     let mut apply = trim_eligible;
     let mut explore_arm: Option<&'static str> = None;
-    if trim_eligible && would_drop && cfg.compress_explore_rate > 0.0 {
-        if explore_draw < cfg.compress_explore_rate {
+    let explore_rate = explore_rate_for(&kind_label, cfg);
+    if trim_eligible && would_drop && explore_rate > 0.0 {
+        if explore_draw < explore_rate {
             explore_arm = Some("control");
             apply = false;
         } else {
@@ -227,6 +232,20 @@ fn read_file_path(tool_input: &Value) -> Option<&str> {
         .get("file_path")
         .or_else(|| tool_input.get("path"))
         .and_then(|v| v.as_str())
+}
+
+/// Coarse file role for a read path (`src`, `test`, `config`, `generated`, `vendored`, `docs`).
+/// Single public name for ADR 0030 / CTX-45; the classifier lives in `compress::path_role`.
+pub fn path_role_of(path: &str) -> Option<&'static str> {
+    crate::compress::path_role::path_role_of(path)
+}
+
+fn explore_rate_for(kind_label: &str, cfg: &Config) -> f64 {
+    if kind_label == "read" {
+        cfg.compress_explore_read_rate
+    } else {
+        cfg.compress_explore_rate
+    }
 }
 
 /// Lowercased file extension for a path, when it is a plausible one (non-empty, short). Used as a
@@ -739,11 +758,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn read_decisions_log_path_role_for_training() {
+        let d = decide(&Config::default(), &read_tr("src/components/App.tsx"));
+        assert_eq!(
+            d.shadow
+                .as_ref()
+                .and_then(|s| s.features.path_role.as_deref()),
+            Some("src")
+        );
+        let vendored = decide(
+            &Config::default(),
+            &read_tr("/proj/node_modules/react/index.js"),
+        );
+        assert_eq!(
+            vendored
+                .shadow
+                .as_ref()
+                .and_then(|s| s.features.path_role.as_deref()),
+            Some("vendored")
+        );
+    }
+
     // A trialed reference read of 500 lines is trim-eligible and actually drops lines, so it is a
     // clean fixture for the Phase 2 exploration tests (ADR 0009).
     fn explore_read_cfg(rate: f64) -> Config {
         Config {
-            compress_explore_rate: rate,
+            compress_explore_read_rate: rate,
             ..read_trial_cfg(true)
         }
     }

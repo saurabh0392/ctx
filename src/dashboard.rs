@@ -627,7 +627,7 @@ async fn api_context_model_progress() -> Json<ModelProgressView> {
         differs_from_rules,
         no_worse_where_differs,
         explore_rate,
-        explore_active: explore_rate > 0.0,
+        explore_active: explore_rate > 0.0 || cfg.compress_explore_read_rate > 0.0,
         explore_collected_total,
         explore_judged_total,
         explore_min_arm,

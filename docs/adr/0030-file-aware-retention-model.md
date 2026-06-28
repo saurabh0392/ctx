@@ -54,3 +54,7 @@ derived by `agent::path_role_of`. The single source of truth for the feature vec
 - Remaining CTX-46 work is unblocked but explicitly out of this increment: the same-file edit-follow
   label (needs Edit/Write path ingest), per-repo gating, the offline benchmark vs the kind-only
   model, and the propose-not-dispose wiring behind a flag.
+
+## Implementation note (2026-06-19)
+
+`path_role` was added to the model vector in increment 1 but live logging was never wired (`agent::path_role_of` was documented but missing). Fixed in CTX-45 follow-up: classifier in `compress/path_role.rs`, logged on every Read in `agent::decide`, one-time backfill from `command_or_path`. Training now excludes reads with `lines_drop=0`, and Read-only exploration re-enabled at 20% via `compress_explore_read_rate`.
