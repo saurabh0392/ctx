@@ -731,7 +731,8 @@ pub fn model_shadow_progress(conn: &Connection) -> ModelShadowProgress {
 /// A row is only marked joined when there is later evidence in the same session, so a
 /// decision is never scored "clean" merely because nothing has happened yet.
 ///
-/// - `outcome_correction`: a user turn flagged `correction` occurred after the decision.
+/// - `outcome_correction`: explicit user complaint after the decision AND ctx trimmed lines
+///   (applied=1, lines_drop>0). Uniform for every tool (CTX-48 / ADR 0033).
 /// - `outcome_reread`: the same `command_or_path` was hit again later in the same session.
 ///
 /// Returns the number of decision rows newly joined.
@@ -757,16 +758,15 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
             r#"
         UPDATE compress_decisions
         SET outcome_correction = (
-                -- Nearest-preceding attribution: a correction turn is caused by the most
-                -- recent decision before it, not every decision in the window. Without the
-                -- inner NOT EXISTS, one correction turn fanned across every decision in the
-                -- prior 15 minutes (SAU-148 finding). Here a decision owns a correction turn
-                -- only when no other decision sits between it and that turn.
-                SELECT CASE WHEN EXISTS (
+                -- CTX-48 / ADR 0033: gate correction only when the user explicitly complained
+                -- AND ctx actually trimmed this decision. Uniform for every tool.
+                SELECT CASE WHEN compress_decisions.applied = 1
+                                 AND compress_decisions.lines_drop > 0
+                                 AND EXISTS (
                     SELECT 1 FROM turns t
                     JOIN sessions s ON s.id = t.session_id
                     WHERE s.external_key LIKE '%' || compress_decisions.session_id || '%'
-                      AND t.flags LIKE '%correction%'
+                      AND t.flags LIKE '%correction_explicit%'
                       AND t.ts IS NOT NULL
                       AND julianday(t.ts) > julianday(compress_decisions.ts)
                       AND julianday(t.ts) <= julianday(compress_decisions.ts) + ?1
@@ -808,12 +808,15 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
         WHERE outcome_joined = 0
           AND session_id IS NOT NULL
           AND (
-              -- A correction inside the window is a final positive label.
+              -- Any observational user signal or a closed window is enough to join.
               EXISTS (
                   SELECT 1 FROM turns t
                   JOIN sessions s ON s.id = t.session_id
                   WHERE s.external_key LIKE '%' || compress_decisions.session_id || '%'
-                    AND t.flags LIKE '%correction%'
+                    AND (
+                      t.flags LIKE '%correction%'
+                      OR t.flags LIKE '%aborted%'
+                    )
                     AND t.ts IS NOT NULL
                     AND julianday(t.ts) > julianday(compress_decisions.ts)
                     AND julianday(t.ts) <= julianday(compress_decisions.ts) + ?1
@@ -832,7 +835,95 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
         ),
         params![window_days],
     )?;
+    let _ = refresh_outcome_signals(conn);
     Ok(n)
+}
+
+/// Populate `outcome_signals` on joined Claude-code rows from turn flags in the outcome window.
+/// Purely observational; the gate reads only `outcome_correction`.
+pub fn refresh_outcome_signals(conn: &Connection) -> Result<usize> {
+    let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    let mut sel = conn.prepare(
+        "SELECT id, session_id, ts, applied, lines_drop, COALESCE(outcome_correction,0),
+                COALESCE(outcome_reread,0), COALESCE(outcome_edit_follow,0)
+         FROM compress_decisions
+         WHERE outcome_joined = 1 AND session_id IS NOT NULL",
+    )?;
+    let rows: Vec<(i64, String, String, i64, i64, i64, i64, i64)> = sel
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+            ))
+        })?
+        .filter_map(|x| x.ok())
+        .collect();
+
+    let mut updated = 0usize;
+    for (id, sid, ts, applied, lines_drop, corr, rr, ef) in rows {
+        let sid_like = format!("%{sid}%");
+        let mut flags_stmt = match conn.prepare(
+            "SELECT t.flags FROM turns t
+             JOIN sessions s ON s.id = t.session_id
+             WHERE s.external_key LIKE ?1
+               AND t.ts IS NOT NULL
+               AND julianday(t.ts) > julianday(?2)
+               AND julianday(t.ts) <= julianday(?2) + ?3",
+        ) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let flag_rows = flags_stmt
+            .query_map(params![sid_like, ts, window_days], |r| r.get::<_, String>(0))
+            .ok();
+        let mut signals: Vec<&str> = Vec::new();
+        if let Some(it) = flag_rows {
+            for f in it.filter_map(|x| x.ok()) {
+                if f.contains("correction_explicit") {
+                    signals.push("correction_explicit");
+                }
+                if f.contains("correction_terse") {
+                    signals.push("correction_terse");
+                }
+                if f.contains("aborted") {
+                    signals.push("aborted");
+                }
+            }
+        }
+        signals.sort_unstable();
+        signals.dedup();
+        if corr > 0 {
+            signals.push("correction_gate");
+        }
+        if rr > 0 {
+            signals.push("reread");
+        }
+        if ef > 0 {
+            signals.push("edit_follow");
+        }
+        if applied > 0 && lines_drop > 0 {
+            signals.push("trimmed");
+        }
+        signals.sort_unstable();
+        signals.dedup();
+        let json = serde_json::to_string(&signals).unwrap_or_else(|_| "[]".into());
+        if conn
+            .execute(
+                "UPDATE compress_decisions SET outcome_signals = ?2 WHERE id = ?1",
+                params![id, json],
+            )
+            .is_ok()
+        {
+            updated += 1;
+        }
+    }
+    Ok(updated)
 }
 
 /// The `outcome_edit_follow` value subquery (CTX-46 / ADR 0031): 1 when the same file was edited
@@ -873,6 +964,8 @@ fn edit_follow_value_sql() -> String {
 pub struct UnjoinedDecision {
     pub id: i64,
     pub command_or_path: String,
+    pub applied: bool,
+    pub lines_drop: i64,
 }
 
 /// Unjoined decisions for one surface session, keyed by the surface's own session id
@@ -883,7 +976,7 @@ pub fn unjoined_decisions_for_session(
     session_id: &str,
 ) -> Vec<UnjoinedDecision> {
     let mut stmt = match conn.prepare(
-        "SELECT id, command_or_path FROM compress_decisions
+        "SELECT id, command_or_path, applied, lines_drop FROM compress_decisions
          WHERE session_id = ?1 AND outcome_joined = 0 AND command_or_path IS NOT NULL",
     ) {
         Ok(s) => s,
@@ -893,6 +986,8 @@ pub fn unjoined_decisions_for_session(
         Ok(UnjoinedDecision {
             id: r.get(0)?,
             command_or_path: r.get(1)?,
+            applied: r.get::<_, i64>(2)? != 0,
+            lines_drop: r.get(3)?,
         })
     });
     match rows {
@@ -1879,6 +1974,42 @@ fn backfill_path_role(conn: &Connection) {
     );
 }
 
+/// One-time rejoin of every outcome label under CTX-48 / ADR 0033: reset joined rows, rerun
+/// both timestamp and transcript joins, then refresh observation-only `outcome_signals`.
+fn backfill_rejoin_outcome_labels_v3(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v3'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v3', '1')",
+        [],
+    );
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
@@ -1897,6 +2028,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     backfill_self_dev_tag(conn);
     backfill_edit_follow_label(conn);
     backfill_path_role(conn);
+    backfill_rejoin_outcome_labels_v3(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -3592,18 +3724,16 @@ mod compress_decision_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // A correction turn lands after the decision.
+        // Explicit complaint after a trimmed decision (CTX-48 gate).
         conn.execute(
-            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', 'correction', '2026-05-31T10:05:00+00:00')",
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', '[\"correction\",\"correction_explicit\"]', '2026-05-31T10:05:00+00:00')",
             params![sid],
         )
         .unwrap();
 
-        insert_compress_decision(
-            &conn,
-            &decision("2026-05-31T10:01:00+00:00", "sess-x", "Read", "a.rs"),
-        )
-        .unwrap();
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-x", "Read", "a.rs");
+        d.applied = true;
+        insert_compress_decision(&conn, &d).unwrap();
 
         let n = join_compress_outcomes(&conn).unwrap();
         assert_eq!(n, 1);
@@ -3616,6 +3746,93 @@ mod compress_decision_tests {
         assert_eq!(read.joined, 1);
         assert_eq!(read.corrections, 1);
         assert_eq!(read.clean_runs, 0);
+    }
+
+    #[test]
+    fn interrupt_after_trim_does_not_set_gate_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-int', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-int'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', '[\"aborted\"]', '2026-05-31T10:05:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-int", "Bash", "npm test");
+        d.applied = true;
+        insert_compress_decision(&conn, &d).unwrap();
+
+        let n = join_compress_outcomes(&conn).unwrap();
+        assert_eq!(n, 1);
+        let corr: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_correction,0) FROM compress_decisions WHERE command_or_path='npm test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(corr, 0, "interrupts must not feed the causal gate");
+    }
+
+    #[test]
+    fn terse_correction_without_explicit_does_not_set_gate_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-terse', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-terse'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', '[\"correction\",\"correction_terse\"]', '2026-05-31T10:05:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-terse", "Read", "a.rs");
+        d.applied = true;
+        insert_compress_decision(&conn, &d).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+        let corr: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_correction,0) FROM compress_decisions WHERE command_or_path='a.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(corr, 0, "terse redirects are observational only");
     }
 
     #[test]

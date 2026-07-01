@@ -140,6 +140,7 @@ impl SurfaceTranscriptAdapter for CursorTranscript {
                             }
                             crate::outcome_signals::CorrectionClass::Terse => {
                                 flags.push(TurnFlag::Correction);
+                                flags.push(TurnFlag::CorrectionTerse);
                             }
                             crate::outcome_signals::CorrectionClass::None => {}
                         }

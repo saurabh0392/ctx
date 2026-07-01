@@ -82,6 +82,23 @@ const APPROVAL_PHRASES: &[&str] = &[
     "thank you",
 ];
 
+/// Workflow redirects that are not pushback on tool output. Matched as lowercase substrings.
+const WORKFLOW_PHRASES: &[&str] = &[
+    "committ and push",
+    "commit and push",
+    "commit & push",
+    "push it",
+    "fold and adr",
+    "narrow pass",
+    "open pr",
+    "create pr",
+    "merge it",
+    "run tests",
+    "cargo test",
+    "ctx setup",
+    "reload window",
+];
+
 /// Single approval/continuation/filler tokens. A message whose alphabetic tokens are all
 /// drawn from this set (numbers and punctuation ignored) is a pure approval or
 /// continuation, so it is not a correction.
@@ -243,6 +260,36 @@ pub fn is_user_interrupt(text: &str) -> bool {
         .contains("[request interrupted by user")
 }
 
+/// System or plumbing turns that must never count as user corrections.
+pub fn is_system_turn(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return true;
+    }
+    if is_user_interrupt(t) {
+        return true;
+    }
+    let lower = t.to_lowercase();
+    lower.starts_with("<task-notification>")
+        || lower.starts_with("<task_notification>")
+        || lower.starts_with("<system-reminder>")
+}
+
+/// Short workflow commands ("commit and push", "fold and ADR") are not tool-output corrections.
+pub fn is_workflow_command(text: &str) -> bool {
+    let raw = text.trim().to_lowercase();
+    if raw.is_empty() {
+        return false;
+    }
+    WORKFLOW_PHRASES.iter().any(|p| raw.contains(p))
+}
+
+/// Whether this decision earns `outcome_correction` on the causal gate (CTX-48 / ADR 0033).
+/// Uniform for every tool: explicit complaint language AND ctx actually trimmed lines.
+pub fn gate_correction_label(explicit_complaint: bool, applied: bool, lines_drop: i64) -> bool {
+    explicit_complaint && applied && lines_drop > 0
+}
+
 pub fn is_approval_or_continuation(raw_lower: &str) -> bool {
     if APPROVAL_PHRASES.iter().any(|p| raw_lower.contains(p)) {
         return true;
@@ -271,7 +318,7 @@ pub fn is_approval_or_continuation(raw_lower: &str) -> bool {
 /// is the conservative terse default.
 pub fn classify_correction(human: &str, terse_max: usize) -> CorrectionClass {
     let raw = human.trim().to_lowercase();
-    if raw.is_empty() {
+    if raw.is_empty() || is_system_turn(human) || is_workflow_command(human) {
         return CorrectionClass::None;
     }
     if has_negative_cue(&raw) {
@@ -435,5 +482,39 @@ mod tests {
             classify_correction(long, DEFAULT_TERSE_MAX_CHARS),
             CorrectionClass::None
         );
+    }
+
+    #[test]
+    fn interrupts_and_system_turns_are_not_corrections() {
+        assert!(is_system_turn("[Request interrupted by user for tool use]"));
+        assert!(is_system_turn("<task-notification>done</task-notification>"));
+        assert_eq!(
+            classify_correction("[Request interrupted by user]", DEFAULT_TERSE_MAX_CHARS),
+            CorrectionClass::None
+        );
+        assert_eq!(
+            classify_correction("<system-reminder>be concise</system-reminder>", DEFAULT_TERSE_MAX_CHARS),
+            CorrectionClass::None
+        );
+    }
+
+    #[test]
+    fn workflow_commands_are_not_corrections() {
+        for s in ["commit and push", "fold and ADR", "narrow pass", "cargo test"] {
+            assert!(is_workflow_command(s), "workflow: {s}");
+            assert_eq!(
+                classify_correction(s, DEFAULT_TERSE_MAX_CHARS),
+                CorrectionClass::None,
+                "workflow must not flag: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_correction_requires_explicit_trim_and_applied() {
+        assert!(!gate_correction_label(false, true, 10));
+        assert!(!gate_correction_label(true, false, 10));
+        assert!(!gate_correction_label(true, true, 0));
+        assert!(gate_correction_label(true, true, 10));
     }
 }

@@ -94,6 +94,9 @@ pub enum TurnFlag {
     /// of `Correction` (both are emitted together) so the join still matches on
     /// `%correction%` while the confidence tier stays recoverable from the flags column.
     CorrectionExplicit,
+    /// Low-confidence correction: terse redirect after substantial work. Recorded for audit,
+    /// never feeds the causal gate (CTX-48).
+    CorrectionTerse,
     Clarification,
     LongDump,
     PreCompact,
@@ -105,6 +108,7 @@ impl TurnFlag {
         match self {
             TurnFlag::Correction => "correction",
             TurnFlag::CorrectionExplicit => "correction_explicit",
+            TurnFlag::CorrectionTerse => "correction_terse",
             TurnFlag::Clarification => "clarification",
             TurnFlag::LongDump => "long_dump",
             TurnFlag::PreCompact => "pre_compact",
@@ -116,6 +120,7 @@ impl TurnFlag {
         match s {
             "correction" => Some(TurnFlag::Correction),
             "correction_explicit" => Some(TurnFlag::CorrectionExplicit),
+            "correction_terse" => Some(TurnFlag::CorrectionTerse),
             "clarification" => Some(TurnFlag::Clarification),
             "long_dump" => Some(TurnFlag::LongDump),
             "pre_compact" => Some(TurnFlag::PreCompact),
@@ -235,6 +240,8 @@ mod tests {
     fn turn_flag_round_trips_with_stored_strings() {
         for f in [
             TurnFlag::Correction,
+            TurnFlag::CorrectionExplicit,
+            TurnFlag::CorrectionTerse,
             TurnFlag::Clarification,
             TurnFlag::LongDump,
             TurnFlag::PreCompact,

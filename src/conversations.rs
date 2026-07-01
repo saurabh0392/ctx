@@ -391,6 +391,7 @@ fn detect_flags(
         }
         crate::outcome_signals::CorrectionClass::Terse if substantial_prior => {
             flags.push("correction".to_string());
+            flags.push("correction_terse".to_string());
         }
         _ => {}
     }
@@ -539,9 +540,8 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                         // The user hit ESC to stop the agent. Emit this as its own turn now:
                         // the standard path waits for a following assistant reply, but the
                         // next real prompt overwrites this row, so the signal would be lost.
-                        // Flagged "aborted" (a distinct high-precision signal type) plus
-                        // "correction" so the existing windowed outcome join attributes it.
-                        corrections += 1;
+                        // Flagged "aborted" only (CTX-48): interrupts are session steering, not
+                        // tool-output corrections and must not feed the causal gate.
                         turns.push(TurnDetail {
                             turn_index: turns.len(),
                             human_text: text.clone(),
@@ -552,7 +552,7 @@ fn parse_session(path: &Path, project: &str, profile: &UserProfile) -> Option<Pa
                             cache_creation_tokens: 0,
                             model: String::new(),
                             cost_usd: 0.0,
-                            flags: vec!["aborted".to_string(), "correction".to_string()],
+                            flags: vec!["aborted".to_string()],
                             tip: String::new(),
                         });
                     } else {
