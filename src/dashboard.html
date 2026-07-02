@@ -354,6 +354,25 @@
   .report-compact .report-card-story { font-size: 13px; }
   .report-compact .report-card-head { padding-top: 14px; }
 
+  /* ── wnad scoreboard (CTX-63) ── */
+  .wnad { border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); padding: 22px 24px; max-width: 760px; margin-top: 14px; }
+  .wnad.ahead { background: linear-gradient(150deg, #0f2920 0%, var(--surface) 74%); border-color: #1e3b30; }
+  .wnad-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .wnad-verdict { font-size: 24px; font-weight: 800; letter-spacing: -0.4px; color: var(--t1); }
+  .wnad.ahead .wnad-verdict { color: var(--primary-lt); }
+  .wnad-week { font-size: 12px; color: var(--t4); font-variant-numeric: tabular-nums; }
+  .wnad-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+  .wnad-cell { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .wnad-k { font-size: 11px; color: var(--t4); text-transform: uppercase; letter-spacing: .05em; }
+  .wnad-v { font-size: 22px; font-weight: 800; color: var(--t1); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .wnad-v.ok { color: var(--primary-lt); }
+  .wnad-v.bad { color: var(--danger); }
+  .wnad-s { font-size: 12px; color: var(--t3); margin-top: 3px; }
+  .wnad-bar { height: 6px; border-radius: 999px; background: var(--surface3); overflow: hidden; margin-top: 10px; }
+  .wnad-bar-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--primary-lt)); }
+  .wnad-note { font-size: 13px; color: var(--t2); line-height: 1.6; margin-top: 15px; }
+  @media (max-width: 640px) { .wnad-grid { grid-template-columns: 1fr; } }
+
   /* ── payoff ── */
   .payoff { border-radius: var(--radius); padding: 28px; max-width: 760px; }
   .payoff.earned { background: linear-gradient(135deg, #0f2920 0%, var(--surface) 70%); border: 1px solid #1e3b30; }
@@ -465,6 +484,8 @@
         </div>
         <div class="control" id="home-control"></div>
       </div>
+
+      <div class="sec" id="home-wnad"></div>
 
       <div class="sec">
         <div class="sec-eyebrow">Where each of your tools stands</div>
@@ -702,6 +723,59 @@
   }
 
   // ════ HOME ════
+  // The north star, made visible (CTX-63). A week is net-ahead when ctx reclaimed enough context AND
+  // trimming stayed at or below the developer's own harm baseline. Fail-closed: safety must be
+  // confirmed, never assumed, so a week that reclaimed room but has not proven its trims safe reads
+  // as "reclaiming, not yet confirmed", not a win.
+  function wnadScoreboard(weeks) {
+    if (!weeks.length) {
+      return `<div class="sec-eyebrow">This week: net-ahead scoreboard</div><p class="sec-note">Once ctx has trimmed and scored a few runs, this shows whether your week is net-ahead: enough context reclaimed, with harm at or below your own baseline.</p>`;
+    }
+    const w = weeks[0];
+    const aheadCount = weeks.filter((x) => x.net_ahead).length;
+    const reclaimPct = w.reclaim_bar_tokens > 0 ? Math.min(100, Math.round((w.reclaimed_tokens / w.reclaim_bar_tokens) * 100)) : 0;
+    const trimRate = w.trimmed_scored > 0 ? Math.round((w.trimmed_harm / w.trimmed_scored) * 100) : null;
+    const baseRate = w.baseline_scored > 0 ? Math.round((w.baseline_harm / w.baseline_scored) * 100) : null;
+
+    const verdict = w.net_ahead ? "Net-ahead this week" : "Not net-ahead yet";
+    const reclaimCell = `<div class="wnad-cell">
+      <div class="wnad-k">Reclaimed</div>
+      <div class="wnad-v ${w.reclaim_ok ? "ok" : ""}">${fmtK(w.reclaimed_tokens)}</div>
+      <div class="wnad-s">of ${fmtK(w.reclaim_bar_tokens)} tokens needed (${pct(w.capture_rate)} of eligible)</div>
+      <div class="wnad-bar"><div class="wnad-bar-fill" style="width:${reclaimPct}%"></div></div>
+    </div>`;
+    let safetyV, safetyS;
+    if (w.harm_unconfirmed) {
+      safetyV = `<div class="wnad-v">unconfirmed</div>`;
+      safetyS = `only ${num(w.trimmed_scored)} scored trims so far, too few to confirm safety`;
+    } else {
+      safetyV = `<div class="wnad-v ${w.harm_ok ? "ok" : "bad"}">${w.harm_ok ? "at or below baseline" : "above baseline"}</div>`;
+      safetyS = `${trimRate}% re-touch on trimmed vs ${baseRate}% on your baseline`;
+    }
+    const safetyCell = `<div class="wnad-cell"><div class="wnad-k">Safety</div>${safetyV}<div class="wnad-s">${safetyS}</div></div>`;
+
+    let note;
+    if (w.net_ahead) {
+      note = `You reclaimed enough context this week and trimming stayed at or below your own baseline. That is a net-ahead week.`;
+    } else if (!w.reclaim_ok && w.harm_ok) {
+      const short = fmtK(Math.max(0, w.reclaim_bar_tokens - w.reclaimed_tokens));
+      note = `About <b>${short} tokens</b> short of net-ahead. Safety is fine: trimming re-touches ${trimRate ?? 0}% versus ${baseRate ?? 0}% at baseline. As the tools on trial finish accruing this week, reclaimed crosses the line.`;
+    } else if (w.harm_unconfirmed) {
+      note = `Reclaiming context, but ctx will not call the week net-ahead until enough trims are scored to confirm trimming did not raise harm. Fail-closed on purpose.`;
+    } else {
+      note = `Trimming raised re-touch above your baseline this week, so ctx holds the affected tools whole. Safety vetoes the week even when room was reclaimed.`;
+    }
+
+    const count = `<div class="wnad-week">${aheadCount} net-ahead week${aheadCount === 1 ? "" : "s"} so far &middot; ${esc(w.week)}</div>`;
+    return `<div class="sec-eyebrow">This week: net-ahead scoreboard</div>
+      <p class="sec-note">The north star: a week is net-ahead when ctx reclaimed a meaningful share of your context AND trimming stayed at or below your own harm baseline. On your own machine, no account, no telemetry.</p>
+      <div class="wnad ${w.net_ahead ? "ahead" : ""}">
+        <div class="wnad-top"><div class="wnad-verdict">${verdict}</div>${count}</div>
+        <div class="wnad-grid">${reclaimCell}${safetyCell}</div>
+        <div class="wnad-note">${note}</div>
+      </div>`;
+  }
+
   async function loadHome() {
     let ctx, proof, bill;
     try { [ctx, proof, bill] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({}))]); setHealth(true); }
@@ -733,6 +807,8 @@
     $("home-control").innerHTML = on
       ? `<div class="autoline"><span class="dot"></span><span>Autopilot is on. ctx turns on each tool by itself, the moment it proves safe on your work, and never before. You can pause it any time in <b class="link" onclick="go('settings')">Settings</b>.</span></div>`
       : `<div class="optin"><button class="cta" onclick="setPreset('full')">Turn on autopilot</button><span class="optin-sub">One yes, then it is hands-off. ctx will only ever trim a tool after your own work proves it is safe, and the tool always runs in full.</span></div>`;
+
+    $("home-wnad").innerHTML = wnadScoreboard(ctx.wnad || []);
 
     // the ladder, made literal
     const board = [
