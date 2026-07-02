@@ -661,6 +661,80 @@ pub fn get_rewind(conn: &Connection, id: &str) -> Option<RewindEntry> {
     .ok()
 }
 
+/// Aggregate per-tool "suspected trim cost" (CTX-54). Single-case causation is unprovable: the
+/// branch where the same session ran with the full output is in no log. So this never claims a
+/// trim caused anything. It reads the offline signals ingest already computed and counts, per
+/// tool, how often an *applied* trim was followed by the agent behaving as if it needed the
+/// dropped content: it worked around the trim, re-read the source, or asked for the verbatim
+/// original back via `ctx_expand`. Aggregated over many trims that is an honest per-tool risk
+/// read; on any single trim it is only a suspect. This replaces the always-zero "gate
+/// corrections" headline with something the data actually supports.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ToolAttribution {
+    pub tool: String,
+    /// Applied trims that dropped lines: the only trims we can attribute a cost to.
+    pub applied_trims: i64,
+    /// The agent read the source another way after the trim (compression_workaround signal).
+    pub workaround: i64,
+    /// The agent re-touched the trimmed path/command within the window (reread signal).
+    pub reread: i64,
+    /// The agent pulled the verbatim original back with ctx_expand. Closest-to-causal signal
+    /// available without an A/B: it asked for exactly what the trim dropped.
+    pub reexpanded: i64,
+    /// Applied trims with any of the above. The union, so a trim with two signals counts once.
+    pub suspect: i64,
+    /// suspect / applied_trims, the aggregate rate. The "confidence" is this rate over N, not a
+    /// per-case verdict.
+    pub suspect_rate: f64,
+}
+
+pub fn tool_attribution(conn: &Connection) -> Vec<ToolAttribution> {
+    let mut out = Vec::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT d.tool_name,
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
+                         AND d.outcome_signals LIKE '%compression_workaround%' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
+                         AND d.outcome_signals LIKE '%reread%' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
+                         AND r.expanded_at IS NOT NULL THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 AND (
+                         d.outcome_signals LIKE '%compression_workaround%'
+                      OR d.outcome_signals LIKE '%reread%'
+                      OR d.outcome_signals LIKE '%reedit%'
+                      OR r.expanded_at IS NOT NULL) THEN 1 ELSE 0 END)
+         FROM compress_decisions d
+         LEFT JOIN rewind_store r ON d.rewind_id = r.id
+         GROUP BY d.tool_name
+         HAVING SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 THEN 1 ELSE 0 END) > 0
+         ORDER BY 6 DESC, 2 DESC",
+    ) else {
+        return out;
+    };
+    let rows = stmt.query_map([], |r| {
+        let applied_trims: i64 = r.get(1)?;
+        let suspect: i64 = r.get(5)?;
+        Ok(ToolAttribution {
+            tool: r.get(0)?,
+            applied_trims,
+            workaround: r.get(2)?,
+            reread: r.get(3)?,
+            reexpanded: r.get(4)?,
+            suspect,
+            suspect_rate: if applied_trims > 0 {
+                suspect as f64 / applied_trims as f64
+            } else {
+                0.0
+            },
+        })
+    });
+    if let Ok(rows) = rows {
+        out.extend(rows.flatten());
+    }
+    out
+}
+
 pub fn context_bill(conn: &Connection) -> ContextBill {
     let mut bill = ContextBill::default();
     let mut stmt = match conn.prepare(
@@ -5162,6 +5236,108 @@ mod compress_decision_tests {
             assert_eq!(s.decisions, 0);
             assert!(s.last_seen.is_none());
         }
+    }
+
+    #[test]
+    fn tool_attribution_aggregates_suspects_never_counts_shadow() {
+        // Attribution must only look at applied trims that dropped lines, and count a trim as a
+        // suspect when the agent worked around it, re-read the source, or re-expanded it. A shadow
+        // decision (applied=0) is never a suspect, and a trim with two signals counts once (CTX-54).
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let trim = |cmd: &'static str, applied: bool| CompressDecision::<'static> {
+            ts: "2026-06-14T00:00:00+00:00",
+            session_id: Some("s1"),
+            tool_name: "Bash",
+            server_prefix: None,
+            kind: "generic",
+            task_mode: "scan",
+            lines_total: 100,
+            lines_keep: 60,
+            lines_drop: 40,
+            chars_in: 5000,
+            would_chars_out: 2000,
+            features_json: "{}",
+            command_or_path: cmd,
+            applied,
+            explore_arm: None,
+            surface: Some("claude-code"),
+        };
+        // Applied trim with a workaround AND a reread (should count once as a suspect).
+        insert_compress_decision(&conn, &trim("cmd-a", true)).unwrap();
+        // Applied trim, no suspect signal.
+        insert_compress_decision(&conn, &trim("cmd-b", true)).unwrap();
+        // Shadow decision with a suspect-looking signal: must be ignored (not applied).
+        insert_compress_decision(&conn, &trim("cmd-c", false)).unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_signals='[\"compression_workaround\",\"reread\"]' WHERE command_or_path='cmd-a'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_signals='[\"compression_workaround\"]' WHERE command_or_path='cmd-c'",
+            [],
+        )
+        .unwrap();
+
+        let out = tool_attribution(&conn);
+        let bash = out.iter().find(|t| t.tool == "Bash").expect("bash row");
+        assert_eq!(bash.applied_trims, 2, "shadow decision must not count");
+        assert_eq!(bash.workaround, 1);
+        assert_eq!(bash.reread, 1);
+        assert_eq!(bash.suspect, 1, "two signals on one trim count once");
+        assert!((bash.suspect_rate - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tool_attribution_counts_reexpand_via_rewind() {
+        // The re-expand event (rewind_store.expanded_at) is the closest-to-causal suspect: the agent
+        // asked for exactly the dropped block back. It must count even with no other signal.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("s1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "scan",
+                lines_total: 200,
+                lines_keep: 40,
+                lines_drop: 160,
+                chars_in: 8000,
+                would_chars_out: 2000,
+                features_json: "{}",
+                command_or_path: "/big.rs",
+                applied: true,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+        insert_rewind(&conn, "rw1", "2026-06-14T00:00:00+00:00", Some("s1"), "Read", "/big.rs", "full original", "trimmed");
+        link_decision_rewind(&conn, Some("s1"), "Read", "rw1");
+        mark_rewind_expanded(&conn, "rw1");
+
+        let out = tool_attribution(&conn);
+        let read = out.iter().find(|t| t.tool == "Read").expect("read row");
+        assert_eq!(read.applied_trims, 1);
+        assert_eq!(read.reexpanded, 1);
+        assert_eq!(read.suspect, 1);
     }
 
     #[test]

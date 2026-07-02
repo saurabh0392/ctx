@@ -326,6 +326,10 @@ struct ContextView {
     /// Per-agent activity for the cross-surface view (ADR 0018 / CTX-34). Always Claude Code and
     /// Cursor, each with a `seen` flag so the UI can show an honest empty state.
     surfaces: Vec<crate::db::SurfaceSummary>,
+    /// Per-tool aggregate "suspected trim cost" (CTX-54). Replaces the always-zero gate-corrections
+    /// headline: how often an applied trim coincided with the agent needing the dropped content
+    /// back. Aggregate suspicion, never single-case proof.
+    attribution: Vec<crate::db::ToolAttribution>,
 }
 
 /// POST /api/context/rewind: return the verbatim original ctx trimmed, by rewind id (CTX-57).
@@ -357,7 +361,7 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction, loop_health, surfaces) = match open_ctx_db() {
+    let (stats, tools, feed, compaction, loop_health, surfaces, attribution) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
             let progress = crate::db::compress_tool_progress(&conn);
@@ -420,7 +424,8 @@ async fn api_context() -> Json<ContextView> {
             };
             let home = dirs::home_dir().unwrap_or_default();
             let surfaces = crate::db::surface_summary_full(&conn, &home);
-            (stats, tools, feed, compaction, loop_health, surfaces)
+            let attribution = crate::db::tool_attribution(&conn);
+            (stats, tools, feed, compaction, loop_health, surfaces, attribution)
         }
         None => (
             Default::default(),
@@ -438,6 +443,7 @@ async fn api_context() -> Json<ContextView> {
                 by_day: Vec::new(),
                 tools: Vec::new(),
             },
+            Vec::new(),
             Vec::new(),
         ),
     };
@@ -471,6 +477,7 @@ async fn api_context() -> Json<ContextView> {
         compaction,
         loop_health,
         surfaces,
+        attribution,
     })
 }
 

@@ -259,6 +259,19 @@
   .sf-empty { font-size: 12.5px; color: var(--t3); line-height: 1.55; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex: 1; }
   @media (max-width: 720px) { .sf-grid { grid-template-columns: 1fr; } }
 
+  /* attribution: per-tool suspected trim cost (CTX-54) */
+  .attr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 14px; max-width: 760px; }
+  .attr-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 15px 16px; }
+  .attr-card.risk { border-color: #4a2530; }
+  .attr-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .attr-tool { font-size: 14px; font-weight: 700; color: var(--t1); }
+  .attr-rate { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--t3); }
+  .attr-card.risk .attr-rate { color: var(--danger); }
+  .attr-card.clean .attr-rate { color: var(--primary-lt); }
+  .attr-big { font-size: 20px; font-weight: 700; color: var(--t1); margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .attr-big span { font-size: 13px; font-weight: 600; color: var(--t3); }
+  .attr-detail { font-size: 12px; color: var(--t4); margin-top: 8px; line-height: 1.5; }
+
   /* loop health: accrual lead + sparkline + per-tool stage rows */
   .lh-spark { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin-top: 16px; max-width: 760px; }
   .lh-bar { flex: 1 1 0; min-width: 5px; background: var(--surface3); border-radius: 4px 4px 0 0; display: flex; align-items: flex-end; overflow: hidden; }
@@ -925,8 +938,37 @@
 
   async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadLoop(); }
 
-  function gateCorrections(ctx) {
-    return (ctx.tools || []).reduce((n, t) => n + (t.corrections || 0), 0);
+  // Aggregate "suspected trim cost" across tools (CTX-54). Replaces the always-zero gate-corrections
+  // count. A suspect is an applied trim the agent behaved as if it needed back (worked around, re-read,
+  // or re-expanded). Aggregate suspicion on your own work, never proof any one trim caused anything.
+  function attributionTotals(ctx) {
+    const a = ctx.attribution || [];
+    const trims = a.reduce((n, t) => n + (t.applied_trims || 0), 0);
+    const suspect = a.reduce((n, t) => n + (t.suspect || 0), 0);
+    return { trims, suspect, rate: trims > 0 ? suspect / trims : 0 };
+  }
+
+  // Per-tool suspected trim cost. Honest by construction: it names the tool and a rate, never
+  // claims a single trim caused a correction (single-case causation is unprovable). A high rate
+  // over enough trims is the signal that trimming that tool is risky for you.
+  function attributionSection(ctx) {
+    const a = (ctx.attribution || []).filter((t) => (t.applied_trims || 0) > 0);
+    if (!a.length) return "";
+    const cards = a.map((r) => {
+      const rate = Math.round((r.suspect_rate || 0) * 100);
+      const bits = [];
+      if (r.workaround) bits.push(`${num(r.workaround)} worked around`);
+      if (r.reread) bits.push(`${num(r.reread)} re-read the source`);
+      if (r.reexpanded) bits.push(`${num(r.reexpanded)} pulled the original back`);
+      const detail = bits.length ? bits.join(", ") : "no suspect signal on these trims";
+      const cls = r.suspect === 0 ? "clean" : rate >= 33 ? "risk" : "warn";
+      return `<div class="attr-card ${cls}">
+        <div class="attr-head"><div class="attr-tool">${esc(prettyTool(r.tool))}</div><div class="attr-rate">${rate}%</div></div>
+        <div class="attr-big">${num(r.suspect)} <span>of ${num(r.applied_trims)} trims</span></div>
+        <div class="attr-detail">${esc(detail)}</div>
+      </div>`;
+    }).join("");
+    return `<div class="sec" style="margin-top:28px"><div class="sec-eyebrow">Suspected trim cost, by tool</div><p class="sec-note">When ctx trimmed a tool, how often the agent then acted like it needed the dropped content back: it worked around the trim, re-read the source, or pulled the verbatim original back with ctx_expand. This is a correlation across your own trims, not proof any single trim caused it. The branch where that session ran with full output is in no log. Aggregated over enough trims, a high rate is the honest read that trimming that tool is risky for you.</p><div class="attr-grid">${cards}</div></div>`;
   }
 
   function buildSystemNarrative(ctx, proof, rows) {
@@ -946,8 +988,10 @@
       };
     }
     parts.push(`ctx has watched <b>${num(total)}</b> tool results and labeled <b>${num(joined)}</b> (${jp}).`);
-    const gc = gateCorrections(ctx);
-    parts.push(`Gate corrections (explicit pushback on a trim): <b>${num(gc)}</b>.`);
+    const at = attributionTotals(ctx);
+    if (at.trims) {
+      parts.push(`Of <b>${num(at.trims)}</b> applied trims, <b>${num(at.suspect)}</b> showed a suspected cost (the agent worked around the trim or asked for the content back). Aggregate suspicion, not proof.`);
+    }
     if (g.earned.length) parts.push(`<span class="good">Earned trim:</span> ${g.earned.map((r) => esc(prettyTool(r.tool))).join(", ")}.`);
     if (g.trial.length) parts.push(`Live trial: <b>${g.trial.map((r) => esc(prettyTool(r.tool))).join(", ")}</b>.`);
     if (g.proving.length) parts.push(`Close to verdict (output stays whole): ${g.proving.slice(0, 4).map((r) => esc(prettyTool(r.tool))).join(", ")}${g.proving.length > 4 ? ", and others" : ""}.`);
@@ -1189,7 +1233,7 @@
       <div class="report-stat"><div class="rs-k">Watched</div><div class="rs-v">${num(total)}</div><div class="rs-s">tool results seen</div></div>
       <div class="report-stat"><div class="rs-k">Labeled</div><div class="rs-v">${num(joined)}</div><div class="rs-s">${lh.joined_pct != null ? pct(lh.joined_pct) : "n/a"} with outcomes</div></div>
       <div class="report-stat"><div class="rs-k">Today</div><div class="rs-v">${num(lh.today || 0)}</div><div class="rs-s">new decisions</div></div>
-      <div class="report-stat"><div class="rs-k">Gate fixes</div><div class="rs-v">${num(gateCorrections(ctx))}</div><div class="rs-s">explicit trim pushback</div></div>
+      <div class="report-stat"><div class="rs-k">Suspected cost</div><div class="rs-v">${num(attributionTotals(ctx).suspect)}</div><div class="rs-s">of ${num(attributionTotals(ctx).trims)} applied trims</div></div>
     </div>` : "";
 
     const days = lh.by_day || [];
@@ -1236,7 +1280,7 @@
       if (watchMore > 0) body += `<p class="sec-note" style="margin-top:8px">${watchMore} more tools with lighter usage are not shown.</p>`;
     }
 
-    $("loop-body").innerHTML = hero + statStrip + spark + body;
+    $("loop-body").innerHTML = hero + statStrip + attributionSection(ctx) + spark + body;
   }
 
   // ════ COMPACTION ════
