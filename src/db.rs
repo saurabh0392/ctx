@@ -1490,6 +1490,16 @@ pub struct SurfaceSummary {
     pub today: i64,
     /// Most recent decision timestamp (RFC3339), or `None` when the surface is unseen.
     pub last_seen: Option<String>,
+    /// Transcripts ctx has parsed for this surface, independent of any hook decision (CTX-53).
+    /// Lets an agent ctx only watches (Cursor today) render real sessions instead of a fake zero.
+    pub sessions_seen: i64,
+    /// Tool calls observed across those transcripts. Calls, not results: some surfaces omit output.
+    pub tool_calls_seen: i64,
+    /// Corrections observed in transcripts (lexical guard), for a surface with no hook outcomes yet.
+    pub transcript_corrections: i64,
+    /// How ctx knows this surface: "hook" (live decisions), "transcript" (parsed sessions only),
+    /// "hook+transcript" (both), or "" when unseen. Drives honest per-agent copy in the UI.
+    pub observed_via: String,
 }
 
 /// Per-surface activity for the cross-surface view (CTX-34). Always returns Claude Code and
@@ -1528,6 +1538,10 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
                 chars_saved: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
                 today: r.get(7)?,
                 last_seen: r.get(8)?,
+                sessions_seen: 0,
+                tool_calls_seen: 0,
+                transcript_corrections: 0,
+                observed_via: if decisions > 0 { "hook".into() } else { String::new() },
             })
         });
         if let Ok(it) = rows {
@@ -1546,6 +1560,39 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
             })
         })
         .collect()
+}
+
+/// Per-surface activity enriched with the transcript corpus under `home` (CTX-53). The hook-based
+/// `surface_summary` only knows an agent ctx has trimmed; this folds in agents ctx has merely
+/// watched on disk, so an agent with real transcripts but zero hook decisions (Cursor, once the
+/// user has moved off it) still renders as a seen agent with genuine sessions and tool calls
+/// instead of a permanent "not seen yet". Read-only; the transcript files and DB are never
+/// mutated here.
+pub fn surface_summary_full(conn: &Connection, home: &std::path::Path) -> Vec<SurfaceSummary> {
+    let mut base = surface_summary(conn);
+    let corpus = crate::surface::ingest::transcript_corpus_summary(home);
+    for stats in corpus {
+        let Some(entry) = base.iter_mut().find(|s| s.surface == stats.surface) else {
+            continue;
+        };
+        entry.sessions_seen = stats.sessions;
+        entry.tool_calls_seen = stats.tool_calls;
+        entry.transcript_corrections = stats.corrections;
+        if stats.sessions > 0 {
+            entry.seen = true;
+            entry.observed_via = if entry.observed_via == "hook" {
+                "hook+transcript".into()
+            } else {
+                "transcript".into()
+            };
+            // Transcripts have no timestamps; use the newest file mtime only when the hook path
+            // gave us no decision timestamp for this surface, so we never overwrite a real one.
+            if entry.last_seen.is_none() {
+                entry.last_seen = stats.last_activity;
+            }
+        }
+    }
+    base
 }
 
 /// A labeled decision row for training / benchmarking (Act 1 / Act 2).
@@ -5115,6 +5162,69 @@ mod compress_decision_tests {
             assert_eq!(s.decisions, 0);
             assert!(s.last_seen.is_none());
         }
+    }
+
+    #[test]
+    fn surface_summary_full_folds_in_watched_cursor_transcripts() {
+        // No hook decisions for Cursor, but a real transcript on disk: the full summary must mark
+        // Cursor seen via transcripts with genuine session/tool-call counts (CTX-53), while Claude
+        // Code stays hook-provenanced.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("cc-1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "scan",
+                lines_total: 100,
+                lines_keep: 60,
+                lines_drop: 40,
+                chars_in: 5000,
+                would_chars_out: 2000,
+                features_json: "{}",
+                command_or_path: "/a.rs",
+                applied: true,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+
+        let proj = tmp
+            .path()
+            .join(".cursor/projects/Users-me-Projects-ctx/agent-transcripts/sess-a");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("sess-a.jsonl");
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>build a cursor adapter and walk me through the tradeoffs carefully</user_query>"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Reading the adapter boundary before proposing anything, so the plan lines up with the real ingest path."},{"type":"tool_use","name":"Read","input":{"path":"/x.rs"}}]}}"#,
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>no that's wrong, revert it</user_query>"}]}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+
+        let out = surface_summary_full(&conn, tmp.path());
+        let cc = out.iter().find(|s| s.surface == "claude-code").unwrap();
+        assert_eq!(cc.observed_via, "hook");
+        assert_eq!(cc.sessions_seen, 0);
+
+        let cu = out.iter().find(|s| s.surface == "cursor").unwrap();
+        assert!(cu.seen);
+        assert_eq!(cu.decisions, 0);
+        assert_eq!(cu.observed_via, "transcript");
+        assert_eq!(cu.sessions_seen, 1);
+        assert_eq!(cu.tool_calls_seen, 1);
+        assert_eq!(cu.transcript_corrections, 1);
+        assert!(cu.last_seen.is_some());
     }
 }
 

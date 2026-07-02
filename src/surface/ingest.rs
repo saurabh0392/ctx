@@ -30,6 +30,63 @@ pub fn join_transcript_outcomes(conn: &Connection, home: &Path) -> usize {
     newly
 }
 
+/// What ctx has observed of one agent purely from its on-disk transcripts, independent of any
+/// hook decision (CTX-53). This is how ctx shows a real second agent side by side with Claude
+/// Code even when it has never trimmed that agent: the transcripts are genuine machine data, so
+/// the surface card can report sessions and tool calls seen instead of a fake zero. Cursor
+/// transcripts carry no timestamps, so `last_activity` is the newest transcript's file mtime, the
+/// only honest "when" we have.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct TranscriptSurfaceStats {
+    pub surface: String,
+    /// Transcripts ctx could parse for this surface.
+    pub sessions: i64,
+    /// Tool calls observed across those transcripts (calls, not results: Cursor omits output).
+    pub tool_calls: i64,
+    /// User turns flagged as a correction by the shared lexical guard.
+    pub corrections: i64,
+    /// Distinct project labels seen, so a card can say "across N repos".
+    pub projects: i64,
+    /// Newest transcript file mtime (RFC3339), or `None` when nothing parsed.
+    pub last_activity: Option<String>,
+}
+
+/// Summarize the transcript corpus per surface, read-only over the files under `home`. Every
+/// registered transcript adapter contributes one entry, even one that parses nothing, so callers
+/// can distinguish "seen zero" from "adapter absent". Never touches the database.
+pub fn transcript_corpus_summary(home: &Path) -> Vec<TranscriptSurfaceStats> {
+    let mut out = Vec::new();
+    for adapter in transcript_adapters() {
+        let mut stats = TranscriptSurfaceStats {
+            surface: adapter.surface_id().as_str().to_string(),
+            ..Default::default()
+        };
+        let mut projects: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut newest: Option<std::time::SystemTime> = None;
+        for path in adapter.discover_sessions(home) {
+            if let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) {
+                newest = Some(newest.map_or(modified, |n: std::time::SystemTime| n.max(modified)));
+            }
+            let Some(parsed) = adapter.parse_session(&path) else {
+                continue;
+            };
+            stats.sessions += 1;
+            stats.tool_calls += parsed.tool_calls.len() as i64;
+            projects.insert(parsed.session.project_label.clone());
+            for t in &parsed.turns {
+                if t.flags.contains(&TurnFlag::Correction) {
+                    stats.corrections += 1;
+                }
+            }
+        }
+        stats.projects = projects.len() as i64;
+        stats.last_activity = newest
+            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+        out.push(stats);
+    }
+    out
+}
+
 /// Ordinal/fingerprint outcome join for one parsed transcript. Surface-agnostic: it works
 /// for any `ParsedTranscript` regardless of which adapter produced it.
 fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
@@ -203,6 +260,43 @@ mod tests {
             flags,
             ts: None,
         }
+    }
+
+    #[test]
+    fn transcript_corpus_summary_reports_real_cursor_sessions() {
+        // A watched-only agent (Cursor here) must surface real sessions and tool calls from its
+        // transcripts so it can render side by side with Claude Code (CTX-53), never a fake zero.
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp
+            .path()
+            .join(".cursor/projects/Users-me-Projects-ctx/agent-transcripts/sess-a");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("sess-a.jsonl");
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>build a cursor adapter and walk me through the tradeoffs carefully</user_query>"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Reading the adapter boundary before proposing anything, so the plan lines up with the real ingest path."},{"type":"tool_use","name":"Read","input":{"path":"/Users/me/Projects/ctx/src/agent.rs"}}]}}"#,
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>no that's wrong, revert it</user_query>"}]}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+
+        let out = transcript_corpus_summary(tmp.path());
+        let cursor = out.iter().find(|s| s.surface == "cursor").expect("cursor entry");
+        assert_eq!(cursor.sessions, 1);
+        assert_eq!(cursor.tool_calls, 1);
+        assert_eq!(cursor.corrections, 1);
+        assert_eq!(cursor.projects, 1);
+        assert!(cursor.last_activity.is_some());
+    }
+
+    #[test]
+    fn transcript_corpus_summary_empty_home_is_zero_not_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = transcript_corpus_summary(tmp.path());
+        // Every registered adapter still contributes an entry, so callers can tell "seen zero"
+        // (adapter ran, found nothing) from "adapter absent".
+        let cursor = out.iter().find(|s| s.surface == "cursor").expect("cursor entry");
+        assert_eq!(cursor.sessions, 0);
+        assert!(cursor.last_activity.is_none());
     }
 
     fn call(fingerprint: &str, tool: &str, ordinal: u32) -> CanonicalToolResult {

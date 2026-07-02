@@ -247,8 +247,9 @@
   .sf-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .sf-name { font-size: 15px; font-weight: 700; color: var(--t1); }
   .sf-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 4px 9px; border-radius: 7px; white-space: nowrap; }
-  .sf-pill.act { background: var(--primary); color: #04231a; }
+  .sf-pill.acting { background: var(--primary); color: #04231a; }
   .sf-pill.obs { background: var(--primary-dim); color: var(--primary-lt); }
+  .sf-pill.watch { background: var(--surface3); color: var(--t2); box-shadow: inset 0 0 0 1px var(--border2); }
   .sf-pill.none { background: var(--surface3); color: var(--t4); }
   .sf-cap { font-size: 12px; color: var(--t3); line-height: 1.5; margin-top: 10px; min-height: 36px; }
   .sf-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
@@ -1303,7 +1304,7 @@
   // stay observe-only, because Cursor won't let a hook rewrite their output. No claim of parity.
   const SURFACE_CAP = {
     "claude-code": "ctx trims MCP results and long tool output here, live, once a tool has earned it.",
-    "cursor": "ctx trims Cursor's MCP results live, and runs earned shell commands through ctx run to shorten what the agent reads back. Built-in Read and Grep stay observe-only, because Cursor only lets a hook rewrite a shell command or an MCP result, not built-in read output.",
+    "cursor": "ctx reads Cursor's own session transcripts on this machine, so it can show your Cursor work next to Claude Code. When ctx runs live inside Cursor it trims MCP results once earned; built-in Read and Grep stay observe-only, because Cursor won't let a hook rewrite their output.",
   };
   async function loadSurfaces() {
     let ctx;
@@ -1311,27 +1312,42 @@
     catch (e) { setHealth(false); $("surfaces-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
     const surfaces = ctx.surfaces || [];
     const seen = surfaces.filter((s) => s.seen);
-    const totalDecisions = surfaces.reduce((a, s) => a + (s.decisions || 0), 0);
 
     let lead;
     if (!seen.length) {
       lead = `<div class="cf-lead"><div class="cf-big">No agents seen yet</div><div class="cf-cap">ctx is the same honest layer under every coding agent you run. The moment you use Claude Code or Cursor with ctx installed, each one shows up here with its own real numbers. Run <code>ctx ingest</code> if you have used an agent and still see nothing.</div></div>`;
     } else {
       const names = seen.map((s) => SURFACE_NAME[s.surface] || s.surface).join(" and ");
-      lead = `<div class="cf-lead"><div class="cf-big"><b>${num(totalDecisions)}</b> decisions across ${seen.length} agent${seen.length === 1 ? "" : "s"}</div><div class="cf-cap">ctx is watching ${esc(names)} on this machine as one layer. No agent vendor measures the others, so this is the only place they sit side by side, on your own work.</div></div>`;
+      lead = `<div class="cf-lead"><div class="cf-big">${esc(names)}, side by side</div><div class="cf-cap">ctx sees ${seen.length} agent${seen.length === 1 ? "" : "s"} on this machine as one layer, from live hooks and from each agent's own transcripts. No agent vendor measures the others, so this is the only place they sit together, on your own work.</div></div>`;
     }
 
     const card = (s) => {
       const name = SURFACE_NAME[s.surface] || s.surface;
       const cap = SURFACE_CAP[s.surface] || "";
+      const ago = s.last_seen ? timeAgo(s.last_seen) : "n/a";
       if (!s.seen) {
         return `<div class="sf-card"><div class="sf-head"><div class="sf-name">${esc(name)}</div><div class="sf-pill none">not seen yet</div></div><div class="sf-cap">${esc(cap)}</div><div class="sf-empty">No sessions on this machine yet. When you run ${esc(name)} with ctx installed, its decisions, savings, and corrections show up here.</div></div>`;
       }
+      // Watched-only agent (transcripts on disk, no live hook decisions): show what ctx read from
+      // its transcripts, honestly labeled. This is how a second agent renders side by side even
+      // when ctx has never trimmed it (CTX-53).
+      if ((s.decisions || 0) === 0 && (s.sessions_seen || 0) > 0) {
+        return `<div class="sf-card">
+          <div class="sf-head"><div class="sf-name">${esc(name)}</div><div class="sf-pill watch">watched</div></div>
+          <div class="sf-cap">${esc(cap)}</div>
+          <div class="sf-metrics">
+            <div><div class="sf-k">Sessions seen</div><div class="sf-v">${num(s.sessions_seen)}</div></div>
+            <div><div class="sf-k">Tool calls observed</div><div class="sf-v">${num(s.tool_calls_seen)}</div></div>
+            <div><div class="sf-k">Corrections seen</div><div class="sf-v">${num(s.transcript_corrections)}</div></div>
+            <div><div class="sf-k">Trims applied</div><div class="sf-v">none yet</div></div>
+          </div>
+          <div class="sf-foot">Read from ${esc(name)}'s own transcripts on this machine, not live. ctx never trimmed anything here. Last transcript ${esc(ago)}.</div>
+        </div>`;
+      }
       const acting = (s.acted || 0) > 0;
-      const pill = acting ? `<div class="sf-pill act">acting</div>` : `<div class="sf-pill obs">observing</div>`;
+      const pill = acting ? `<div class="sf-pill acting">acting</div>` : `<div class="sf-pill obs">observing</div>`;
       const savedTok = tok(s.chars_saved || 0);
       const saved = savedTok > 0 ? fmtK(savedTok) + " tok" : "none yet";
-      const ago = s.last_seen ? timeAgo(s.last_seen) : "n/a";
       return `<div class="sf-card">
         <div class="sf-head"><div class="sf-name">${esc(name)}</div>${pill}</div>
         <div class="sf-cap">${esc(cap)}</div>
@@ -1354,7 +1370,7 @@
 
     $("surfaces-body").innerHTML =
       lead +
-      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Acting means ctx is shortening what the agent reads back. Observing means it is only watching for now. The numbers are this machine's real decisions, not an estimate.</p><div class="sf-grid">${cards}</div></div>`;
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Acting means ctx is shortening what the agent reads back. Observing means it is watching live. Watched means ctx read the agent's saved transcripts but never ran inside it. Every number is this machine's real activity, not an estimate.</p><div class="sf-grid">${cards}</div></div>`;
   }
 
   // ════ SETTINGS ════

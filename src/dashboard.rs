@@ -418,7 +418,8 @@ async fn api_context() -> Json<ContextView> {
                 by_day,
                 tools: lh_tools,
             };
-            let surfaces = crate::db::surface_summary(&conn);
+            let home = dirs::home_dir().unwrap_or_default();
+            let surfaces = crate::db::surface_summary_full(&conn, &home);
             (stats, tools, feed, compaction, loop_health, surfaces)
         }
         None => (
