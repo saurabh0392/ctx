@@ -665,8 +665,8 @@
 
   // ════ HOME ════
   async function loadHome() {
-    let ctx, proof;
-    try { [ctx, proof] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] }))]); setHealth(true); }
+    let ctx, proof, bill;
+    try { [ctx, proof, bill] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({}))]); setHealth(true); }
     catch (e) { setHealth(false); $("home-status").textContent = "Could not reach ctx. Is the dashboard running?"; return; }
 
     const stats = ctx.stats || {};
@@ -728,11 +728,17 @@
       $("home-savings").className = "savings";
       $("home-savings").innerHTML = `<div class="sv-label">Saved so far</div><div class="sv-val">~${fmtK(tok(safe))}<span class="sv-unit">tokens</span></div><div class="sv-sub">About ${usd(safe)} of context kept out of your window, and counting. It compounds, because a trimmed result stays out on every later turn.${harmLine ? " " + harmLine : ""}</div>`;
     } else {
-      const tail = trial > 0
-        ? `Output is being trimmed while ctx tests it, but nothing counts as saved until a tool clears its proof.${harmLine ? " " + harmLine : ""}`
-        : "The moment a tool clears its proof, savings show up here in tokens and dollars.";
-      $("home-savings").className = "savings muted";
-      $("home-savings").innerHTML = `<div class="sv-label">Saved so far</div><div class="sv-val">none yet</div><div class="sv-sub">${tail}</div>`;
+      const onTable = (bill && bill.total_reclaimable_chars) || 0;
+      if (onTable > 0) {
+        $("home-savings").className = "savings";
+        $("home-savings").innerHTML = `<div class="sv-label">On the table</div><div class="sv-val">~${fmtK(tok(onTable))}<span class="sv-unit">tokens</span></div><div class="sv-sub">Context ctx could reclaim across your tools, about ${usd(onTable)} a pass. It banks as saved once a tool clears its proof. <span class="link" onclick="go('bill')">See the bill</span>.${harmLine ? " " + harmLine : ""}</div>`;
+      } else {
+        const tail = trial > 0
+          ? `Output is being trimmed while ctx tests it, but nothing counts as saved until a tool clears its proof.${harmLine ? " " + harmLine : ""}`
+          : "Run a few agent turns and ctx will show what is on the table here.";
+        $("home-savings").className = "savings muted";
+        $("home-savings").innerHTML = `<div class="sv-label">On the table</div><div class="sv-val">none yet</div><div class="sv-sub">${tail}</div>`;
+      }
     }
   }
 
