@@ -435,9 +435,9 @@
     <!-- ══ HOME ══ -->
     <section class="view on" id="view-home">
       <div class="hero">
-        <div class="eyebrow"><span class="pip"></span> Context truth and safety layer</div>
+        <div class="eyebrow"><span class="pip"></span> Context education and savings</div>
         <h1 class="title">ctx makes your agent leaner without losing the thread.</h1>
-        <p class="lede">Your coding agent drags around tool output it stops needing. ctx clears the dead weight from its context, but only the parts your own sessions prove are safe to drop. The tool still runs in full; ctx just shortens what the agent reads back.</p>
+        <p class="lede">First it shows you where your agent's context actually goes, tool by tool. Then it reclaims the room it can prove is safe to drop, and only that. Everything stays on your machine, and the tool always runs in full.</p>
         <div class="snapshot">
           <div class="status"><span class="pip"></span><div class="big" id="home-status">Getting your numbers.</div></div>
           <div class="savings" id="home-savings"></div>
@@ -452,16 +452,17 @@
       </div>
 
       <div class="sec">
-        <div class="sec-eyebrow">How ctx decides, in three rules</div>
+        <div class="sec-eyebrow">See, save, trust</div>
         <div class="pillars">
-          <div class="pillar"><div class="pn">1</div><div class="pt">Shortens what the agent reads back</div><div class="pb">When a tool's output runs long, ctx trims it to what matters and keeps the errors. It does this across the agents it watches, Claude Code and Cursor. Trimming MCP tools you rarely call is available too, but it is off by default until you turn it on.</div></div>
-          <div class="pillar"><div class="pn">2</div><div class="pt">Proves before it trims for real</div><div class="pb">A tool only starts trimming for keeps after your own sessions show that trimming it did not make the agent re-read or correct more. Before that it watches, then tests quietly.</div></div>
-          <div class="pillar"><div class="pn">3</div><div class="pt">A trim is never a dead end</div><div class="pb">The tool still runs in full. ctx only shortens what the agent reads back, and if it needs the detail again it reads it again, which ctx counts and learns from.</div></div>
+          <div class="pillar"><div class="pn">1</div><div class="pt">See where your context goes</div><div class="pb">The Context bill itemizes every tool's output, biggest sinks first, so you can see where your agent actually spends its context. No other tool shows you this.</div></div>
+          <div class="pillar"><div class="pn">2</div><div class="pt">Save the room that is safe to reclaim</div><div class="pb">ctx trims a tool only after your own sessions show that trimming it did not make the agent re-read or correct. The tool always runs in full, and a trimmed detail can be read again on demand.</div></div>
+          <div class="pillar"><div class="pn">3</div><div class="pt">Local, neutral, honest</div><div class="pb">Everything stays in SQLite on this machine. No account, no telemetry. ctx watches Claude Code and Cursor alike and takes no side between them.</div></div>
         </div>
       </div>
 
       <div class="footer">
         <span>All local. Nothing leaves this machine.</span>
+        <span class="link" onclick="go('bill')">Context bill</span>
         <span class="link" onclick="go('settings')">Settings</span>
         <span class="link" onclick="go('activity')">Activity</span>
       </div>
