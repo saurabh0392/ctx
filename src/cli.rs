@@ -156,6 +156,13 @@ pub enum ContextCommand {
     On,
     /// Turn off user-facing compression, keep shadow collection (alias for `preset off`)
     Off,
+    /// Archive the current DB to a timestamped backup, then start fresh with an empty schema.
+    /// Destructive: requires --yes. The archive lands beside ctx.db as ctx.db.post-wipe-<ts>.
+    Reset {
+        /// Confirm the wipe. Without it, prints what would happen and exits.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Re-parse sessions, clean interrupt flags, rejoin outcome labels, retrain model
     Repair {
         /// Skip the full JSONL re-parse (only rejoin from existing turns)

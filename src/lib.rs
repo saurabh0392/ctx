@@ -245,6 +245,7 @@ pub async fn run() -> Result<()> {
             ContextCommand::Preset { value } => context_ctl::set_preset(&value)?,
             ContextCommand::On => context_ctl::set_preset("safe")?,
             ContextCommand::Off => context_ctl::set_preset("off")?,
+            ContextCommand::Reset { yes } => context_ctl::reset(yes)?,
             ContextCommand::Repair {
                 skip_ingest,
                 json,
