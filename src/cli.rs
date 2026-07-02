@@ -131,6 +131,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: FilterCommand,
     },
+    /// Print the verbatim original of a trim by its rewind id (from the ctx trim marker).
+    Expand {
+        /// The rewind id shown in the "[ctx trimmed ... id: X]" marker.
+        id: String,
+    },
     /// Self-learning context controller: collection status, presets, training, activation
     Context {
         #[command(subcommand)]

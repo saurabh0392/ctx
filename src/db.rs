@@ -507,6 +507,82 @@ pub struct ContextBill {
     pub since: Option<String>,
 }
 
+/// A verbatim tool output ctx trimmed, kept so the agent can re-expand it on demand (CTX-51).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct RewindEntry {
+    pub id: String,
+    pub ts: String,
+    pub tool_name: String,
+    pub command_or_path: String,
+    pub original: String,
+    pub chars: i64,
+}
+
+/// Store a trimmed original, keyed by a content id, so a later `ctx_expand` returns it verbatim.
+/// Self-creates the table and keeps the store bounded so the DB does not grow without limit.
+pub fn insert_rewind(
+    conn: &Connection,
+    id: &str,
+    ts: &str,
+    session_id: Option<&str>,
+    tool_name: &str,
+    command_or_path: &str,
+    original: &str,
+) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS rewind_store (
+            id TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            tool_name TEXT NOT NULL,
+            command_or_path TEXT,
+            original TEXT NOT NULL,
+            chars INTEGER NOT NULL
+        )",
+        [],
+    );
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO rewind_store
+         (id, ts, session_id, tool_name, command_or_path, original, chars)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            id,
+            ts,
+            session_id,
+            tool_name,
+            command_or_path,
+            original,
+            original.chars().count() as i64
+        ],
+    );
+    // Keep only the most recent entries so verbatim blobs do not accumulate forever.
+    let _ = conn.execute(
+        "DELETE FROM rewind_store WHERE id NOT IN
+         (SELECT id FROM rewind_store ORDER BY ts DESC LIMIT 500)",
+        [],
+    );
+}
+
+/// Fetch a stored original by id. None if the id is unknown or the store is empty.
+pub fn get_rewind(conn: &Connection, id: &str) -> Option<RewindEntry> {
+    conn.query_row(
+        "SELECT id, ts, tool_name, COALESCE(command_or_path, ''), original, chars
+         FROM rewind_store WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(RewindEntry {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                tool_name: r.get(2)?,
+                command_or_path: r.get(3)?,
+                original: r.get(4)?,
+                chars: r.get(5)?,
+            })
+        },
+    )
+    .ok()
+}
+
 pub fn context_bill(conn: &Connection) -> ContextBill {
     let mut bill = ContextBill::default();
     let mut stmt = match conn.prepare(

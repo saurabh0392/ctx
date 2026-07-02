@@ -656,6 +656,20 @@ pub fn reset(yes: bool) -> Result<()> {
     Ok(())
 }
 
+/// Print the verbatim original of a trim, looked up by its rewind id (CTX-51). Backs the
+/// `ctx expand <id>` fallback the trim marker points at; the agent path is the ctx_expand MCP tool.
+pub fn expand(id: &str) -> Result<()> {
+    let conn = crate::db::open_db()?;
+    let _ = crate::db::ensure_schema(&conn);
+    match crate::db::get_rewind(&conn, id) {
+        Some(e) => {
+            println!("{}", e.original);
+            Ok(())
+        }
+        None => anyhow::bail!("No stored output for id \"{id}\"."),
+    }
+}
+
 pub fn set_preset(value: &str) -> Result<()> {
     let preset = CompressPreset::parse(value)
         .ok_or_else(|| anyhow::anyhow!("unknown preset '{value}' (use off, safe, or full)"))?;

@@ -240,6 +240,7 @@ pub async fn run() -> Result<()> {
             FilterCommand::Expand { target } => filter_control::expand_session_target(&target)?,
             FilterCommand::ClearExpansion => filter_control::clear_session_expansion()?,
         },
+        Commands::Expand { id } => context_ctl::expand(&id)?,
         Commands::Context { command } => match command {
             ContextCommand::Status { json } => context_ctl::status(json)?,
             ContextCommand::Preset { value } => context_ctl::set_preset(&value)?,
