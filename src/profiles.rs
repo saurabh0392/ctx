@@ -25,10 +25,14 @@ pub struct Profile {
     pub triggers: Vec<String>,
 }
 
-// Observed tool counts per MCP server in this Claude Code environment
+// Full tool-catalog size each MCP server ships (the menu carried on every request). The four
+// active connectors here (Figma, Linear, Canva, Notion) were counted from the live catalogs on
+// 2026-07-02; the rest are earlier observations. These are the carried-side ground truth for the
+// Tool Menu Bill (CTX-63). A server missing here falls back to a small default; the bill also
+// floors each count at the distinct tools actually observed, so it never under-counts.
 pub const SERVER_COUNTS: &[(&str, usize)] = &[
     ("mcp__claude_ai_Atlassian__", 22),
-    ("mcp__claude_ai_Figma__", 21),
+    ("mcp__claude_ai_Figma__", 24),
     ("mcp__claude_ai_Data_Shippo__", 25),
     ("mcp__claude_ai_Fullstory__", 18),
     ("mcp__claude_ai_Slack__", 15),
@@ -36,11 +40,11 @@ pub const SERVER_COUNTS: &[(&str, usize)] = &[
     ("mcp__claude_ai_Google_Drive__", 7),
     ("mcp__claude_ai_AWS_Marketplace__", 5),
     ("mcp__claude_ai_Google_Calendar__", 2),
-    ("mcp__claude_ai_Linear__", 2),
+    ("mcp__claude_ai_Linear__", 47),
     ("mcp__claude_ai_Shippo_MCP_Dev__", 3),
     ("mcp__claude_ai_Shippo_MCP_DEV_QA__", 3),
     ("mcp__claude_ai_Adobe_Marketing_Agent__", 2),
-    ("mcp__claude_ai_Canva__", 2),
+    ("mcp__claude_ai_Canva__", 39),
     ("mcp__claude_ai_Clay__", 2),
     ("mcp__claude_ai_Cloudflare_Developer_Platform__", 2),
     ("mcp__claude_ai_Docusign__", 2),
@@ -52,7 +56,7 @@ pub const SERVER_COUNTS: &[(&str, usize)] = &[
     ("mcp__claude_ai_Moody_s__", 2),
     ("mcp__claude_ai_NetSuite__", 2),
     ("mcp__claude_ai_NetSuite_Sandbox__", 2),
-    ("mcp__claude_ai_Notion__", 2),
+    ("mcp__claude_ai_Notion__", 19),
     ("mcp__claude_ai_Postman__", 2),
     ("mcp__claude_ai_Ramp__", 2),
     ("mcp__claude_ai_Stripe__", 2),
@@ -65,7 +69,9 @@ pub const SERVER_COUNTS: &[(&str, usize)] = &[
 ];
 
 pub const TOTAL_TOOLS: usize = 156;
-const TOKENS_PER_TOOL: usize = 600;
+/// Flat per-schema token estimate for one MCP tool (name + description + JSON schema). Schemas vary
+/// widely, so this is a labeled estimate, not a measurement; counts and ratios on the bill are exact.
+pub const TOKENS_PER_TOOL: usize = 600;
 
 /// Slugs written by `generate_from_config` — pruned on regenerate when no longer observed.
 const AUTO_GENERATED_PROFILE_SLUGS: &[&str] = &[
@@ -171,6 +177,13 @@ fn tool_count_for_prefix(prefix: &str) -> usize {
         .find(|(k, _)| k.starts_with(prefix) || prefix.starts_with(*k))
         .map(|(_, c)| *c)
         .unwrap_or(3)
+}
+
+/// Full catalog size a server ships (the tool menu carried every request), for the input-tax bill.
+/// This is the carried-side ground truth; the bill floors it at the distinct tools observed so a
+/// server whose catalog grew past `SERVER_COUNTS` is never under-counted.
+pub fn catalog_tool_count(prefix: &str) -> usize {
+    tool_count_for_prefix(prefix)
 }
 
 /// Estimated kept / removed / token savings for a profile slug (hook + dashboard estimates).

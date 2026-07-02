@@ -550,6 +550,50 @@ pub struct ContextBill {
     pub trend: Vec<BillDay>,
 }
 
+/// One MCP server's line on the Tool Menu Bill: the full catalog it ships every request against
+/// what the developer actually invokes. Counts and ratios are exact; token figures are the count
+/// times a flat per-schema estimate (`ToolMenuBill::tokens_per_tool`), so the UI can label them.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ToolMenuBillServer {
+    pub server: String,
+    pub prefix: String,
+    /// Full menu carried on every request (the fixed input tax).
+    pub catalog_tools: i64,
+    /// catalog_tools * tokens_per_tool: tokens paid per request whether used or not.
+    pub carried_tokens: i64,
+    /// Distinct tools actually invoked in the window.
+    pub invoked_tools: i64,
+    /// Total invocations in the window.
+    pub calls: i64,
+    /// catalog_tools - invoked_tools: tools carried but never called.
+    pub dead_tools: i64,
+    /// dead_tools * tokens_per_tool: reclaimable input tax per request.
+    pub dead_tokens: i64,
+    /// dead_tools / catalog_tools, 0..1.
+    pub dead_ratio: f64,
+    pub last_used: Option<String>,
+}
+
+/// The input-side Context Bill: the fixed per-request tool-menu tax, itemized per server and ranked
+/// by dead weight. The mirror of `context_bill` (the output/result tax). Built from real
+/// `tool_invocations` against measured server catalogs, no new tracking. CTX-63 / M-A.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ToolMenuBill {
+    pub servers: Vec<ToolMenuBillServer>,
+    pub total_catalog_tools: i64,
+    /// Fixed input tax paid on every request, all servers summed.
+    pub total_carried_tokens: i64,
+    pub total_invoked_tools: i64,
+    /// Reclaimable input tax per request (dead weight across all servers).
+    pub total_dead_tokens: i64,
+    /// The flat per-schema token estimate used, surfaced so the UI can label the figures.
+    pub tokens_per_tool: i64,
+    pub biggest_dead_server: Option<String>,
+    pub biggest_dead_tokens: i64,
+    pub lookback_days: i64,
+    pub since: Option<String>,
+}
+
 /// One repo ctx has recorded decisions for, for the shareable report's repo picker (CTX-56).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RepoSummary {
@@ -971,6 +1015,106 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
         })
         .ok()
         .flatten();
+    bill
+}
+
+/// The input-side Context Bill (CTX-63 / M-A): the per-server tool-menu tax over the last
+/// `lookback_days`. Carried = the full catalog each connected server ships every request; invoked =
+/// what was actually called (real `tool_invocations`); dead weight = the difference, ranked biggest
+/// first. Only servers with invocation history in the window appear, so it renders on this
+/// machine's own data with no new tracking. Token figures are counts times a flat per-schema
+/// estimate; the multiplier is returned so the UI can label them.
+pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
+    let tpt = crate::profiles::TOKENS_PER_TOOL as i64;
+    let mut bill = ToolMenuBill {
+        tokens_per_tool: tpt,
+        lookback_days: lookback_days as i64,
+        ..Default::default()
+    };
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(lookback_days as i64)).to_rfc3339();
+
+    let mut stmt = match conn.prepare(
+        "SELECT server_prefix,
+                COUNT(DISTINCT tool_name),
+                COUNT(*),
+                MAX(ts)
+         FROM tool_invocations
+         WHERE ts >= ?1 AND server_prefix IS NOT NULL AND server_prefix != ''
+         GROUP BY server_prefix
+         ORDER BY COUNT(*) DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return bill,
+    };
+
+    let rows = stmt.query_map(params![cutoff], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, Option<String>>(3)?,
+        ))
+    });
+
+    if let Ok(rows) = rows {
+        for (prefix, invoked_tools, calls, last_used) in rows.flatten() {
+            // Carried catalog: the measured server catalog, floored at the distinct tools ever
+            // observed for this server so it never reads below what we have actually seen it ship.
+            let observed_all_time: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT tool_name) FROM tool_invocations WHERE server_prefix = ?1",
+                    params![prefix],
+                    |r| r.get(0),
+                )
+                .unwrap_or(invoked_tools);
+            let catalog = crate::profiles::catalog_tool_count(&prefix) as i64;
+            let catalog_tools = catalog.max(observed_all_time).max(invoked_tools);
+            let dead_tools = (catalog_tools - invoked_tools).max(0);
+            let dead_ratio = if catalog_tools > 0 {
+                dead_tools as f64 / catalog_tools as f64
+            } else {
+                0.0
+            };
+            let carried_tokens = catalog_tools * tpt;
+            let dead_tokens = dead_tools * tpt;
+
+            bill.total_catalog_tools += catalog_tools;
+            bill.total_carried_tokens += carried_tokens;
+            bill.total_invoked_tools += invoked_tools;
+            bill.total_dead_tokens += dead_tokens;
+
+            bill.servers.push(ToolMenuBillServer {
+                server: crate::profiles::mcp_prefix_to_server_display(&prefix),
+                prefix,
+                catalog_tools,
+                carried_tokens,
+                invoked_tools,
+                calls,
+                dead_tools,
+                dead_tokens,
+                dead_ratio,
+                last_used,
+            });
+        }
+    }
+
+    bill.servers
+        .sort_by(|a, b| b.dead_tokens.cmp(&a.dead_tokens));
+    if let Some(top) = bill.servers.first() {
+        bill.biggest_dead_server = Some(top.server.clone());
+        bill.biggest_dead_tokens = top.dead_tokens;
+    }
+
+    bill.since = conn
+        .query_row(
+            "SELECT MIN(ts) FROM tool_invocations WHERE ts >= ?1",
+            params![cutoff],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+
     bill
 }
 
@@ -4732,6 +4876,111 @@ mod compress_decision_tests {
             .map(|c| c.baseline_n)
             .sum();
         assert_eq!(baseline_n, 1, "self-dev row must be excluded from the gate");
+    }
+
+    #[test]
+    fn tool_menu_bill_ranks_dead_weight_and_uses_catalog() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('bill-sess', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Linear: 3 distinct tools invoked (catalog 47), Notion: 2 distinct (catalog 19). All in-window.
+        for tool in ["get_issue", "list_issues", "save_issue"] {
+            insert_tool_invocation(
+                &conn,
+                sid,
+                None,
+                &format!("mcp__claude_ai_Linear__{tool}"),
+                "mcp__claude_ai_Linear__",
+                &now,
+            )
+            .unwrap();
+        }
+        for tool in ["notion-fetch", "notion-search"] {
+            insert_tool_invocation(
+                &conn,
+                sid,
+                None,
+                &format!("mcp__claude_ai_Notion__{tool}"),
+                "mcp__claude_ai_Notion__",
+                &now,
+            )
+            .unwrap();
+        }
+
+        let bill = tool_menu_bill(&conn, 30);
+        assert_eq!(bill.tokens_per_tool, 600);
+        assert_eq!(bill.servers.len(), 2);
+
+        // Linear carries the bigger catalog and more dead weight, so it ranks first.
+        let linear = &bill.servers[0];
+        assert_eq!(linear.server, "Linear");
+        assert_eq!(linear.catalog_tools, 47);
+        assert_eq!(linear.invoked_tools, 3);
+        assert_eq!(linear.dead_tools, 44);
+        assert_eq!(linear.carried_tokens, 47 * 600);
+        assert_eq!(linear.dead_tokens, 44 * 600);
+
+        let notion = &bill.servers[1];
+        assert_eq!(notion.server, "Notion");
+        assert_eq!(notion.dead_tools, 17);
+
+        assert_eq!(bill.biggest_dead_server.as_deref(), Some("Linear"));
+        assert_eq!(bill.total_carried_tokens, (47 + 19) * 600);
+        assert_eq!(bill.total_invoked_tools, 5);
+    }
+
+    #[test]
+    fn tool_menu_bill_floors_catalog_at_observed() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('bill-sess2', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // A server not in SERVER_COUNTS (falls back to 3), but 5 distinct tools were observed:
+        // the catalog must floor at what we have actually seen, so dead weight is never negative.
+        for i in 0..5 {
+            insert_tool_invocation(
+                &conn,
+                sid,
+                None,
+                &format!("mcp__claude_ai_Unknownco__tool_{i}"),
+                "mcp__claude_ai_Unknownco__",
+                &now,
+            )
+            .unwrap();
+        }
+
+        let bill = tool_menu_bill(&conn, 30);
+        assert_eq!(bill.servers.len(), 1);
+        let s = &bill.servers[0];
+        assert_eq!(s.invoked_tools, 5);
+        assert!(s.catalog_tools >= 5, "catalog floored at observed distinct");
+        assert_eq!(s.dead_tools, s.catalog_tools - s.invoked_tools);
+        assert!(s.dead_tools >= 0);
     }
 
     #[test]
