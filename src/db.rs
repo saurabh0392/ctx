@@ -861,20 +861,41 @@ pub struct ToolFollowup {
     pub is_edit_tool: bool,
     pub reread_rate: f64,
     pub edit_follow_rate: f64,
+    /// Total characters this tool poured into context (all decisions, not just joined), so an edit
+    /// tool reads as the trim candidate it is: the upside a future trim would go after.
+    pub sink_chars: i64,
+    /// Characters a trim would drop in shadow. For edit tools this reflects the CTX-60 echo strategy
+    /// going forward; older rows measured it with the generic pass, so treat it as a lower bound.
+    pub reclaimable_chars: i64,
 }
 
 pub fn tool_followups(conn: &Connection) -> Vec<ToolFollowup> {
     let mut out = Vec::new();
+    // Outcome rates come from joined decisions (self-dev excluded, so the rate is real usage). Sink
+    // and reclaimable come from every decision for the tool, since the sink is spent whether or not
+    // the window has closed. Two subqueries keep each measure honest to its own denominator.
     let sql = format!(
-        "SELECT tool_name,
-                COUNT(*),
-                SUM(COALESCE(outcome_reread,0)),
-                SUM(COALESCE(outcome_edit_follow,0))
-         FROM compress_decisions
-         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}
-         GROUP BY tool_name
-         HAVING COUNT(*) >= 5
-         ORDER BY 2 DESC"
+        "SELECT j.tool_name, j.joined, j.rereads, j.edit_follows,
+                COALESCE(s.sink,0), COALESCE(s.reclaimable,0)
+         FROM (
+             SELECT tool_name,
+                    COUNT(*) AS joined,
+                    SUM(COALESCE(outcome_reread,0)) AS rereads,
+                    SUM(COALESCE(outcome_edit_follow,0)) AS edit_follows
+             FROM compress_decisions
+             WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}
+             GROUP BY tool_name
+             HAVING COUNT(*) >= 5
+         ) j
+         LEFT JOIN (
+             SELECT tool_name,
+                    SUM(chars_in) AS sink,
+                    SUM(chars_in - would_chars_out) AS reclaimable
+             FROM compress_decisions
+             WHERE 1=1{EXCLUDE_SELF_DEV}
+             GROUP BY tool_name
+         ) s ON s.tool_name = j.tool_name
+         ORDER BY j.joined DESC"
     );
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return out;
@@ -900,6 +921,8 @@ pub fn tool_followups(conn: &Connection) -> Vec<ToolFollowup> {
             joined,
             rereads,
             edit_follows,
+            sink_chars: r.get(4)?,
+            reclaimable_chars: r.get(5)?,
         })
     });
     if let Ok(rows) = rows {

@@ -987,23 +987,40 @@
   function followupSection(ctx) {
     const f = (ctx.followups || []).filter((t) => (t.joined || 0) >= 5);
     if (!f.length) return "";
-    const cards = f.map((r) => {
-      const isEdit = !!r.is_edit_tool;
-      const primaryRate = Math.round((isEdit ? r.edit_follow_rate : r.reread_rate) * 100);
-      const primaryN = isEdit ? r.edit_follows : r.rereads;
-      const primaryWord = isEdit ? "re-edited" : "re-read";
-      const tag = isEdit ? `<span class="fu-tag edit">edit tool</span>` : `<span class="fu-tag">reference</span>`;
-      // Secondary rate, the other signal, for context.
-      const secRate = Math.round((isEdit ? r.reread_rate : r.edit_follow_rate) * 100);
-      const secWord = isEdit ? "re-read" : "re-edited the file";
-      const cls = primaryRate >= 50 ? "risk" : primaryRate <= 10 ? "clean" : "warn";
-      return `<div class="attr-card ${cls}">
-        <div class="attr-head"><div class="attr-tool">${esc(prettyTool(r.tool))}</div>${tag}</div>
-        <div class="attr-big">${primaryRate}% <span>${primaryWord}</span></div>
-        <div class="attr-detail">${num(primaryN)} of ${num(r.joined)} followed by ${primaryWord === "re-edited" ? "another edit to the same file" : "re-reading the same target"}. ${secRate}% ${secWord}.</div>
-      </div>`;
-    }).join("");
-    return `<div class="sec" style="margin-top:28px"><div class="sec-eyebrow">Baseline follow-up rates, by tool</div><p class="sec-note">How often each tool's output is followed by the agent re-touching the same target: a re-edit for edit tools, a re-read for reference tools. These are baseline rates on your own work, how agents behave whether or not ctx trims, so they are the bar a trim must not worsen, not harm by themselves. Edit is watch-only, so its rate is pure baseline: this is the signal a future decision to trim Edit would be judged against, not reread.</p><div class="attr-grid">${cards}</div></div>`;
+    let out = "";
+
+    // Edit/write tools are real trim candidates (Edit is the biggest sink), but the reread-based
+    // causal ladder excludes them, so they never show as tools on a path to being trimmed. Give them
+    // their own group: the sink upside, the re-edit bar a trim must beat, and the honest roadmap.
+    const edits = f.filter((t) => t.is_edit_tool && (t.sink_chars || 0) > 0);
+    if (edits.length) {
+      const cards = edits.map((r) => {
+        const rate = Math.round((r.edit_follow_rate || 0) * 100);
+        const sinkTok = fmtK(tok(r.sink_chars || 0));
+        return `<div class="attr-card warn">
+          <div class="attr-head"><div class="attr-tool">${esc(prettyTool(r.tool))}</div><span class="fu-tag edit">watch-only</span></div>
+          <div class="attr-big">${sinkTok} <span>tokens sunk</span></div>
+          <div class="attr-detail">Never trimmed yet. Baseline re-edit rate <b>${rate}%</b> (${num(r.edit_follows)} of ${num(r.joined)}): the bar a trim must not worsen. Trimming a write is the riskiest cut, so ctx measures the saving in shadow and holds until a trial shows re-edits do not rise. That trial is the path to trimming Edit.</div>
+        </div>`;
+      }).join("");
+      out += `<div class="sec" style="margin-top:28px"><div class="sec-eyebrow">Trim candidates: watch-only tools</div><p class="sec-note">These tools spend real context but ctx does not trim them yet. An edit tool's output confirms a write, and the agent must never misread what it just wrote, so it is record-only. The number that decides a future trim is re-edit rate, not re-read. This is the honest roadmap, not a promise a tool earns.</p><div class="attr-grid">${cards}</div></div>`;
+    }
+
+    // Reference tools (Read, Bash): baseline re-read rates, the harm bar for their trims.
+    const refs = f.filter((t) => !t.is_edit_tool);
+    if (refs.length) {
+      const cards = refs.map((r) => {
+        const rate = Math.round((r.reread_rate || 0) * 100);
+        const cls = rate >= 50 ? "risk" : rate <= 10 ? "clean" : "warn";
+        return `<div class="attr-card ${cls}">
+          <div class="attr-head"><div class="attr-tool">${esc(prettyTool(r.tool))}</div><span class="fu-tag">reference</span></div>
+          <div class="attr-big">${rate}% <span>re-read</span></div>
+          <div class="attr-detail">${num(r.rereads)} of ${num(r.joined)} followed by re-reading the same target. This is baseline behavior, the bar a trim must not worsen, not harm by itself.</div>
+        </div>`;
+      }).join("");
+      out += `<div class="sec" style="margin-top:28px"><div class="sec-eyebrow">Baseline re-read rates, by reference tool</div><p class="sec-note">How often a tool's output is followed by re-reading the same target, on your own work, whether or not ctx trims. A trim earns only if it does not push this rate up.</p><div class="attr-grid">${cards}</div></div>`;
+    }
+    return out;
   }
 
   function buildSystemNarrative(ctx, proof, rows) {
