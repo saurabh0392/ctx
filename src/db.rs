@@ -1645,6 +1645,13 @@ fn reread_value_sql() -> String {
 /// is the window in days; the edit-tool predicate comes from the one shared edit-tool set.
 fn edit_follow_value_sql() -> String {
     let edit_is_d2 = crate::outcome_signals::edit_tool_sql_in_list("d2.tool_name");
+    // Same-region requirement (CTX-62 refinement): when both the trimmed edit and the follow-up
+    // edit recorded the line range their `cat -n` echo covered (`features_json.edit_lines`), the
+    // follow-up only counts as a re-edit if those ranges overlap within a small tolerance. Editing
+    // line 12 then line 500 of one big file is normal multi-part work, not a botched-edit redo.
+    // When either side lacks a range (a read-then-edit, a new-file Write, a legacy row), it falls
+    // back to the original same-file rule, so read "needed whole" signals are unchanged.
+    let overlap = edit_region_overlap_sql();
     format!(
         r#"(
                 SELECT CASE WHEN EXISTS (
@@ -1654,6 +1661,7 @@ fn edit_follow_value_sql() -> String {
                       AND d2.command_or_path IS NOT NULL
                       AND d2.id <> compress_decisions.id
                       AND {edit_is_d2}
+                      AND {overlap}
                       AND julianday(d2.ts) > julianday(compress_decisions.ts)
                       AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
                       AND NOT EXISTS (
@@ -1666,7 +1674,27 @@ fn edit_follow_value_sql() -> String {
                       )
                 ) THEN 1 ELSE 0 END
             )"#,
-        edit_is_d2 = edit_is_d2
+        edit_is_d2 = edit_is_d2,
+        overlap = overlap,
+    )
+}
+
+/// Lines of slack when comparing two edit echo ranges. The echo already shows a few context lines
+/// around the change, and an intervening edit can shift line numbers slightly, so ranges within a
+/// few lines of each other still count as the same region.
+const REEDIT_OVERLAP_TOLERANCE_LINES: i64 = 3;
+
+/// SQL predicate: the decision's edit range and `d2`'s edit range overlap (within tolerance), or
+/// either side has no range and we defer to the same-file rule. Reads have no `edit_lines`, so a
+/// read-then-edit always takes the fallback and keeps its existing "needed whole" meaning.
+fn edit_region_overlap_sql() -> String {
+    let tol = REEDIT_OVERLAP_TOLERANCE_LINES;
+    let cd_lo = "CAST(json_extract(compress_decisions.features_json,'$.edit_lines[0]') AS INTEGER)";
+    let cd_hi = "CAST(json_extract(compress_decisions.features_json,'$.edit_lines[1]') AS INTEGER)";
+    let d2_lo = "CAST(json_extract(d2.features_json,'$.edit_lines[0]') AS INTEGER)";
+    let d2_hi = "CAST(json_extract(d2.features_json,'$.edit_lines[1]') AS INTEGER)";
+    format!(
+        "({cd_lo} IS NULL OR {d2_lo} IS NULL OR ({d2_lo} <= {cd_hi} + {tol} AND {d2_hi} >= {cd_lo} - {tol}))"
     )
 }
 
@@ -5247,6 +5275,80 @@ mod compress_decision_tests {
         let (b_edit, b_reread) = label("b.rs");
         assert_eq!(b_edit, 0, "b.rs was only re-read, never edited");
         assert_eq!(b_reread, 1, "b.rs was read again within the window");
+    }
+
+    #[test]
+    fn edit_follow_requires_same_region_when_ranges_are_known() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-region', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-region'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        // An edit decision that records the line range its echo covered.
+        let edit_at = |ts: &str, path: &str, lo: u32, hi: u32| {
+            let features = format!("{{\"edit_lines\":[{lo},{hi}]}}");
+            let row = CompressDecision {
+                kind: "edit",
+                tool_name: "Edit",
+                features_json: &features,
+                command_or_path: path,
+                applied: true,
+                lines_drop: 40,
+                ..decision(ts, "sess-region", "Edit", path)
+            };
+            insert_compress_decision(&conn, &row).unwrap();
+        };
+
+        // big.rs: first edit at lines 10-12, follow-up edit far away at 500-502 -> not a re-edit.
+        edit_at("2026-05-31T10:01:00+00:00", "big.rs", 10, 12);
+        edit_at("2026-05-31T10:03:00+00:00", "big.rs", 500, 502);
+        // small.rs: first edit at 10-12, follow-up overlaps at 11-13 -> a real re-edit.
+        edit_at("2026-05-31T10:01:00+00:00", "small.rs", 10, 12);
+        edit_at("2026-05-31T10:03:00+00:00", "small.rs", 11, 13);
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let first_edit_follow = |path: &str| -> i64 {
+            conn.query_row(
+                "SELECT COALESCE(outcome_edit_follow,0) FROM compress_decisions
+                 WHERE command_or_path = ?1 AND ts = '2026-05-31T10:01:00+00:00'",
+                params![path],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            first_edit_follow("big.rs"),
+            0,
+            "an edit 490 lines away is normal multi-part work, not a re-edit"
+        );
+        assert_eq!(
+            first_edit_follow("small.rs"),
+            1,
+            "an overlapping follow-up edit is a real same-region re-edit"
+        );
     }
 
     #[test]

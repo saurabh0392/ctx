@@ -109,6 +109,13 @@ pub struct ShadowFeatures {
     /// `"self_dev":true`, which the corpus-exclusion SQL matches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_dev: Option<bool>,
+    /// For edit tools, the `[min, max]` line numbers the echoed `cat -n` snippet covered. It lets
+    /// the re-edit harm signal require a *same-region* follow-up edit instead of firing on any later
+    /// edit anywhere in a large file (CTX-62 refinement): editing line 12 then line 500 of one file
+    /// is normal multi-part work, not a botched-edit redo. `None` for non-edit decisions or when the
+    /// echo carried no parseable line numbers, in which case the join falls back to same-file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_lines: Option<[u32; 2]>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +153,27 @@ pub fn kind_str(k: CompressKind) -> &'static str {
         CompressKind::Mcp => "mcp",
         CompressKind::Edit => "edit",
     }
+}
+
+/// Parse the `[min, max]` line numbers from an edit tool's `cat -n` echo (rows like
+/// "   12\t    fn foo() {"). Requires a tab right after the digits so prose numbers in the header
+/// ("The file ... has been updated") never match. Returns `None` when nothing parses (a new-file
+/// Write, an unfamiliar shape), which makes the re-edit join fall back to same-file matching.
+pub(crate) fn parse_edit_echo_range(echo: &str) -> Option<[u32; 2]> {
+    let mut lo = u32::MAX;
+    let mut hi = 0u32;
+    for line in echo.lines() {
+        let trimmed = line.trim_start();
+        let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() || !trimmed[digits.len()..].starts_with('\t') {
+            continue;
+        }
+        if let Ok(n) = digits.parse::<u32>() {
+            lo = lo.min(n);
+            hi = hi.max(n);
+        }
+    }
+    (hi > 0 && lo != u32::MAX).then_some([lo, hi])
 }
 
 /// Server prefix for an MCP tool name (`mcp__linear__list` -> `mcp__linear`), else None.
@@ -254,6 +282,11 @@ pub fn compute_shadow_decision(
             would_model_apply: None,
             model_proposed: None,
             self_dev: None,
+            edit_lines: if matches!(kind, CompressKind::Edit) {
+                parse_edit_echo_range(raw_output)
+            } else {
+                None
+            },
         },
     })
 }
@@ -270,6 +303,33 @@ mod tests {
             compress_redact_secrets: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn parses_edit_echo_line_range_and_skips_prose() {
+        let echo = "The file /a/b.rs has been updated. Here's the result of running `cat -n`:\n   10\tfn foo() {\n   11\t    bar();\n   12\t}";
+        assert_eq!(parse_edit_echo_range(echo), Some([10, 12]));
+        // No cat -n rows (a new-file Write confirmation) -> None, so the join falls back to same-file.
+        assert_eq!(
+            parse_edit_echo_range("File created successfully at /a/b.rs"),
+            None
+        );
+    }
+
+    #[test]
+    fn edit_decision_records_its_line_range() {
+        let echo = "The file /a/b.rs has been updated. Here's the result of running `cat -n`:\n  40\tlet x = 1;\n  41\tlet y = 2;";
+        let d = compute_shadow_decision(
+            "Edit",
+            &serde_json::json!({"file_path": "/a/b.rs"}),
+            echo,
+            &cfg(),
+            None,
+            "/tmp",
+        )
+        .expect("decision");
+        assert_eq!(d.features.edit_lines, Some([40, 41]));
+        assert!(d.features_json().contains("\"edit_lines\":[40,41]"));
     }
 
     #[test]
