@@ -67,7 +67,11 @@ pub enum Commands {
         no_open: bool,
     },
     /// Scan Claude Code JSONL into ~/.ctx/ctx.db (sessions, turns, tool invocations)
-    Ingest,
+    Ingest {
+        /// Re-parse every session file, not just files changed since last ingest
+        #[arg(long)]
+        full: bool,
+    },
     /// Claude Code hook entrypoints (stdin JSON → stdout; used from ~/.claude/settings.json)
     Hook {
         #[command(subcommand)]
@@ -152,6 +156,14 @@ pub enum ContextCommand {
     On,
     /// Turn off user-facing compression, keep shadow collection (alias for `preset off`)
     Off,
+    /// Re-parse sessions, clean interrupt flags, rejoin outcome labels, retrain model
+    Repair {
+        /// Skip the full JSONL re-parse (only rejoin from existing turns)
+        #[arg(long)]
+        skip_ingest: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Train the local outcome model from collected labels and print the honesty gate
     Learn {
         #[arg(long)]

@@ -121,7 +121,8 @@
   .tool-msg { font-size: 13px; color: var(--t3); flex: 1; line-height: 1.5; }
   .pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 4px 11px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
   .pill.earned { background: var(--primary-dim); color: var(--primary-lt); }
-  .pill.test { background: var(--amber-dim); color: var(--amber); }
+  .pill.trial { background: var(--amber-dim); color: var(--amber); }
+  .pill.proving { background: var(--surface3); color: var(--t2); box-shadow: inset 0 0 0 1px var(--border2); }
   .pill.off { background: var(--danger-dim); color: var(--danger); }
   .pill.watch { background: var(--surface3); color: var(--t3); }
   .chev { color: var(--t4); font-size: 12px; transition: transform .2s; flex-shrink: 0; }
@@ -133,42 +134,52 @@
   .tool-story .good { color: var(--primary-lt); font-weight: 600; }
   .tool-story .bad { color: var(--danger); font-weight: 600; }
   .draw-actions { display: flex; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
-  .mini-btn { font-size: 12.5px; font-weight: 600; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--border2); background: var(--surface2); color: var(--t2); cursor: pointer; }
+  .mini-btn { font-size: 12.5px; font-weight: 600; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--border2); background: var(--surface2); color: var(--t2); cursor: pointer; line-height: 1.2; }
   .mini-btn:hover { color: var(--t1); border-color: var(--t3); }
   .mini-btn.go { border-color: var(--primary-dim); color: var(--primary-lt); }
+  .mini-btn:focus { outline: none; }
+  .mini-btn:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary-dim); }
 
   /* before/after numbers */
-  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
-  .ba-col { background: var(--surface2); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; }
-  .ba-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--t4); }
-  .ba-n { font-size: 12px; color: var(--t3); margin: 3px 0 12px; }
-  .ba-metric { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 9px; }
-  .ba-metric:last-child { margin-bottom: 0; }
-  .ba-mn { font-size: 12.5px; color: var(--t3); }
-  .ba-mv { font-size: 17px; font-weight: 800; color: var(--t1); font-variant-numeric: tabular-nums; line-height: 1.1; text-align: right; }
-  .ba-ci { font-size: 10.5px; color: var(--t4); font-variant-numeric: tabular-nums; }
-  .ba-note { font-size: 11.5px; color: var(--t4); margin-top: 10px; line-height: 1.5; max-width: 720px; }
+  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: stretch; }
+  .ba-col { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; }
+  .ba-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--t4); line-height: 1.3; }
+  .ba-n { font-size: 12px; color: var(--t3); margin: 6px 0 0; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .ba-metric { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; align-items: start; padding: 11px 0; border-bottom: 1px solid var(--border); }
+  .ba-metric:last-child { border-bottom: none; padding-bottom: 0; }
+  .ba-mn { font-size: 12.5px; color: var(--t3); line-height: 1.45; padding-top: 2px; }
+  .ba-metric-val { text-align: right; min-width: 72px; }
+  .ba-mv { display: block; font-size: 16px; font-weight: 800; color: var(--t1); font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .ba-ci { display: block; font-size: 10.5px; color: var(--t4); font-variant-numeric: tabular-nums; margin-top: 3px; line-height: 1.3; }
+  .ba-note { font-size: 11.5px; color: var(--t4); margin-top: 12px; line-height: 1.55; }
 
   /* experiment arms */
-  .arms { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
-  .arm { background: var(--surface2); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; }
-  .arm-h { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--t4); }
-  .arm-n { font-size: 13px; color: var(--t1); margin-top: 4px; }
-  .arm-n span { color: var(--t4); }
-  .arm-s { font-size: 12.5px; color: var(--t3); margin-top: 3px; }
-  .tool-progress { margin-top: 14px; max-width: 740px; }
-  .tp-bar { height: 6px; border-radius: 999px; background: var(--surface3); overflow: hidden; }
+  .arms { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: stretch; }
+  .arm { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; justify-content: flex-start; min-height: 96px; }
+  .arm-h { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--t4); }
+  .arm-n { font-size: 13px; font-weight: 600; color: var(--t1); margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .arm-n span { font-weight: 400; color: var(--t4); }
+  .arm-s { font-size: 12px; color: var(--t3); margin-top: auto; padding-top: 10px; line-height: 1.45; }
+  .tool-progress { margin-top: 0; }
+  .tp-bar { height: 5px; border-radius: 999px; background: var(--surface3); overflow: hidden; }
   .tp-fill { height: 100%; border-radius: 999px; background: var(--amber); transition: width .3s; }
   .tp-fill.earned { background: var(--primary-lt); }
   .tp-fill.wait { background: var(--amber); opacity: .35; }
-  .tp-label { font-size: 12.5px; color: var(--t3); margin-top: 8px; line-height: 1.5; }
-  .ev-toggle { font-size: 12.5px; font-weight: 600; color: var(--t3); cursor: pointer; background: none; border: none; padding: 8px 0; text-decoration: underline; text-underline-offset: 3px; }
-  .ev-toggle:hover { color: var(--t1); }
+  .tp-label { font-size: 12px; color: var(--t3); margin-top: 8px; line-height: 1.5; }
+  .ev-toggle { font-size: 12px; font-weight: 600; color: var(--t3); cursor: pointer; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; padding: 7px 12px; text-decoration: none; line-height: 1.2; }
+  .ev-toggle:hover { color: var(--t1); border-color: var(--t3); }
+  .ev-toggle:focus { outline: none; }
+  .ev-toggle:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary-dim); }
   .tool-evidence { display: none; }
   .tool-evidence.ev-open { display: block; }
-  .ev-lead { font-size: 12.5px; color: var(--t3); line-height: 1.65; margin-top: 16px; max-width: 740px; }
+  .ev-lead { font-size: 12.5px; color: var(--t3); line-height: 1.65; margin: 0 0 20px; }
   .ev-lead b { color: var(--t1); }
-  .ev-sec { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--t4); margin-top: 18px; }
+  .ev-block { margin-top: 24px; }
+  .ev-block:first-child { margin-top: 0; }
+  .ev-sec { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--t4); margin: 0 0 10px; }
+  .ev-callout { font-size: 13px; color: var(--t2); line-height: 1.6; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; }
+  .ev-callout .good { color: var(--primary-lt); font-weight: 600; }
+  .ev-callout .bad { color: var(--danger); font-weight: 600; }
   .sec-note { font-size: 13px; color: var(--t3); line-height: 1.6; margin: 4px 0 0; max-width: 720px; }
 
   /* snapshot: summary + savings, side by side at the top */
@@ -185,18 +196,20 @@
   @media (max-width: 720px) { .snapshot { grid-template-columns: 1fr; } }
 
   /* board: the four-stage ladder */
-  .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+  .board { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 16px; }
   .bcard { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 17px 16px 16px; cursor: pointer; transition: border-color .15s, transform .15s; display: flex; flex-direction: column; }
   .bcard::before { content: ""; position: absolute; top: 0; left: 14px; right: 14px; height: 2px; border-radius: 0 0 2px 2px; }
   .bcard.earned::before { background: var(--primary-lt); }
-  .bcard.test::before { background: var(--amber); }
+  .bcard.trial::before { background: var(--amber); }
+  .bcard.proving::before { background: var(--t3); }
   .bcard.off::before { background: var(--danger); }
   .bcard.watch::before { background: var(--t4); }
   .bcard:hover { border-color: var(--border2); transform: translateY(-1px); }
   .bc-head { display: flex; align-items: baseline; gap: 8px; }
   .bc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; align-self: center; }
   .bc-dot.earned { background: var(--primary-lt); }
-  .bc-dot.test { background: var(--amber); }
+  .bc-dot.trial { background: var(--amber); }
+  .bc-dot.proving { background: var(--t3); }
   .bc-dot.off { background: var(--danger); }
   .bc-dot.watch { background: var(--t4); }
   .bc-title { font-size: 12.5px; font-weight: 700; color: var(--t1); }
@@ -206,6 +219,7 @@
   .bc-chip { font-size: 10.5px; font-family: "SF Mono", ui-monospace, monospace; background: var(--surface3); color: var(--t2); padding: 3px 7px; border-radius: 6px; white-space: nowrap; }
   .bc-more { font-size: 10.5px; color: var(--t4); padding: 3px 4px; align-self: center; }
   .bc-empty { font-size: 11px; color: var(--t4); font-style: italic; }
+  @media (max-width: 1100px) { .board { grid-template-columns: repeat(3, 1fr); } }
   @media (max-width: 880px) { .board { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 480px) { .board { grid-template-columns: 1fr; } }
 
@@ -271,6 +285,54 @@
   .lh-count { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--t3); text-align: right; white-space: nowrap; }
   @media (max-width: 640px) { .lh-row { grid-template-columns: minmax(0, 1fr) 76px 46px; gap: 12px; } .lh-track { display: none; } }
 
+  /* tool report: narrative-first layout */
+  .report-hero { background: linear-gradient(155deg, #0f2920 0%, var(--surface) 72%); border: 1px solid #1e3b30; border-radius: var(--radius); padding: 28px 30px; max-width: 820px; }
+  .report-hero.empty { background: var(--surface); border-color: var(--border); }
+  .report-hero .rh-eyebrow { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--primary-lt); margin-bottom: 10px; }
+  .report-hero.empty .rh-eyebrow { color: var(--t4); }
+  .report-hero .rh-story { font-size: 17px; font-weight: 600; color: var(--t1); line-height: 1.55; letter-spacing: -.02em; max-width: 68ch; }
+  .report-hero .rh-detail { font-size: 13.5px; color: var(--t2); line-height: 1.65; margin-top: 14px; max-width: 68ch; }
+  .report-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 22px; max-width: 820px; }
+  .report-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; }
+  .report-stat .rs-k { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--t4); }
+  .report-stat .rs-v { font-size: 22px; font-weight: 800; color: var(--t1); font-variant-numeric: tabular-nums; margin-top: 4px; line-height: 1.1; }
+  .report-stat .rs-s { font-size: 11px; color: var(--t3); margin-top: 4px; line-height: 1.4; }
+  @media (max-width: 720px) { .report-stats { grid-template-columns: 1fr 1fr; } }
+
+  .report-spotlight { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 28px; max-width: 820px; }
+  .report-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; transition: border-color .15s; display: flex; flex-direction: column; }
+  .report-card:hover { border-color: var(--border2); }
+  .report-card.earned { border-color: #1e3b30; }
+  .report-card.off { border-color: #3b2020; }
+  .report-card.trial { border-color: #3b3018; }
+  .report-card.proving { border-color: var(--border2); }
+  .report-verdict.hold { background: var(--surface2); border: 1px solid var(--border); color: var(--t3); }
+  .report-verdict.hold .rv-dot { background: var(--t4); }
+  .report-card-head { padding: 20px 22px 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .report-card-head .tool-name { font-family: "SF Mono", ui-monospace, monospace; font-size: 13px; font-weight: 700; color: var(--t1); flex: 1; min-width: 0; }
+  .report-card-story { padding: 12px 22px 0; font-size: 14px; color: var(--t2); line-height: 1.65; }
+  .report-card-story b { color: var(--t1); font-weight: 600; }
+  .report-card-meta { display: flex; flex-wrap: wrap; gap: 6px; padding: 16px 22px 0; align-items: center; }
+  .report-chip { font-size: 11px; font-weight: 600; color: var(--t3); background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-variant-numeric: tabular-nums; line-height: 1.35; white-space: nowrap; }
+  .report-chip strong { color: var(--t1); font-weight: 700; }
+  .report-chip.warn { border-color: #3b3018; color: #d9a441; }
+  .report-chip.good { border-color: #1e3b30; color: var(--primary-lt); }
+  .report-chip.bad { border-color: #3b2020; color: var(--danger); }
+  .report-verdict { display: flex; align-items: center; gap: 10px; margin: 16px 22px 0; padding: 10px 14px; border-radius: 10px; font-size: 12.5px; color: var(--t2); line-height: 1.45; }
+  .report-verdict.earned { background: var(--primary-dim); border: 1px solid #1e3b30; color: var(--primary-lt); }
+  .report-verdict .rv-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
+  .report-card .tool-progress { padding: 16px 22px 0; }
+  .report-card-foot { padding: 16px 22px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--border); margin-top: 16px; }
+  .report-card .tool-evidence.ev-open { background: var(--surface2); border-top: 1px solid var(--border); padding: 20px 22px 22px; }
+  .report-card .tool-evidence .ba-col,
+  .report-card .tool-evidence .arm { background: var(--surface); }
+  .report-section { margin-top: 36px; }
+  .report-section-h { font-size: 13px; font-weight: 700; color: var(--t1); margin-bottom: 6px; }
+  .report-section-p { font-size: 12.5px; color: var(--t3); margin-bottom: 14px; max-width: 68ch; line-height: 1.55; }
+  .report-compact { opacity: .92; }
+  .report-compact .report-card-story { font-size: 13px; }
+  .report-compact .report-card-head { padding-top: 14px; }
+
   /* ── payoff ── */
   .payoff { border-radius: var(--radius); padding: 28px; max-width: 760px; }
   .payoff.earned { background: linear-gradient(135deg, #0f2920 0%, var(--surface) 70%); border: 1px solid #1e3b30; }
@@ -287,7 +349,8 @@
   .chip b { color: var(--t1); }
   .chip .d { width: 8px; height: 8px; border-radius: 50%; }
   .d.earned { background: var(--primary); }
-  .d.test { background: var(--amber); }
+  .d.trial { background: var(--amber); }
+  .d.proving { background: var(--t3); }
   .d.off { background: var(--danger); }
   .d.watch { background: var(--t4); }
 
@@ -358,7 +421,7 @@
       </div>
       <nav class="nav">
         <a data-view="home" onclick="go('home')">Home</a>
-        <a data-view="loop" onclick="go('loop')">Loop health</a>
+        <a data-view="loop" onclick="go('loop')">Tool report</a>
         <a data-view="compaction" onclick="go('compaction')">Compaction</a>
         <a data-view="surfaces" onclick="go('surfaces')">Surfaces</a>
         <a data-view="activity" onclick="go('activity')">Activity</a>
@@ -413,11 +476,11 @@
       <div id="compaction-body" style="margin-top:24px"></div>
     </section>
 
-    <!-- ══ LOOP HEALTH ══ -->
+    <!-- ══ TOOL REPORT ══ -->
     <section class="view" id="view-loop">
       <div style="padding-top:40px">
-        <div class="page-title">Loop health</div>
-        <p class="page-sub">The honest answer to "is anything happening on my machine yet". ctx only changes a tool once it has watched enough of your own runs to prove the change is safe. This page shows how much it has seen, how much of that it could label, and where each tool sits on the way from watching to earned. Sparse is normal early on. We show the real numbers, never a placeholder.</p>
+        <div class="page-title">Tool report</div>
+        <p class="page-sub">A plain-language read on what ctx is doing with each tool on your machine. The story comes first; the numbers sit underneath when you want to dig in. Nothing here is a guess. Every verdict comes from your own sessions.</p>
       </div>
       <div id="loop-body" style="margin-top:24px"></div>
     </section>
@@ -492,14 +555,26 @@
 
   // ── tool stage mapping (shared by Home mini + Tools page) ──
   function stageOf(p, c) {
-    if (p && p.verdict === "safe") return "earned";
-    if (p && p.verdict === "harmful") return "off";
-    if (p && (p.trialing || p.verdict === "collecting" || (p.trimmed_n || 0) > 0)) return "test";
-    if (p && p.verdict === "unclear") return "test";
+    if (!p) return "watch";
+    if (p.verdict === "safe") return "earned";
+    if (p.verdict === "harmful") return "off";
+    if (p.trialing) return "trial";
+    if (p.verdict === "unclear") return "proving";
+    if (p.verdict === "collecting" && (p.trimmed_n || 0) > 0) return "proving";
+    if (p.verdict === "collecting") return "watch";
+    if ((p.trimmed_n || 0) > 0) return "proving";
     return "watch";
   }
-  const STAGE_LABEL = { earned: "Earned", test: "Testing", off: "Kept off", watch: "Watching" };
-  const STAGE_ORDER = { earned: 0, test: 1, off: 2, watch: 3 };
+  const STAGE_LABEL = { earned: "Earned", trial: "On trial", proving: "Unproven", off: "Kept off", watch: "Watching" };
+  const STAGE_ORDER = { earned: 0, trial: 1, proving: 2, off: 3, watch: 4 };
+  function stageLabel(r) {
+    if (!r) return "Watching";
+    if (r.stage === "proving" && r.p) {
+      if (r.p.verdict === "unclear") return "Close to verdict";
+      if (r.p.verdict === "collecting") return "Collecting proof";
+    }
+    return STAGE_LABEL[r.stage] || r.stage;
+  }
   // Within "watch", tell two states apart: still gathering the left-alone baseline ("gather"), vs
   // already having enough baseline but no trimmed "after" runs to compare against ("wait"). A tool
   // can't earn without both halves, and the trimmed half never accrues while autopilot is off and
@@ -516,10 +591,20 @@
   function shortMsg(r, autopilot, minB) {
     const { stage, p, c } = r;
     if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Earned it. Across ${runs} of your runs, trimming did not make you re-read or correct more.`; }
-    if (stage === "off") return "Tested and it cost you re-reads, so ctx keeps it whole.";
-    if (stage === "test") {
-      if (p && p.verdict === "unclear") return "Close to a verdict. A few more runs settle it.";
-      return "On trial. ctx is testing whether it is safe to trim, and your output is unchanged.";
+    if (stage === "off") {
+      const cd = p && p.correction_delta, rd = p && p.reread_delta;
+      if (cd && cd.verdict === "harmful") return "Tested and corrections rose after trims, so ctx keeps it whole.";
+      if (rd && rd.verdict === "harmful") return "Tested and re-reads rose after trims, so ctx keeps it whole.";
+      return "Tested and trimming looked worse than leaving it whole, so ctx keeps it off.";
+    }
+    if (stage === "trial") {
+      if (p && p.verdict === "unclear") return "On live trial, close to a verdict.";
+      return "On live trial. ctx is trimming it on your runs to finish the proof.";
+    }
+    if (stage === "proving") {
+      if (p && p.verdict === "unclear") return "Close to a verdict. ctx keeps output whole until the proof locks.";
+      if (p && p.verdict === "collecting") return "Collecting the trimmed half. Your output stays whole for now.";
+      return "Has trim history but no locked verdict yet. Output stays whole.";
     }
     if (watchKind(r, minB) === "wait") {
       return autopilot
@@ -549,7 +634,7 @@
 
     // group every tool by where it sits on the ladder
     const rows = mergeTools(ctx, proof);
-    const g = { earned: [], test: [], off: [], watch: [] };
+    const g = { earned: [], trial: [], proving: [], off: [], watch: [] };
     rows.forEach((r) => g[r.stage].push(r.tool));
     const total = stats.total || 0;
 
@@ -560,7 +645,8 @@
       const parts = [`ctx has watched <b>${num(total)}</b> tool results and scored <b>${num(stats.joined)}</b> of them by what you did next.`];
       if (g.earned.length) parts.push(`It has proven <b>${g.earned.length}</b> safe to trim (${g.earned.map((x) => esc(prettyTool(x))).join(", ")}) and is trimming ${g.earned.length > 1 ? "those" : "that one"} now. The tool still ran in full.`);
       else parts.push(`Nothing has earned trimming yet, so your context is still untouched.`);
-      if (g.test.length) parts.push(`<b>${g.test.length}</b> ${g.test.length > 1 ? "are" : "is"} on trial right now (${g.test.map((x) => esc(prettyTool(x))).join(", ")}); everything else is still being watched.`);
+      if (g.trial.length) parts.push(`<b>${g.trial.length}</b> ${g.trial.length > 1 ? "are" : "is"} on live trial (${g.trial.map((x) => esc(prettyTool(x))).join(", ")}).`);
+      if (g.proving.length) parts.push(`<b>${g.proving.length}</b> ${g.proving.length > 1 ? "are" : "is"} close to a verdict (${g.proving.map((x) => esc(prettyTool(x))).join(", ")}). Output stays whole until the proof locks.`);
       $("home-status").innerHTML = parts.join(" ");
     }
 
@@ -572,7 +658,8 @@
     // the ladder, made literal
     const board = [
       ["earned", "Trimming for real", "Proven safe on your work, so ctx cuts these now."],
-      ["test", "Testing now", "Trimming on some runs to check it is safe. Not decided yet."],
+      ["trial", "On trial", "Being trimmed live to finish the proof."],
+      ["proving", "Close to verdict", "Has trim history but the proof is not locked yet. Output stays whole."],
       ["watch", "Just watching", "Not enough evidence yet. Left whole, nothing changed."],
       ["off", "Kept off", "Trimming cost you re-reads, so ctx keeps these whole."],
     ];
@@ -622,7 +709,7 @@
   async function setPreset(p) { await post("/api/context/preset", { preset: p }); loadHome(); }
 
   // ════ PER-TOOL EVIDENCE (rendered inside Loop health, CTX-35) ════
-  function metricLine(name, m) { return m ? `<div class="ba-metric"><span class="ba-mn">${name}</span><span><div class="ba-mv">${pct(m.rate)}</div><div class="ba-ci">${pct(m.lo)} to ${pct(m.hi)}</div></span></div>` : ""; }
+  function metricLine(name, m) { return m ? `<div class="ba-metric"><span class="ba-mn">${name}</span><span class="ba-metric-val"><span class="ba-mv">${pct(m.rate)}</span><span class="ba-ci">${pct(m.lo)} to ${pct(m.hi)}</span></span></div>` : ""; }
   function baCol(label, n, corr, rr) {
     if (!n) return `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">no runs yet</div></div>`;
     return `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">${n} runs</div>${metricLine("You had to fix it", corr)}${metricLine("You re-read it", rr)}</div>`;
@@ -631,15 +718,31 @@
   function longStory(r, autopilot, minB) {
     const p = r.p, c = r.c, runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
     if (r.stage === "earned") return `<b>${esc(r.tool)}</b> earned it. Across <b>${runs}</b> of your runs, trimming it did <span class="good">not</span> make you re-read or correct any more often than leaving it whole. So ctx trims it now. The tool still runs in full; only what the agent reads back is shorter.`;
-    if (r.stage === "off") return `ctx tested <b>${esc(r.tool)}</b> and it backfired. When it trimmed it, you re-read or corrected <span class="bad">noticeably more often</span> than when it left the output whole. So ctx keeps it off. That is the safety layer doing its job.`;
-    if (r.stage === "test") {
+    if (r.stage === "off") {
+      const cd = p && p.correction_delta, rd = p && p.reread_delta;
+      let why = "re-reads or corrections rose after trims";
+      if (cd && cd.verdict === "harmful" && rd && rd.verdict === "harmful") why = "both re-reads and explicit fixes rose";
+      else if (cd && cd.verdict === "harmful") why = "explicit fixes rose after trims";
+      else if (rd && rd.verdict === "harmful") why = "re-reads rose after trims";
+      return `ctx tested <b>${esc(r.tool)}</b> and ${why}. So it keeps the output whole. That is the safety layer doing its job.`;
+    }
+    if (r.stage === "trial") {
       let lean = "";
       const rd = p && p.reread_delta, cd = p && p.correction_delta;
       if (rd || cd) {
-        const bad = (rd && rd.diff > 0) || (cd && cd.diff > 0);
-        lean = bad ? " So far it looks like trimming might be costing you, so ctx is being careful." : " <span class=\"good\">Early signs look good</span>, but it is not conclusive yet.";
+        const bad = (rd && rd.verdict === "harmful") || (cd && cd.verdict === "harmful");
+        const good = (rd && rd.verdict === "safe") || (cd && cd.verdict === "safe");
+        if (bad) lean = " Early signal: trimming may be costing you. ctx is being careful.";
+        else if (good) lean = " <span class=\"good\">Early signs look fine</span>, but the range is still wide.";
       }
-      return `<b>${esc(r.tool)}</b> is on trial. ctx is trimming it on some of your runs and watching whether cutting it ever makes you re-read or fix something.${lean} The tool still runs in full while it tests.`;
+      return `<b>${esc(r.tool)}</b> is on a <b>live trial</b>. ctx trims it on your runs now and compares what you do next against when it left the output whole.${lean}`;
+    }
+    if (r.stage === "proving") {
+      if (p && p.verdict === "unclear") {
+        return `<b>${esc(r.tool)}</b> has enough trim history for a verdict, but the confidence range still crosses the harm bar. ctx is <span class="good">not trimming live</span> until the proof locks. The point estimate looks fine; the gate fails closed when the upper bound is too wide.`;
+      }
+      const tn = p ? (p.trimmed_n || 0) : 0, bn = p ? (p.baseline_n || 0) : 0;
+      return `<b>${esc(r.tool)}</b> is building the trimmed half of its proof (${num(tn)} trimmed, ${num(bn)} left whole). ctx is still judging. Your output stays whole unless this tool earns trim.`;
     }
     if (watchKind(r, minB) === "wait") {
       const before = p ? (p.baseline_n || 0) : ((c && c.joined) || 0);
@@ -661,8 +764,9 @@
     let tail = " The range still crosses zero, so it is too close to call.";
     if (r.stage === "earned") tail = " Both sit at or below zero, so trimming is not measurably worse. That is enough to earn it.";
     else if (r.stage === "off") tail = " That is real harm, clearly above zero, so it stays off.";
-    else if (r.stage === "test") tail = " Too early to read the gap. The trimmed side is still thin, so the range is wide.";
-    return `<div class="tool-story" style="margin-top:10px">Trimmed vs left whole: ${parts.join(" and ")}.${tail}</div>`;
+    else if (r.stage === "trial") tail = " Too early to read the gap. The trimmed side is still thin, so the range is wide.";
+    else if (r.stage === "proving") tail = " The range still crosses the harm bar, so ctx keeps output whole until it clears.";
+    return `<div class="ev-callout">Trimmed vs left whole: ${parts.join(" and ")}.${tail}</div>`;
   }
 
   function armsBlock(e, minArm) {
@@ -670,23 +774,33 @@
     const arm = (label, n, coll, corr, rr) => `<div class="arm"><div class="arm-h">${label}</div><div class="arm-n">${num(n)} scored <span>/ ${num(coll)} trimmed</span></div><div class="arm-s">${n > 0 ? `corrected ${pct(corr)}, re-read ${pct(rr)}` : "no scored runs yet"}</div></div>`;
     let effect = `<div class="ba-note">"Scored" means ctx could tell from your next move whether you needed the trimmed text. It needs about ${minArm || 20} scored on each side before it will even lean.</div>`;
     if (e.reread_delta != null) { const sign = e.reread_delta <= 0 ? "no more" : "more"; effect = `<div class="ba-note">Trimming led to <b style="color:${e.reread_delta <= 0 ? "var(--primary-lt)" : "var(--danger)"}">${sign} re-reads</b> (${signedPts(e.reread_delta)}) and ${signedPts(e.correction_delta)} corrections, compared with the runs ctx left alone.</div>`; }
-    return `<div style="margin-top:18px"><div class="ev-sec" style="margin-bottom:8px">The clean test, a random sample</div><div class="arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_correction, e.treatment_reread)}${arm("Left alone", e.control_n, e.control_collected, e.control_correction, e.control_reread)}</div>${effect}</div>`;
+    return `<div style="margin-top:18px"><div class="ev-block"><div class="ev-sec">The clean test, a random sample</div><div class="arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_correction, e.treatment_reread)}${arm("Left alone", e.control_n, e.control_collected, e.control_correction, e.control_reread)}</div>${effect}</div></div>`;
   }
 
   function toolActions(r) {
-    const t = esc(r.tool);
+    const t = esc(r.tool), p = r.p;
     if (r.stage === "watch") return `<button class="mini-btn go" onclick="event.stopPropagation();trial('${t}',true)">Put on trial</button>`;
-    if (r.stage === "test") return `<button class="mini-btn" onclick="event.stopPropagation();trial('${t}',false)">Stop the test</button>`;
+    if (r.stage === "trial") return `<button class="mini-btn" onclick="event.stopPropagation();trial('${t}',false)">Stop the trial</button>`;
+    if (r.stage === "proving" && !(p && p.verdict === "unclear")) return `<button class="mini-btn go" onclick="event.stopPropagation();trial('${t}',true)">Put on trial</button>`;
     if (r.stage === "off") return `<button class="mini-btn" onclick="event.stopPropagation();trial('${t}',true)">Run the test again</button>`;
     return "";
   }
 
   function progressBlock(r, minB, minT, autopilot) {
     const p = r.p;
-    if (r.stage === "test") {
+    if (r.stage === "trial") {
       const done = p ? p.trimmed_n || 0 : 0, need = minT || 30;
       const w = Math.min(100, Math.round((done / need) * 100));
-      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${done} of about ${need} test runs done. ctx will not rely on this until the test fills up.</div></div>`;
+      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${done} of about ${need} trial runs done. ctx will not rely on this until the proof fills up.</div></div>`;
+    }
+    if (r.stage === "proving") {
+      if (p && p.verdict === "unclear") {
+        const runs = (p.baseline_n || 0) + (p.trimmed_n || 0);
+        return `<div class="report-verdict hold"><span class="rv-dot"></span><span class="rv-text">Proof not locked across ${runs} runs. Output stays whole until the confidence range clears the bar.</span></div>`;
+      }
+      const done = p ? p.trimmed_n || 0 : 0, need = minT || 30;
+      const w = Math.min(100, Math.round((done / need) * 100));
+      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${done} of about ${need} trimmed runs collected. Output stays whole until the proof lands.</div></div>`;
     }
     if (r.stage === "watch") {
       const c = r.c, need = (c && c.need) || minB || 30;
@@ -699,7 +813,7 @@
     }
     if (r.stage === "earned") {
       const runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
-      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill earned" style="width:100%"></div></div><div class="tp-label">Proven across ${runs} of your runs. ctx trims it now; the tool still runs in full.</div></div>`;
+      return `<div class="report-verdict earned"><span class="rv-dot"></span><span class="rv-text">Proven across ${runs} runs. ctx trims it now; the tool still runs in full.</span></div>`;
     }
     return "";
   }
@@ -711,10 +825,10 @@
       ? `<div class="ev-lead">Two ways to look at it. The <b>rough tally</b> is everything ctx has seen so far. The <b>clean test</b> below is a random sample, so trust that one most.</div>`
       : `<div class="ev-lead">This is the <b>rough tally</b>: every run ctx scored by what you did next, split by whether it trimmed the output or left it whole.</div>`;
     if (hasNums) {
-      out += `<div class="ev-sec">The rough tally so far</div>`;
+      out += `<div class="ev-block"><div class="ev-sec">The rough tally so far</div>`;
       out += deltaLine(r);
       out += `<div class="ba">${baCol("When ctx kept it whole", p.baseline_n, p.baseline_corrections, p.baseline_rereads)}${baCol("When ctx trimmed it", p.trimmed_n, p.trimmed_corrections, p.trimmed_rereads)}</div>`;
-      out += `<div class="ba-note">Each grey range is how sure ctx is: 95% of the time the real rate sits inside it. Fewer runs means a wider range.</div>`;
+      out += `<div class="ba-note">Each grey range is how sure ctx is: 95% of the time the real rate sits inside it. Fewer runs means a wider range.</div></div>`;
     }
     if (hasExp) out += armsBlock(e, minT);
     return out;
@@ -731,7 +845,7 @@
     return `<div class="tool" id="tc${i}">
       <div class="tool-head" onclick="document.getElementById('tc${i}').classList.toggle('open')">
         <span class="tool-name">${esc(r.tool)}</span>
-        <span class="pill ${r.stage}">${STAGE_LABEL[r.stage]}</span>
+        <span class="pill ${r.stage}">${stageLabel(r)}</span>
         <span class="tool-msg">${shortMsg(r, autopilot, minB)}</span>
         <span class="chev">&#9654;</span>
       </div>
@@ -745,6 +859,88 @@
   }
 
   async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadLoop(); }
+
+  function gateCorrections(ctx) {
+    return (ctx.tools || []).reduce((n, t) => n + (t.corrections || 0), 0);
+  }
+
+  function buildSystemNarrative(ctx, proof, rows) {
+    const lh = ctx.loop_health || {};
+    const stats = ctx.stats || {};
+    const total = lh.total || stats.total || 0;
+    const joined = lh.joined || stats.joined || 0;
+    const jp = lh.joined_pct != null ? pct(lh.joined_pct) : "n/a";
+    const g = { earned: [], trial: [], proving: [], off: [], watch: [] };
+    rows.forEach((r) => g[r.stage].push(r));
+    const parts = [];
+    if (!total) {
+      return {
+        headline: "ctx has not watched any tool output on this machine yet.",
+        detail: "Run a few agent turns and this page fills in with a story per tool. If you already use Claude Code or Cursor and still see nothing, run ctx ingest.",
+        empty: true,
+      };
+    }
+    parts.push(`ctx has watched <b>${num(total)}</b> tool results and labeled <b>${num(joined)}</b> (${jp}).`);
+    const gc = gateCorrections(ctx);
+    parts.push(`Gate corrections (explicit pushback on a trim): <b>${num(gc)}</b>.`);
+    if (g.earned.length) parts.push(`<span class="good">Earned trim:</span> ${g.earned.map((r) => esc(prettyTool(r.tool))).join(", ")}.`);
+    if (g.trial.length) parts.push(`Live trial: <b>${g.trial.map((r) => esc(prettyTool(r.tool))).join(", ")}</b>.`);
+    if (g.proving.length) parts.push(`Close to verdict (output stays whole): ${g.proving.slice(0, 4).map((r) => esc(prettyTool(r.tool))).join(", ")}${g.proving.length > 4 ? ", and others" : ""}.`);
+    if (g.off.length) parts.push(`Kept whole: ${g.off.map((r) => esc(prettyTool(r.tool))).join(", ")}.`);
+    return {
+      headline: parts[0],
+      detail: parts.slice(1).join(" "),
+      empty: false,
+    };
+  }
+
+  function reportMetaChips(r) {
+    const p = r.p, c = r.c, chips = [];
+    if (c) chips.push(`<span class="report-chip"><strong>${num(c.joined)}</strong> judged</span>`);
+    if (p && (p.baseline_n || p.trimmed_n)) {
+      chips.push(`<span class="report-chip"><strong>${num(p.baseline_n || 0)}</strong> left whole</span>`);
+      chips.push(`<span class="report-chip"><strong>${num(p.trimmed_n || 0)}</strong> trimmed</span>`);
+    }
+    if (p && p.correction_delta) {
+      const cls = p.correction_delta.verdict === "harmful" ? " bad" : p.correction_delta.verdict === "safe" ? " good" : " warn";
+      chips.push(`<span class="report-chip${cls}">fixes ${signedPts(p.correction_delta)}</span>`);
+    }
+    if (p && p.reread_delta) {
+      const cls = p.reread_delta.verdict === "harmful" ? " bad" : p.reread_delta.verdict === "safe" ? " good" : " warn";
+      chips.push(`<span class="report-chip${cls}">re-reads ${signedPts(p.reread_delta)}</span>`);
+    }
+    if (p && p.applied_chars_saved) chips.push(`<span class="report-chip good">${fmtK(p.applied_chars_saved)} chars saved</span>`);
+    return chips.join("");
+  }
+
+  function reportCard(r, i, minB, minT, e, autopilot, compact) {
+    const p = r.p;
+    const hasNums = !!(p && (p.baseline_n || p.trimmed_n));
+    const hasExp = !!(e && (e.control_collected + e.treatment_collected) > 0);
+    const showEvidence = hasNums || hasExp;
+    const evToggle = showEvidence
+      ? `<button class="ev-toggle" onclick="event.stopPropagation();var x=document.getElementById('te${i}');x.classList.toggle('ev-open');this.textContent=x.classList.contains('ev-open')?'Hide the numbers':'Show the numbers'">Show the numbers</button>`
+      : "";
+    const evBody = showEvidence ? `<div class="tool-evidence" id="te${i}">${evidenceBlock(r, e, minT)}</div>` : "";
+    const live = p && p.trialing ? `<span class="report-chip good">live trial</span>` : "";
+    return `<div class="report-card ${r.stage}${compact ? " report-compact" : ""}" id="tc${i}">
+      <div class="report-card-head">
+        <span class="tool-name">${esc(r.tool)}</span>
+        <span class="pill ${r.stage}">${stageLabel(r)}</span>
+        ${live}
+      </div>
+      <div class="report-card-story">${longStory(r, autopilot, minB)}</div>
+      <div class="report-card-meta">${reportMetaChips(r)}</div>
+      ${progressBlock(r, minB, minT, autopilot)}
+      <div class="report-card-foot">${toolActions(r)}${evToggle}</div>
+      ${evBody}
+    </div>`;
+  }
+
+  function reportSection(title, note, cards) {
+    if (!cards.length) return "";
+    return `<div class="report-section"><div class="report-section-h">${title}</div><div class="report-section-p">${note}</div><div class="report-spotlight">${cards.join("")}</div></div>`;
+  }
 
   // ════ ACTIVITY ════
   function timeAgo(ts) {
@@ -788,10 +984,7 @@
     }).join("");
   }
 
-  // ════ LOOP HEALTH ════
-  // One per-tool surface (CTX-35): the accrual summary and sparkline on top say how much the loop
-  // has learned, then each tool's full evidence and trial controls sit below. This replaced the
-  // separate Tools tab; the rich card render (mergeTools + toolCard) is shared with nothing else now.
+  // ════ TOOL REPORT (narrative-first; was Loop health, CTX-35) ════
   async function loadLoop() {
     let ctx, proof, mp;
     try {
@@ -807,15 +1000,25 @@
       return;
     }
     const lh = ctx.loop_health || {};
-    const total = lh.total || 0;
+    const stats = ctx.stats || {};
+    const rows = mergeTools(ctx, proof);
+    const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
+    const autopilot = (ctx.preset || "off") !== "off";
+    const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
+    const narr = buildSystemNarrative(ctx, proof, rows);
 
-    let lead;
-    if (total === 0) {
-      lead = `<div class="cf-lead"><div class="cf-big">Nothing yet</div><div class="cf-cap">ctx hasn't seen any tool results on this machine yet. Run a few agent turns and they show up here. If you have used an agent and still see nothing, run <code>ctx ingest</code>.</div></div>`;
-    } else {
-      const jp = lh.joined_pct == null ? "n/a" : pct(lh.joined_pct);
-      lead = `<div class="cf-lead"><div class="cf-big"><b>${num(total)}</b> decisions watched</div><div class="cf-cap"><b>${num(lh.joined || 0)}</b> of those (${jp}) have an outcome ctx could label. ${num(lh.today || 0)} came in today. A decision only counts toward proof once ctx sees what happened next, so the labeled share grows as you keep working.</div></div>`;
-    }
+    const hero = narr.empty
+      ? `<div class="report-hero empty"><div class="rh-eyebrow">Your machine</div><div class="rh-story">${narr.headline}</div><div class="rh-detail">${narr.detail}</div></div>`
+      : `<div class="report-hero"><div class="rh-eyebrow">Right now on your machine</div><div class="rh-story">${narr.headline}</div><div class="rh-detail">${narr.detail}</div></div>`;
+
+    const total = lh.total || stats.total || 0;
+    const joined = lh.joined || stats.joined || 0;
+    const statStrip = total ? `<div class="report-stats">
+      <div class="report-stat"><div class="rs-k">Watched</div><div class="rs-v">${num(total)}</div><div class="rs-s">tool results seen</div></div>
+      <div class="report-stat"><div class="rs-k">Labeled</div><div class="rs-v">${num(joined)}</div><div class="rs-s">${lh.joined_pct != null ? pct(lh.joined_pct) : "n/a"} with outcomes</div></div>
+      <div class="report-stat"><div class="rs-k">Today</div><div class="rs-v">${num(lh.today || 0)}</div><div class="rs-s">new decisions</div></div>
+      <div class="report-stat"><div class="rs-k">Gate fixes</div><div class="rs-v">${num(gateCorrections(ctx))}</div><div class="rs-s">explicit trim pushback</div></div>
+    </div>` : "";
 
     const days = lh.by_day || [];
     let spark = "";
@@ -828,27 +1031,40 @@
         return `<div class="lh-bar" style="height:${h}%" title="${tip}"><div class="lh-bar-joined" style="height:${jh}%"></div></div>`;
       }).join("");
       const first = days[0].day, last = days[days.length - 1].day;
-      spark = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Arriving over time</div><div class="lh-spark">${bars}</div><div class="lh-axis"><span>${esc(first)}</span><span>${esc(last)}</span></div><div class="lh-legend"><span><span class="sw" style="background:var(--surface3)"></span>watched</span><span><span class="sw" style="background:var(--primary)"></span>labeled</span></div></div>`;
+      spark = `<div class="sec" style="margin-top:28px"><div class="sec-eyebrow">Corpus arriving over time</div><div class="lh-spark">${bars}</div><div class="lh-axis"><span>${esc(first)}</span><span>${esc(last)}</span></div><div class="lh-legend"><span><span class="sw" style="background:var(--surface3)"></span>watched</span><span><span class="sw" style="background:var(--primary)"></span>labeled</span></div></div>`;
     }
 
-    // Per-tool evidence + controls, the rich cards that used to live on the Tools tab.
-    const rows = mergeTools(ctx, proof);
-    const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
-    const autopilot = (ctx.preset || "off") !== "off";
-    const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
-    const count = (s) => rows.filter((r) => r.stage === s).length;
-    const chip = (s, word) => count(s) ? `<span class="chip"><span class="d ${s}"></span><b>${count(s)}</b> ${word}</span>` : "";
-    const tally = chip("earned", "earning it") + chip("test", "on trial") + chip("off", "kept off") + chip("watch", "still watching");
-
-    let toolsBlock;
+    let body = "";
     if (!rows.length) {
-      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">No tool has enough labeled, trim-eligible runs yet to place on the path. As outcomes land, each tool appears here and climbs from watching, to testing real trims, to earned.</p></div>`;
+      body = `<div class="empty" style="margin-top:28px">No tool has enough trim-eligible runs yet. As you work, each tool gets a story here.</div>`;
     } else {
-      const cards = rows.map((r, i) => toolCard(r, i, minB, minT, expBy[r.tool], autopilot)).join("");
-      toolsBlock = `<div class="sec" style="margin-top:30px"><div class="sec-eyebrow">Each tool's path</div><p class="sec-note">Every tool climbs the same ladder. ctx watches until there is enough evidence, then tests by trimming for a bounded run, and keeps trimming only if your re-reads and corrections did not rise. It looks for about ${minB} left-alone and ${minT} trimmed runs per tool. Open any tool for the evidence.</p>${tally ? `<div class="tally">${tally}</div>` : ""}${cards}</div>`;
+      const spotlight = rows.filter((r) => r.stage === "earned" || r.stage === "off" || r.stage === "trial");
+      const proving = rows.filter((r) => r.stage === "proving");
+      const watching = rows.filter((r) => r.stage === "watch");
+
+      let idx = 0;
+      const card = (r, compact) => reportCard(r, idx++, minB, minT, expBy[r.tool], autopilot, compact);
+
+      body += reportSection(
+        "Tools that matter right now",
+        "Earned, blocked, or on a live trial. These are the ones changing or protecting your context today.",
+        spotlight.map((r) => card(r, false))
+      );
+      body += reportSection(
+        "Close to a verdict",
+        "ctx has trim history but the proof is not locked yet. Your output stays whole until the confidence range clears the bar.",
+        proving.map((r) => card(r, false))
+      );
+      body += reportSection(
+        "Watching quietly",
+        "Not enough evidence yet, or output is not trim-eligible. Nothing changes here until the ladder fills in.",
+        watching.filter((r) => (r.c && r.c.decisions >= 10) || (r.p && (r.p.baseline_n || r.p.trimmed_n))).slice(0, 12).map((r) => card(r, true))
+      );
+      const watchMore = watching.length - Math.min(watching.length, 12);
+      if (watchMore > 0) body += `<p class="sec-note" style="margin-top:8px">${watchMore} more tools with lighter usage are not shown.</p>`;
     }
 
-    $("loop-body").innerHTML = lead + spark + toolsBlock;
+    $("loop-body").innerHTML = hero + statStrip + spark + body;
   }
 
   // ════ COMPACTION ════

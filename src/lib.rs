@@ -60,8 +60,8 @@ pub async fn run() -> Result<()> {
 
     match cli.command {
         Commands::Use { profile, force } => profiles::switch(&profile, force)?,
-        Commands::Ingest => {
-            let n = conversations::ingest_claude_jsonl()?;
+        Commands::Ingest { full } => {
+            let n = conversations::ingest_claude_jsonl(full)?;
             println!("Ingested {n} session file(s) into ~/.ctx/ctx.db (Claude Code + Desktop)");
         }
         Commands::Status => profiles::status()?,
@@ -245,6 +245,10 @@ pub async fn run() -> Result<()> {
             ContextCommand::Preset { value } => context_ctl::set_preset(&value)?,
             ContextCommand::On => context_ctl::set_preset("safe")?,
             ContextCommand::Off => context_ctl::set_preset("off")?,
+            ContextCommand::Repair {
+                skip_ingest,
+                json,
+            } => context_ctl::repair(skip_ingest, json)?,
             ContextCommand::Learn { json } => learn::run(json)?,
             ContextCommand::Labels { tool, limit, json } => {
                 context_ctl::labels(tool.as_deref(), limit, json)?

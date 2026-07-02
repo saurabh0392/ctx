@@ -225,6 +225,39 @@ pub fn is_edit_tool(tool_name: &str) -> bool {
     EDIT_TOOL_NAMES.contains(&n.as_str())
 }
 
+/// Tools whose output is session state, not a path or shell command. When the fingerprint
+/// falls back to the bare tool name (legacy rows), any later call of the same tool falsely
+/// looked like a re-read. Content fingerprints and the join exclusion below fix that.
+pub const STATE_MUTATION_TOOL_NAMES: &[&str] = &["todowrite", "task"];
+
+pub fn is_state_mutation_tool(tool_name: &str) -> bool {
+    let n = tool_name.trim().to_ascii_lowercase();
+    STATE_MUTATION_TOOL_NAMES.contains(&n.as_str())
+}
+
+/// True when a decision still uses the pre-CTX-49 bare tool-name fingerprint.
+pub fn is_legacy_state_mutation_fingerprint(tool_name: &str, fingerprint: &str) -> bool {
+    is_state_mutation_tool(tool_name) && fingerprint == tool_name
+}
+
+/// SQL fragment excluding routine TodoWrite/Task churn from the re-read EXISTS clause.
+/// When the decision used a legacy bare fingerprint, a later call of the same tool is not
+/// treated as needing the prior output back.
+pub fn reread_legacy_state_mutation_exclusion_sql() -> String {
+    let quoted: Vec<String> = STATE_MUTATION_TOOL_NAMES
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect();
+    let in_list = quoted.join(", ");
+    format!(
+        "AND NOT (
+            LOWER(TRIM(compress_decisions.tool_name)) IN ({in_list})
+            AND compress_decisions.command_or_path = compress_decisions.tool_name
+            AND LOWER(TRIM(d2.tool_name)) = LOWER(TRIM(compress_decisions.tool_name))
+        )"
+    )
+}
+
 /// A SQL boolean fragment `LOWER(TRIM(<col>)) IN ('write','edit',...)` over [`EDIT_TOOL_NAMES`],
 /// so the timestamp join (which cannot call [`is_edit_tool`] from SQL) classifies an edit the
 /// same way the transcript join does. `col` is a fixed internal column reference and the names

@@ -32,7 +32,7 @@ fn spawn_background_ingest(hook_type: Option<String>) {
     }
     tokio::spawn(async move {
         let _ = tokio::task::spawn_blocking(|| {
-            let _ = crate::conversations::ingest_claude_jsonl();
+            let _ = crate::conversations::ingest_claude_jsonl(false);
         })
         .await;
         ingest_running().store(false, Ordering::Release);
@@ -81,7 +81,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
     // Run JSONL ingest in background so the server binds immediately.
     tokio::spawn(async {
         let _ = tokio::task::spawn_blocking(|| {
-            let _ = crate::conversations::ingest_claude_jsonl();
+            let _ = crate::conversations::ingest_claude_jsonl(false);
         })
         .await;
     });

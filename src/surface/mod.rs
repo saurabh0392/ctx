@@ -211,7 +211,13 @@ pub trait SurfaceTranscriptAdapter {
 /// it so a hook-recorded decision and a transcript tool call line up. Mirrors the legacy
 /// inline logic in the PostToolUse hook: prefer the shell command, then the file path,
 /// then fall back to the tool name.
+///
+/// State-mutation tools (TodoWrite, Task) hash their payload so routine todo updates do
+/// not share one fingerprint and falsely count as re-reads of the same decision.
 pub fn fingerprint_tool_input(tool_name: &str, tool_input: &Value) -> String {
+    if crate::outcome_signals::is_state_mutation_tool(tool_name) {
+        return state_mutation_fingerprint(tool_name, tool_input);
+    }
     tool_input
         .get("command")
         .and_then(|v| v.as_str())
@@ -220,6 +226,37 @@ pub fn fingerprint_tool_input(tool_name: &str, tool_input: &Value) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or(tool_name)
         .to_string()
+}
+
+/// Fingerprint for TodoWrite/Task: `ToolName:<fnv1a64>` over a canonical merge+todos payload.
+fn state_mutation_fingerprint(tool_name: &str, tool_input: &Value) -> String {
+    let merge = tool_input
+        .get("merge")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let mut todos = tool_input
+        .get("todos")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    todos.sort_by(|a, b| {
+        let id_a = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let id_b = b.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        id_a.cmp(id_b)
+    });
+    let payload = serde_json::json!({ "merge": merge, "todos": todos });
+    let canonical = serde_json::to_string(&payload).unwrap_or_default();
+    format!("{tool_name}:{:016x}", fnv1a64(&canonical))
+}
+
+/// Stable 64-bit FNV-1a. Used only for fingerprint bucketing inside this crate.
+fn fnv1a64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 #[cfg(test)]
@@ -287,5 +324,25 @@ mod tests {
             fingerprint_tool_input("Bash", &json!({"command": ""})),
             "Bash"
         );
+    }
+
+    #[test]
+    fn fingerprint_todowrite_hashes_payload_not_bare_name() {
+        let a = fingerprint_tool_input(
+            "TodoWrite",
+            &json!({"merge": true, "todos": [{"id": "1", "content": "ship", "status": "pending"}]}),
+        );
+        let b = fingerprint_tool_input(
+            "TodoWrite",
+            &json!({"merge": true, "todos": [{"id": "2", "content": "test", "status": "pending"}]}),
+        );
+        assert!(a.starts_with("TodoWrite:"));
+        assert!(b.starts_with("TodoWrite:"));
+        assert_ne!(a, b);
+        let same = fingerprint_tool_input(
+            "TodoWrite",
+            &json!({"merge": true, "todos": [{"id": "1", "content": "ship", "status": "pending"}]}),
+        );
+        assert_eq!(a, same);
     }
 }

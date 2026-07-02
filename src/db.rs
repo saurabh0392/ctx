@@ -753,6 +753,7 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
     // edit/write tool. Shared with the one-time backfill so both compute the label identically
     // (CTX-46 / ADR 0031).
     let edit_follow = edit_follow_value_sql();
+    let reread = reread_value_sql();
     let n = conn.execute(
         &format!(
             r#"
@@ -767,6 +768,7 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
                     JOIN sessions s ON s.id = t.session_id
                     WHERE s.external_key LIKE '%' || compress_decisions.session_id || '%'
                       AND t.flags LIKE '%correction_explicit%'
+                      AND t.flags NOT LIKE '%long_dump%'
                       AND t.ts IS NOT NULL
                       AND julianday(t.ts) > julianday(compress_decisions.ts)
                       AND julianday(t.ts) <= julianday(compress_decisions.ts) + ?1
@@ -778,27 +780,7 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
                       )
                 ) THEN 1 ELSE 0 END
             ),
-            outcome_reread = (
-                -- Same nearest-preceding rule on the path: a re-read is owned by the last
-                -- decision on that path before the re-read, not every prior touch of it.
-                SELECT CASE WHEN EXISTS (
-                    SELECT 1 FROM compress_decisions d2
-                    WHERE d2.session_id = compress_decisions.session_id
-                      AND d2.command_or_path = compress_decisions.command_or_path
-                      AND d2.command_or_path IS NOT NULL
-                      AND d2.id <> compress_decisions.id
-                      AND julianday(d2.ts) > julianday(compress_decisions.ts)
-                      AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
-                      AND NOT EXISTS (
-                          SELECT 1 FROM compress_decisions d3
-                          WHERE d3.session_id = compress_decisions.session_id
-                            AND d3.command_or_path = compress_decisions.command_or_path
-                            AND d3.id <> compress_decisions.id
-                            AND julianday(d3.ts) > julianday(compress_decisions.ts)
-                            AND julianday(d3.ts) < julianday(d2.ts)
-                      )
-                ) THEN 1 ELSE 0 END
-            ),
+            outcome_reread = {reread},
             -- Same nearest-preceding rule as the re-read, but only a later *edit* of the same path
             -- counts: the agent acted on the file, the strongest "needed it whole" signal. A plain
             -- re-read does not set this; it sets outcome_reread (CTX-46 / ADR 0031).
@@ -831,7 +813,8 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
               )
           )
         "#,
-            edit_follow = edit_follow
+            edit_follow = edit_follow,
+            reread = reread
         ),
         params![window_days],
     )?;
@@ -924,6 +907,35 @@ pub fn refresh_outcome_signals(conn: &Connection) -> Result<usize> {
         }
     }
     Ok(updated)
+}
+
+/// The `outcome_reread` value subquery: nearest-preceding same fingerprint within the window.
+/// State-mutation tools with legacy bare fingerprints skip routine follow-up calls (CTX-49).
+fn reread_value_sql() -> String {
+    let legacy_exclude = crate::outcome_signals::reread_legacy_state_mutation_exclusion_sql();
+    format!(
+        r#"(
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM compress_decisions d2
+                    WHERE d2.session_id = compress_decisions.session_id
+                      AND d2.command_or_path = compress_decisions.command_or_path
+                      AND d2.command_or_path IS NOT NULL
+                      AND d2.id <> compress_decisions.id
+                      AND julianday(d2.ts) > julianday(compress_decisions.ts)
+                      AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
+                      {legacy_exclude}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM compress_decisions d3
+                          WHERE d3.session_id = compress_decisions.session_id
+                            AND d3.command_or_path = compress_decisions.command_or_path
+                            AND d3.id <> compress_decisions.id
+                            AND julianday(d3.ts) > julianday(compress_decisions.ts)
+                            AND julianday(d3.ts) < julianday(d2.ts)
+                      )
+                ) THEN 1 ELSE 0 END
+            )"#,
+        legacy_exclude = legacy_exclude
+    )
 }
 
 /// The `outcome_edit_follow` value subquery (CTX-46 / ADR 0031): 1 when the same file was edited
@@ -2010,6 +2022,150 @@ fn backfill_rejoin_outcome_labels_v3(conn: &Connection) {
     );
 }
 
+/// Strip spurious `correction` flags from interrupt-only turns stored before CTX-48.
+fn backfill_interrupt_turn_flags_v1(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='interrupt_turn_flags_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let _ = conn.execute(
+        "UPDATE turns
+         SET flags = '[\"aborted\"]'
+         WHERE flags LIKE '%aborted%'
+           AND flags LIKE '%correction%'
+           AND (
+             LOWER(COALESCE(human_text_prefix,'')) LIKE '%[request interrupted by user%'
+             OR LOWER(COALESCE(human_text_prefix,'')) = ''
+           )",
+        [],
+    );
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('interrupt_turn_flags_v1', '1')",
+        [],
+    );
+}
+
+/// Rejoin after interrupt turn cleanup so join triggers and observational signals match CTX-48.
+fn backfill_rejoin_outcome_labels_v4(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v4'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v4', '1')",
+        [],
+    );
+}
+
+/// Rejoin after TodoWrite content fingerprints and legacy state-mutation reread exclusion (CTX-49).
+fn backfill_rejoin_outcome_labels_v5(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v5'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_reread = NULL,
+             outcome_edit_follow = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v5', '1')",
+        [],
+    );
+}
+
+/// Repair the live corpus for honest dashboard display: clean interrupt flags, rejoin outcomes.
+pub fn repair_corpus(conn: &Connection) -> Result<(usize, usize, usize)> {
+    let _ = conn.execute(
+        "UPDATE turns
+         SET flags = '[\"aborted\"]'
+         WHERE flags LIKE '%aborted%'
+           AND flags LIKE '%correction%'
+           AND (
+             LOWER(COALESCE(human_text_prefix,'')) LIKE '%[request interrupted by user%'
+             OR LOWER(COALESCE(human_text_prefix,'')) = ''
+           )",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let joined: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(outcome_joined),0) FROM compress_decisions",
+        [],
+        |r| r.get(0),
+    )?;
+    let corrections: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(COALESCE(outcome_correction,0)),0) FROM compress_decisions WHERE outcome_joined=1",
+        [],
+        |r| r.get(0),
+    )?;
+    let interrupt_clean: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM turns
+         WHERE flags LIKE '%aborted%' AND flags NOT LIKE '%correction%'
+           AND LOWER(COALESCE(human_text_prefix,'')) LIKE '%[request interrupted by user%'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok((joined as usize, corrections as usize, interrupt_clean as usize))
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
@@ -2029,6 +2185,9 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     backfill_edit_follow_label(conn);
     backfill_path_role(conn);
     backfill_rejoin_outcome_labels_v3(conn);
+    backfill_interrupt_turn_flags_v1(conn);
+    backfill_rejoin_outcome_labels_v4(conn);
+    backfill_rejoin_outcome_labels_v5(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -3920,6 +4079,138 @@ mod compress_decision_tests {
         let (b_edit, b_reread) = label("b.rs");
         assert_eq!(b_edit, 0, "b.rs was only re-read, never edited");
         assert_eq!(b_reread, 1, "b.rs was read again within the window");
+    }
+
+    #[test]
+    fn join_skips_legacy_todowrite_routine_followups() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-todo', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-todo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut first = decision(
+            "2026-05-31T10:01:00+00:00",
+            "sess-todo",
+            "TodoWrite",
+            "TodoWrite",
+        );
+        first.kind = "generic";
+        insert_compress_decision(&conn, &first).unwrap();
+        let mut second = decision(
+            "2026-05-31T10:05:00+00:00",
+            "sess-todo",
+            "TodoWrite",
+            "TodoWrite",
+        );
+        second.kind = "generic";
+        insert_compress_decision(&conn, &second).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let reread: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_reread,0) FROM compress_decisions
+                 WHERE session_id = 'sess-todo' AND ts = '2026-05-31T10:01:00+00:00'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reread, 0, "routine TodoWrite follow-ups must not count as re-reads");
+    }
+
+    #[test]
+    fn join_counts_todowrite_reread_only_on_identical_payload() {
+        use serde_json::json;
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-todo2', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-todo2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let payload = json!({"merge": true, "todos": [{"id": "a", "content": "x", "status": "pending"}]});
+        let fp = crate::surface::fingerprint_tool_input("TodoWrite", &payload);
+        let mut first = decision("2026-05-31T10:01:00+00:00", "sess-todo2", "TodoWrite", &fp);
+        first.kind = "generic";
+        insert_compress_decision(&conn, &first).unwrap();
+        let other = json!({"merge": true, "todos": [{"id": "b", "content": "y", "status": "pending"}]});
+        let fp2 = crate::surface::fingerprint_tool_input("TodoWrite", &other);
+        let mut second = decision("2026-05-31T10:05:00+00:00", "sess-todo2", "TodoWrite", &fp2);
+        second.kind = "generic";
+        insert_compress_decision(&conn, &second).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let reread_diff: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_reread,0) FROM compress_decisions
+                 WHERE session_id = 'sess-todo2' AND ts = '2026-05-31T10:01:00+00:00'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reread_diff, 0);
+
+        let mut third = decision("2026-05-31T10:08:00+00:00", "sess-todo2", "TodoWrite", &fp);
+        third.kind = "generic";
+        insert_compress_decision(&conn, &third).unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_joined = 0, outcome_reread = NULL
+             WHERE session_id = 'sess-todo2'",
+            [],
+        )
+        .unwrap();
+        join_compress_outcomes(&conn).unwrap();
+
+        let reread_same: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_reread,0) FROM compress_decisions
+                 WHERE session_id = 'sess-todo2' AND ts = '2026-05-31T10:01:00+00:00'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reread_same, 1, "identical todo payload should count as a re-read");
     }
 
     #[test]

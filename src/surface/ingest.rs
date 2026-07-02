@@ -67,7 +67,9 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         let window_end = call_ordinal + CORRECTION_WINDOW_TURNS;
         let in_window = |o: u32| o > call_ordinal && o <= window_end;
 
-        let explicit_in_window = explicit_ordinals.iter().any(|&o| in_window(o));
+        let explicit_in_window = explicit_gate_ordinals(parsed)
+            .iter()
+            .any(|&o| in_window(o));
         let terse_in_window = terse_ordinals.iter().any(|&o| in_window(o));
         let aborted_in_window = aborted_ordinals.iter().any(|&o| in_window(o));
         let observed_user_signal =
@@ -135,6 +137,22 @@ fn flag_ordinals(parsed: &ParsedTranscript, flag: TurnFlag) -> Vec<u32> {
         .turns
         .iter()
         .filter(|t| t.flags.contains(&flag))
+        .map(|t| t.ordinal)
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// Explicit complaint ordinals that can feed the causal gate. Agent log dumps can carry
+/// complaint-like substrings ("sits wrong") without being user pushback, so long_dump is out.
+fn explicit_gate_ordinals(parsed: &ParsedTranscript) -> Vec<u32> {
+    let mut v: Vec<u32> = parsed
+        .turns
+        .iter()
+        .filter(|t| {
+            t.flags.contains(&TurnFlag::CorrectionExplicit)
+                && !t.flags.contains(&TurnFlag::LongDump)
+        })
         .map(|t| t.ordinal)
         .collect();
     v.sort_unstable();

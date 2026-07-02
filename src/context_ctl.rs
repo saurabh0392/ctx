@@ -651,3 +651,50 @@ pub fn set_preset(value: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[derive(Serialize)]
+struct RepairReport {
+    sessions_ingested: usize,
+    decisions_joined: usize,
+    gate_corrections: usize,
+    interrupt_turns_clean: usize,
+    model_trained: bool,
+}
+
+/// Full corpus repair: re-parse sessions, clean interrupt flags, rejoin labels, retrain.
+pub fn repair(skip_ingest: bool, json: bool) -> Result<()> {
+    let ingested = if skip_ingest {
+        0
+    } else {
+        crate::conversations::ingest_claude_jsonl(true)?
+    };
+    let conn = crate::db::open_db()?;
+    crate::db::ensure_schema(&conn)?;
+    let (joined, corrections, interrupt_clean) = crate::db::repair_corpus(&conn)?;
+    let model_trained = crate::learn::train()?.is_some();
+    let report = RepairReport {
+        sessions_ingested: ingested,
+        decisions_joined: joined,
+        gate_corrections: corrections,
+        interrupt_turns_clean: interrupt_clean,
+        model_trained,
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Corpus repair complete.");
+        if !skip_ingest {
+            println!("  Re-parsed {ingested} session file(s) with current flag rules.");
+        }
+        println!("  {joined} decisions joined, {corrections} gate corrections, {interrupt_clean} clean interrupt turns.");
+        println!(
+            "  Model {}",
+            if model_trained {
+                "retrained"
+            } else {
+                "unchanged (not enough labels yet)"
+            }
+        );
+    }
+    Ok(())
+}

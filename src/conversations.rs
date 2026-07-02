@@ -1067,7 +1067,7 @@ fn file_unchanged_since(path: &std::path::Path, cutoff: Option<std::time::System
 /// Skips files whose filesystem mtime is at or before the previous `last_ingest_at` timestamp
 /// stored in the meta table. This makes per-turn ingest calls cheap: on an active session only
 /// the current session file is newer than the last run, so the full scan stays O(1) in practice.
-pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
+pub fn ingest_claude_jsonl(force_full: bool) -> anyhow::Result<usize> {
     let conn = crate::db::open_db()?;
     crate::db::ensure_schema(&conn)?;
     let cfg = crate::config::Config::load();
@@ -1076,16 +1076,20 @@ pub fn ingest_claude_jsonl() -> anyhow::Result<usize> {
     let profile = UserProfile::compute();
 
     // Read the previous ingest timestamp once and convert to SystemTime for mtime comparisons.
-    let last_ingest_cutoff: Option<std::time::SystemTime> = conn
-        .query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| {
-            r.get::<_, String>(0)
-        })
-        .ok()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-        .map(|dt| {
-            std::time::SystemTime::UNIX_EPOCH
-                + std::time::Duration::from_secs(dt.timestamp().max(0) as u64)
-        });
+    let last_ingest_cutoff: Option<std::time::SystemTime> = if force_full {
+        None
+    } else {
+        conn
+            .query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| {
+                std::time::SystemTime::UNIX_EPOCH
+                    + std::time::Duration::from_secs(dt.timestamp().max(0) as u64)
+            })
+    };
 
     let tx = conn.unchecked_transaction()?;
     let mut count = 0usize;
