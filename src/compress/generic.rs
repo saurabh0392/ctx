@@ -52,6 +52,34 @@ pub fn dedupe_lines(text: &str) -> String {
     out.join("\n")
 }
 
+/// Collapse pathologically long lines to a head plus tail with a marker (CTX-60). Line-based
+/// trimming cannot touch a single 292K-char line (a minified or data-heavy file echoed back), which
+/// is exactly where the biggest Edit and tool-output waste lives. Keeping the two ends preserves the
+/// start and end of the line (imports, a trailing token, the shape of the data) while dropping the
+/// bulk. Lines at or under `max_line_chars` pass through untouched.
+pub fn collapse_long_lines(text: &str, max_line_chars: usize) -> String {
+    if max_line_chars == 0 {
+        return text.to_string();
+    }
+    let head = max_line_chars.saturating_mul(3) / 4;
+    let tail = max_line_chars.saturating_sub(head).min(120);
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let n = line.chars().count();
+        if n <= max_line_chars {
+            out.push(line.to_string());
+            continue;
+        }
+        let head_s: String = line.chars().take(head).collect();
+        let tail_s: String = line.chars().skip(n - tail).collect();
+        let dropped = n - head - tail;
+        out.push(format!(
+            "{head_s} … {dropped} chars on this line trimmed (ctx_expand for full) … {tail_s}"
+        ));
+    }
+    out.join("\n")
+}
+
 pub fn collapse_blank_runs(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut blank_run = 0usize;
@@ -157,5 +185,32 @@ fn rank_by_keywords(text: &str, keywords: &[String], budget: usize) -> String {
         joined
     } else {
         truncate_to_budget(&joined, budget, out.len().min(30))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collapse_long_lines_trims_giant_lines_keeps_short_ones() {
+        let giant = "a".repeat(10_000);
+        let input = format!("short line\n{giant}\nanother short");
+        let out = collapse_long_lines(&input, 400);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "short line", "short line untouched");
+        assert_eq!(lines[2], "another short", "short line untouched");
+        assert!(lines[1].chars().count() < 700, "giant line collapsed");
+        assert!(lines[1].contains("chars on this line trimmed"));
+        assert!(lines[1].contains("ctx_expand"));
+        // Keeps the very start and very end of the collapsed line.
+        assert!(lines[1].starts_with("aaa"));
+        assert!(lines[1].ends_with("aaa"));
+    }
+
+    #[test]
+    fn collapse_long_lines_zero_threshold_is_noop() {
+        let input = "a\nbb\nccc";
+        assert_eq!(collapse_long_lines(input, 0), input);
     }
 }

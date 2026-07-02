@@ -194,6 +194,12 @@ pub fn classify_tool(
     file_path: Option<&str>,
 ) -> CompressKind {
     let name = tool_name.trim();
+    // Edit/Write confirmations get their own strategy so the shadow measurement reflects real
+    // savings on long-line echoes (CTX-60). Apply stays blocked for these by name in the controller,
+    // so classifying them here never trims what the agent sees, it only measures.
+    if crate::outcome_signals::is_edit_tool(name) {
+        return CompressKind::Edit;
+    }
     // Claude Code names the shell tool "Bash"; Cursor names it "Shell". They are the same surface,
     // so both classify by their command (git/grep/test) rather than falling through to Generic.
     if name.eq_ignore_ascii_case("bash") || name.eq_ignore_ascii_case("shell") {

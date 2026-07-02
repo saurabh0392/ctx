@@ -11,6 +11,10 @@ pub enum CompressKind {
     Grep,
     Read,
     Mcp,
+    /// A file edit/write confirmation (Edit, Write, MultiEdit, ...). Shadow-only: the apply path
+    /// blocks edit tools by name (`is_edit_tool`), so this strategy only ever measures what a trim
+    /// would save, it never changes what the agent sees (CTX-60).
+    Edit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
