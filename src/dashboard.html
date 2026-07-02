@@ -371,6 +371,8 @@
   .wnad-bar { height: 6px; border-radius: 999px; background: var(--surface3); overflow: hidden; margin-top: 10px; }
   .wnad-bar-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--primary-lt)); }
   .wnad-note { font-size: 13px; color: var(--t2); line-height: 1.6; margin-top: 15px; }
+  .wnad-actions { font-size: 12.5px; color: var(--t3); line-height: 1.6; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border); }
+  .wnad-actions b { color: var(--t1); }
   @media (max-width: 640px) { .wnad-grid { grid-template-columns: 1fr; } }
 
   /* ── payoff ── */
@@ -727,9 +729,23 @@
   // trimming stayed at or below the developer's own harm baseline. Fail-closed: safety must be
   // confirmed, never assumed, so a week that reclaimed room but has not proven its trims safe reads
   // as "reclaiming, not yet confirmed", not a win.
-  function wnadScoreboard(weeks) {
+  // Insight-actions: behavior changes ctx can see (CTX-63). Education only counts when it changes
+  // what you do. ctx has no telemetry, so this reflects only locally logged actions.
+  function insightActionsLine(a) {
+    const total = a.total || 0;
+    if (!total) {
+      return `<div class="wnad-actions"><b>0</b> insight-actions yet. Recovering a trim with ctx_expand or pruning MCP servers to a leaner profile shows up here, the sign the education changed what you do.</div>`;
+    }
+    const parts = [];
+    if (a.recoveries) parts.push(`${num(a.recoveries)} trim${a.recoveries === 1 ? "" : "s"} recovered with ctx_expand`);
+    if (a.mcp_prunes) parts.push(`${num(a.mcp_prunes)} MCP prune${a.mcp_prunes === 1 ? "" : "s"}`);
+    return `<div class="wnad-actions"><b>${num(total)}</b> insight-action${total === 1 ? "" : "s"} so far: ${esc(parts.join(", "))}. These are the moments the education changed what you did.</div>`;
+  }
+
+  function wnadScoreboard(weeks, actions) {
+    const actionsLine = insightActionsLine(actions || {});
     if (!weeks.length) {
-      return `<div class="sec-eyebrow">This week: net-ahead scoreboard</div><p class="sec-note">Once ctx has trimmed and scored a few runs, this shows whether your week is net-ahead: enough context reclaimed, with harm at or below your own baseline.</p>`;
+      return `<div class="sec-eyebrow">This week: net-ahead scoreboard</div><p class="sec-note">Once ctx has trimmed and scored a few runs, this shows whether your week is net-ahead: enough context reclaimed, with harm at or below your own baseline.</p>${actionsLine}`;
     }
     const w = weeks[0];
     const aheadCount = weeks.filter((x) => x.net_ahead).length;
@@ -773,6 +789,7 @@
         <div class="wnad-top"><div class="wnad-verdict">${verdict}</div>${count}</div>
         <div class="wnad-grid">${reclaimCell}${safetyCell}</div>
         <div class="wnad-note">${note}</div>
+        ${actionsLine}
       </div>`;
   }
 
@@ -808,7 +825,7 @@
       ? `<div class="autoline"><span class="dot"></span><span>Autopilot is on. ctx turns on each tool by itself, the moment it proves safe on your work, and never before. You can pause it any time in <b class="link" onclick="go('settings')">Settings</b>.</span></div>`
       : `<div class="optin"><button class="cta" onclick="setPreset('full')">Turn on autopilot</button><span class="optin-sub">One yes, then it is hands-off. ctx will only ever trim a tool after your own work proves it is safe, and the tool always runs in full.</span></div>`;
 
-    $("home-wnad").innerHTML = wnadScoreboard(ctx.wnad || []);
+    $("home-wnad").innerHTML = wnadScoreboard(ctx.wnad || [], ctx.insight_actions || {});
 
     // the ladder, made literal
     const board = [

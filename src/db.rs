@@ -2117,6 +2117,46 @@ pub struct WeekNetAhead {
     pub net_ahead: bool,
 }
 
+/// Insight-actions: behavior changes the developer made from what ctx showed them (CTX-63 / L4).
+/// The plan's insight-engagement KPI ("education only counts when it changes behavior"). ctx has no
+/// telemetry, so this counts only actions it logs locally: recovering a trim with ctx_expand, and
+/// pruning MCP servers by switching to a leaner profile. Session splits are not tracked, so they are
+/// honestly absent rather than guessed.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct InsightActions {
+    /// Times the agent pulled a trimmed original back with ctx_expand (engaged with reversibility).
+    pub recoveries: i64,
+    /// Profile switches that removed at least one MCP server (acted on the waste / bill insight).
+    pub mcp_prunes: i64,
+    pub total: i64,
+}
+
+pub fn insight_actions(conn: &Connection) -> InsightActions {
+    let recoveries: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM rewind_store WHERE expanded_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    // A prune is a profile change that removed a server. `servers_removed` is a JSON array string;
+    // empty ('[]', '', NULL) means the switch added or kept servers, not a prune.
+    let mcp_prunes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM profile_changes
+             WHERE servers_removed IS NOT NULL
+               AND TRIM(servers_removed) NOT IN ('', '[]')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    InsightActions {
+        recoveries,
+        mcp_prunes,
+        total: recoveries + mcp_prunes,
+    }
+}
+
 /// Reclaim floor and eligible fraction from the plan's WNAD definition, and the harm margin (shared
 /// with the causal gate) plus the minimum scored trims to confirm a week's safety.
 const WNAD_RECLAIM_FLOOR_TOKENS: i64 = 50_000;
