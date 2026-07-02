@@ -506,12 +506,6 @@
       <div class="sec" id="home-wnad"></div>
 
       <div class="sec">
-        <div class="sec-eyebrow">Where each of your tools stands</div>
-        <p class="sec-note">Every tool climbs the same ladder, left to right. ctx leaves a tool's output whole until it reaches "trimming for real", and only then does it start cutting. Tap any stage for the tool-by-tool detail.</p>
-        <div class="board" id="home-board"></div>
-      </div>
-
-      <div class="sec">
         <div class="sec-eyebrow">See, save, trust</div>
         <div class="pillars">
           <div class="pillar"><div class="pn">1</div><div class="pt">See where your context goes</div><div class="pb">The Context bill itemizes every tool's output, biggest sinks first, so you can see where your agent actually spends its context. No other tool shows you this.</div></div>
@@ -864,26 +858,6 @@
       : `<div class="optin"><button class="cta" onclick="setPreset('full')">Turn on autopilot</button><span class="optin-sub">One yes, then it is hands-off. ctx will only ever trim a tool after your own work proves it is safe, and the tool always runs in full.</span></div>`;
 
     $("home-wnad").innerHTML = wnadScoreboard(ctx.wnad || [], ctx.insight_actions || {});
-
-    // the ladder, made literal
-    const board = [
-      ["earned", "Trimming for real", "Proven safe on your work, so ctx cuts these now."],
-      ["trial", "On trial", "Being trimmed live to finish the proof."],
-      ["proving", "Close to verdict", "Has trim history but the proof is not locked yet. Output stays whole."],
-      ["watch", "Just watching", "Not enough evidence yet. Left whole, nothing changed."],
-      ["off", "Kept off", "Trimming cost you re-reads, so ctx keeps these whole."],
-    ];
-    const CHIP_CAP = 7;
-    $("home-board").innerHTML = board.map(([s, title, desc]) => {
-      const t = g[s];
-      let chips;
-      if (!t.length) chips = `<span class="bc-empty">none yet</span>`;
-      else {
-        const shown = t.slice(0, CHIP_CAP).map((x) => `<span class="bc-chip">${esc(prettyTool(x))}</span>`).join("");
-        chips = shown + (t.length > CHIP_CAP ? `<span class="bc-more">+${t.length - CHIP_CAP} more</span>` : "");
-      }
-      return `<div class="bcard ${s}" onclick="go('loop')"><div class="bc-head"><span class="bc-dot ${s}"></span><span class="bc-title">${title}</span><span class="bc-count">${t.length}</span></div><div class="bc-desc">${desc}</div><div class="bc-tools">${chips}</div></div>`;
-    }).join("");
 
     // savings, up top beside the summary
     const safe = proof.safe_chars_saved || 0, trial = proof.trial_chars_saved || 0;
