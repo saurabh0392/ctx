@@ -50,7 +50,7 @@
   .brand-mark span { color: var(--primary); }
   .brand-sub { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em; color: var(--t4); }
   .nav { display: flex; gap: 2px; align-items: center; }
-  .nav a { color: var(--t3); font-size: 13.5px; font-weight: 600; text-decoration: none; padding: 8px 13px; border-radius: 9px; transition: .15s; cursor: pointer; }
+  .nav a { color: var(--t3); font-size: 13.5px; font-weight: 600; text-decoration: none; padding: 8px 12px; border-radius: 9px; transition: .15s; cursor: pointer; white-space: nowrap; }
   .nav a:hover { color: var(--t1); background: var(--surface); }
   .nav a.on { color: var(--primary-lt); background: var(--primary-dim); }
   .health { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--t4); margin-left: 6px; }
@@ -417,10 +417,10 @@
     <div class="topbar-inner">
       <div class="brand">
         <div class="brand-mark">ctx<span>.</span></div>
-        <div class="brand-sub">Context truth layer</div>
       </div>
       <nav class="nav">
         <a data-view="home" onclick="go('home')">Home</a>
+        <a data-view="bill" onclick="go('bill')">Context bill</a>
         <a data-view="loop" onclick="go('loop')">Tool report</a>
         <a data-view="compaction" onclick="go('compaction')">Compaction</a>
         <a data-view="surfaces" onclick="go('surfaces')">Surfaces</a>
@@ -468,6 +468,27 @@
     </section>
 
     <!-- ══ COMPACTION ══ -->
+    <section class="view" id="view-bill">
+      <div class="hero">
+        <div class="eyebrow"><span class="pip"></span> See where your context goes</div>
+        <h1 class="title">Your context bill</h1>
+        <p class="lede">Every tool result your agent reads spends context. This is the bill, itemized from your own sessions: the biggest sinks first, how much ctx could safely reclaim, and how much it already has. No proof needed to see it, it is just your data.</p>
+      </div>
+      <style>
+        .bill-tot { display:flex; gap:14px; flex-wrap:wrap; margin:22px 0 10px; }
+        .bill-tot .bt { flex:1; min-width:150px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px; }
+        .bill-tot .bt-n { font-size:26px; font-weight:700; color:var(--t1); }
+        .bill-tot .bt-l { font-size:12.5px; color:var(--t2); margin-top:3px; }
+        .bill-row { padding:13px 2px; border-bottom:1px solid var(--border); }
+        .bill-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+        .bill-tool { font-weight:600; color:var(--t1); font-size:14px; }
+        .bill-meta { font-size:12px; color:var(--t2); white-space:nowrap; }
+        .bill-bar { height:8px; background:var(--bg); border-radius:5px; overflow:hidden; margin-top:7px; }
+        .bill-bar > span { display:block; height:100%; background:linear-gradient(90deg,var(--primary),var(--primary-lt)); }
+      </style>
+      <div id="bill-summary"></div>
+      <div id="bill-list"></div>
+    </section>
     <section class="view" id="view-compaction">
       <div style="padding-top:40px">
         <div class="page-title">When your agent compacts</div>
@@ -529,16 +550,17 @@
 
   // ── router ──
   function go(view) {
-    const v = ["home", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(view) ? view : "home";
+    const v = ["home", "bill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(view) ? view : "home";
     location.hash = v;
   }
   function render() {
     const v = (location.hash || "#home").slice(1);
-    const view = ["home", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(v) ? v : "home";
+    const view = ["home", "bill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(v) ? v : "home";
     document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === "view-" + view));
     document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view));
     window.scrollTo(0, 0);
     if (view === "home") loadHome();
+    if (view === "bill") loadBill();
     if (view === "loop") loadLoop();
     if (view === "compaction") loadCompaction();
     if (view === "surfaces") loadSurfaces();
@@ -952,6 +974,35 @@
     if (s < 86400) return Math.floor(s / 3600) + "h ago";
     return Math.floor(s / 86400) + "d ago";
   }
+  async function loadBill() {
+    let b;
+    try { b = await getJSON("/api/context/bill"); setHealth(true); }
+    catch (e) { setHealth(false); $("bill-summary").innerHTML = '<div class="status" style="margin-top:22px"><div class="big">Could not reach ctx. Is the dashboard running?</div></div>'; return; }
+    const tools = (b.tools || []).filter((t) => (t.sink_chars || 0) > 0);
+    if (!tools.length) {
+      $("bill-summary").innerHTML = '<div class="status" style="margin-top:22px"><div class="big">Nothing to itemize yet. ctx has not seen tool output on this corpus. Run a few agent turns and your context bill fills in here.</div></div>';
+      $("bill-list").innerHTML = "";
+      return;
+    }
+    const since = b.since ? (" since " + esc(String(b.since).slice(0, 10))) : "";
+    $("bill-summary").innerHTML =
+      '<div class="bill-tot">' +
+      '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_sink_chars)) + '</div><div class="bt-l">tokens of tool output' + since + '</div></div>' +
+      '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_reclaimable_chars)) + '</div><div class="bt-l">reclaimable, on the table</div></div>' +
+      '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_reclaimed_chars)) + '</div><div class="bt-l">reclaimed so far</div></div>' +
+      '</div>';
+    const max = tools[0].sink_chars || 1;
+    $("bill-list").innerHTML = tools.map((t) => {
+      const w = Math.max(2, Math.round((t.sink_chars / max) * 100));
+      const rp = t.sink_chars > 0 ? Math.max(0, Math.round((t.reclaimable_chars / t.sink_chars) * 100)) : 0;
+      return '<div class="bill-row">' +
+        '<div class="bill-head"><span class="bill-tool">' + esc(prettyTool(t.tool)) + '</span>' +
+        '<span class="bill-meta">' + fmtK(tok(t.sink_chars)) + ' tok · ' + num(t.decisions) + ' calls · ' + rp + '% trimmable</span></div>' +
+        '<div class="bill-bar"><span style="width:' + w + '%"></span></div>' +
+        '</div>';
+    }).join("");
+  }
+
   async function loadActivity() {
     let ctx;
     try { ctx = await getJSON("/api/context"); setHealth(true); }

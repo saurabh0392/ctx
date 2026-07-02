@@ -472,6 +472,73 @@ pub struct CompressDecisionStats {
     pub today: i64,
 }
 
+/// One tool's line on the context bill.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBillTool {
+    pub tool: String,
+    pub decisions: i64,
+    /// Total characters this tool poured into the agent's context.
+    pub sink_chars: i64,
+    /// Characters a trim would drop (what is on the table).
+    pub reclaimable_chars: i64,
+    /// Characters ctx actually removed on applied trims.
+    pub reclaimed_chars: i64,
+}
+
+/// Where context goes, itemized from `compress_decisions`. Needs no labels, so it renders on day
+/// one: ranked output sinks with what ctx could reclaim and what it already has.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBill {
+    pub tools: Vec<ContextBillTool>,
+    pub total_sink_chars: i64,
+    pub total_reclaimable_chars: i64,
+    pub total_reclaimed_chars: i64,
+    pub decisions: i64,
+    pub since: Option<String>,
+}
+
+pub fn context_bill(conn: &Connection) -> ContextBill {
+    let mut bill = ContextBill::default();
+    let mut stmt = match conn.prepare(
+        "SELECT tool_name,
+                COUNT(*),
+                COALESCE(SUM(chars_in), 0),
+                COALESCE(SUM(chars_in - would_chars_out), 0),
+                COALESCE(SUM(CASE WHEN applied = 1 THEN chars_in - would_chars_out ELSE 0 END), 0)
+         FROM compress_decisions
+         GROUP BY tool_name
+         ORDER BY 3 DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return bill,
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(ContextBillTool {
+            tool: r.get(0)?,
+            decisions: r.get(1)?,
+            sink_chars: r.get(2)?,
+            reclaimable_chars: r.get(3)?,
+            reclaimed_chars: r.get(4)?,
+        })
+    });
+    if let Ok(rows) = rows {
+        for t in rows.flatten() {
+            bill.total_sink_chars += t.sink_chars;
+            bill.total_reclaimable_chars += t.reclaimable_chars;
+            bill.total_reclaimed_chars += t.reclaimed_chars;
+            bill.decisions += t.decisions;
+            bill.tools.push(t);
+        }
+    }
+    bill.since = conn
+        .query_row("SELECT MIN(ts) FROM compress_decisions", [], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .ok()
+        .flatten();
+    bill
+}
+
 pub fn compress_decision_stats(conn: &Connection) -> CompressDecisionStats {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let row = conn.query_row(

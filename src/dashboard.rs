@@ -108,6 +108,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/context", get(api_context))
         .route("/api/context/preset", post(api_context_preset))
         .route("/api/context/proof", get(api_context_proof))
+        .route("/api/context/bill", get(api_context_bill))
         .route(
             "/api/context/model-progress",
             get(api_context_model_progress),
@@ -324,6 +325,15 @@ struct ContextView {
     /// Per-agent activity for the cross-surface view (ADR 0018 / CTX-34). Always Claude Code and
     /// Cursor, each with a `seen` flag so the UI can show an honest empty state.
     surfaces: Vec<crate::db::SurfaceSummary>,
+}
+
+/// GET /api/context/bill: where your context goes, per tool. The education front door, ranked
+/// output sinks with reclaimable and reclaimed room. Populates from the first session, no labels.
+async fn api_context_bill() -> Json<crate::db::ContextBill> {
+    match open_ctx_db() {
+        Some(conn) => Json(crate::db::context_bill(&conn)),
+        None => Json(crate::db::ContextBill::default()),
+    }
 }
 
 /// GET /api/context — everything the Context home needs, drawn only from real data.
