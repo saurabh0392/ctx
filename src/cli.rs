@@ -146,6 +146,21 @@ pub enum Commands {
         #[command(subcommand)]
         command: BenchCommand,
     },
+    /// Export a shareable, self-contained Context Report for a repo (CTX-56).
+    ///
+    /// Writes a single HTML file that opens in any browser on any machine, no ctx install needed.
+    /// Local only: nothing leaves this machine except the file you choose to share.
+    Report {
+        /// Repo to report on, matched as a substring of its path. Omit to list repos.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Output file (default: ctx-report-<repo>.html in the current directory).
+        #[arg(long)]
+        out: Option<String>,
+        /// List the repos ctx has data for, then exit.
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 #[derive(Subcommand)]

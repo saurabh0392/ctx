@@ -36,6 +36,7 @@ pub mod modes;
 pub mod outcome_signals;
 pub mod profiles;
 pub mod quality_guard;
+pub mod report;
 pub mod rule_signals;
 pub mod semantic_tools;
 pub mod setup;
@@ -269,6 +270,9 @@ pub async fn run() -> Result<()> {
         Commands::Bench { command } => match command {
             BenchCommand::Run { json } => bench::run(json)?,
         },
+        Commands::Report { repo, out, list } => {
+            report::run(repo.as_deref(), out.as_deref(), list)?
+        }
     }
 
     Ok(())

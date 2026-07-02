@@ -550,6 +550,110 @@ pub struct ContextBill {
     pub trend: Vec<BillDay>,
 }
 
+/// One repo ctx has recorded decisions for, for the shareable report's repo picker (CTX-56).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RepoSummary {
+    pub repo_key: String,
+    pub decisions: i64,
+    pub sink_chars: i64,
+}
+
+/// Repos ctx has data for, biggest sink first. `repo_key` comes from `features_json` (the repo the
+/// decision was recorded in); rows without one fold into "(unknown)".
+pub fn list_repos(conn: &Connection) -> Vec<RepoSummary> {
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(json_extract(features_json,'$.repo_key'),'(unknown)') AS repo,
+                COUNT(*), COALESCE(SUM(chars_in),0)
+         FROM compress_decisions
+         GROUP BY repo
+         ORDER BY 3 DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok(RepoSummary {
+                repo_key: r.get(0)?,
+                decisions: r.get(1)?,
+                sink_chars: r.get(2)?,
+            })
+        }) {
+            out.extend(rows.flatten());
+        }
+    }
+    out
+}
+
+/// Per-repo Context Bill for the shareable report (CTX-56). Same shape as `context_bill`, scoped to
+/// one repo via the `repo_key` recorded in `features_json`. Rewinds and trend are left empty: the
+/// export is a static, sendable snapshot of where context went, not the live drill-down.
+pub fn repo_bill(conn: &Connection, repo_key: &str) -> ContextBill {
+    let mut bill = ContextBill::default();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tool_name,
+                COUNT(*),
+                COALESCE(SUM(chars_in), 0),
+                COALESCE(SUM(chars_in - would_chars_out), 0),
+                COALESCE(SUM(CASE WHEN applied = 1 THEN chars_in - would_chars_out ELSE 0 END), 0)
+         FROM compress_decisions
+         WHERE COALESCE(json_extract(features_json,'$.repo_key'),'(unknown)') = ?1
+         GROUP BY tool_name
+         ORDER BY 3 DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![repo_key], |r| {
+            Ok(ContextBillTool {
+                tool: r.get(0)?,
+                decisions: r.get(1)?,
+                sink_chars: r.get(2)?,
+                reclaimable_chars: r.get(3)?,
+                reclaimed_chars: r.get(4)?,
+                sources: Vec::new(),
+                rewinds: Vec::new(),
+            })
+        }) {
+            for t in rows.flatten() {
+                bill.total_sink_chars += t.sink_chars;
+                bill.total_reclaimable_chars += t.reclaimable_chars;
+                bill.total_reclaimed_chars += t.reclaimed_chars;
+                bill.decisions += t.decisions;
+                bill.tools.push(t);
+            }
+        }
+    }
+    let mut idx = std::collections::HashMap::new();
+    for (i, t) in bill.tools.iter().enumerate() {
+        idx.insert(t.tool.clone(), i);
+    }
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tool_name,
+                COALESCE(NULLIF(command_or_path, ''), '(unlabeled)'),
+                COUNT(*),
+                COALESCE(SUM(chars_in), 0)
+         FROM compress_decisions
+         WHERE COALESCE(json_extract(features_json,'$.repo_key'),'(unknown)') = ?1
+         GROUP BY tool_name, command_or_path
+         ORDER BY SUM(chars_in) DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![repo_key], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                ContextBillSource {
+                    label: r.get(1)?,
+                    calls: r.get(2)?,
+                    sink_chars: r.get(3)?,
+                },
+            ))
+        }) {
+            for (tool, src) in rows.flatten() {
+                if let Some(&i) = idx.get(&tool) {
+                    if bill.tools[i].sources.len() < 8 {
+                        bill.tools[i].sources.push(src);
+                    }
+                }
+            }
+        }
+    }
+    bill
+}
+
 /// A verbatim tool output ctx trimmed, kept so the agent can re-expand it on demand (CTX-51).
 #[derive(Debug, Default, serde::Serialize)]
 pub struct RewindEntry {
