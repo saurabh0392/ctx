@@ -301,6 +301,10 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
         crate::config::install_statusline_script(DASHBOARD_PORT)?;
         crate::claude_settings::write_native_ctx_to_user_settings(slug, DASHBOARD_PORT)?;
         let _ = crate::claude_settings::sync_experiment_hooks_from_config();
+        // Register the MCP server too, so the agent can call ctx_expand to recover a trim. Without
+        // this the hook trims but the recovery tool the marker points at does not exist, and every
+        // trim that cut something needed becomes a re-read instead of a cheap round trip.
+        let _ = crate::claude_settings::register_ctx_mcp_server_in_user_config();
         println!();
         let filter_line = match cfg.filter_mode {
             crate::config::FilterMode::Off => {
@@ -315,6 +319,7 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
         };
         println!("  Filter:     {filter_line}");
         println!("  Hooks:      UserPromptSubmit + dashboard telemetry");
+        println!("  MCP tools:  ctx_expand (recover a trim) + status/spend/waste");
         println!("  Allowance:  statusLine → dashboard (Pro/Max rate limits)");
         println!("  Dashboard:  http://127.0.0.1:{DASHBOARD_PORT}");
         println!("  Autorun:    {}", autorun_summary(periodic_ingest));

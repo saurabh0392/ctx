@@ -109,6 +109,53 @@ fn resolve_ctx_subcommand(sub: &str) -> String {
     format!("ctx {}", sub)
 }
 
+/// Register the ctx MCP server in `~/.claude.json` so the agent can call `ctx_expand` and the other
+/// ctx tools. Without this the PostToolUse hook trims output but the agent has no way to recover a
+/// trim: the "[ctx trimmed ... call the ctx_expand tool]" marker points at a tool that was never
+/// installed, so reversible trims are dead on arrival and every recovery becomes a re-read. Idempotent
+/// and only writes when the entry actually changes, so it is safe to call on every `ctx setup`.
+pub fn register_ctx_mcp_server_in_user_config() -> Result<bool> {
+    let path = crate::config::claude_json_path();
+    let mut doc: Value = if path.exists() {
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        json!({})
+    };
+
+    let command = ctx_binary_path();
+    let desired = json!({
+        "type": "stdio",
+        "command": command,
+        "args": ["mcp"],
+        "env": {},
+    });
+
+    if !doc.get("mcpServers").map(|m| m.is_object()).unwrap_or(false) {
+        doc["mcpServers"] = json!({});
+    }
+    if doc["mcpServers"].get("ctx") == Some(&desired) {
+        return Ok(false);
+    }
+    doc["mcpServers"]["ctx"] = desired;
+    crate::config::write_json_atomic_if_changed(&path, &doc)?;
+    Ok(true)
+}
+
+/// Absolute path to the running ctx binary, for the MCP server command. Falls back to the bare name
+/// so the entry is still usable if the exe path cannot be resolved.
+fn ctx_binary_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "ctx".to_string())
+}
+
 fn http_hook_event_entry(dashboard_port: u16) -> Value {
     let url = format!("http://127.0.0.1:{dashboard_port}{}", CTX_HOOK_EVENT_PATH);
     json!({
@@ -522,6 +569,34 @@ pub fn write_native_ctx_to_user_settings(active_slug: &str, dashboard_port: u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registers_ctx_mcp_server_idempotently() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        // Pre-seed an existing user config with an unrelated server to prove we merge, not clobber.
+        let path = crate::config::claude_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"other":{"type":"stdio","command":"other"}}}"#,
+        )
+        .unwrap();
+
+        assert!(register_ctx_mcp_server_in_user_config().unwrap(), "first call writes");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["mcpServers"]["ctx"]["args"][0], "mcp");
+        assert!(doc["mcpServers"]["other"].is_object(), "existing server preserved");
+
+        assert!(
+            !register_ctx_mcp_server_in_user_config().unwrap(),
+            "second call is a no-op, returns false"
+        );
+        std::env::remove_var("CTX_HOME");
+    }
 
     #[test]
     fn merge_soft_deny_rules_for_data_profile() {

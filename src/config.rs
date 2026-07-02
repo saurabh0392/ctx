@@ -282,6 +282,20 @@ pub fn claude_settings_path() -> PathBuf {
         .join("settings.json")
 }
 
+/// Path to `~/.claude.json`, the user-scope Claude Code config that holds `mcpServers`. Distinct
+/// from `claude_settings_path` (which is `~/.claude/settings.json`, hooks and permissions). Test
+/// isolation mirrors `claude_settings_path`.
+pub fn claude_json_path() -> PathBuf {
+    if cfg!(test) {
+        if let Ok(p) = std::env::var("CTX_HOME") {
+            return PathBuf::from(p).join(".claude.json");
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".claude.json")
+}
+
 /// True when `~/.claude/settings.json` exists (Claude Code CLI or prior ctx setup).
 pub fn claude_code_cli_present() -> bool {
     claude_settings_path().is_file()
