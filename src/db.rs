@@ -769,6 +769,7 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
                     WHERE s.external_key LIKE '%' || compress_decisions.session_id || '%'
                       AND t.flags LIKE '%correction_explicit%'
                       AND t.flags NOT LIKE '%long_dump%'
+                      AND t.flags NOT LIKE '%session_steer%'
                       AND t.ts IS NOT NULL
                       AND julianday(t.ts) > julianday(compress_decisions.ts)
                       AND julianday(t.ts) <= julianday(compress_decisions.ts) + ?1
@@ -798,6 +799,7 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
                     AND (
                       t.flags LIKE '%correction%'
                       OR t.flags LIKE '%aborted%'
+                      OR t.flags LIKE '%session_steer%'
                     )
                     AND t.ts IS NOT NULL
                     AND julianday(t.ts) > julianday(compress_decisions.ts)
@@ -877,6 +879,9 @@ pub fn refresh_outcome_signals(conn: &Connection) -> Result<usize> {
                 if f.contains("aborted") {
                     signals.push("aborted");
                 }
+                if f.contains("session_steer") {
+                    signals.push("session_steer");
+                }
             }
         }
         signals.sort_unstable();
@@ -893,6 +898,9 @@ pub fn refresh_outcome_signals(conn: &Connection) -> Result<usize> {
         if applied > 0 && lines_drop > 0 {
             signals.push("trimmed");
         }
+        if compression_workaround_from_db(conn, &sid, &ts, applied, lines_drop)? {
+            signals.push("compression_workaround");
+        }
         signals.sort_unstable();
         signals.dedup();
         let json = serde_json::to_string(&signals).unwrap_or_else(|_| "[]".into());
@@ -907,6 +915,46 @@ pub fn refresh_outcome_signals(conn: &Connection) -> Result<usize> {
         }
     }
     Ok(updated)
+}
+
+/// Structural compression workaround from the timestamp join path: trimmed decision followed
+/// by a shell bypass in the same session within the outcome window (CTX-50 / ADR 0035).
+fn compression_workaround_from_db(
+    conn: &Connection,
+    session_id: &str,
+    decision_ts: &str,
+    applied: i64,
+    lines_drop: i64,
+) -> Result<bool> {
+    if applied == 0 || lines_drop <= 0 {
+        return Ok(false);
+    }
+    let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    let shell_list: String = crate::outcome_signals::BYPASS_SHELL_TOOL_NAMES
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT EXISTS (
+            SELECT 1 FROM compress_decisions d2
+            WHERE d2.session_id = ?1
+              AND julianday(d2.ts) > julianday(?2)
+              AND julianday(d2.ts) <= julianday(?2) + ?3
+              AND LOWER(TRIM(d2.tool_name)) IN ({shell_list})
+              AND (
+                LOWER(COALESCE(d2.command_or_path,'')) LIKE '%json%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%<<%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%heredoc%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%python3 -c%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%node -e%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '% > %'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%>>%'
+              )
+         )"
+    );
+    conn.query_row(&sql, params![session_id, decision_ts, window_days], |r| r.get(0))
+        .map_err(Into::into)
 }
 
 /// The `outcome_reread` value subquery: nearest-preceding same fingerprint within the window.
@@ -2122,6 +2170,92 @@ fn backfill_rejoin_outcome_labels_v5(conn: &Connection) {
     );
 }
 
+/// Rejoin after steer-aware correction labels and compression workaround signals (CTX-50).
+fn backfill_rejoin_outcome_labels_v6(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v6'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    backfill_steer_turn_flags_v1(conn);
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_reread = NULL,
+             outcome_edit_follow = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v6', '1')",
+        [],
+    );
+}
+
+/// Reclassify mislabeled explicit corrections that are session steers (CTX-50).
+fn repair_steer_turn_flags(conn: &Connection) {
+    let mut sel = match conn.prepare(
+        "SELECT id, COALESCE(human_text_prefix,'') FROM turns WHERE flags LIKE '%correction_explicit%'",
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let rows: Vec<(i64, String)> = sel
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()
+        .map(|iter| iter.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default();
+    for (id, text) in rows {
+        if crate::outcome_signals::classify_correction(
+            &text,
+            crate::outcome_signals::DEFAULT_TERSE_MAX_CHARS,
+        ) != crate::outcome_signals::CorrectionClass::Steer
+        {
+            continue;
+        }
+        let _ = conn.execute(
+            "UPDATE turns SET flags = '[\"session_steer\"]' WHERE id = ?1",
+            params![id],
+        );
+    }
+}
+
+/// One-time migration wrapper for steer turn cleanup.
+fn backfill_steer_turn_flags_v1(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='steer_turn_flags_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    repair_steer_turn_flags(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('steer_turn_flags_v1', '1')",
+        [],
+    );
+}
+
 /// Repair the live corpus for honest dashboard display: clean interrupt flags, rejoin outcomes.
 pub fn repair_corpus(conn: &Connection) -> Result<(usize, usize, usize)> {
     let _ = conn.execute(
@@ -2135,9 +2269,11 @@ pub fn repair_corpus(conn: &Connection) -> Result<(usize, usize, usize)> {
            )",
         [],
     );
+    repair_steer_turn_flags(conn);
     let _ = conn.execute(
         "UPDATE compress_decisions
-         SET outcome_joined = 0, outcome_correction = NULL, outcome_signals = NULL
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_reread = NULL,
+             outcome_edit_follow = NULL, outcome_signals = NULL
          WHERE outcome_joined = 1",
         [],
     );
@@ -2188,6 +2324,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     backfill_interrupt_turn_flags_v1(conn);
     backfill_rejoin_outcome_labels_v4(conn);
     backfill_rejoin_outcome_labels_v5(conn);
+    backfill_rejoin_outcome_labels_v6(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -3992,6 +4129,52 @@ mod compress_decision_tests {
             )
             .unwrap();
         assert_eq!(corr, 0, "terse redirects are observational only");
+    }
+
+    #[test]
+    fn session_steer_after_trim_does_not_set_gate_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-steer', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-steer'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, human_text_prefix, ts) VALUES (?1, 1, 'user', '[\"session_steer\"]', 'nope nope.. lets do the fun stuff', '2026-05-31T10:05:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-steer", "Bash", "figma metadata");
+        d.applied = true;
+        d.lines_drop = 166;
+        insert_compress_decision(&conn, &d).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+        let (corr, sigs): (i64, String) = conn
+            .query_row(
+                "SELECT COALESCE(outcome_correction,0), COALESCE(outcome_signals,'') FROM compress_decisions WHERE command_or_path='figma metadata'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(corr, 0, "session steers must not feed the causal gate");
+        assert!(sigs.contains("session_steer"));
+        assert!(!sigs.contains("correction_gate"));
     }
 
     #[test]

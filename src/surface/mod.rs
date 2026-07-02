@@ -101,6 +101,8 @@ pub enum TurnFlag {
     LongDump,
     PreCompact,
     Aborted,
+    /// Topic pivot or scope redirect; observation only, not a gate correction (CTX-50).
+    SessionSteer,
 }
 
 impl TurnFlag {
@@ -113,6 +115,7 @@ impl TurnFlag {
             TurnFlag::LongDump => "long_dump",
             TurnFlag::PreCompact => "pre_compact",
             TurnFlag::Aborted => "aborted",
+            TurnFlag::SessionSteer => "session_steer",
         }
     }
 
@@ -125,6 +128,7 @@ impl TurnFlag {
             "long_dump" => Some(TurnFlag::LongDump),
             "pre_compact" => Some(TurnFlag::PreCompact),
             "aborted" => Some(TurnFlag::Aborted),
+            "session_steer" => Some(TurnFlag::SessionSteer),
             _ => None,
         }
     }
@@ -283,6 +287,7 @@ mod tests {
             TurnFlag::LongDump,
             TurnFlag::PreCompact,
             TurnFlag::Aborted,
+            TurnFlag::SessionSteer,
         ] {
             assert_eq!(TurnFlag::parse(f.as_str()), Some(f));
         }

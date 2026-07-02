@@ -393,6 +393,9 @@ fn detect_flags(
             flags.push("correction".to_string());
             flags.push("correction_terse".to_string());
         }
+        crate::outcome_signals::CorrectionClass::Steer => {
+            flags.push("session_steer".to_string());
+        }
         _ => {}
     }
 

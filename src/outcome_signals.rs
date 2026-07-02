@@ -21,6 +21,9 @@ pub enum CorrectionClass {
     Terse,
     /// High confidence: explicit complaint language ("wrong", "revert", "undo", "broken").
     Explicit,
+    /// Topic pivot or session redirect ("drop it", "lets do the fun stuff"). Recorded as
+    /// `session_steer` for observation only; must not feed the causal gate (CTX-50).
+    Steer,
 }
 
 /// A user turn at or below this many characters, following substantial assistant work and
@@ -81,6 +84,44 @@ const APPROVAL_PHRASES: &[&str] = &[
     "hell yeah",
     "thank you",
 ];
+
+/// Session steers: topic pivots and scope redirects without output-specific complaints.
+/// Checked before negative cues so a bare "nope" plus a pivot is not a gate correction.
+const STEER_PHRASES: &[&str] = &[
+    "drop it",
+    "just drop it",
+    "start scoping",
+    "do the fun stuff",
+    "lets do the fun stuff",
+    "let's do the fun stuff",
+    "design and build",
+    "move on",
+    "move to the next",
+    "whats next",
+    "what's next",
+    "start sim",
+    "restart sim",
+    "run sim again",
+];
+
+/// Output-quality complaints that keep a steer from swallowing a real pushback.
+const OUTPUT_COMPLAINT_PHRASES: &[&str] = &[
+    "bad bg",
+    "bad image",
+    "bad background",
+    "looks wrong",
+    "still wrong",
+    "still broken",
+    "not what i",
+    "not what we",
+    "wrong file",
+    "wrong approach",
+    "doesn't look",
+    "does not look",
+];
+
+/// Bare dismissals that are not output-specific on their own ("nope", "no,").
+const BARE_DISMISSAL_CUES: &[&str] = &["nope", "no,", "no "];
 
 /// Workflow redirects that are not pushback on tool output. Matched as lowercase substrings.
 const WORKFLOW_PHRASES: &[&str] = &[
@@ -179,6 +220,100 @@ const APPROVAL_TOKENS: &[&str] = &[
 
 pub fn has_negative_cue(raw_lower: &str) -> bool {
     NEGATIVE_CUES.iter().any(|c| raw_lower.contains(c))
+}
+
+/// Whether the user pivoted topic or scope without complaining about tool output.
+pub fn is_session_steer(text: &str) -> bool {
+    let raw = text.trim().to_lowercase();
+    if raw.is_empty() || is_system_turn(text) || is_workflow_command(text) {
+        return false;
+    }
+    if !STEER_PHRASES.iter().any(|p| raw.contains(p)) {
+        return false;
+    }
+    !has_output_specific_complaint(&raw)
+}
+
+/// Complaint language aimed at output quality, not a bare dismissal or pivot.
+pub fn has_output_specific_complaint(raw_lower: &str) -> bool {
+    if OUTPUT_COMPLAINT_PHRASES
+        .iter()
+        .any(|p| raw_lower.contains(p))
+    {
+        return true;
+    }
+    for cue in NEGATIVE_CUES {
+        if !raw_lower.contains(cue) {
+            continue;
+        }
+        if BARE_DISMISSAL_CUES.contains(cue) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// Assistant narration that the prior tool result was compressed or truncated.
+pub fn is_compression_narration(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    COMPRESSION_NARRATION_CUES
+        .iter()
+        .any(|c| lower.contains(c))
+}
+
+const COMPRESSION_NARRATION_CUES: &[&str] = &[
+    "compressed",
+    "compression",
+    "truncat",
+    "trimmed output",
+    "output was trimmed",
+    "context limit",
+    "too large to include",
+    "couldn't fit",
+    "could not fit",
+];
+
+/// Shell tools sometimes used to write trimmed JSON or dumps back to disk.
+pub const BYPASS_SHELL_TOOL_NAMES: &[&str] = &["bash", "shell"];
+
+pub fn is_shell_bypass_call(tool_name: &str, fingerprint: &str) -> bool {
+    let n = tool_name.trim().to_ascii_lowercase();
+    if !BYPASS_SHELL_TOOL_NAMES.contains(&n.as_str()) {
+        return false;
+    }
+    let fp = fingerprint.trim().to_ascii_lowercase();
+    fp.contains("json")
+        || fp.contains("<<")
+        || fp.contains("heredoc")
+        || fp.contains(" > ")
+        || fp.contains(">>")
+        || fp.contains("python3 -c")
+        || fp.contains("node -e")
+}
+
+/// Observation-only: trimmed output, assistant named compression, then a shell bypass (CTX-50).
+pub fn is_compression_workaround(
+    applied: bool,
+    lines_drop: i64,
+    call_ordinal: u32,
+    assistant_turns: &[(u32, &str)],
+    later_calls: &[(u32, &str, &str)],
+    window: u32,
+) -> bool {
+    if !applied || lines_drop <= 0 {
+        return false;
+    }
+    let window_end = call_ordinal.saturating_add(window);
+    let narrated = assistant_turns.iter().any(|(o, text)| {
+        *o > call_ordinal && *o <= window_end && is_compression_narration(text)
+    });
+    if !narrated {
+        return false;
+    }
+    later_calls.iter().any(|(o, tool, fp)| {
+        *o > call_ordinal && *o <= window_end && is_shell_bypass_call(tool, fp)
+    })
 }
 
 /// Window, in transcript turns, within which a structural follow-up (re-edit, retry) still
@@ -353,6 +488,9 @@ pub fn classify_correction(human: &str, terse_max: usize) -> CorrectionClass {
     let raw = human.trim().to_lowercase();
     if raw.is_empty() || is_system_turn(human) || is_workflow_command(human) {
         return CorrectionClass::None;
+    }
+    if is_session_steer(human) {
+        return CorrectionClass::Steer;
     }
     if has_negative_cue(&raw) {
         return CorrectionClass::Explicit;
@@ -549,5 +687,58 @@ mod tests {
         assert!(!gate_correction_label(true, false, 10));
         assert!(!gate_correction_label(true, true, 0));
         assert!(gate_correction_label(true, true, 10));
+    }
+
+    #[test]
+    fn session_steers_are_not_explicit_corrections() {
+        for s in [
+            "nope nope.. lets do the fun stuff",
+            "just drop it",
+            "start scoping",
+            "design and build the dashboard next",
+            "whats next?",
+        ] {
+            assert_eq!(
+                classify_correction(s, DEFAULT_TERSE_MAX_CHARS),
+                CorrectionClass::Steer,
+                "should steer: {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn output_complaints_stay_explicit_even_with_nope() {
+        for s in ["nope. bad bg image", "nope that's wrong", "still broken, revert"] {
+            assert_eq!(
+                classify_correction(s, DEFAULT_TERSE_MAX_CHARS),
+                CorrectionClass::Explicit,
+                "should stay explicit: {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compression_workaround_needs_narration_and_shell_bypass() {
+        let w = STRUCTURAL_WINDOW_TURNS;
+        let assistants = [(2u32, "output was trimmed so I'll write the json to disk")];
+        let bypass = [(3u32, "Bash", "python3 -c 'open(\"x.json\")'")];
+        assert!(is_compression_workaround(true, 40, 1, &assistants, &bypass, w));
+        assert!(!is_compression_workaround(
+            true,
+            40,
+            1,
+            &[(2, "continuing")],
+            &bypass,
+            w
+        ));
+        assert!(!is_compression_workaround(
+            true,
+            40,
+            1,
+            &assistants,
+            &[(3, "Read", "/a.rs")],
+            w
+        ));
+        assert!(!is_compression_workaround(false, 40, 1, &assistants, &bypass, w));
     }
 }

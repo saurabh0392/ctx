@@ -33,9 +33,10 @@ pub fn join_transcript_outcomes(conn: &Connection, home: &Path) -> usize {
 /// Ordinal/fingerprint outcome join for one parsed transcript. Surface-agnostic: it works
 /// for any `ParsedTranscript` regardless of which adapter produced it.
 fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
-    let explicit_ordinals = flag_ordinals(parsed, TurnFlag::CorrectionExplicit);
+    let _explicit_ordinals = flag_ordinals(parsed, TurnFlag::CorrectionExplicit);
     let terse_ordinals = flag_ordinals(parsed, TurnFlag::CorrectionTerse);
     let aborted_ordinals = flag_ordinals(parsed, TurnFlag::Aborted);
+    let steer_ordinals = flag_ordinals(parsed, TurnFlag::SessionSteer);
 
     let Some(max_ordinal) = parsed.turns.iter().map(|t| t.ordinal).max() else {
         return 0;
@@ -72,14 +73,37 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
             .any(|&o| in_window(o));
         let terse_in_window = terse_ordinals.iter().any(|&o| in_window(o));
         let aborted_in_window = aborted_ordinals.iter().any(|&o| in_window(o));
-        let observed_user_signal =
-            explicit_in_window || terse_in_window || aborted_in_window;
+        let steer_in_window = steer_ordinals.iter().any(|&o| in_window(o));
+        let observed_user_signal = explicit_in_window
+            || terse_in_window
+            || aborted_in_window
+            || steer_in_window;
 
         let window_closed = max_ordinal > window_end;
         let reread = calls.iter().any(|&(o, _)| in_window(o));
         let reedit = calls.iter().any(|&(o, is_edit)| is_edit && in_window(o));
 
-        if !observed_user_signal && !window_closed && !reread {
+        let assistant_turns: Vec<(u32, &str)> = parsed
+            .turns
+            .iter()
+            .filter(|t| matches!(t.role, crate::surface::TurnRole::Assistant))
+            .map(|t| (t.ordinal, t.text_prefix.as_str()))
+            .collect();
+        let all_calls: Vec<(u32, &str, &str)> = parsed
+            .tool_calls
+            .iter()
+            .filter_map(|c| c.turn_ordinal.map(|o| (o, c.tool_name.as_str(), c.input_fingerprint.as_str())))
+            .collect();
+        let compression_workaround = crate::outcome_signals::is_compression_workaround(
+            d.applied,
+            d.lines_drop,
+            call_ordinal,
+            &assistant_turns,
+            &all_calls,
+            CORRECTION_WINDOW_TURNS,
+        );
+
+        if !observed_user_signal && !window_closed && !reread && !compression_workaround {
             continue;
         }
 
@@ -99,6 +123,9 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         if aborted_in_window {
             signals.push("aborted");
         }
+        if steer_in_window {
+            signals.push("session_steer");
+        }
         if gate_correction {
             signals.push("correction_gate");
         }
@@ -110,6 +137,9 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         }
         if d.applied && d.lines_drop > 0 {
             signals.push("trimmed");
+        }
+        if compression_workaround {
+            signals.push("compression_workaround");
         }
         let signals_json = serde_json::to_string(&signals).ok();
 
@@ -152,6 +182,7 @@ fn explicit_gate_ordinals(parsed: &ParsedTranscript) -> Vec<u32> {
         .filter(|t| {
             t.flags.contains(&TurnFlag::CorrectionExplicit)
                 && !t.flags.contains(&TurnFlag::LongDump)
+                && !t.flags.contains(&TurnFlag::SessionSteer)
         })
         .map(|t| t.ordinal)
         .collect();
@@ -372,5 +403,128 @@ mod tests {
             )
             .unwrap();
         assert_eq!(corr, 1);
+    }
+
+    #[test]
+    fn session_steer_after_trim_does_not_set_gate_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = crate::db::open_db().unwrap();
+        crate::db::ensure_schema(&conn).unwrap();
+
+        crate::db::insert_compress_decision(
+            &conn,
+            &crate::db::CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("sess-1"),
+                tool_name: "Bash",
+                server_prefix: None,
+                kind: "generic",
+                task_mode: "scan",
+                lines_total: 100,
+                lines_keep: 40,
+                lines_drop: 60,
+                chars_in: 5000,
+                would_chars_out: 2000,
+                features_json: "{}",
+                command_or_path: "figma metadata",
+                applied: true,
+                explore_arm: None,
+                surface: None,
+            },
+        )
+        .unwrap();
+
+        let parsed = ParsedTranscript {
+            session: CanonicalSession {
+                surface: SurfaceId::Cursor,
+                session_key: "sess-1".into(),
+                external_key: "sess-1".into(),
+                project_label: "p".into(),
+                repo_root: None,
+            },
+            turns: vec![
+                turn(1, TurnRole::Assistant, vec![]),
+                turn(2, TurnRole::User, vec![TurnFlag::SessionSteer]),
+                turn(6, TurnRole::User, vec![]),
+            ],
+            tool_calls: vec![call("figma metadata", "Bash", 1)],
+        };
+
+        assert_eq!(join_one(&conn, &parsed), 1);
+        let (corr, sigs): (i64, String) = conn
+            .query_row(
+                "SELECT outcome_correction, COALESCE(outcome_signals,'') FROM compress_decisions WHERE command_or_path = 'figma metadata'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(corr, 0);
+        assert!(sigs.contains("session_steer"));
+        assert!(!sigs.contains("correction_gate"));
+    }
+
+    #[test]
+    fn compression_workaround_records_on_trimmed_read_not_bash() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = crate::db::open_db().unwrap();
+        crate::db::ensure_schema(&conn).unwrap();
+
+        crate::db::insert_compress_decision(
+            &conn,
+            &crate::db::CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("sess-1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "scan",
+                lines_total: 200,
+                lines_keep: 40,
+                lines_drop: 160,
+                chars_in: 8000,
+                would_chars_out: 2000,
+                features_json: "{}",
+                command_or_path: "/atlas.json",
+                applied: true,
+                explore_arm: None,
+                surface: None,
+            },
+        )
+        .unwrap();
+
+        let mut narrate = turn(2, TurnRole::Assistant, vec![]);
+        narrate.text_prefix = "Read output was trimmed; writing json via shell".into();
+        let parsed = ParsedTranscript {
+            session: CanonicalSession {
+                surface: SurfaceId::Cursor,
+                session_key: "sess-1".into(),
+                external_key: "sess-1".into(),
+                project_label: "p".into(),
+                repo_root: None,
+            },
+            turns: vec![turn(1, TurnRole::Assistant, vec![]), narrate, turn(6, TurnRole::User, vec![])],
+            tool_calls: vec![
+                call("/atlas.json", "Read", 1),
+                call("python3 -c 'open(\"x.json\")'", "Bash", 2),
+            ],
+        };
+
+        assert_eq!(join_one(&conn, &parsed), 1);
+        let sigs: String = conn
+            .query_row(
+                "SELECT COALESCE(outcome_signals,'') FROM compress_decisions WHERE command_or_path = '/atlas.json'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sigs.contains("compression_workaround"));
     }
 }
