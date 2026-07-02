@@ -669,11 +669,11 @@
   }
   function shortMsg(r, autopilot, minB) {
     const { stage, p, c } = r;
-    if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Earned it. Across ${runs} of your runs, trimming did not make you re-read or correct more.`; }
+    if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Earned it. Across ${runs} of your runs, trimming did not make you ${toolIsEdit(r.tool) ? "re-edit" : "re-read"} or correct more.`; }
     if (stage === "off") {
       const cd = p && p.correction_delta, rd = p && p.reread_delta;
       if (cd && cd.verdict === "harmful") return "Tested and corrections rose after trims, so ctx keeps it whole.";
-      if (rd && rd.verdict === "harmful") return "Tested and re-reads rose after trims, so ctx keeps it whole.";
+      if (rd && rd.verdict === "harmful") return `Tested and ${retouchRose(r.tool)}, so ctx keeps it whole.`;
       return "Tested and trimming looked worse than leaving it whole, so ctx keeps it off.";
     }
     if (stage === "trial") {
@@ -794,21 +794,28 @@
   async function setPreset(p) { await post("/api/context/preset", { preset: p }); loadHome(); }
 
   // ════ PER-TOOL EVIDENCE (rendered inside Loop health, CTX-35) ════
+  // The harm signal ctx judges a tool by: a re-edit of the same file for edit tools, a re-read for
+  // reference tools (CTX-62). One place to phrase it so the whole report labels edit tools honestly.
+  const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit", "str_replace", "str_replace_editor", "create_file", "applypatch", "apply_patch", "searchreplace", "search_replace"]);
+  function toolIsEdit(name) { return EDIT_TOOLS.has(String(name || "").toLowerCase()); }
+  function retouchNoun(name) { return toolIsEdit(name) ? "re-edits" : "re-reads"; }
+  function retouchPast(name) { return toolIsEdit(name) ? "re-edited the file" : "re-read it"; }
+  function retouchRose(name) { return toolIsEdit(name) ? "re-edits rose after trims" : "re-reads rose after trims"; }
   function metricLine(name, m) { return m ? `<div class="ba-metric"><span class="ba-mn">${name}</span><span class="ba-metric-val"><span class="ba-mv">${pct(m.rate)}</span><span class="ba-ci">${pct(m.lo)} to ${pct(m.hi)}</span></span></div>` : ""; }
-  function baCol(label, n, corr, rr) {
+  function baCol(label, n, corr, rr, tool) {
     if (!n) return `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">no runs yet</div></div>`;
-    return `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">${n} runs</div>${metricLine("You had to fix it", corr)}${metricLine("You re-read it", rr)}</div>`;
+    return `<div class="ba-col"><div class="ba-label">${label}</div><div class="ba-n">${n} runs</div>${metricLine("You had to fix it", corr)}${metricLine("You " + retouchPast(tool), rr)}</div>`;
   }
 
   function longStory(r, autopilot, minB) {
     const p = r.p, c = r.c, runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
-    if (r.stage === "earned") return `<b>${esc(r.tool)}</b> earned it. Across <b>${runs}</b> of your runs, trimming it did <span class="good">not</span> make you re-read or correct any more often than leaving it whole. So ctx trims it now. The tool still runs in full; only what the agent reads back is shorter.`;
+    if (r.stage === "earned") return `<b>${esc(r.tool)}</b> earned it. Across <b>${runs}</b> of your runs, trimming it did <span class="good">not</span> make you ${toolIsEdit(r.tool) ? "re-edit" : "re-read"} or correct any more often than leaving it whole. So ctx trims it now. The tool still runs in full; only what the agent reads back is shorter.`;
     if (r.stage === "off") {
       const cd = p && p.correction_delta, rd = p && p.reread_delta;
-      let why = "re-reads or corrections rose after trims";
-      if (cd && cd.verdict === "harmful" && rd && rd.verdict === "harmful") why = "both re-reads and explicit fixes rose";
+      let why = retouchNoun(r.tool) + " or corrections rose after trims";
+      if (cd && cd.verdict === "harmful" && rd && rd.verdict === "harmful") why = "both " + retouchNoun(r.tool) + " and explicit fixes rose";
       else if (cd && cd.verdict === "harmful") why = "explicit fixes rose after trims";
-      else if (rd && rd.verdict === "harmful") why = "re-reads rose after trims";
+      else if (rd && rd.verdict === "harmful") why = retouchRose(r.tool);
       return `ctx tested <b>${esc(r.tool)}</b> and ${why}. So it keeps the output whole. That is the safety layer doing its job.`;
     }
     if (r.stage === "trial") {
@@ -844,7 +851,7 @@
   function deltaLine(r) {
     const p = r.p; if (!p || (!p.reread_delta && !p.correction_delta)) return "";
     const ph = (label, d) => d ? `${label} moved <span class="${d.diff > 0 ? "bad" : "good"}">${signedPts(d)}</span>` : "";
-    const parts = [ph("re-reads", p.reread_delta), ph("fixes", p.correction_delta)].filter(Boolean);
+    const parts = [ph(retouchNoun(r.tool), p.reread_delta), ph("fixes", p.correction_delta)].filter(Boolean);
     if (!parts.length) return "";
     let tail = " The range still crosses zero, so it is too close to call.";
     if (r.stage === "earned") tail = " Both sit at or below zero, so trimming is not measurably worse. That is enough to earn it.";
@@ -912,7 +919,7 @@
     if (hasNums) {
       out += `<div class="ev-block"><div class="ev-sec">The rough tally so far</div>`;
       out += deltaLine(r);
-      out += `<div class="ba">${baCol("When ctx kept it whole", p.baseline_n, p.baseline_corrections, p.baseline_rereads)}${baCol("When ctx trimmed it", p.trimmed_n, p.trimmed_corrections, p.trimmed_rereads)}</div>`;
+      out += `<div class="ba">${baCol("When ctx kept it whole", p.baseline_n, p.baseline_corrections, p.baseline_rereads, r.tool)}${baCol("When ctx trimmed it", p.trimmed_n, p.trimmed_corrections, p.trimmed_rereads, r.tool)}</div>`;
       out += `<div class="ba-note">Each grey range is how sure ctx is: 95% of the time the real rate sits inside it. Fewer runs means a wider range.</div></div>`;
     }
     if (hasExp) out += armsBlock(e, minT);
@@ -1023,7 +1030,7 @@
     }
     if (p && p.reread_delta) {
       const cls = p.reread_delta.verdict === "harmful" ? " bad" : p.reread_delta.verdict === "safe" ? " good" : " warn";
-      chips.push(`<span class="report-chip${cls}">re-reads ${signedPts(p.reread_delta)}</span>`);
+      chips.push(`<span class="report-chip${cls}">${retouchNoun(r.tool)} ${signedPts(p.reread_delta)}</span>`);
     }
     if (p && p.applied_chars_saved) chips.push(`<span class="report-chip good">${fmtK(p.applied_chars_saved)} chars saved</span>`);
     return chips.join("");

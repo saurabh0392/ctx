@@ -87,22 +87,22 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         .as_ref()
         .map(|d| d.kind_str().to_string())
         .unwrap_or_else(|| "generic".to_string());
-    // Edits are recorded as timeline events for the same-file edit-follow label (CTX-46 / ADR
-    // 0031), never trimmed: ctx must never alter what an Edit/Write returned, or the agent could
-    // misread what it just wrote. So an edit tool is always record-only, regardless of preset,
-    // trial, or gate.
-    let is_edit_tool = crate::outcome_signals::is_edit_tool(&tr.tool_name);
+    // Edit/Write confirmations go through the same gate as every other tool (CTX-62). Only their
+    // echo is trimmed, by the edit strategy that collapses the giant minified lines the agent cannot
+    // read anyway; the file and the change itself are untouched, and ctx_expand recovers the full
+    // echo on demand. Like any tool, an edit trim applies only under an explicit trial or once it has
+    // earned activation, and edit tools are judged by re-edit rather than re-read, so a trim earns
+    // only if re-edits do not rise. The old blanket "edits are never trimmed" rule is gone.
 
     // A deliberate trial (`compress_trial_tools`) trims the chosen tool live even while the preset
     // stays off and the evidence gate is unmet. Otherwise the autopilot path: the preset must allow
     // the kind AND the tool must either have earned activation OR be in automatic burn-in (ADR 0012
     // / CTX-23), the bounded on-ramp that lets a tool with a clean baseline build its "after" arm.
     // Burn-in respects the preset, so it never trims when autopilot is off.
-    let base_apply = !is_edit_tool
-        && (cfg.compress_trialing(&tr.tool_name)
-            || (cfg.compress_applies_kind(&kind_label)
-                && (compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label)
-                    || compress::activation::tool_in_burn_in(cfg, &tr.tool_name))));
+    let base_apply = cfg.compress_trialing(&tr.tool_name)
+        || (cfg.compress_applies_kind(&kind_label)
+            && (compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label)
+                || compress::activation::tool_in_burn_in(cfg, &tr.tool_name)));
 
     let is_read = kind_label == "read";
     let read_path = read_file_path(&tr.tool_input);
@@ -451,17 +451,23 @@ mod tests {
     }
 
     #[test]
-    fn edit_tools_are_recorded_but_never_trimmed() {
-        // ctx must never alter an Edit/Write result (CTX-46 / ADR 0031). Even under a deliberate
-        // trial of the edit tool with the preset off, the decision is recorded (shadow present,
-        // for the edit-follow timeline) but never applied.
-        let cfg = Config {
+    fn edit_tools_trim_under_trial_like_any_tool() {
+        // CTX-62: the old blanket "edits are never trimmed" rule is gone. An edit tool now goes
+        // through the same gate as any tool: only its echo is trimmed (by the edit strategy), it
+        // applies under an explicit trial, and it stays shadow-only when neither trialed nor earned.
+        let trialed = Config {
             compress_enabled: true,
             compress_preset: crate::config::CompressPreset::Off,
             compress_trial_tools: vec!["Write".into(), "Edit".into()],
             ..Default::default()
         };
-        for tool in ["Write", "Edit", "MultiEdit"] {
+        let untrialed = Config {
+            compress_enabled: true,
+            compress_preset: crate::config::CompressPreset::Off,
+            compress_trial_tools: vec![],
+            ..Default::default()
+        };
+        for tool in ["Write", "Edit"] {
             let tr = ToolResult {
                 tool_name: tool.into(),
                 tool_input: json!({"file_path": "/proj/src/foo.rs"}),
@@ -470,13 +476,16 @@ mod tests {
                 cwd: "/proj".into(),
                 recent_intent_text: None,
             };
-            let d = decide(&cfg, &tr);
-            assert!(!d.apply, "{tool} must never be trimmed, even under trial");
+            let d = decide(&trialed, &tr);
+            assert!(d.apply, "{tool} trims under an explicit trial, like any tool");
             assert!(
                 d.shadow.is_some(),
-                "{tool} must still be recorded as a timeline event"
+                "{tool} is still recorded for the edit-follow timeline"
             );
-            assert!(d.explore_arm.is_none(), "{tool} must not enter exploration");
+            assert!(
+                !decide(&untrialed, &tr).apply,
+                "{tool} stays shadow-only when it is neither trialed nor earned"
+            );
         }
     }
 
