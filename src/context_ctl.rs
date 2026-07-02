@@ -629,6 +629,48 @@ fn print_arm(label: &str, a: &crate::db::CacheAuditArm) {
     );
 }
 
+/// Archive the live DB, then recreate an empty one. Destructive, so it refuses without `yes`.
+/// The archive uses the existing `ctx.db.post-wipe-<ts>` name so prior wipe backups and this one
+/// sort together. Callers should stop the dashboard first; a fresh schema is written so the file
+/// is immediately valid for the next process that opens it.
+pub fn reset(yes: bool) -> Result<()> {
+    let path = crate::config::db_path();
+    if !yes {
+        println!("Would archive and wipe {}.", path.display());
+        println!("Re-run `ctx context reset --yes` to confirm.");
+        return Ok(());
+    }
+    if path.exists() {
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let backup = path.with_file_name(format!("ctx.db.post-wipe-{ts}"));
+        std::fs::copy(&path, &backup)?;
+        println!("archived -> {}", backup.display());
+    }
+    // Remove the DB and its WAL sidecars so the next open starts from an empty schema.
+    for name in ["ctx.db", "ctx.db-wal", "ctx.db-shm"] {
+        let _ = std::fs::remove_file(path.with_file_name(name));
+    }
+    let conn = crate::db::open_db()?;
+    crate::db::ensure_schema(&conn)?;
+    println!("fresh ctx.db at {}", path.display());
+    Ok(())
+}
+
+/// Print the verbatim original of a trim, looked up by its rewind id (CTX-51). Backs the
+/// `ctx expand <id>` fallback the trim marker points at; the agent path is the ctx_expand MCP tool.
+pub fn expand(id: &str) -> Result<()> {
+    let conn = crate::db::open_db()?;
+    let _ = crate::db::ensure_schema(&conn);
+    match crate::db::get_rewind(&conn, id) {
+        Some(e) => {
+            crate::db::mark_rewind_expanded(&conn, id);
+            println!("{}", e.original);
+            Ok(())
+        }
+        None => anyhow::bail!("No stored output for id \"{id}\"."),
+    }
+}
+
 pub fn set_preset(value: &str) -> Result<()> {
     let preset = CompressPreset::parse(value)
         .ok_or_else(|| anyhow::anyhow!("unknown preset '{value}' (use off, safe, or full)"))?;
@@ -648,6 +690,53 @@ pub fn set_preset(value: &str) -> Result<()> {
     }
     if !cfg.compress_force_active && preset != CompressPreset::Off {
         println!("Tools still activate only after your own runs prove them safe. See `ctx context status`.");
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct RepairReport {
+    sessions_ingested: usize,
+    decisions_joined: usize,
+    gate_corrections: usize,
+    interrupt_turns_clean: usize,
+    model_trained: bool,
+}
+
+/// Full corpus repair: re-parse sessions, clean interrupt flags, rejoin labels, retrain.
+pub fn repair(skip_ingest: bool, json: bool) -> Result<()> {
+    let ingested = if skip_ingest {
+        0
+    } else {
+        crate::conversations::ingest_claude_jsonl(true)?
+    };
+    let conn = crate::db::open_db()?;
+    crate::db::ensure_schema(&conn)?;
+    let (joined, corrections, interrupt_clean) = crate::db::repair_corpus(&conn)?;
+    let model_trained = crate::learn::train()?.is_some();
+    let report = RepairReport {
+        sessions_ingested: ingested,
+        decisions_joined: joined,
+        gate_corrections: corrections,
+        interrupt_turns_clean: interrupt_clean,
+        model_trained,
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Corpus repair complete.");
+        if !skip_ingest {
+            println!("  Re-parsed {ingested} session file(s) with current flag rules.");
+        }
+        println!("  {joined} decisions joined, {corrections} gate corrections, {interrupt_clean} clean interrupt turns.");
+        println!(
+            "  Model {}",
+            if model_trained {
+                "retrained"
+            } else {
+                "unchanged (not enough labels yet)"
+            }
+        );
     }
     Ok(())
 }

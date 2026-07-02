@@ -67,7 +67,11 @@ pub enum Commands {
         no_open: bool,
     },
     /// Scan Claude Code JSONL into ~/.ctx/ctx.db (sessions, turns, tool invocations)
-    Ingest,
+    Ingest {
+        /// Re-parse every session file, not just files changed since last ingest
+        #[arg(long)]
+        full: bool,
+    },
     /// Claude Code hook entrypoints (stdin JSON → stdout; used from ~/.claude/settings.json)
     Hook {
         #[command(subcommand)]
@@ -127,6 +131,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: FilterCommand,
     },
+    /// Print the verbatim original of a trim by its rewind id (from the ctx trim marker).
+    Expand {
+        /// The rewind id shown in the "[ctx trimmed ... id: X]" marker.
+        id: String,
+    },
     /// Self-learning context controller: collection status, presets, training, activation
     Context {
         #[command(subcommand)]
@@ -136,6 +145,21 @@ pub enum Commands {
     Bench {
         #[command(subcommand)]
         command: BenchCommand,
+    },
+    /// Export a shareable, self-contained Context Report for a repo (CTX-56).
+    ///
+    /// Writes a single HTML file that opens in any browser on any machine, no ctx install needed.
+    /// Local only: nothing leaves this machine except the file you choose to share.
+    Report {
+        /// Repo to report on, matched as a substring of its path. Omit to list repos.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Output file (default: ctx-report-<repo>.html in the current directory).
+        #[arg(long)]
+        out: Option<String>,
+        /// List the repos ctx has data for, then exit.
+        #[arg(long)]
+        list: bool,
     },
 }
 
@@ -152,6 +176,21 @@ pub enum ContextCommand {
     On,
     /// Turn off user-facing compression, keep shadow collection (alias for `preset off`)
     Off,
+    /// Archive the current DB to a timestamped backup, then start fresh with an empty schema.
+    /// Destructive: requires --yes. The archive lands beside ctx.db as ctx.db.post-wipe-<ts>.
+    Reset {
+        /// Confirm the wipe. Without it, prints what would happen and exits.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Re-parse sessions, clean interrupt flags, rejoin outcome labels, retrain model
+    Repair {
+        /// Skip the full JSONL re-parse (only rejoin from existing turns)
+        #[arg(long)]
+        skip_ingest: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Train the local outcome model from collected labels and print the honesty gate
     Learn {
         #[arg(long)]

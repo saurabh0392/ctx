@@ -32,7 +32,7 @@ fn spawn_background_ingest(hook_type: Option<String>) {
     }
     tokio::spawn(async move {
         let _ = tokio::task::spawn_blocking(|| {
-            let _ = crate::conversations::ingest_claude_jsonl();
+            let _ = crate::conversations::ingest_claude_jsonl(false);
         })
         .await;
         ingest_running().store(false, Ordering::Release);
@@ -81,7 +81,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
     // Run JSONL ingest in background so the server binds immediately.
     tokio::spawn(async {
         let _ = tokio::task::spawn_blocking(|| {
-            let _ = crate::conversations::ingest_claude_jsonl();
+            let _ = crate::conversations::ingest_claude_jsonl(false);
         })
         .await;
     });
@@ -108,6 +108,8 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/context", get(api_context))
         .route("/api/context/preset", post(api_context_preset))
         .route("/api/context/proof", get(api_context_proof))
+        .route("/api/context/bill", get(api_context_bill))
+        .route("/api/context/rewind", post(api_context_rewind))
         .route(
             "/api/context/model-progress",
             get(api_context_model_progress),
@@ -257,9 +259,21 @@ struct ContextToolView {
 struct ContextModelView {
     version: u32,
     trained_at: String,
+    /// What the model predicts ("needed_whole" as of increment 3), so the UI never mislabels the
+    /// AUC as a correction model.
+    target: String,
     holdout_auc: f64,
+    /// Holdout AUC of the kind-only twin, and whether file-awareness beat it. Lets the UI show the
+    /// model only earns the right to steer once knowing the file actually helps.
+    kind_only_auc: f64,
+    file_aware_wins: bool,
     holdout_accuracy: f64,
     base_correction_rate: f64,
+    base_need_rate: f64,
+    /// Repos where the model has enough of their own labels to propose, newest math straight from
+    /// the trainer so the dashboard and `ctx context learn` agree.
+    repos_ready: usize,
+    repos_seen: usize,
     history: Vec<serde_json::Value>,
 }
 
@@ -312,6 +326,34 @@ struct ContextView {
     /// Per-agent activity for the cross-surface view (ADR 0018 / CTX-34). Always Claude Code and
     /// Cursor, each with a `seen` flag so the UI can show an honest empty state.
     surfaces: Vec<crate::db::SurfaceSummary>,
+    /// Per-tool aggregate "suspected trim cost" (CTX-54). Replaces the always-zero gate-corrections
+    /// headline: how often an applied trim coincided with the agent needing the dropped content
+    /// back. Aggregate suspicion, never single-case proof.
+    attribution: Vec<crate::db::ToolAttribution>,
+}
+
+/// POST /api/context/rewind: return the verbatim original ctx trimmed, by rewind id (CTX-57).
+async fn api_context_rewind(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    match open_ctx_db().and_then(|c| crate::db::get_rewind(&c, id)) {
+        Some(e) => Json(serde_json::json!({
+            "id": e.id,
+            "source": e.command_or_path,
+            "chars": e.chars,
+            "original": e.original,
+            "trimmed": e.trimmed,
+        })),
+        None => Json(serde_json::json!({ "error": "not found" })),
+    }
+}
+
+/// GET /api/context/bill: where your context goes, per tool. The education front door, ranked
+/// output sinks with reclaimable and reclaimed room. Populates from the first session, no labels.
+async fn api_context_bill() -> Json<crate::db::ContextBill> {
+    match open_ctx_db() {
+        Some(conn) => Json(crate::db::context_bill(&conn)),
+        None => Json(crate::db::ContextBill::default()),
+    }
 }
 
 /// GET /api/context — everything the Context home needs, drawn only from real data.
@@ -319,7 +361,7 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction, loop_health, surfaces) = match open_ctx_db() {
+    let (stats, tools, feed, compaction, loop_health, surfaces, attribution) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
             let progress = crate::db::compress_tool_progress(&conn);
@@ -380,8 +422,10 @@ async fn api_context() -> Json<ContextView> {
                 by_day,
                 tools: lh_tools,
             };
-            let surfaces = crate::db::surface_summary(&conn);
-            (stats, tools, feed, compaction, loop_health, surfaces)
+            let home = dirs::home_dir().unwrap_or_default();
+            let surfaces = crate::db::surface_summary_full(&conn, &home);
+            let attribution = crate::db::tool_attribution(&conn);
+            (stats, tools, feed, compaction, loop_health, surfaces, attribution)
         }
         None => (
             Default::default(),
@@ -400,6 +444,7 @@ async fn api_context() -> Json<ContextView> {
                 tools: Vec::new(),
             },
             Vec::new(),
+            Vec::new(),
         ),
     };
 
@@ -408,9 +453,15 @@ async fn api_context() -> Json<ContextView> {
         ContextModelView {
             version: m.version,
             trained_at: m.trained_at,
+            target: m.target,
             holdout_auc: m.holdout_auc,
+            kind_only_auc: m.kind_only_auc,
+            file_aware_wins: m.file_aware_wins,
             holdout_accuracy: m.holdout_accuracy,
             base_correction_rate: m.base_correction_rate,
+            base_need_rate: m.base_need_rate,
+            repos_ready: m.per_repo.iter().filter(|r| r.ready).count(),
+            repos_seen: m.per_repo.len(),
             history,
         }
     });
@@ -426,6 +477,7 @@ async fn api_context() -> Json<ContextView> {
         compaction,
         loop_health,
         surfaces,
+        attribution,
     })
 }
 
@@ -609,7 +661,7 @@ async fn api_context_model_progress() -> Json<ModelProgressView> {
         differs_from_rules,
         no_worse_where_differs,
         explore_rate,
-        explore_active: explore_rate > 0.0,
+        explore_active: explore_rate > 0.0 || cfg.compress_explore_read_rate > 0.0,
         explore_collected_total,
         explore_judged_total,
         explore_min_arm,

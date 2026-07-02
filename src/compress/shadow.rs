@@ -79,6 +79,11 @@ pub struct ShadowFeatures {
     /// signal absent from today's trim-shape-only feature set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_ext: Option<String>,
+    /// Coarse file role for read decisions (`src`, `test`, `config`, `generated`, `vendored`,
+    /// `docs`), derived by `agent::path_role_of` (CTX-45 / ADR 0030). Absent on non-read decisions
+    /// and on reads with no file path. The retention model's path-role one-hot reads this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_role: Option<String>,
     /// What the served retention model *would* have predicted for this decision (P(correction)).
     /// `None` when no trustworthy model is being served. Logged for forward measurement only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,6 +93,13 @@ pub struct ShadowFeatures {
     /// in this phase.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub would_model_apply: Option<bool>,
+    /// `Some(true)` when the file-aware model proposed trimming this working read that the static
+    /// guard would otherwise have kept (ADR 0032 / CTX-46 increment 3). Only set when
+    /// `compress_model_propose` is on and the proposal actually lifted the guard. The proposal still
+    /// has to clear the preset, burn-in, and causal gate to be applied, so this records intent, not
+    /// a guaranteed trim. Set by the controller in `agent::decide`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_proposed: Option<bool>,
     /// `Some(true)` when this decision happened inside ctx's own source repo (a Cargo.toml with
     /// package name "ctx" at the repo root). Building ctx, re-editing its files, and running its
     /// commands is the developer's own churn, not user behavior, so it must not feed the learning
@@ -236,8 +248,10 @@ pub fn compute_shadow_decision(
             read_protected: None,
             repo_key: None,
             file_ext: None,
+            path_role: None,
             model_score: None,
             would_model_apply: None,
+            model_proposed: None,
             self_dev: None,
         },
     })

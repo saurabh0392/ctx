@@ -1,13 +1,9 @@
 //! Regression guard for the shadow-decision outcome join.
 //!
-//! Two properties are pinned here:
-//!   1. Corrections are read from the `correction` flag, not a `role = 'user'` filter.
-//!      Real ingest stores turns with role `"turn"`; an earlier join filtered on
-//!      `role = 'user'` and so labeled every decision clean.
-//!   2. The correction is windowed. A short user turn an hour after a tool call is not
-//!      caused by it, so only corrections within `CORRECTION_WINDOW_MINUTES` count, and a
-//!      decision is only scored once that window has closed (or a correction landed in
-//!      it), making the label independent of when ingest happened to run.
+//! Properties pinned here:
+//!   1. Gate corrections require `correction_explicit` plus a trimmed decision (CTX-48).
+//!   2. Corrections are read from turn flags, not a `role = 'user'` filter.
+//!   3. The correction is windowed and attributed to the nearest preceding decision.
 
 mod harness;
 
@@ -54,7 +50,7 @@ fn seed_decision(conn: &rusqlite::Connection, session_id: &str, ts: &str, comman
         would_chars_out: 400,
         features_json: "{}",
         command_or_path: command,
-        applied: false,
+        applied: true,
         explore_arm: None,
         surface: None,
     };
@@ -105,12 +101,12 @@ fn correction_within_window_joins_as_correction() {
     let sid = "abc12345-corr";
     let session_row = seed_session(&conn, &format!("/path/{sid}.jsonl"));
     seed_decision(&conn, sid, "2026-06-06T10:00:00+00:00", "git status");
-    // A correction five minutes later, well inside the window, stored with role "turn".
+    // Explicit complaint five minutes later, well inside the window.
     seed_turn(
         &conn,
         session_row,
         1,
-        r#"["correction","opus"]"#,
+        r#"["correction","correction_explicit","opus"]"#,
         "2026-06-06T10:05:00+00:00",
     );
 
@@ -124,7 +120,7 @@ fn correction_within_window_joins_as_correction() {
     );
     assert_eq!(
         correction, 1,
-        "a correction-flagged turn inside the window is a correction"
+        "explicit complaint on a trimmed decision inside the window is a gate correction"
     );
 }
 
@@ -202,12 +198,12 @@ fn correction_attributes_only_to_nearest_preceding_decision() {
     let session_row = seed_session(&conn, &format!("/path/{sid}.jsonl"));
     seed_decision(&conn, sid, "2026-06-06T10:00:00+00:00", "first cmd");
     seed_decision(&conn, sid, "2026-06-06T10:03:00+00:00", "second cmd");
-    // One correction four minutes after the second decision (in window for both).
+    // One explicit complaint four minutes after the second decision (in window for both).
     seed_turn(
         &conn,
         session_row,
         1,
-        r#"["correction"]"#,
+        r#"["correction","correction_explicit"]"#,
         "2026-06-06T10:07:00+00:00",
     );
 

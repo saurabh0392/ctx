@@ -79,8 +79,13 @@ const TOOL_DEFS: &[(&str, &str, &str)] = &[
     ),
     (
         "ctx_waste",
-        "Lists MCP servers that were loaded on every request but never actually invoked in the last 30 days. These are pure token waste — add them to a profile's strip list.",
+        "Lists MCP servers that were loaded on every request but never actually invoked in the last 30 days. These are pure token waste. Add them to a profile's strip list.",
         r#"{"type":"object","properties":{},"required":[]}"#,
+    ),
+    (
+        "ctx_expand",
+        "Re-expand a tool output that ctx trimmed. Pass the id from the '[ctx trimmed ... id: X]' marker to get the verbatim original text back.",
+        r#"{"type":"object","properties":{"id":{"type":"string","description":"The rewind id shown in the ctx trim marker."}},"required":["id"]}"#,
     ),
 ];
 
@@ -110,6 +115,7 @@ fn handle_tool_call(name: &str, args: &Value) -> Result<Value, String> {
         "ctx_settings" => tool_settings(),
         "ctx_profiles" => tool_profiles(),
         "ctx_waste" => tool_waste(),
+        "ctx_expand" => tool_expand(args),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -174,6 +180,30 @@ fn tool_status() -> Result<Value, String> {
         "store_prompt_text": config.store_prompt_text_enabled(),
         "embeddings_enabled": config.embeddings_enabled(),
     }))
+}
+
+fn tool_expand(args: &Value) -> Result<Value, String> {
+    let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if id.is_empty() {
+        return Err("Pass the id from the ctx trim marker.".to_string());
+    }
+    let conn = crate::db::open_db().map_err(|e| e.to_string())?;
+    let _ = crate::db::ensure_schema(&conn);
+    match crate::db::get_rewind(&conn, id) {
+        Some(e) => {
+            crate::db::mark_rewind_expanded(&conn, id);
+            Ok(json!({
+                "id": e.id,
+                "tool": e.tool_name,
+                "source": e.command_or_path,
+                "chars": e.chars,
+                "original": e.original,
+            }))
+        }
+        None => Err(format!(
+            "No stored output for id \"{id}\". It may have aged out of the rewind store."
+        )),
+    }
 }
 
 fn tool_spend(args: &Value) -> Result<Value, String> {

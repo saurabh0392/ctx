@@ -36,6 +36,7 @@ pub mod modes;
 pub mod outcome_signals;
 pub mod profiles;
 pub mod quality_guard;
+pub mod report;
 pub mod rule_signals;
 pub mod semantic_tools;
 pub mod setup;
@@ -60,8 +61,8 @@ pub async fn run() -> Result<()> {
 
     match cli.command {
         Commands::Use { profile, force } => profiles::switch(&profile, force)?,
-        Commands::Ingest => {
-            let n = conversations::ingest_claude_jsonl()?;
+        Commands::Ingest { full } => {
+            let n = conversations::ingest_claude_jsonl(full)?;
             println!("Ingested {n} session file(s) into ~/.ctx/ctx.db (Claude Code + Desktop)");
         }
         Commands::Status => profiles::status()?,
@@ -240,11 +241,17 @@ pub async fn run() -> Result<()> {
             FilterCommand::Expand { target } => filter_control::expand_session_target(&target)?,
             FilterCommand::ClearExpansion => filter_control::clear_session_expansion()?,
         },
+        Commands::Expand { id } => context_ctl::expand(&id)?,
         Commands::Context { command } => match command {
             ContextCommand::Status { json } => context_ctl::status(json)?,
             ContextCommand::Preset { value } => context_ctl::set_preset(&value)?,
             ContextCommand::On => context_ctl::set_preset("safe")?,
             ContextCommand::Off => context_ctl::set_preset("off")?,
+            ContextCommand::Reset { yes } => context_ctl::reset(yes)?,
+            ContextCommand::Repair {
+                skip_ingest,
+                json,
+            } => context_ctl::repair(skip_ingest, json)?,
             ContextCommand::Learn { json } => learn::run(json)?,
             ContextCommand::Labels { tool, limit, json } => {
                 context_ctl::labels(tool.as_deref(), limit, json)?
@@ -263,6 +270,9 @@ pub async fn run() -> Result<()> {
         Commands::Bench { command } => match command {
             BenchCommand::Run { json } => bench::run(json)?,
         },
+        Commands::Report { repo, out, list } => {
+            report::run(repo.as_deref(), out.as_deref(), list)?
+        }
     }
 
     Ok(())

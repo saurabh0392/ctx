@@ -315,6 +315,29 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     // stamps which agent surface produced a decision so training can exclude the
     // lower-confidence (transcript-derived) labels until their precision is proven.
     let _ = conn.execute("ALTER TABLE compress_decisions ADD COLUMN surface TEXT", []);
+    // CTX-51 L2: link a trim to its rewind entry and record when the agent recovered it via
+    // ctx_expand, so the gate can treat a recovery as a benign outcome, not a harmful re-read.
+    let _ = conn.execute("ALTER TABLE compress_decisions ADD COLUMN rewind_id TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN outcome_recovered INTEGER",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS rewind_store (
+            id TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            tool_name TEXT NOT NULL,
+            command_or_path TEXT,
+            original TEXT NOT NULL,
+            chars INTEGER NOT NULL,
+            expanded_at TEXT,
+            trimmed TEXT
+        )",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN expanded_at TEXT", []);
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN trimmed TEXT", []);
     // Phase 2 randomized exploration arm (ADR 0009): "treatment" (trimmed) or "control"
     // (deliberately kept) for rows that entered the experiment; NULL for every prior and
     // non-experiment decision. Kept separate from `applied` because a randomized control and an
@@ -330,6 +353,16 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     // this column; it is purely for the audit.
     let _ = conn.execute(
         "ALTER TABLE compress_decisions ADD COLUMN outcome_signals TEXT",
+        [],
+    );
+    // Same-file edit-follow label (CTX-46 / ADR 0031): 1 when the same file this read touched was
+    // edited (an edit/write tool) within the outcome window, NULL/0 otherwise. Distinct from
+    // `outcome_reread` (which counts any later same-path touch, read or edit) and from
+    // `outcome_correction` (the causal harm label). This is the observational "the agent needed
+    // this read whole" signal the file-aware retention model will train on (CTX-46 increment 3);
+    // recording it here is safe and never feeds the causal gate.
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN outcome_edit_follow INTEGER",
         [],
     );
 }
@@ -462,6 +495,485 @@ pub struct CompressDecisionStats {
     pub today: i64,
 }
 
+/// One command or path within a tool that spent context, for the expanded bill detail.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBillSource {
+    pub label: String,
+    pub calls: i64,
+    pub sink_chars: i64,
+}
+
+/// A stored trim of a tool the user can re-expand from the bill (CTX-57 drill-down).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBillRewind {
+    pub id: String,
+    pub source: String,
+    pub chars: i64,
+    pub expanded: bool,
+}
+
+/// One tool's line on the context bill.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBillTool {
+    pub tool: String,
+    pub decisions: i64,
+    /// Total characters this tool poured into the agent's context.
+    pub sink_chars: i64,
+    /// Characters a trim would drop (what is on the table).
+    pub reclaimable_chars: i64,
+    /// Characters ctx actually removed on applied trims.
+    pub reclaimed_chars: i64,
+    /// Top commands or paths within this tool, biggest first.
+    pub sources: Vec<ContextBillSource>,
+    /// Recent verbatim trims of this tool the user can re-expand (CTX-57 drill-down).
+    pub rewinds: Vec<ContextBillRewind>,
+}
+
+/// One day of context volume for the leaner-or-heavier trend (CTX-57).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct BillDay {
+    pub day: String,
+    pub sink_chars: i64,
+    pub reclaimable_chars: i64,
+}
+
+/// Where context goes, itemized from `compress_decisions`. Needs no labels, so it renders on day
+/// one: ranked output sinks with what ctx could reclaim and what it already has.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBill {
+    pub tools: Vec<ContextBillTool>,
+    pub total_sink_chars: i64,
+    pub total_reclaimable_chars: i64,
+    pub total_reclaimed_chars: i64,
+    pub decisions: i64,
+    pub since: Option<String>,
+    pub trend: Vec<BillDay>,
+}
+
+/// One repo ctx has recorded decisions for, for the shareable report's repo picker (CTX-56).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RepoSummary {
+    pub repo_key: String,
+    pub decisions: i64,
+    pub sink_chars: i64,
+}
+
+/// Repos ctx has data for, biggest sink first. `repo_key` comes from `features_json` (the repo the
+/// decision was recorded in); rows without one fold into "(unknown)".
+pub fn list_repos(conn: &Connection) -> Vec<RepoSummary> {
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(json_extract(features_json,'$.repo_key'),'(unknown)') AS repo,
+                COUNT(*), COALESCE(SUM(chars_in),0)
+         FROM compress_decisions
+         GROUP BY repo
+         ORDER BY 3 DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok(RepoSummary {
+                repo_key: r.get(0)?,
+                decisions: r.get(1)?,
+                sink_chars: r.get(2)?,
+            })
+        }) {
+            out.extend(rows.flatten());
+        }
+    }
+    out
+}
+
+/// Per-repo Context Bill for the shareable report (CTX-56). Same shape as `context_bill`, scoped to
+/// one repo via the `repo_key` recorded in `features_json`. Rewinds and trend are left empty: the
+/// export is a static, sendable snapshot of where context went, not the live drill-down.
+pub fn repo_bill(conn: &Connection, repo_key: &str) -> ContextBill {
+    let mut bill = ContextBill::default();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tool_name,
+                COUNT(*),
+                COALESCE(SUM(chars_in), 0),
+                COALESCE(SUM(chars_in - would_chars_out), 0),
+                COALESCE(SUM(CASE WHEN applied = 1 THEN chars_in - would_chars_out ELSE 0 END), 0)
+         FROM compress_decisions
+         WHERE COALESCE(json_extract(features_json,'$.repo_key'),'(unknown)') = ?1
+         GROUP BY tool_name
+         ORDER BY 3 DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![repo_key], |r| {
+            Ok(ContextBillTool {
+                tool: r.get(0)?,
+                decisions: r.get(1)?,
+                sink_chars: r.get(2)?,
+                reclaimable_chars: r.get(3)?,
+                reclaimed_chars: r.get(4)?,
+                sources: Vec::new(),
+                rewinds: Vec::new(),
+            })
+        }) {
+            for t in rows.flatten() {
+                bill.total_sink_chars += t.sink_chars;
+                bill.total_reclaimable_chars += t.reclaimable_chars;
+                bill.total_reclaimed_chars += t.reclaimed_chars;
+                bill.decisions += t.decisions;
+                bill.tools.push(t);
+            }
+        }
+    }
+    let mut idx = std::collections::HashMap::new();
+    for (i, t) in bill.tools.iter().enumerate() {
+        idx.insert(t.tool.clone(), i);
+    }
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tool_name,
+                COALESCE(NULLIF(command_or_path, ''), '(unlabeled)'),
+                COUNT(*),
+                COALESCE(SUM(chars_in), 0)
+         FROM compress_decisions
+         WHERE COALESCE(json_extract(features_json,'$.repo_key'),'(unknown)') = ?1
+         GROUP BY tool_name, command_or_path
+         ORDER BY SUM(chars_in) DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![repo_key], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                ContextBillSource {
+                    label: r.get(1)?,
+                    calls: r.get(2)?,
+                    sink_chars: r.get(3)?,
+                },
+            ))
+        }) {
+            for (tool, src) in rows.flatten() {
+                if let Some(&i) = idx.get(&tool) {
+                    if bill.tools[i].sources.len() < 8 {
+                        bill.tools[i].sources.push(src);
+                    }
+                }
+            }
+        }
+    }
+    bill
+}
+
+/// A verbatim tool output ctx trimmed, kept so the agent can re-expand it on demand (CTX-51).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct RewindEntry {
+    pub id: String,
+    pub ts: String,
+    pub tool_name: String,
+    pub command_or_path: String,
+    pub original: String,
+    pub trimmed: String,
+    pub chars: i64,
+}
+
+/// Store a trimmed original, keyed by a content id, so a later `ctx_expand` returns it verbatim.
+/// Self-creates the table and keeps the store bounded so the DB does not grow without limit.
+pub fn insert_rewind(
+    conn: &Connection,
+    id: &str,
+    ts: &str,
+    session_id: Option<&str>,
+    tool_name: &str,
+    command_or_path: &str,
+    original: &str,
+    trimmed: &str,
+) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS rewind_store (
+            id TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            tool_name TEXT NOT NULL,
+            command_or_path TEXT,
+            original TEXT NOT NULL,
+            chars INTEGER NOT NULL,
+            trimmed TEXT
+        )",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN trimmed TEXT", []);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO rewind_store
+         (id, ts, session_id, tool_name, command_or_path, original, chars, trimmed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            ts,
+            session_id,
+            tool_name,
+            command_or_path,
+            original,
+            original.chars().count() as i64,
+            trimmed
+        ],
+    );
+    // Keep only the most recent entries so verbatim blobs do not accumulate forever.
+    let _ = conn.execute(
+        "DELETE FROM rewind_store WHERE id NOT IN
+         (SELECT id FROM rewind_store ORDER BY ts DESC LIMIT 500)",
+        [],
+    );
+}
+
+/// Mark a stored trim as recovered when the agent re-expands it (CTX-51 L2). A recovery is a
+/// benign outcome, so the gate later discounts it from the tool's harmful re-read count.
+pub fn mark_rewind_expanded(conn: &Connection, id: &str) {
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN expanded_at TEXT", []);
+    let _ = conn.execute(
+        "UPDATE rewind_store SET expanded_at = ?2 WHERE id = ?1 AND expanded_at IS NULL",
+        params![id, chrono::Utc::now().to_rfc3339()],
+    );
+}
+
+/// Link the just-recorded applied decision to the rewind entry it produced, so a later recovery
+/// joins back to it. Runs right after the decision insert, so the latest applied row for this
+/// session and tool is the one to stamp.
+pub fn link_decision_rewind(
+    conn: &Connection,
+    session_id: Option<&str>,
+    tool_name: &str,
+    rewind_id: &str,
+) {
+    let _ = conn.execute(
+        "UPDATE compress_decisions SET rewind_id = ?3
+         WHERE id = (
+             SELECT MAX(id) FROM compress_decisions
+             WHERE applied = 1 AND tool_name = ?2 AND session_id IS ?1
+         )",
+        params![session_id, tool_name, rewind_id],
+    );
+}
+
+/// Fetch a stored original by id. None if the id is unknown or the store is empty.
+pub fn get_rewind(conn: &Connection, id: &str) -> Option<RewindEntry> {
+    conn.query_row(
+        "SELECT id, ts, tool_name, COALESCE(command_or_path, ''), original, chars, COALESCE(trimmed, '')
+         FROM rewind_store WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(RewindEntry {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                tool_name: r.get(2)?,
+                command_or_path: r.get(3)?,
+                original: r.get(4)?,
+                chars: r.get(5)?,
+                trimmed: r.get(6)?,
+            })
+        },
+    )
+    .ok()
+}
+
+/// Aggregate per-tool "suspected trim cost" (CTX-54). Single-case causation is unprovable: the
+/// branch where the same session ran with the full output is in no log. So this never claims a
+/// trim caused anything. It reads the offline signals ingest already computed and counts, per
+/// tool, how often an *applied* trim was followed by the agent behaving as if it needed the
+/// dropped content: it worked around the trim, re-read the source, or asked for the verbatim
+/// original back via `ctx_expand`. Aggregated over many trims that is an honest per-tool risk
+/// read; on any single trim it is only a suspect. This replaces the always-zero "gate
+/// corrections" headline with something the data actually supports.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ToolAttribution {
+    pub tool: String,
+    /// Applied trims that dropped lines: the only trims we can attribute a cost to.
+    pub applied_trims: i64,
+    /// The agent read the source another way after the trim (compression_workaround signal).
+    pub workaround: i64,
+    /// The agent re-touched the trimmed path/command within the window (reread signal).
+    pub reread: i64,
+    /// The agent pulled the verbatim original back with ctx_expand. Closest-to-causal signal
+    /// available without an A/B: it asked for exactly what the trim dropped.
+    pub reexpanded: i64,
+    /// Applied trims with any of the above. The union, so a trim with two signals counts once.
+    pub suspect: i64,
+    /// suspect / applied_trims, the aggregate rate. The "confidence" is this rate over N, not a
+    /// per-case verdict.
+    pub suspect_rate: f64,
+}
+
+pub fn tool_attribution(conn: &Connection) -> Vec<ToolAttribution> {
+    let mut out = Vec::new();
+    // Exclude ctx self-dev rows the same way the model corpus does: building and editing ctx is the
+    // developer's own churn (exactly the source-heavy work trimming hurts most), so counting it would
+    // overstate the per-tool suspect rate for everyone else. `features_json` is unambiguous here;
+    // the LEFT-joined rewind_store has no such column.
+    let sql = format!(
+        "SELECT d.tool_name,
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
+                         AND d.outcome_signals LIKE '%compression_workaround%' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
+                         AND d.outcome_signals LIKE '%reread%' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
+                         AND r.expanded_at IS NOT NULL THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 AND (
+                         d.outcome_signals LIKE '%compression_workaround%'
+                      OR d.outcome_signals LIKE '%reread%'
+                      OR d.outcome_signals LIKE '%reedit%'
+                      OR r.expanded_at IS NOT NULL) THEN 1 ELSE 0 END)
+         FROM compress_decisions d
+         LEFT JOIN rewind_store r ON d.rewind_id = r.id
+         WHERE 1=1{EXCLUDE_SELF_DEV}
+         GROUP BY d.tool_name
+         HAVING SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 THEN 1 ELSE 0 END) > 0
+         ORDER BY 6 DESC, 2 DESC"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return out;
+    };
+    let rows = stmt.query_map([], |r| {
+        let applied_trims: i64 = r.get(1)?;
+        let suspect: i64 = r.get(5)?;
+        Ok(ToolAttribution {
+            tool: r.get(0)?,
+            applied_trims,
+            workaround: r.get(2)?,
+            reread: r.get(3)?,
+            reexpanded: r.get(4)?,
+            suspect,
+            suspect_rate: if applied_trims > 0 {
+                suspect as f64 / applied_trims as f64
+            } else {
+                0.0
+            },
+        })
+    });
+    if let Ok(rows) = rows {
+        out.extend(rows.flatten());
+    }
+    out
+}
+
+pub fn context_bill(conn: &Connection) -> ContextBill {
+    let mut bill = ContextBill::default();
+    let mut stmt = match conn.prepare(
+        "SELECT tool_name,
+                COUNT(*),
+                COALESCE(SUM(chars_in), 0),
+                COALESCE(SUM(chars_in - would_chars_out), 0),
+                COALESCE(SUM(CASE WHEN applied = 1 THEN chars_in - would_chars_out ELSE 0 END), 0)
+         FROM compress_decisions
+         GROUP BY tool_name
+         ORDER BY 3 DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return bill,
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(ContextBillTool {
+            tool: r.get(0)?,
+            decisions: r.get(1)?,
+            sink_chars: r.get(2)?,
+            reclaimable_chars: r.get(3)?,
+            reclaimed_chars: r.get(4)?,
+            sources: Vec::new(),
+            rewinds: Vec::new(),
+        })
+    });
+    if let Ok(rows) = rows {
+        for t in rows.flatten() {
+            bill.total_sink_chars += t.sink_chars;
+            bill.total_reclaimable_chars += t.reclaimable_chars;
+            bill.total_reclaimed_chars += t.reclaimed_chars;
+            bill.decisions += t.decisions;
+            bill.tools.push(t);
+        }
+    }
+    // Top sources (command or path) per tool for the expanded detail. Ordered by size globally,
+    // so the first rows seen for each tool are its biggest.
+    let mut idx = std::collections::HashMap::new();
+    for (i, t) in bill.tools.iter().enumerate() {
+        idx.insert(t.tool.clone(), i);
+    }
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tool_name,
+                COALESCE(NULLIF(command_or_path, ''), '(unlabeled)'),
+                COUNT(*),
+                COALESCE(SUM(chars_in), 0)
+         FROM compress_decisions
+         GROUP BY tool_name, command_or_path
+         ORDER BY SUM(chars_in) DESC",
+    ) {
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                ContextBillSource {
+                    label: r.get(1)?,
+                    calls: r.get(2)?,
+                    sink_chars: r.get(3)?,
+                },
+            ))
+        });
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                if let Some(&i) = idx.get(&row.0) {
+                    if bill.tools[i].sources.len() < 6 {
+                        bill.tools[i].sources.push(row.1);
+                    }
+                }
+            }
+        }
+    }
+    // Recent verbatim trims per tool for the drill-down (CTX-57).
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tool_name, id, COALESCE(command_or_path, ''), chars,
+                CASE WHEN expanded_at IS NOT NULL THEN 1 ELSE 0 END
+         FROM rewind_store ORDER BY ts DESC",
+    ) {
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                ContextBillRewind {
+                    id: r.get(1)?,
+                    source: r.get(2)?,
+                    chars: r.get(3)?,
+                    expanded: r.get::<_, i64>(4)? == 1,
+                },
+            ))
+        });
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                if let Some(&i) = idx.get(&row.0) {
+                    if bill.tools[i].rewinds.len() < 5 {
+                        bill.tools[i].rewinds.push(row.1);
+                    }
+                }
+            }
+        }
+    }
+
+    // Per-day context volume for the leaner-or-heavier trend (CTX-57).
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT substr(ts, 1, 10) AS day,
+                COALESCE(SUM(chars_in), 0),
+                COALESCE(SUM(chars_in - would_chars_out), 0)
+         FROM compress_decisions
+         GROUP BY day ORDER BY day DESC LIMIT 14",
+    ) {
+        let rows = stmt.query_map([], |r| {
+            Ok(BillDay {
+                day: r.get(0)?,
+                sink_chars: r.get(1)?,
+                reclaimable_chars: r.get(2)?,
+            })
+        });
+        if let Ok(rows) = rows {
+            let mut days: Vec<BillDay> = rows.flatten().collect();
+            days.reverse();
+            bill.trend = days;
+        }
+    }
+
+    bill.since = conn
+        .query_row("SELECT MIN(ts) FROM compress_decisions", [], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .ok()
+        .flatten();
+    bill
+}
+
 pub fn compress_decision_stats(conn: &Connection) -> CompressDecisionStats {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let row = conn.query_row(
@@ -545,7 +1057,7 @@ pub struct CompressToolProgress {
 
 pub fn compress_tool_progress(conn: &Connection) -> Vec<CompressToolProgress> {
     let mut stmt = match conn.prepare(
-        "SELECT tool_name,
+        &format!("SELECT tool_name,
                 COUNT(*),
                 COALESCE(SUM(outcome_joined), 0),
                 COALESCE(SUM(CASE WHEN outcome_joined = 1 AND COALESCE(outcome_correction,0) = 0
@@ -554,8 +1066,9 @@ pub fn compress_tool_progress(conn: &Connection) -> Vec<CompressToolProgress> {
                 COALESCE(SUM(COALESCE(outcome_reread,0)), 0),
                 COALESCE(MAX(applied), 0)
          FROM compress_decisions
+         WHERE 1=1{EXCLUDE_EDIT_TOOLS}
          GROUP BY tool_name
-         ORDER BY COUNT(*) DESC",
+         ORDER BY COUNT(*) DESC"),
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -720,7 +1233,8 @@ pub fn model_shadow_progress(conn: &Connection) -> ModelShadowProgress {
 /// A row is only marked joined when there is later evidence in the same session, so a
 /// decision is never scored "clean" merely because nothing has happened yet.
 ///
-/// - `outcome_correction`: a user turn flagged `correction` occurred after the decision.
+/// - `outcome_correction`: explicit user complaint after the decision AND ctx trimmed lines
+///   (applied=1, lines_drop>0). Uniform for every tool (CTX-48 / ADR 0033).
 /// - `outcome_reread`: the same `command_or_path` was hit again later in the same session.
 ///
 /// Returns the number of decision rows newly joined.
@@ -737,20 +1251,27 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
     // timestamp shapes (offset vs `Z`, varying fractional digits) that a string compare
     // would get wrong.
     let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    // Edit-follow reuses the re-read attribution exactly, but the later same-path touch must be an
+    // edit/write tool. Shared with the one-time backfill so both compute the label identically
+    // (CTX-46 / ADR 0031).
+    let edit_follow = edit_follow_value_sql();
+    let reread = reread_value_sql();
     let n = conn.execute(
-        r#"
+        &format!(
+            r#"
         UPDATE compress_decisions
         SET outcome_correction = (
-                -- Nearest-preceding attribution: a correction turn is caused by the most
-                -- recent decision before it, not every decision in the window. Without the
-                -- inner NOT EXISTS, one correction turn fanned across every decision in the
-                -- prior 15 minutes (SAU-148 finding). Here a decision owns a correction turn
-                -- only when no other decision sits between it and that turn.
-                SELECT CASE WHEN EXISTS (
+                -- CTX-48 / ADR 0033: gate correction only when the user explicitly complained
+                -- AND ctx actually trimmed this decision. Uniform for every tool.
+                SELECT CASE WHEN compress_decisions.applied = 1
+                                 AND compress_decisions.lines_drop > 0
+                                 AND EXISTS (
                     SELECT 1 FROM turns t
                     JOIN sessions s ON s.id = t.session_id
                     WHERE s.external_key LIKE '%' || compress_decisions.session_id || '%'
-                      AND t.flags LIKE '%correction%'
+                      AND t.flags LIKE '%correction_explicit%'
+                      AND t.flags NOT LIKE '%long_dump%'
+                      AND t.flags NOT LIKE '%session_steer%'
                       AND t.ts IS NOT NULL
                       AND julianday(t.ts) > julianday(compress_decisions.ts)
                       AND julianday(t.ts) <= julianday(compress_decisions.ts) + ?1
@@ -762,38 +1283,32 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
                       )
                 ) THEN 1 ELSE 0 END
             ),
-            outcome_reread = (
-                -- Same nearest-preceding rule on the path: a re-read is owned by the last
-                -- decision on that path before the re-read, not every prior touch of it.
-                SELECT CASE WHEN EXISTS (
-                    SELECT 1 FROM compress_decisions d2
-                    WHERE d2.session_id = compress_decisions.session_id
-                      AND d2.command_or_path = compress_decisions.command_or_path
-                      AND d2.command_or_path IS NOT NULL
-                      AND d2.id <> compress_decisions.id
-                      AND julianday(d2.ts) > julianday(compress_decisions.ts)
-                      AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
-                      AND NOT EXISTS (
-                          SELECT 1 FROM compress_decisions d3
-                          WHERE d3.session_id = compress_decisions.session_id
-                            AND d3.command_or_path = compress_decisions.command_or_path
-                            AND d3.id <> compress_decisions.id
-                            AND julianday(d3.ts) > julianday(compress_decisions.ts)
-                            AND julianday(d3.ts) < julianday(d2.ts)
-                      )
+            outcome_reread = {reread},
+            outcome_recovered = (
+                SELECT CASE WHEN compress_decisions.rewind_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM rewind_store r
+                    WHERE r.id = compress_decisions.rewind_id AND r.expanded_at IS NOT NULL
                 ) THEN 1 ELSE 0 END
             ),
+            -- Same nearest-preceding rule as the re-read, but only a later *edit* of the same path
+            -- counts: the agent acted on the file, the strongest "needed it whole" signal. A plain
+            -- re-read does not set this; it sets outcome_reread (CTX-46 / ADR 0031).
+            outcome_edit_follow = {edit_follow},
             outcome_joined = 1,
             surface = 'claude-code'
         WHERE outcome_joined = 0
           AND session_id IS NOT NULL
           AND (
-              -- A correction inside the window is a final positive label.
+              -- Any observational user signal or a closed window is enough to join.
               EXISTS (
                   SELECT 1 FROM turns t
                   JOIN sessions s ON s.id = t.session_id
                   WHERE s.external_key LIKE '%' || compress_decisions.session_id || '%'
-                    AND t.flags LIKE '%correction%'
+                    AND (
+                      t.flags LIKE '%correction%'
+                      OR t.flags LIKE '%aborted%'
+                      OR t.flags LIKE '%session_steer%'
+                    )
                     AND t.ts IS NOT NULL
                     AND julianday(t.ts) > julianday(compress_decisions.ts)
                     AND julianday(t.ts) <= julianday(compress_decisions.ts) + ?1
@@ -808,9 +1323,207 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
               )
           )
         "#,
+            edit_follow = edit_follow,
+            reread = reread
+        ),
         params![window_days],
     )?;
+    let _ = refresh_outcome_signals(conn);
     Ok(n)
+}
+
+/// Populate `outcome_signals` on joined Claude-code rows from turn flags in the outcome window.
+/// Purely observational; the gate reads only `outcome_correction`.
+pub fn refresh_outcome_signals(conn: &Connection) -> Result<usize> {
+    let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    let mut sel = conn.prepare(
+        "SELECT id, session_id, ts, applied, lines_drop, COALESCE(outcome_correction,0),
+                COALESCE(outcome_reread,0), COALESCE(outcome_edit_follow,0)
+         FROM compress_decisions
+         WHERE outcome_joined = 1 AND session_id IS NOT NULL",
+    )?;
+    let rows: Vec<(i64, String, String, i64, i64, i64, i64, i64)> = sel
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+            ))
+        })?
+        .filter_map(|x| x.ok())
+        .collect();
+
+    let mut updated = 0usize;
+    for (id, sid, ts, applied, lines_drop, corr, rr, ef) in rows {
+        let sid_like = format!("%{sid}%");
+        let mut flags_stmt = match conn.prepare(
+            "SELECT t.flags FROM turns t
+             JOIN sessions s ON s.id = t.session_id
+             WHERE s.external_key LIKE ?1
+               AND t.ts IS NOT NULL
+               AND julianday(t.ts) > julianday(?2)
+               AND julianday(t.ts) <= julianday(?2) + ?3",
+        ) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let flag_rows = flags_stmt
+            .query_map(params![sid_like, ts, window_days], |r| r.get::<_, String>(0))
+            .ok();
+        let mut signals: Vec<&str> = Vec::new();
+        if let Some(it) = flag_rows {
+            for f in it.filter_map(|x| x.ok()) {
+                if f.contains("correction_explicit") {
+                    signals.push("correction_explicit");
+                }
+                if f.contains("correction_terse") {
+                    signals.push("correction_terse");
+                }
+                if f.contains("aborted") {
+                    signals.push("aborted");
+                }
+                if f.contains("session_steer") {
+                    signals.push("session_steer");
+                }
+            }
+        }
+        signals.sort_unstable();
+        signals.dedup();
+        if corr > 0 {
+            signals.push("correction_gate");
+        }
+        if rr > 0 {
+            signals.push("reread");
+        }
+        if ef > 0 {
+            signals.push("edit_follow");
+        }
+        if applied > 0 && lines_drop > 0 {
+            signals.push("trimmed");
+        }
+        if compression_workaround_from_db(conn, &sid, &ts, applied, lines_drop)? {
+            signals.push("compression_workaround");
+        }
+        signals.sort_unstable();
+        signals.dedup();
+        let json = serde_json::to_string(&signals).unwrap_or_else(|_| "[]".into());
+        if conn
+            .execute(
+                "UPDATE compress_decisions SET outcome_signals = ?2 WHERE id = ?1",
+                params![id, json],
+            )
+            .is_ok()
+        {
+            updated += 1;
+        }
+    }
+    Ok(updated)
+}
+
+/// Structural compression workaround from the timestamp join path: trimmed decision followed
+/// by a shell bypass in the same session within the outcome window (CTX-50 / ADR 0035).
+fn compression_workaround_from_db(
+    conn: &Connection,
+    session_id: &str,
+    decision_ts: &str,
+    applied: i64,
+    lines_drop: i64,
+) -> Result<bool> {
+    if applied == 0 || lines_drop <= 0 {
+        return Ok(false);
+    }
+    let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    let shell_list: String = crate::outcome_signals::BYPASS_SHELL_TOOL_NAMES
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT EXISTS (
+            SELECT 1 FROM compress_decisions d2
+            WHERE d2.session_id = ?1
+              AND julianday(d2.ts) > julianday(?2)
+              AND julianday(d2.ts) <= julianday(?2) + ?3
+              AND LOWER(TRIM(d2.tool_name)) IN ({shell_list})
+              AND (
+                LOWER(COALESCE(d2.command_or_path,'')) LIKE '%json%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%<<%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%heredoc%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%python3 -c%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%node -e%'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '% > %'
+                OR LOWER(COALESCE(d2.command_or_path,'')) LIKE '%>>%'
+              )
+         )"
+    );
+    conn.query_row(&sql, params![session_id, decision_ts, window_days], |r| r.get(0))
+        .map_err(Into::into)
+}
+
+/// The `outcome_reread` value subquery: nearest-preceding same fingerprint within the window.
+/// State-mutation tools with legacy bare fingerprints skip routine follow-up calls (CTX-49).
+fn reread_value_sql() -> String {
+    let legacy_exclude = crate::outcome_signals::reread_legacy_state_mutation_exclusion_sql();
+    format!(
+        r#"(
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM compress_decisions d2
+                    WHERE d2.session_id = compress_decisions.session_id
+                      AND d2.command_or_path = compress_decisions.command_or_path
+                      AND d2.command_or_path IS NOT NULL
+                      AND d2.id <> compress_decisions.id
+                      AND julianday(d2.ts) > julianday(compress_decisions.ts)
+                      AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
+                      {legacy_exclude}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM compress_decisions d3
+                          WHERE d3.session_id = compress_decisions.session_id
+                            AND d3.command_or_path = compress_decisions.command_or_path
+                            AND d3.id <> compress_decisions.id
+                            AND julianday(d3.ts) > julianday(compress_decisions.ts)
+                            AND julianday(d3.ts) < julianday(d2.ts)
+                      )
+                ) THEN 1 ELSE 0 END
+            )"#,
+        legacy_exclude = legacy_exclude
+    )
+}
+
+/// The `outcome_edit_follow` value subquery (CTX-46 / ADR 0031): 1 when the same file was edited
+/// (an edit/write tool) within the window after a decision, using the same nearest-preceding
+/// attribution as the re-read so one edit is owned by the last same-path read before it. Shared by
+/// the live join and the one-time backfill so they can never compute the label differently. `?1`
+/// is the window in days; the edit-tool predicate comes from the one shared edit-tool set.
+fn edit_follow_value_sql() -> String {
+    let edit_is_d2 = crate::outcome_signals::edit_tool_sql_in_list("d2.tool_name");
+    format!(
+        r#"(
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM compress_decisions d2
+                    WHERE d2.session_id = compress_decisions.session_id
+                      AND d2.command_or_path = compress_decisions.command_or_path
+                      AND d2.command_or_path IS NOT NULL
+                      AND d2.id <> compress_decisions.id
+                      AND {edit_is_d2}
+                      AND julianday(d2.ts) > julianday(compress_decisions.ts)
+                      AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM compress_decisions d3
+                          WHERE d3.session_id = compress_decisions.session_id
+                            AND d3.command_or_path = compress_decisions.command_or_path
+                            AND d3.id <> compress_decisions.id
+                            AND julianday(d3.ts) > julianday(compress_decisions.ts)
+                            AND julianday(d3.ts) < julianday(d2.ts)
+                      )
+                ) THEN 1 ELSE 0 END
+            )"#,
+        edit_is_d2 = edit_is_d2
+    )
 }
 
 /// A shadow decision still awaiting an outcome, with the fields a transcript-based join
@@ -819,6 +1532,8 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
 pub struct UnjoinedDecision {
     pub id: i64,
     pub command_or_path: String,
+    pub applied: bool,
+    pub lines_drop: i64,
 }
 
 /// Unjoined decisions for one surface session, keyed by the surface's own session id
@@ -829,7 +1544,7 @@ pub fn unjoined_decisions_for_session(
     session_id: &str,
 ) -> Vec<UnjoinedDecision> {
     let mut stmt = match conn.prepare(
-        "SELECT id, command_or_path FROM compress_decisions
+        "SELECT id, command_or_path, applied, lines_drop FROM compress_decisions
          WHERE session_id = ?1 AND outcome_joined = 0 AND command_or_path IS NOT NULL",
     ) {
         Ok(s) => s,
@@ -839,6 +1554,8 @@ pub fn unjoined_decisions_for_session(
         Ok(UnjoinedDecision {
             id: r.get(0)?,
             command_or_path: r.get(1)?,
+            applied: r.get::<_, i64>(2)? != 0,
+            lines_drop: r.get(3)?,
         })
     });
     match rows {
@@ -851,22 +1568,31 @@ pub fn unjoined_decisions_for_session(
 /// transcript (ordinal) join; the timestamp join uses a bulk UPDATE instead.
 ///
 /// `signals_json` is the observation-only richer-signal set for this decision (ADR 0019), a JSON
-/// array of signal names, or `None` to leave it unset. It never changes `outcome_correction`,
-/// which is the only label the gate reads; recording is decoupled from voting on purpose.
+/// array of signal names, or `None` to leave it unset. `edit_follow` is the same-file edit-follow
+/// label (CTX-46 / ADR 0031): the same path was edited within the window. None of these feed the
+/// causal gate, which reads only `outcome_correction`; recording is decoupled from voting.
 pub fn set_decision_outcome(
     conn: &Connection,
     id: i64,
     correction: bool,
     reread: bool,
+    edit_follow: bool,
     surface: &str,
     signals_json: Option<&str>,
 ) -> Result<()> {
     conn.execute(
         "UPDATE compress_decisions
-         SET outcome_correction = ?2, outcome_reread = ?3, outcome_joined = 1, surface = ?4,
-             outcome_signals = ?5
+         SET outcome_correction = ?2, outcome_reread = ?3, outcome_edit_follow = ?4,
+             outcome_joined = 1, surface = ?5, outcome_signals = ?6
          WHERE id = ?1",
-        params![id, correction as i64, reread as i64, surface, signals_json],
+        params![
+            id,
+            correction as i64,
+            reread as i64,
+            edit_follow as i64,
+            surface,
+            signals_json
+        ],
     )?;
     Ok(())
 }
@@ -948,6 +1674,16 @@ pub struct SurfaceSummary {
     pub today: i64,
     /// Most recent decision timestamp (RFC3339), or `None` when the surface is unseen.
     pub last_seen: Option<String>,
+    /// Transcripts ctx has parsed for this surface, independent of any hook decision (CTX-53).
+    /// Lets an agent ctx only watches (Cursor today) render real sessions instead of a fake zero.
+    pub sessions_seen: i64,
+    /// Tool calls observed across those transcripts. Calls, not results: some surfaces omit output.
+    pub tool_calls_seen: i64,
+    /// Corrections observed in transcripts (lexical guard), for a surface with no hook outcomes yet.
+    pub transcript_corrections: i64,
+    /// How ctx knows this surface: "hook" (live decisions), "transcript" (parsed sessions only),
+    /// "hook+transcript" (both), or "" when unseen. Drives honest per-agent copy in the UI.
+    pub observed_via: String,
 }
 
 /// Per-surface activity for the cross-surface view (CTX-34). Always returns Claude Code and
@@ -986,6 +1722,10 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
                 chars_saved: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
                 today: r.get(7)?,
                 last_seen: r.get(8)?,
+                sessions_seen: 0,
+                tool_calls_seen: 0,
+                transcript_corrections: 0,
+                observed_via: if decisions > 0 { "hook".into() } else { String::new() },
             })
         });
         if let Ok(it) = rows {
@@ -1006,6 +1746,39 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
         .collect()
 }
 
+/// Per-surface activity enriched with the transcript corpus under `home` (CTX-53). The hook-based
+/// `surface_summary` only knows an agent ctx has trimmed; this folds in agents ctx has merely
+/// watched on disk, so an agent with real transcripts but zero hook decisions (Cursor, once the
+/// user has moved off it) still renders as a seen agent with genuine sessions and tool calls
+/// instead of a permanent "not seen yet". Read-only; the transcript files and DB are never
+/// mutated here.
+pub fn surface_summary_full(conn: &Connection, home: &std::path::Path) -> Vec<SurfaceSummary> {
+    let mut base = surface_summary(conn);
+    let corpus = crate::surface::ingest::transcript_corpus_summary(home);
+    for stats in corpus {
+        let Some(entry) = base.iter_mut().find(|s| s.surface == stats.surface) else {
+            continue;
+        };
+        entry.sessions_seen = stats.sessions;
+        entry.tool_calls_seen = stats.tool_calls;
+        entry.transcript_corrections = stats.corrections;
+        if stats.sessions > 0 {
+            entry.seen = true;
+            entry.observed_via = if entry.observed_via == "hook" {
+                "hook+transcript".into()
+            } else {
+                "transcript".into()
+            };
+            // Transcripts have no timestamps; use the newest file mtime only when the hook path
+            // gave us no decision timestamp for this surface, so we never overwrite a real one.
+            if entry.last_seen.is_none() {
+                entry.last_seen = stats.last_activity;
+            }
+        }
+    }
+    base
+}
+
 /// A labeled decision row for training / benchmarking (Act 1 / Act 2).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LabeledDecision {
@@ -1018,6 +1791,10 @@ pub struct LabeledDecision {
     pub features_json: String,
     pub correction: i64,
     pub reread: i64,
+    /// Same-file edit-follow label (CTX-46 / ADR 0031): the file was edited within the window.
+    /// The observational "needed this read whole" target the file-aware model trains on in a later
+    /// increment. Distinct from `correction` (causal harm) and `reread` (any later same-path touch).
+    pub edit_follow: i64,
 }
 
 /// All decisions that have been joined to an outcome and are trustworthy enough to train
@@ -1028,9 +1805,10 @@ pub struct LabeledDecision {
 pub fn load_joined_decisions(conn: &Connection) -> Vec<LabeledDecision> {
     let mut stmt = match conn.prepare(
         &format!("SELECT tool_name, kind, lines_total, lines_drop, chars_in, would_chars_out,
-                features_json, COALESCE(outcome_correction,0), COALESCE(outcome_reread,0)
+                features_json, COALESCE(outcome_correction,0), COALESCE(outcome_reread,0),
+                COALESCE(outcome_edit_follow,0)
          FROM compress_decisions
-         WHERE outcome_joined = 1 AND COALESCE(surface,'') != 'cursor'{EXCLUDE_SELF_DEV}"),
+         WHERE outcome_joined = 1 AND COALESCE(surface,'') != 'cursor'{EXCLUDE_SELF_DEV}{EXCLUDE_EDIT_TOOLS}"),
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -1046,6 +1824,7 @@ pub fn load_joined_decisions(conn: &Connection) -> Vec<LabeledDecision> {
             features_json: r.get(6)?,
             correction: r.get(7)?,
             reread: r.get(8)?,
+            edit_follow: r.get(9)?,
         })
     });
     match rows {
@@ -1208,6 +1987,12 @@ pub fn audit_labeled_decisions(
 pub(crate) const EXCLUDE_SELF_DEV: &str =
     " AND COALESCE(features_json,'') NOT LIKE '%\"self_dev\":true%'";
 
+/// SQL fragment that drops edit/write tool rows from trim-facing corpus queries (CTX-46 / ADR
+/// 0031). Edits are recorded as timeline events so the edit-follow label can find them, but ctx
+/// never trims an edit, so they must not train the trim model or appear as trimmable tools on the
+/// ladder/gate. The list mirrors `outcome_signals::EDIT_TOOL_NAMES`; a test pins the two together.
+pub(crate) const EXCLUDE_EDIT_TOOLS: &str = " AND LOWER(TRIM(tool_name)) NOT IN ('write','edit','multiedit','str_replace','str_replace_editor','create_file','applypatch','apply_patch','searchreplace','search_replace')";
+
 /// Causal before/after counts for one tool (SAU-150). The control and treatment share the
 /// same selection (the heuristic wanted to drop lines, `lines_drop > 0`) and differ only on
 /// whether the trim was actually applied. Comparing these isolates the effect of trimming,
@@ -1237,9 +2022,9 @@ pub fn causal_tool_outcomes(
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0)
+            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
-         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}"
+         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}{EXCLUDE_EDIT_TOOLS}"
     );
     let sql = match tool_filter {
         Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
@@ -1713,6 +2498,365 @@ fn backfill_self_dev_tag(conn: &Connection) {
     );
 }
 
+/// One-time backfill of the same-file edit-follow label (CTX-46 / ADR 0031) for timestamp-joined
+/// decisions recorded before the column existed. Going forward `join_compress_outcomes` sets it as
+/// rows join; this fills already-joined Claude/legacy rows so the training corpus carries the label
+/// on existing usage, not only future rows. Cursor rows are skipped: their edit detection needs the
+/// transcript, not a self-join, and they are excluded from training anyway. Uses the exact shared
+/// subquery the live join uses. Meta-guarded so the pass runs at most once; idempotent.
+fn backfill_edit_follow_label(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='edit_follow_backfill_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    let edit_follow = edit_follow_value_sql();
+    let _ = conn.execute(
+        &format!(
+            "UPDATE compress_decisions
+             SET outcome_edit_follow = {edit_follow}
+             WHERE outcome_joined = 1
+               AND outcome_edit_follow IS NULL
+               AND session_id IS NOT NULL
+               AND COALESCE(surface,'') != 'cursor'",
+            edit_follow = edit_follow
+        ),
+        params![window_days],
+    );
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('edit_follow_backfill_v1', '1')",
+        [],
+    );
+}
+
+/// One-time backfill of `path_role` on read decisions recorded before CTX-45 wired live logging.
+/// Uses `command_or_path`, the same path the activity feed shows. Meta-guarded, idempotent.
+fn backfill_path_role(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='path_role_backfill_v2'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+
+    let rows: Vec<(i64, String)> = match conn.prepare(
+        "SELECT id, command_or_path FROM compress_decisions
+         WHERE kind = 'read'
+           AND command_or_path IS NOT NULL
+           AND TRIM(command_or_path) != ''
+           AND json_extract(COALESCE(features_json,'{}'), '$.path_role') IS NULL",
+    ) {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+
+    for (id, path) in rows {
+        let Some(role) = crate::agent::path_role_of(&path) else {
+            continue;
+        };
+        let _ = conn.execute(
+            "UPDATE compress_decisions
+             SET features_json = json_set(COALESCE(features_json,'{}'), '$.path_role', ?2)
+             WHERE id = ?1",
+            params![id, role],
+        );
+    }
+
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('path_role_backfill_v2', '1')",
+        [],
+    );
+}
+
+/// One-time rejoin of every outcome label under CTX-48 / ADR 0033: reset joined rows, rerun
+/// both timestamp and transcript joins, then refresh observation-only `outcome_signals`.
+fn backfill_rejoin_outcome_labels_v3(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v3'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v3', '1')",
+        [],
+    );
+}
+
+/// Strip spurious `correction` flags from interrupt-only turns stored before CTX-48.
+fn backfill_interrupt_turn_flags_v1(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='interrupt_turn_flags_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let _ = conn.execute(
+        "UPDATE turns
+         SET flags = '[\"aborted\"]'
+         WHERE flags LIKE '%aborted%'
+           AND flags LIKE '%correction%'
+           AND (
+             LOWER(COALESCE(human_text_prefix,'')) LIKE '%[request interrupted by user%'
+             OR LOWER(COALESCE(human_text_prefix,'')) = ''
+           )",
+        [],
+    );
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('interrupt_turn_flags_v1', '1')",
+        [],
+    );
+}
+
+/// Rejoin after interrupt turn cleanup so join triggers and observational signals match CTX-48.
+fn backfill_rejoin_outcome_labels_v4(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v4'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v4', '1')",
+        [],
+    );
+}
+
+/// Rejoin after TodoWrite content fingerprints and legacy state-mutation reread exclusion (CTX-49).
+fn backfill_rejoin_outcome_labels_v5(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v5'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_reread = NULL,
+             outcome_edit_follow = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v5', '1')",
+        [],
+    );
+}
+
+/// Rejoin after steer-aware correction labels and compression workaround signals (CTX-50).
+fn backfill_rejoin_outcome_labels_v6(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='rejoin_outcome_labels_v6'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    backfill_steer_turn_flags_v1(conn);
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_reread = NULL,
+             outcome_edit_follow = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('rejoin_outcome_labels_v6', '1')",
+        [],
+    );
+}
+
+/// Reclassify mislabeled explicit corrections that are session steers (CTX-50).
+fn repair_steer_turn_flags(conn: &Connection) {
+    let mut sel = match conn.prepare(
+        "SELECT id, COALESCE(human_text_prefix,'') FROM turns WHERE flags LIKE '%correction_explicit%'",
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let rows: Vec<(i64, String)> = sel
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()
+        .map(|iter| iter.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default();
+    for (id, text) in rows {
+        if crate::outcome_signals::classify_correction(
+            &text,
+            crate::outcome_signals::DEFAULT_TERSE_MAX_CHARS,
+        ) != crate::outcome_signals::CorrectionClass::Steer
+        {
+            continue;
+        }
+        let _ = conn.execute(
+            "UPDATE turns SET flags = '[\"session_steer\"]' WHERE id = ?1",
+            params![id],
+        );
+    }
+}
+
+/// One-time migration wrapper for steer turn cleanup.
+fn backfill_steer_turn_flags_v1(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    let already_done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='steer_turn_flags_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if already_done {
+        return;
+    }
+    repair_steer_turn_flags(conn);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('steer_turn_flags_v1', '1')",
+        [],
+    );
+}
+
+/// Repair the live corpus for honest dashboard display: clean interrupt flags, rejoin outcomes.
+pub fn repair_corpus(conn: &Connection) -> Result<(usize, usize, usize)> {
+    let _ = conn.execute(
+        "UPDATE turns
+         SET flags = '[\"aborted\"]'
+         WHERE flags LIKE '%aborted%'
+           AND flags LIKE '%correction%'
+           AND (
+             LOWER(COALESCE(human_text_prefix,'')) LIKE '%[request interrupted by user%'
+             OR LOWER(COALESCE(human_text_prefix,'')) = ''
+           )",
+        [],
+    );
+    repair_steer_turn_flags(conn);
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined = 0, outcome_correction = NULL, outcome_reread = NULL,
+             outcome_edit_follow = NULL, outcome_signals = NULL
+         WHERE outcome_joined = 1",
+        [],
+    );
+    let _ = join_compress_outcomes(conn);
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
+    }
+    let _ = refresh_outcome_signals(conn);
+    let joined: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(outcome_joined),0) FROM compress_decisions",
+        [],
+        |r| r.get(0),
+    )?;
+    let corrections: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(COALESCE(outcome_correction,0)),0) FROM compress_decisions WHERE outcome_joined=1",
+        [],
+        |r| r.get(0),
+    )?;
+    let interrupt_clean: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM turns
+         WHERE flags LIKE '%aborted%' AND flags NOT LIKE '%correction%'
+           AND LOWER(COALESCE(human_text_prefix,'')) LIKE '%[request interrupted by user%'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok((joined as usize, corrections as usize, interrupt_clean as usize))
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
@@ -1729,6 +2873,13 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     migrate_compress_decisions_table(conn);
     migrate_cursor_compactions_table(conn);
     backfill_self_dev_tag(conn);
+    backfill_edit_follow_label(conn);
+    backfill_path_role(conn);
+    backfill_rejoin_outcome_labels_v3(conn);
+    backfill_interrupt_turn_flags_v1(conn);
+    backfill_rejoin_outcome_labels_v4(conn);
+    backfill_rejoin_outcome_labels_v5(conn);
+    backfill_rejoin_outcome_labels_v6(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -3424,18 +4575,16 @@ mod compress_decision_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // A correction turn lands after the decision.
+        // Explicit complaint after a trimmed decision (CTX-48 gate).
         conn.execute(
-            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', 'correction', '2026-05-31T10:05:00+00:00')",
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', '[\"correction\",\"correction_explicit\"]', '2026-05-31T10:05:00+00:00')",
             params![sid],
         )
         .unwrap();
 
-        insert_compress_decision(
-            &conn,
-            &decision("2026-05-31T10:01:00+00:00", "sess-x", "Read", "a.rs"),
-        )
-        .unwrap();
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-x", "Read", "a.rs");
+        d.applied = true;
+        insert_compress_decision(&conn, &d).unwrap();
 
         let n = join_compress_outcomes(&conn).unwrap();
         assert_eq!(n, 1);
@@ -3448,6 +4597,358 @@ mod compress_decision_tests {
         assert_eq!(read.joined, 1);
         assert_eq!(read.corrections, 1);
         assert_eq!(read.clean_runs, 0);
+    }
+
+    #[test]
+    fn interrupt_after_trim_does_not_set_gate_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-int', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-int'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', '[\"aborted\"]', '2026-05-31T10:05:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-int", "Bash", "npm test");
+        d.applied = true;
+        insert_compress_decision(&conn, &d).unwrap();
+
+        let n = join_compress_outcomes(&conn).unwrap();
+        assert_eq!(n, 1);
+        let corr: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_correction,0) FROM compress_decisions WHERE command_or_path='npm test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(corr, 0, "interrupts must not feed the causal gate");
+    }
+
+    #[test]
+    fn terse_correction_without_explicit_does_not_set_gate_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-terse', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-terse'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'user', '[\"correction\",\"correction_terse\"]', '2026-05-31T10:05:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-terse", "Read", "a.rs");
+        d.applied = true;
+        insert_compress_decision(&conn, &d).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+        let corr: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_correction,0) FROM compress_decisions WHERE command_or_path='a.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(corr, 0, "terse redirects are observational only");
+    }
+
+    #[test]
+    fn session_steer_after_trim_does_not_set_gate_correction() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-steer', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-steer'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, human_text_prefix, ts) VALUES (?1, 1, 'user', '[\"session_steer\"]', 'nope nope.. lets do the fun stuff', '2026-05-31T10:05:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-steer", "Bash", "figma metadata");
+        d.applied = true;
+        d.lines_drop = 166;
+        insert_compress_decision(&conn, &d).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+        let (corr, sigs): (i64, String) = conn
+            .query_row(
+                "SELECT COALESCE(outcome_correction,0), COALESCE(outcome_signals,'') FROM compress_decisions WHERE command_or_path='figma metadata'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(corr, 0, "session steers must not feed the causal gate");
+        assert!(sigs.contains("session_steer"));
+        assert!(!sigs.contains("correction_gate"));
+    }
+
+    #[test]
+    fn exclude_edit_tools_fragment_covers_every_edit_tool_name() {
+        // The trim-corpus exclusion must list exactly the shared edit-tool set, or an edit tool
+        // could leak into training / the ladder. Pin them together (CTX-46 / ADR 0031).
+        for name in crate::outcome_signals::EDIT_TOOL_NAMES {
+            assert!(
+                EXCLUDE_EDIT_TOOLS.contains(&format!("'{name}'")),
+                "EXCLUDE_EDIT_TOOLS is missing {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn join_sets_edit_follow_for_same_file_edit_but_not_for_a_plain_reread() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-ef', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-ef'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // A plain turn past the window closes every decision so they score as final.
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        // a.rs: read, then edited within the window -> edit-follow (and a re-read, since an edit is
+        // a later same-path touch).
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:01:00+00:00", "sess-ef", "Read", "a.rs"),
+        )
+        .unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:03:00+00:00", "sess-ef", "Edit", "a.rs"),
+        )
+        .unwrap();
+        // b.rs: read, then read again within the window -> re-read only, never edit-follow.
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:01:00+00:00", "sess-ef", "Read", "b.rs"),
+        )
+        .unwrap();
+        insert_compress_decision(
+            &conn,
+            &decision("2026-05-31T10:04:00+00:00", "sess-ef", "Read", "b.rs"),
+        )
+        .unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let label = |path: &str| -> (i64, i64) {
+            conn.query_row(
+                "SELECT COALESCE(outcome_edit_follow,0), COALESCE(outcome_reread,0)
+                 FROM compress_decisions
+                 WHERE command_or_path = ?1 AND tool_name = 'Read'",
+                params![path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+
+        let (a_edit, a_reread) = label("a.rs");
+        assert_eq!(a_edit, 1, "a.rs read was followed by an edit of the same file");
+        assert_eq!(a_reread, 1, "an edit is also a later same-path touch");
+
+        let (b_edit, b_reread) = label("b.rs");
+        assert_eq!(b_edit, 0, "b.rs was only re-read, never edited");
+        assert_eq!(b_reread, 1, "b.rs was read again within the window");
+    }
+
+    #[test]
+    fn join_skips_legacy_todowrite_routine_followups() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-todo', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-todo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let mut first = decision(
+            "2026-05-31T10:01:00+00:00",
+            "sess-todo",
+            "TodoWrite",
+            "TodoWrite",
+        );
+        first.kind = "generic";
+        insert_compress_decision(&conn, &first).unwrap();
+        let mut second = decision(
+            "2026-05-31T10:05:00+00:00",
+            "sess-todo",
+            "TodoWrite",
+            "TodoWrite",
+        );
+        second.kind = "generic";
+        insert_compress_decision(&conn, &second).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let reread: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_reread,0) FROM compress_decisions
+                 WHERE session_id = 'sess-todo' AND ts = '2026-05-31T10:01:00+00:00'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reread, 0, "routine TodoWrite follow-ups must not count as re-reads");
+    }
+
+    #[test]
+    fn join_counts_todowrite_reread_only_on_identical_payload() {
+        use serde_json::json;
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-todo2', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-todo2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let payload = json!({"merge": true, "todos": [{"id": "a", "content": "x", "status": "pending"}]});
+        let fp = crate::surface::fingerprint_tool_input("TodoWrite", &payload);
+        let mut first = decision("2026-05-31T10:01:00+00:00", "sess-todo2", "TodoWrite", &fp);
+        first.kind = "generic";
+        insert_compress_decision(&conn, &first).unwrap();
+        let other = json!({"merge": true, "todos": [{"id": "b", "content": "y", "status": "pending"}]});
+        let fp2 = crate::surface::fingerprint_tool_input("TodoWrite", &other);
+        let mut second = decision("2026-05-31T10:05:00+00:00", "sess-todo2", "TodoWrite", &fp2);
+        second.kind = "generic";
+        insert_compress_decision(&conn, &second).unwrap();
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let reread_diff: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_reread,0) FROM compress_decisions
+                 WHERE session_id = 'sess-todo2' AND ts = '2026-05-31T10:01:00+00:00'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reread_diff, 0);
+
+        let mut third = decision("2026-05-31T10:08:00+00:00", "sess-todo2", "TodoWrite", &fp);
+        third.kind = "generic";
+        insert_compress_decision(&conn, &third).unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_joined = 0, outcome_reread = NULL
+             WHERE session_id = 'sess-todo2'",
+            [],
+        )
+        .unwrap();
+        join_compress_outcomes(&conn).unwrap();
+
+        let reread_same: i64 = conn
+            .query_row(
+                "SELECT COALESCE(outcome_reread,0) FROM compress_decisions
+                 WHERE session_id = 'sess-todo2' AND ts = '2026-05-31T10:01:00+00:00'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reread_same, 1, "identical todo payload should count as a re-read");
     }
 
     #[test]
@@ -3846,6 +5347,171 @@ mod compress_decision_tests {
             assert!(s.last_seen.is_none());
         }
     }
+
+    #[test]
+    fn tool_attribution_aggregates_suspects_never_counts_shadow() {
+        // Attribution must only look at applied trims that dropped lines, and count a trim as a
+        // suspect when the agent worked around it, re-read the source, or re-expanded it. A shadow
+        // decision (applied=0) is never a suspect, and a trim with two signals counts once (CTX-54).
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let trim = |cmd: &'static str, applied: bool| CompressDecision::<'static> {
+            ts: "2026-06-14T00:00:00+00:00",
+            session_id: Some("s1"),
+            tool_name: "Bash",
+            server_prefix: None,
+            kind: "generic",
+            task_mode: "scan",
+            lines_total: 100,
+            lines_keep: 60,
+            lines_drop: 40,
+            chars_in: 5000,
+            would_chars_out: 2000,
+            features_json: "{}",
+            command_or_path: cmd,
+            applied,
+            explore_arm: None,
+            surface: Some("claude-code"),
+        };
+        // Applied trim with a workaround AND a reread (should count once as a suspect).
+        insert_compress_decision(&conn, &trim("cmd-a", true)).unwrap();
+        // Applied trim, no suspect signal.
+        insert_compress_decision(&conn, &trim("cmd-b", true)).unwrap();
+        // Shadow decision with a suspect-looking signal: must be ignored (not applied).
+        insert_compress_decision(&conn, &trim("cmd-c", false)).unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_signals='[\"compression_workaround\",\"reread\"]' WHERE command_or_path='cmd-a'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_signals='[\"compression_workaround\"]' WHERE command_or_path='cmd-c'",
+            [],
+        )
+        .unwrap();
+
+        let out = tool_attribution(&conn);
+        let bash = out.iter().find(|t| t.tool == "Bash").expect("bash row");
+        assert_eq!(bash.applied_trims, 2, "shadow decision must not count");
+        assert_eq!(bash.workaround, 1);
+        assert_eq!(bash.reread, 1);
+        assert_eq!(bash.suspect, 1, "two signals on one trim count once");
+        assert!((bash.suspect_rate - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tool_attribution_counts_reexpand_via_rewind() {
+        // The re-expand event (rewind_store.expanded_at) is the closest-to-causal suspect: the agent
+        // asked for exactly the dropped block back. It must count even with no other signal.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("s1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "scan",
+                lines_total: 200,
+                lines_keep: 40,
+                lines_drop: 160,
+                chars_in: 8000,
+                would_chars_out: 2000,
+                features_json: "{}",
+                command_or_path: "/big.rs",
+                applied: true,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+        insert_rewind(&conn, "rw1", "2026-06-14T00:00:00+00:00", Some("s1"), "Read", "/big.rs", "full original", "trimmed");
+        link_decision_rewind(&conn, Some("s1"), "Read", "rw1");
+        mark_rewind_expanded(&conn, "rw1");
+
+        let out = tool_attribution(&conn);
+        let read = out.iter().find(|t| t.tool == "Read").expect("read row");
+        assert_eq!(read.applied_trims, 1);
+        assert_eq!(read.reexpanded, 1);
+        assert_eq!(read.suspect, 1);
+    }
+
+    #[test]
+    fn surface_summary_full_folds_in_watched_cursor_transcripts() {
+        // No hook decisions for Cursor, but a real transcript on disk: the full summary must mark
+        // Cursor seen via transcripts with genuine session/tool-call counts (CTX-53), while Claude
+        // Code stays hook-provenanced.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("cc-1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "scan",
+                lines_total: 100,
+                lines_keep: 60,
+                lines_drop: 40,
+                chars_in: 5000,
+                would_chars_out: 2000,
+                features_json: "{}",
+                command_or_path: "/a.rs",
+                applied: true,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+
+        let proj = tmp
+            .path()
+            .join(".cursor/projects/Users-me-Projects-ctx/agent-transcripts/sess-a");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("sess-a.jsonl");
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>build a cursor adapter and walk me through the tradeoffs carefully</user_query>"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Reading the adapter boundary before proposing anything, so the plan lines up with the real ingest path."},{"type":"tool_use","name":"Read","input":{"path":"/x.rs"}}]}}"#,
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>no that's wrong, revert it</user_query>"}]}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+
+        let out = surface_summary_full(&conn, tmp.path());
+        let cc = out.iter().find(|s| s.surface == "claude-code").unwrap();
+        assert_eq!(cc.observed_via, "hook");
+        assert_eq!(cc.sessions_seen, 0);
+
+        let cu = out.iter().find(|s| s.surface == "cursor").unwrap();
+        assert!(cu.seen);
+        assert_eq!(cu.decisions, 0);
+        assert_eq!(cu.observed_via, "transcript");
+        assert_eq!(cu.sessions_seen, 1);
+        assert_eq!(cu.tool_calls_seen, 1);
+        assert_eq!(cu.transcript_corrections, 1);
+        assert!(cu.last_seen.is_some());
+    }
 }
 
 #[cfg(test)]
@@ -3907,6 +5573,56 @@ mod compress_attach_tests {
         assert_eq!(first.compress_event_count, 1);
         assert_eq!(second.compress_chars_saved, 5000 - 800);
         assert_eq!(second.compress_event_count, 1);
+    }
+
+    #[test]
+    fn backfill_path_role_tags_historical_reads_from_command_or_path() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-19T10:00:00+00:00",
+                session_id: Some("s1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "default",
+                lines_total: 20,
+                lines_keep: 10,
+                lines_drop: 10,
+                chars_in: 100,
+                would_chars_out: 50,
+                features_json: r#"{"repo_key":"/proj"}"#,
+                command_or_path: "src/main.rs",
+                applied: false,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+
+        conn.execute(
+            "DELETE FROM meta WHERE k='path_role_backfill_v2'",
+            [],
+        )
+        .unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let role: Option<String> = conn
+            .query_row(
+                "SELECT json_extract(features_json,'$.path_role') FROM compress_decisions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(role.as_deref(), Some("src"));
     }
 }
 

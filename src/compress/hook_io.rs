@@ -114,11 +114,21 @@ pub fn post_tool_use() -> Result<()> {
         ""
     };
 
+    // Reversible trim (CTX-51): store the verbatim original, hash-addressed, so the agent can
+    // re-expand it on demand. The id travels in a marker appended to what the agent reads.
+    let rewind_id = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        raw.hash(&mut h);
+        format!("{:x}", h.finish())
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
         let _ = crate::db::insert_compress_event(
             &conn,
-            &chrono::Utc::now().to_rfc3339(),
+            &now,
             session_id,
             tool_name,
             &result.strategy,
@@ -126,6 +136,17 @@ pub fn post_tool_use() -> Result<()> {
             result.chars_out,
             &command_or_path,
         );
+        crate::db::insert_rewind(
+            &conn,
+            &rewind_id,
+            &now,
+            session_id,
+            tool_name,
+            &command_or_path,
+            &raw,
+            &result.text,
+        );
+        crate::db::link_decision_rewind(&conn, session_id, tool_name, &rewind_id);
     }
 
     analytics::record_compress(
@@ -138,7 +159,11 @@ pub fn post_tool_use() -> Result<()> {
         "ctx compressed this tool output ({} to {} chars). The tool still ran successfully.{}",
         result.chars_in, result.chars_out, sgr_note
     );
-    let updated = ClaudeCodeTransport.wrap(tool_name, &response_value, &result.text);
+    let marker = format!(
+        "\n\n[ctx trimmed this output to save context. Full original id: {rewind_id}. To read all of it, call the ctx_expand tool with id \"{rewind_id}\", or run: ctx expand {rewind_id}]"
+    );
+    let marked = format!("{}{}", result.text, marker);
+    let updated = ClaudeCodeTransport.wrap(tool_name, &response_value, &marked);
     let out = json!({
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",

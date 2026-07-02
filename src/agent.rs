@@ -87,15 +87,22 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         .as_ref()
         .map(|d| d.kind_str().to_string())
         .unwrap_or_else(|| "generic".to_string());
+    // Edits are recorded as timeline events for the same-file edit-follow label (CTX-46 / ADR
+    // 0031), never trimmed: ctx must never alter what an Edit/Write returned, or the agent could
+    // misread what it just wrote. So an edit tool is always record-only, regardless of preset,
+    // trial, or gate.
+    let is_edit_tool = crate::outcome_signals::is_edit_tool(&tr.tool_name);
+
     // A deliberate trial (`compress_trial_tools`) trims the chosen tool live even while the preset
     // stays off and the evidence gate is unmet. Otherwise the autopilot path: the preset must allow
     // the kind AND the tool must either have earned activation OR be in automatic burn-in (ADR 0012
     // / CTX-23), the bounded on-ramp that lets a tool with a clean baseline build its "after" arm.
     // Burn-in respects the preset, so it never trims when autopilot is off.
-    let base_apply = cfg.compress_trialing(&tr.tool_name)
-        || (cfg.compress_applies_kind(&kind_label)
-            && (compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label)
-                || compress::activation::tool_in_burn_in(cfg, &tr.tool_name)));
+    let base_apply = !is_edit_tool
+        && (cfg.compress_trialing(&tr.tool_name)
+            || (cfg.compress_applies_kind(&kind_label)
+                && (compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label)
+                    || compress::activation::tool_in_burn_in(cfg, &tr.tool_name))));
 
     let is_read = kind_label == "read";
     let read_path = read_file_path(&tr.tool_input);
@@ -143,6 +150,10 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         // (CTX-32). Developing ctx is not user behavior; left in, it dominates and biases the gate.
         d.features.self_dev = is_self_dev_repo(&tr.cwd).then_some(true);
         d.features.file_ext = read_file_path(&tr.tool_input).and_then(file_ext_of);
+        if is_read {
+            d.features.path_role = read_file_path(&tr.tool_input)
+                .and_then(|p| path_role_of(p).map(str::to_string));
+        }
         let features_json = d.features_json();
         if let Some(score) = crate::learn::score_parts(
             &kind_label,
@@ -155,7 +166,36 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         }
     }
 
-    let trim_eligible = base_apply && !read_guard_blocks;
+    // Model proposal (ADR 0032 / CTX-46 increment 3), default off. When the flag is on, the
+    // file-aware model may *propose* trimming a working read the static guard would otherwise hold
+    // back, but only for a read, only when the model beat its kind-only twin, only in a repo that
+    // cleared its own label gate, and only when it is confident the read is throwaway. This can
+    // unblock the read guard; it can never satisfy `base_apply`, so a proposal alone never trims:
+    // the preset, burn-in, and causal activation gate still govern (see `trim_eligible` below).
+    let model_proposes = cfg.compress_model_propose
+        && is_read
+        && read_guard_blocks
+        && shadow
+            .as_ref()
+            .map(|d| {
+                crate::learn::model_proposes_safe_trim(
+                    &kind_label,
+                    d.lines_total as i64,
+                    d.lines_drop as i64,
+                    &d.features_json(),
+                    d.features.repo_key.as_deref(),
+                )
+            })
+            .unwrap_or(false);
+    if model_proposes {
+        if let Some(d) = shadow.as_mut() {
+            d.features.model_proposed = Some(true);
+        }
+    }
+
+    // A proposal can only lift the read guard. `base_apply` (preset + activation/burn-in, and never
+    // an edit tool) is still required, so the model alone can never make a trim apply.
+    let trim_eligible = base_apply && (!read_guard_blocks || model_proposes);
     // Only decisions that would actually drop lines are worth experimenting on; keeping a no-op
     // "trim" tells us nothing, so it never enters the experiment.
     let would_drop = shadow.as_ref().map(|d| d.lines_drop > 0).unwrap_or(false);
@@ -167,8 +207,9 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     // user's own work. Exploration can only ever withhold a trim, never add one.
     let mut apply = trim_eligible;
     let mut explore_arm: Option<&'static str> = None;
-    if trim_eligible && would_drop && cfg.compress_explore_rate > 0.0 {
-        if explore_draw < cfg.compress_explore_rate {
+    let explore_rate = explore_rate_for(&kind_label, cfg);
+    if trim_eligible && would_drop && explore_rate > 0.0 {
+        if explore_draw < explore_rate {
             explore_arm = Some("control");
             apply = false;
         } else {
@@ -191,6 +232,20 @@ fn read_file_path(tool_input: &Value) -> Option<&str> {
         .get("file_path")
         .or_else(|| tool_input.get("path"))
         .and_then(|v| v.as_str())
+}
+
+/// Coarse file role for a read path (`src`, `test`, `config`, `generated`, `vendored`, `docs`).
+/// Single public name for ADR 0030 / CTX-45; the classifier lives in `compress::path_role`.
+pub fn path_role_of(path: &str) -> Option<&'static str> {
+    crate::compress::path_role::path_role_of(path)
+}
+
+fn explore_rate_for(kind_label: &str, cfg: &Config) -> f64 {
+    if kind_label == "read" {
+        cfg.compress_explore_read_rate
+    } else {
+        cfg.compress_explore_rate
+    }
 }
 
 /// Lowercased file extension for a path, when it is a plausible one (non-empty, short). Used as a
@@ -395,6 +450,126 @@ mod tests {
         );
     }
 
+    #[test]
+    fn edit_tools_are_recorded_but_never_trimmed() {
+        // ctx must never alter an Edit/Write result (CTX-46 / ADR 0031). Even under a deliberate
+        // trial of the edit tool with the preset off, the decision is recorded (shadow present,
+        // for the edit-follow timeline) but never applied.
+        let cfg = Config {
+            compress_enabled: true,
+            compress_preset: crate::config::CompressPreset::Off,
+            compress_trial_tools: vec!["Write".into(), "Edit".into()],
+            ..Default::default()
+        };
+        for tool in ["Write", "Edit", "MultiEdit"] {
+            let tr = ToolResult {
+                tool_name: tool.into(),
+                tool_input: json!({"file_path": "/proj/src/foo.rs"}),
+                raw_output: "changed line\n".repeat(500),
+                session_id: None,
+                cwd: "/proj".into(),
+                recent_intent_text: None,
+            };
+            let d = decide(&cfg, &tr);
+            assert!(!d.apply, "{tool} must never be trimmed, even under trial");
+            assert!(
+                d.shadow.is_some(),
+                "{tool} must still be recorded as a timeline event"
+            );
+            assert!(d.explore_arm.is_none(), "{tool} must not enter exploration");
+        }
+    }
+
+    /// Write a served model that would propose trimming any read in repo `/proj`, so the propose
+    /// path is live. Returns nothing; the model lands at the CTX_HOME-scoped model path.
+    fn write_proposing_model() {
+        let n = crate::learn::feature_count();
+        let model = crate::learn::RetentionModel {
+            version: 3,
+            trained_at: "2026-06-19T00:00:00Z".into(),
+            target: "needed_whole".into(),
+            n_train: 200,
+            n_holdout: 40,
+            feature_names: vec!["f".into(); n],
+            // Large negative bias drives P(needed whole) far below the act threshold, so the model
+            // is maximally confident the read is throwaway.
+            weights: vec![0.0; n],
+            bias: -6.0,
+            holdout_auc: 0.72,
+            kind_only_auc: 0.64,
+            file_aware_wins: true,
+            holdout_accuracy: 0.7,
+            base_correction_rate: 0.05,
+            base_need_rate: 0.4,
+            per_tool: vec![],
+            per_repo: vec![crate::learn::PerRepoReadiness {
+                repo_key: "/proj".into(),
+                joined: 120,
+                positives: 50,
+                ready: true,
+            }],
+        };
+        crate::config::ensure_dir().unwrap();
+        let json = serde_json::to_value(&model).unwrap();
+        crate::config::write_json_atomic(&crate::config::retention_model_path(), &json).unwrap();
+    }
+
+    #[test]
+    fn a_model_proposal_can_lift_the_read_guard_but_never_applies_without_base_apply() {
+        // The increment-3 contract (ADR 0032): the file-aware model may *propose* trimming a
+        // working read the guard would keep, but a proposal alone can never trim. `base_apply`
+        // (preset + activation/burn-in) is still required, and the flag is off by default.
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        write_proposing_model();
+
+        // Preset OFF and the read is not trialed: base_apply is false. Even with the propose flag
+        // on and a maximally-confident proposing model, the read must not trim.
+        let cfg_off = Config {
+            compress_enabled: true,
+            compress_preset: crate::config::CompressPreset::Off,
+            compress_read_edit_guard: true,
+            compress_model_propose: true,
+            ..Default::default()
+        };
+        let d = decide(&cfg_off, &read_tr("src/foo.rs"));
+        assert!(
+            !d.apply,
+            "a model proposal must never apply without base_apply (preset off)"
+        );
+
+        // Now the read is trialed, so base_apply is true. The guard would still block this working
+        // read, but the proposal lifts it: with the flag on, the read trims.
+        let cfg_trial_on = Config {
+            compress_model_propose: true,
+            ..read_trial_cfg(true)
+        };
+        let d_on = decide(&cfg_trial_on, &read_tr("src/foo.rs"));
+        assert!(
+            d_on.apply,
+            "with base_apply met, a confident proposal should lift the guard"
+        );
+        assert_eq!(
+            d_on.shadow.as_ref().and_then(|s| s.features.model_proposed),
+            Some(true),
+            "the lifted-guard proposal must be recorded for audit"
+        );
+
+        // Same trialed read, flag OFF: the guard holds and nothing trims. Proves the proposal, not
+        // some other path, is what lifted the guard above.
+        let cfg_trial_off = read_trial_cfg(true);
+        let d_off = decide(&cfg_trial_off, &read_tr("src/foo.rs"));
+        assert!(
+            !d_off.apply,
+            "with the propose flag off, the guard must still block the working read"
+        );
+
+        std::env::remove_var("CTX_HOME");
+    }
+
     fn read_trial_cfg(guard: bool) -> Config {
         Config {
             compress_enabled: true,
@@ -583,11 +758,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn read_decisions_log_path_role_for_training() {
+        let d = decide(&Config::default(), &read_tr("src/components/App.tsx"));
+        assert_eq!(
+            d.shadow
+                .as_ref()
+                .and_then(|s| s.features.path_role.as_deref()),
+            Some("src")
+        );
+        let vendored = decide(
+            &Config::default(),
+            &read_tr("/proj/node_modules/react/index.js"),
+        );
+        assert_eq!(
+            vendored
+                .shadow
+                .as_ref()
+                .and_then(|s| s.features.path_role.as_deref()),
+            Some("vendored")
+        );
+    }
+
     // A trialed reference read of 500 lines is trim-eligible and actually drops lines, so it is a
     // clean fixture for the Phase 2 exploration tests (ADR 0009).
     fn explore_read_cfg(rate: f64) -> Config {
         Config {
-            compress_explore_rate: rate,
+            compress_explore_read_rate: rate,
             ..read_trial_cfg(true)
         }
     }

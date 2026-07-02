@@ -231,7 +231,7 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
         Ok::<(), anyhow::Error>(())
     });
     if claude_projects_has_jsonl() {
-        match crate::conversations::ingest_claude_jsonl() {
+        match crate::conversations::ingest_claude_jsonl(false) {
             Ok(n) if n > 0 => println!("  Ingested {n} session file(s)"),
             Ok(_) => {}
             Err(e) => println!("  {} Ingest skipped: {e}", "!".yellow()),

@@ -94,10 +94,15 @@ pub enum TurnFlag {
     /// of `Correction` (both are emitted together) so the join still matches on
     /// `%correction%` while the confidence tier stays recoverable from the flags column.
     CorrectionExplicit,
+    /// Low-confidence correction: terse redirect after substantial work. Recorded for audit,
+    /// never feeds the causal gate (CTX-48).
+    CorrectionTerse,
     Clarification,
     LongDump,
     PreCompact,
     Aborted,
+    /// Topic pivot or scope redirect; observation only, not a gate correction (CTX-50).
+    SessionSteer,
 }
 
 impl TurnFlag {
@@ -105,10 +110,12 @@ impl TurnFlag {
         match self {
             TurnFlag::Correction => "correction",
             TurnFlag::CorrectionExplicit => "correction_explicit",
+            TurnFlag::CorrectionTerse => "correction_terse",
             TurnFlag::Clarification => "clarification",
             TurnFlag::LongDump => "long_dump",
             TurnFlag::PreCompact => "pre_compact",
             TurnFlag::Aborted => "aborted",
+            TurnFlag::SessionSteer => "session_steer",
         }
     }
 
@@ -116,10 +123,12 @@ impl TurnFlag {
         match s {
             "correction" => Some(TurnFlag::Correction),
             "correction_explicit" => Some(TurnFlag::CorrectionExplicit),
+            "correction_terse" => Some(TurnFlag::CorrectionTerse),
             "clarification" => Some(TurnFlag::Clarification),
             "long_dump" => Some(TurnFlag::LongDump),
             "pre_compact" => Some(TurnFlag::PreCompact),
             "aborted" => Some(TurnFlag::Aborted),
+            "session_steer" => Some(TurnFlag::SessionSteer),
             _ => None,
         }
     }
@@ -206,7 +215,13 @@ pub trait SurfaceTranscriptAdapter {
 /// it so a hook-recorded decision and a transcript tool call line up. Mirrors the legacy
 /// inline logic in the PostToolUse hook: prefer the shell command, then the file path,
 /// then fall back to the tool name.
+///
+/// State-mutation tools (TodoWrite, Task) hash their payload so routine todo updates do
+/// not share one fingerprint and falsely count as re-reads of the same decision.
 pub fn fingerprint_tool_input(tool_name: &str, tool_input: &Value) -> String {
+    if crate::outcome_signals::is_state_mutation_tool(tool_name) {
+        return state_mutation_fingerprint(tool_name, tool_input);
+    }
     tool_input
         .get("command")
         .and_then(|v| v.as_str())
@@ -215,6 +230,37 @@ pub fn fingerprint_tool_input(tool_name: &str, tool_input: &Value) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or(tool_name)
         .to_string()
+}
+
+/// Fingerprint for TodoWrite/Task: `ToolName:<fnv1a64>` over a canonical merge+todos payload.
+fn state_mutation_fingerprint(tool_name: &str, tool_input: &Value) -> String {
+    let merge = tool_input
+        .get("merge")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let mut todos = tool_input
+        .get("todos")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    todos.sort_by(|a, b| {
+        let id_a = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let id_b = b.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        id_a.cmp(id_b)
+    });
+    let payload = serde_json::json!({ "merge": merge, "todos": todos });
+    let canonical = serde_json::to_string(&payload).unwrap_or_default();
+    format!("{tool_name}:{:016x}", fnv1a64(&canonical))
+}
+
+/// Stable 64-bit FNV-1a. Used only for fingerprint bucketing inside this crate.
+fn fnv1a64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 #[cfg(test)]
@@ -235,10 +281,13 @@ mod tests {
     fn turn_flag_round_trips_with_stored_strings() {
         for f in [
             TurnFlag::Correction,
+            TurnFlag::CorrectionExplicit,
+            TurnFlag::CorrectionTerse,
             TurnFlag::Clarification,
             TurnFlag::LongDump,
             TurnFlag::PreCompact,
             TurnFlag::Aborted,
+            TurnFlag::SessionSteer,
         ] {
             assert_eq!(TurnFlag::parse(f.as_str()), Some(f));
         }
@@ -280,5 +329,25 @@ mod tests {
             fingerprint_tool_input("Bash", &json!({"command": ""})),
             "Bash"
         );
+    }
+
+    #[test]
+    fn fingerprint_todowrite_hashes_payload_not_bare_name() {
+        let a = fingerprint_tool_input(
+            "TodoWrite",
+            &json!({"merge": true, "todos": [{"id": "1", "content": "ship", "status": "pending"}]}),
+        );
+        let b = fingerprint_tool_input(
+            "TodoWrite",
+            &json!({"merge": true, "todos": [{"id": "2", "content": "test", "status": "pending"}]}),
+        );
+        assert!(a.starts_with("TodoWrite:"));
+        assert!(b.starts_with("TodoWrite:"));
+        assert_ne!(a, b);
+        let same = fingerprint_tool_input(
+            "TodoWrite",
+            &json!({"merge": true, "todos": [{"id": "1", "content": "ship", "status": "pending"}]}),
+        );
+        assert_eq!(a, same);
     }
 }

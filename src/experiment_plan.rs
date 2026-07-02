@@ -591,7 +591,7 @@ pub fn run_tick(dry_run: bool) -> Result<()> {
     }
 
     if !dry_run {
-        let _ = crate::conversations::ingest_claude_jsonl();
+        let _ = crate::conversations::ingest_claude_jsonl(false);
         if let Ok(conn) = crate::db::open_db() {
             let _ = tuning::run_tuning_after_ingest(&conn);
         }

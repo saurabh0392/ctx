@@ -616,6 +616,20 @@ pub struct Config {
     /// 0.0 disables exploration. Default 0.20.
     #[serde(default = "default_explore_rate")]
     pub compress_explore_rate: f64,
+    /// Randomized exploration rate for Read decisions only (ADR 0009 / CTX-15). Re-enabled now that
+    /// path-role logging is live so the observational needed-whole target can get a causal check on
+    /// reads without turning exploration back on for every tool. Default 0.20. Other tools still use
+    /// `compress_explore_rate`, which stays off by default.
+    #[serde(default = "default_explore_read_rate")]
+    pub compress_explore_read_rate: f64,
+    /// Let the file-aware retention model propose a trim for a working read the static guard would
+    /// hold back (ADR 0032 / CTX-46 increment 3). Default OFF. Even when on, the model can only
+    /// *propose*: the proposed read still has to clear the same preset, burn-in, and causal
+    /// activation gate as any other trim, and a model score alone can never make a trim apply. The
+    /// proposal is also confined to repos that have enough of their own labels and to a model that
+    /// has beaten the kind-only twin on holdout AUC. Off until the per-repo signal is proven.
+    #[serde(default)]
+    pub compress_model_propose: bool,
     /// Session-grounded retention (v2): score lines by task frame after v1 format pass.
     #[serde(default)]
     pub compress_sgr_enabled: bool,
@@ -767,6 +781,10 @@ fn default_explore_rate() -> f64 {
     0.0
 }
 
+fn default_explore_read_rate() -> f64 {
+    0.20
+}
+
 impl Default for AbTestConfig {
     fn default() -> Self {
         Self {
@@ -840,6 +858,8 @@ impl Config {
                 compress_auto_trial: true,
                 // Exploration off by default (ADR 0012): Phase 2 was shelved; plumbing kept, idle.
                 compress_explore_rate: default_explore_rate(),
+                // Read-only exploration on by default now that path-role logging is live (CTX-45).
+                compress_explore_read_rate: default_explore_read_rate(),
                 experiment_hooks_enabled: true,
                 ..Default::default()
             }
@@ -858,6 +878,7 @@ impl Config {
                     compress_intent_log: true,
                     compress_auto_trial: true,
                     compress_explore_rate: default_explore_rate(),
+                    compress_explore_read_rate: default_explore_read_rate(),
                     experiment_hooks_enabled: true,
                     ..Default::default()
                 })
