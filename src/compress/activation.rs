@@ -278,6 +278,7 @@ mod tests {
             trimmed_n,
             trimmed_corrections: trimmed_corr,
             trimmed_rereads: trimmed_rr,
+            trimmed_collected: trimmed_n,
             is_edit_tool: false,
         }
     }

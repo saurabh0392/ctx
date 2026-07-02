@@ -723,6 +723,12 @@ struct ProofToolView {
     verdict: String,
     /// Characters ctx actually removed from this tool's output (applied trims only).
     applied_chars_saved: i64,
+    /// Applied trims collected so far, joined or not. `trimmed_n` counts only scored trims, so a
+    /// fresh trial reads as "0 trimmed" while trims are visibly happening; this matches what the
+    /// user just watched (CTX-62).
+    trimmed_collected: i64,
+    /// True when this tool is judged by re-edit rather than re-read, for honest UI labels.
+    is_edit_tool: bool,
 }
 
 #[derive(Serialize)]
@@ -829,6 +835,8 @@ fn proof_tool_view(
         reread_delta,
         verdict: verdict.to_string(),
         applied_chars_saved: 0,
+        trimmed_collected: o.trimmed_collected,
+        is_edit_tool: o.is_edit_tool,
     }
 }
 
