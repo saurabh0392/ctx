@@ -239,6 +239,13 @@
   .cf-conf.unknown { color: var(--t4); }
   .cf-num { font-size: 26px; font-weight: 800; color: var(--t1); font-variant-numeric: tabular-nums; margin-top: 12px; line-height: 1; }
   .cf-note { font-size: 12px; color: var(--t3); line-height: 1.5; margin-top: 9px; }
+  .cf-action { background: linear-gradient(150deg, #101d2e 0%, var(--surface) 78%); border: 1px solid var(--border2); border-radius: var(--radius); padding: 20px 22px; max-width: 760px; margin-top: 16px; }
+  .cf-action-h { font-size: 13px; font-weight: 700; color: var(--t1); }
+  .cf-action-list { margin: 12px 0 0; padding-left: 18px; }
+  .cf-action-list li { font-size: 13px; color: var(--t2); line-height: 1.6; margin-bottom: 8px; }
+  .cf-action-foot { font-size: 12.5px; color: var(--t3); margin-top: 6px; line-height: 1.6; }
+  .cf-action-foot a { color: var(--primary-lt); text-decoration: none; }
+  .cf-action-foot a:hover { text-decoration: underline; }
   @media (max-width: 720px) { .cf-grid { grid-template-columns: 1fr; } }
 
   /* surfaces: one card per agent, side by side, equal height */
@@ -541,8 +548,8 @@
     </section>
     <section class="view" id="view-compaction">
       <div style="padding-top:40px">
-        <div class="page-title">When your agent compacts</div>
-        <p class="page-sub">When a coding agent runs low on room, it compacts: it summarizes and drops older detail so it can keep going. That is the platform's call, not ctx's. ctx just watches what happens next and counts the times a compaction was followed by you correcting the agent within a few turns. This is not proof the compaction caused the correction. It only tells you how often one came right after the other, on your own work, across the agents ctx can see.</p>
+        <div class="page-title">Compaction health</div>
+        <p class="page-sub">Compaction is your agent hitting its context limit: it summarizes and drops older detail so it can keep going, and the detail it drops is gone for the rest of the session. That is the platform's call, not ctx's. This page reads how often it happens on your work and what you can do to need it less often.</p>
       </div>
       <div id="compaction-body" style="margin-top:24px"></div>
     </section>
@@ -1286,23 +1293,36 @@
   // ════ COMPACTION ════
   const SURFACE_NAME = { "claude-code": "Claude Code", "cursor": "Cursor", "codex": "Codex" };
   async function loadCompaction() {
-    let ctx;
-    try { ctx = await getJSON("/api/context"); setHealth(true); }
+    let ctx, bill;
+    try { [ctx, bill] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/bill").catch(() => null)]); setHealth(true); }
     catch (e) { setHealth(false); $("compaction-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
     const surfaces = ctx.compaction || [];
     const claude = surfaces.find((s) => s.surface === "claude-code");
     const w = (claude && claude.window_turns) || 5;
 
-    // Lead block keys off the one surface we can measure today (Claude Code).
+    // Health read leads: how often the agent compacted, keyed off the one surface we measure fully
+    // (Claude Code). The correction follow-up is background further down, never the headline.
     let lead;
     if (!claude || claude.confidence !== "observed") {
-      lead = `<div class="cf-lead"><div class="cf-big">Nothing to show yet</div><div class="cf-cap">ctx hasn't indexed any Claude Code sessions on this machine yet. Once you run a few, this shows how often a compaction was followed by a correction. Run <code>ctx ingest</code> if you have used Claude Code and still see nothing.</div></div>`;
+      lead = `<div class="cf-lead"><div class="cf-big">Nothing to read yet</div><div class="cf-cap">ctx hasn't indexed any Claude Code sessions on this machine yet. Once you run a few, this shows how often your agent hits its context limit. Run <code>ctx ingest</code> if you have used Claude Code and still see nothing.</div></div>`;
     } else if ((claude.compaction_events || 0) === 0) {
-      const sess = claude.sessions_with_compaction || 0;
-      lead = `<div class="cf-lead good"><div class="cf-big">No compactions yet</div><div class="cf-cap">Across the Claude Code sessions ctx has seen, your agent hasn't had to compact its context. That is the good case, so there is nothing to report. If a session does compact, it shows up here.</div></div>`;
+      lead = `<div class="cf-lead good"><div class="cf-big">Your sessions stay under the limit</div><div class="cf-cap">Across the Claude Code sessions ctx has seen, your agent hasn't had to compact once. That is the healthy read: no mid-session detail was summarized away. If a session ever does compact, it shows up here with what to do about it.</div></div>`;
     } else {
-      const n = claude.compaction_events || 0, m = claude.followed_by_correction || 0;
-      lead = `<div class="cf-lead"><div class="cf-big"><b>${num(m)}</b> of ${num(n)}</div><div class="cf-cap">Claude Code compactions on this machine were followed by you correcting the agent within ${w} turns. This counts what came next, not what caused it. A correction can follow a compaction for reasons that have nothing to do with it.</div></div>`;
+      const n = claude.compaction_events || 0, sess = claude.sessions_with_compaction || 0;
+      const per = sess > 0 ? (n / sess) : 0;
+      lead = `<div class="cf-lead"><div class="cf-big">Compacted <b>${num(n)}</b> time${n === 1 ? "" : "s"}</div><div class="cf-cap">across ${num(sess)} Claude Code session${sess === 1 ? "" : "s"} ctx has seen${per >= 2 ? `, about ${per.toFixed(1)} per affected session` : ""}. Each one means the agent ran out of room and summarized older detail away for the rest of that session. Fewer is healthier.</div></div>`;
+    }
+
+    // Next action, the point of the page. Concrete levers, one anchored to the real top sink so it
+    // is your data, not generic advice.
+    let action = "";
+    const compacted = claude && claude.confidence === "observed" && (claude.compaction_events || 0) > 0;
+    if (compacted) {
+      const top = bill && bill.tools && bill.tools.length ? bill.tools[0] : null;
+      const sinkLine = top
+        ? `Your biggest context sink is <b>${esc(prettyTool(top.tool))}</b>, about ${fmtK(tok(top.sink_chars || 0))} tokens over time. The more a session pours into the window, the sooner it compacts. Unused MCP servers are the usual hidden culprit; prune the ones you don't need.`
+        : `Unused MCP servers are the usual hidden sink; their tool definitions and outputs fill the window fast. Prune the ones you don't need.`;
+      action = `<div class="cf-action"><div class="cf-action-h">What reduces it</div><ul class="cf-action-list"><li>Split a long session once the task shifts. A fresh session starts with an empty window, so it compacts later or not at all.</li><li>${sinkLine}</li></ul><div class="cf-action-foot">Open the <a href="#bill" onclick="go('bill')">Context bill</a> to see what is filling the window, and <a href="#loop" onclick="go('loop')">Tool report</a> for what ctx can safely reclaim.</div></div>`;
     }
 
     const card = (s) => {
@@ -1313,19 +1333,17 @@
       if (s.confidence === "unknown") {
         return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf unknown">not visible yet</div><div class="cf-num">&mdash;</div><div class="cf-note">ctx hasn't recorded a compaction from ${esc(name)} yet, so there's nothing to show. We'd rather show nothing than guess.</div></div>`;
       }
-      // Cursor: we see real compaction events live (preCompact hook), but the correction follow-up
-      // isn't computed yet, so we show the count honestly at lower confidence, not a fake "of N".
       if (s.confidence === "observed_low") {
         const n = s.compaction_events || 0;
         const body = n === 0
           ? `<div class="cf-num">none yet</div><div class="cf-note">ctx is watching ${esc(name)}'s compactions live. None recorded yet.</div>`
-          : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} recorded live across ${sessLbl}. Whether a correction followed is coming next.</div>`;
+          : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} recorded live across ${sessLbl}.</div>`;
         return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf low">watching live</div>${body}</div>`;
       }
-      const n = s.compaction_events || 0, m = s.followed_by_correction || 0;
+      const n = s.compaction_events || 0;
       const body = n === 0
-        ? `<div class="cf-num">none</div><div class="cf-note">No compaction seen across ${sessLbl}.</div>`
-        : `<div class="cf-num">${num(m)} <span style="font-size:14px;color:var(--t3);font-weight:600">of ${num(n)}</span></div><div class="cf-note">compactions were followed by a correction within ${w} turns, across ${sessLbl}.</div>`;
+        ? `<div class="cf-num">none</div><div class="cf-note">No compaction across ${sessLbl}. The healthy case.</div>`
+        : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} across ${sessLbl}.</div>`;
       return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf observed">observed here</div>${body}</div>`;
     };
 
@@ -1336,9 +1354,19 @@
       .map(card)
       .join("");
 
+    // Background only: what tended to follow a compaction. Correlation, clearly labeled, never the
+    // headline. Shown only when there is a real count to report.
+    let followup = "";
+    if (compacted && claude.followed_by_correction != null) {
+      const n = claude.compaction_events || 0, m = claude.followed_by_correction || 0;
+      followup = `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">For context: what tended to follow</div><p class="sec-note">${num(m)} of ${num(n)} Claude Code compactions had you correct the agent within ${w} turns. This is background, not a cause: a correction can follow a compaction for reasons unrelated to it, and the branch where the session had more room is in no log. Treat it as a loose hint that compaction-heavy sessions get bumpier, not as a verdict.</p></div>`;
+    }
+
     $("compaction-body").innerHTML =
       lead +
-      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">ctx can only measure an agent whose sessions it sees. Claude Code exposes its compaction in the transcript, so its count is full. Cursor reports each compaction live as it happens, so its count is real but lower confidence until we line up what came after. Anything ctx can't see yet shows as not visible, never as a zero.</p><div class="cf-grid">${cards}</div></div>`;
+      action +
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">ctx can only measure an agent whose sessions it sees. Claude Code exposes its compaction in the transcript, so its count is full. Cursor reports each compaction live as it happens. Anything ctx can't see yet shows as not visible, never as a zero.</p><div class="cf-grid">${cards}</div></div>` +
+      followup;
   }
 
   // ════ SURFACES ════
