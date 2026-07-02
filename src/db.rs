@@ -845,6 +845,69 @@ pub fn tool_attribution(conn: &Connection) -> Vec<ToolAttribution> {
     out
 }
 
+/// Per-tool baseline follow-up rates (CTX-61): how often a tool's output is followed by the agent
+/// re-touching the same target. A re-read for reference tools (Read, Bash), a re-edit for edit tools
+/// (Edit, Write). This is the harm signal each tool's trimming is judged against, and until now it
+/// was computed (`outcome_edit_follow`) but shown nowhere. These are baseline rates on real work, not
+/// harm by themselves: they are the bar a trim must not worsen. Excludes ctx self-dev churn.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ToolFollowup {
+    pub tool: String,
+    /// Decisions with a known outcome (the window closed), the denominator for the rates.
+    pub joined: i64,
+    pub rereads: i64,
+    pub edit_follows: i64,
+    /// True when this tool edits/writes files, so the UI leads with re-edit rather than re-read.
+    pub is_edit_tool: bool,
+    pub reread_rate: f64,
+    pub edit_follow_rate: f64,
+}
+
+pub fn tool_followups(conn: &Connection) -> Vec<ToolFollowup> {
+    let mut out = Vec::new();
+    let sql = format!(
+        "SELECT tool_name,
+                COUNT(*),
+                SUM(COALESCE(outcome_reread,0)),
+                SUM(COALESCE(outcome_edit_follow,0))
+         FROM compress_decisions
+         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}
+         GROUP BY tool_name
+         HAVING COUNT(*) >= 5
+         ORDER BY 2 DESC"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return out;
+    };
+    let rows = stmt.query_map([], |r| {
+        let tool: String = r.get(0)?;
+        let joined: i64 = r.get(1)?;
+        let rereads: i64 = r.get(2)?;
+        let edit_follows: i64 = r.get(3)?;
+        Ok(ToolFollowup {
+            is_edit_tool: crate::outcome_signals::is_edit_tool(&tool),
+            reread_rate: if joined > 0 {
+                rereads as f64 / joined as f64
+            } else {
+                0.0
+            },
+            edit_follow_rate: if joined > 0 {
+                edit_follows as f64 / joined as f64
+            } else {
+                0.0
+            },
+            tool,
+            joined,
+            rereads,
+            edit_follows,
+        })
+    });
+    if let Ok(rows) = rows {
+        out.extend(rows.flatten());
+    }
+    out
+}
+
 pub fn context_bill(conn: &Connection) -> ContextBill {
     let mut bill = ContextBill::default();
     let mut stmt = match conn.prepare(
@@ -5448,6 +5511,96 @@ mod compress_decision_tests {
         assert_eq!(read.applied_trims, 1);
         assert_eq!(read.reexpanded, 1);
         assert_eq!(read.suspect, 1);
+    }
+
+    #[test]
+    fn tool_followups_surfaces_edit_follow_for_edit_tools() {
+        // Edit tools report their re-edit baseline (the harm signal a future trim is judged on),
+        // and the row is flagged is_edit_tool so the UI leads with it (CTX-61).
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // Six Edit decisions, all joined; four followed by a re-edit of the same file.
+        for i in 0..6 {
+            insert_compress_decision(
+                &conn,
+                &CompressDecision {
+                    ts: "2026-06-14T00:00:00+00:00",
+                    session_id: Some("s1"),
+                    tool_name: "Edit",
+                    server_prefix: None,
+                    kind: "edit",
+                    task_mode: "build",
+                    lines_total: 40,
+                    lines_keep: 40,
+                    lines_drop: 0,
+                    chars_in: 6000,
+                    would_chars_out: 4000,
+                    features_json: "{}",
+                    command_or_path: &format!("/f{i}.rs"),
+                    applied: false,
+                    explore_arm: None,
+                    surface: Some("claude-code"),
+                },
+            )
+            .unwrap();
+        }
+        conn.execute("UPDATE compress_decisions SET outcome_joined=1", []).unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_edit_follow=1 WHERE command_or_path IN ('/f0.rs','/f1.rs','/f2.rs','/f3.rs')",
+            [],
+        )
+        .unwrap();
+
+        let out = tool_followups(&conn);
+        let edit = out.iter().find(|t| t.tool == "Edit").expect("edit row");
+        assert!(edit.is_edit_tool);
+        assert_eq!(edit.joined, 6);
+        assert_eq!(edit.edit_follows, 4);
+        assert!((edit.edit_follow_rate - 4.0 / 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tool_followups_excludes_self_dev_churn() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+        for i in 0..6 {
+            insert_compress_decision(
+                &conn,
+                &CompressDecision {
+                    ts: "2026-06-14T00:00:00+00:00",
+                    session_id: Some("s1"),
+                    tool_name: "Read",
+                    server_prefix: None,
+                    kind: "read",
+                    task_mode: "scan",
+                    lines_total: 40,
+                    lines_keep: 40,
+                    lines_drop: 0,
+                    chars_in: 6000,
+                    would_chars_out: 4000,
+                    features_json: "{\"self_dev\":true}",
+                    command_or_path: &format!("/f{i}.rs"),
+                    applied: false,
+                    explore_arm: None,
+                    surface: Some("claude-code"),
+                },
+            )
+            .unwrap();
+        }
+        conn.execute("UPDATE compress_decisions SET outcome_joined=1", []).unwrap();
+        // All rows are self-dev, so the tool falls below the HAVING threshold and is absent.
+        assert!(tool_followups(&conn).iter().all(|t| t.tool != "Read"));
     }
 
     #[test]

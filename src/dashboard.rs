@@ -330,6 +330,9 @@ struct ContextView {
     /// headline: how often an applied trim coincided with the agent needing the dropped content
     /// back. Aggregate suspicion, never single-case proof.
     attribution: Vec<crate::db::ToolAttribution>,
+    /// Per-tool baseline follow-up rates (CTX-61): re-read for reference tools, re-edit for edit
+    /// tools. The harm signal each tool's trimming is judged against, surfaced instead of hidden.
+    followups: Vec<crate::db::ToolFollowup>,
 }
 
 /// POST /api/context/rewind: return the verbatim original ctx trimmed, by rewind id (CTX-57).
@@ -361,7 +364,7 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction, loop_health, surfaces, attribution) = match open_ctx_db() {
+    let (stats, tools, feed, compaction, loop_health, surfaces, attribution, followups) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
             let progress = crate::db::compress_tool_progress(&conn);
@@ -425,7 +428,8 @@ async fn api_context() -> Json<ContextView> {
             let home = dirs::home_dir().unwrap_or_default();
             let surfaces = crate::db::surface_summary_full(&conn, &home);
             let attribution = crate::db::tool_attribution(&conn);
-            (stats, tools, feed, compaction, loop_health, surfaces, attribution)
+            let followups = crate::db::tool_followups(&conn);
+            (stats, tools, feed, compaction, loop_health, surfaces, attribution, followups)
         }
         None => (
             Default::default(),
@@ -443,6 +447,7 @@ async fn api_context() -> Json<ContextView> {
                 by_day: Vec::new(),
                 tools: Vec::new(),
             },
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ),
@@ -478,6 +483,7 @@ async fn api_context() -> Json<ContextView> {
         loop_health,
         surfaces,
         attribution,
+        followups,
     })
 }
 

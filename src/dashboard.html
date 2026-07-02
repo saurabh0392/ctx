@@ -278,6 +278,8 @@
   .attr-big { font-size: 20px; font-weight: 700; color: var(--t1); margin-top: 8px; font-variant-numeric: tabular-nums; }
   .attr-big span { font-size: 13px; font-weight: 600; color: var(--t3); }
   .attr-detail { font-size: 12px; color: var(--t4); margin-top: 8px; line-height: 1.5; }
+  .fu-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 3px 7px; border-radius: 6px; background: var(--surface3); color: var(--t3); white-space: nowrap; }
+  .fu-tag.edit { background: #2a2036; color: #c9a7e0; }
 
   /* loop health: accrual lead + sparkline + per-tool stage rows */
   .lh-spark { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin-top: 16px; max-width: 760px; }
@@ -978,6 +980,32 @@
     return `<div class="sec" style="margin-top:28px"><div class="sec-eyebrow">Suspected trim cost, by tool</div><p class="sec-note">When ctx trimmed a tool, how often the agent then acted like it needed the dropped content back: it worked around the trim, re-read the source, or pulled the verbatim original back with ctx_expand. This is a correlation across your own trims, not proof any single trim caused it. The branch where that session ran with full output is in no log. Aggregated over enough trims, a high rate is the honest read that trimming that tool is risky for you.</p><div class="attr-grid">${cards}</div></div>`;
   }
 
+  // Baseline follow-up rates (CTX-61): how often each tool's output is followed by re-touching the
+  // same target. Edit tools lead with re-edit, reference tools with re-read. These are baseline
+  // behavior, the bar a trim must not worsen, not harm on their own. This is where edit_follow,
+  // computed all along but never shown, finally surfaces.
+  function followupSection(ctx) {
+    const f = (ctx.followups || []).filter((t) => (t.joined || 0) >= 5);
+    if (!f.length) return "";
+    const cards = f.map((r) => {
+      const isEdit = !!r.is_edit_tool;
+      const primaryRate = Math.round((isEdit ? r.edit_follow_rate : r.reread_rate) * 100);
+      const primaryN = isEdit ? r.edit_follows : r.rereads;
+      const primaryWord = isEdit ? "re-edited" : "re-read";
+      const tag = isEdit ? `<span class="fu-tag edit">edit tool</span>` : `<span class="fu-tag">reference</span>`;
+      // Secondary rate, the other signal, for context.
+      const secRate = Math.round((isEdit ? r.reread_rate : r.edit_follow_rate) * 100);
+      const secWord = isEdit ? "re-read" : "re-edited the file";
+      const cls = primaryRate >= 50 ? "risk" : primaryRate <= 10 ? "clean" : "warn";
+      return `<div class="attr-card ${cls}">
+        <div class="attr-head"><div class="attr-tool">${esc(prettyTool(r.tool))}</div>${tag}</div>
+        <div class="attr-big">${primaryRate}% <span>${primaryWord}</span></div>
+        <div class="attr-detail">${num(primaryN)} of ${num(r.joined)} followed by ${primaryWord === "re-edited" ? "another edit to the same file" : "re-reading the same target"}. ${secRate}% ${secWord}.</div>
+      </div>`;
+    }).join("");
+    return `<div class="sec" style="margin-top:28px"><div class="sec-eyebrow">Baseline follow-up rates, by tool</div><p class="sec-note">How often each tool's output is followed by the agent re-touching the same target: a re-edit for edit tools, a re-read for reference tools. These are baseline rates on your own work, how agents behave whether or not ctx trims, so they are the bar a trim must not worsen, not harm by themselves. Edit is watch-only, so its rate is pure baseline: this is the signal a future decision to trim Edit would be judged against, not reread.</p><div class="attr-grid">${cards}</div></div>`;
+  }
+
   function buildSystemNarrative(ctx, proof, rows) {
     const lh = ctx.loop_health || {};
     const stats = ctx.stats || {};
@@ -1287,7 +1315,7 @@
       if (watchMore > 0) body += `<p class="sec-note" style="margin-top:8px">${watchMore} more tools with lighter usage are not shown.</p>`;
     }
 
-    $("loop-body").innerHTML = hero + statStrip + attributionSection(ctx) + spark + body;
+    $("loop-body").innerHTML = hero + statStrip + attributionSection(ctx) + followupSection(ctx) + spark + body;
   }
 
   // ════ COMPACTION ════
