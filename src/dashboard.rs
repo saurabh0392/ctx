@@ -330,6 +330,12 @@ struct ContextView {
     /// headline: how often an applied trim coincided with the agent needing the dropped content
     /// back. Aggregate suspicion, never single-case proof.
     attribution: Vec<crate::db::ToolAttribution>,
+    /// Per-week net-ahead scoreboard (CTX-63): the north-star metric made real. Each week's reclaimed
+    /// vs eligible and harm-vs-baseline, with a fail-closed net-ahead verdict.
+    wnad: Vec<crate::db::WeekNetAhead>,
+    /// Insight-actions (CTX-63 / L4): behavior changes ctx can see, recoveries and MCP prunes. The
+    /// education-engagement KPI, counted only from locally logged actions.
+    insight_actions: crate::db::InsightActions,
 }
 
 /// POST /api/context/rewind: return the verbatim original ctx trimmed, by rewind id (CTX-57).
@@ -361,7 +367,7 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction, loop_health, surfaces, attribution) = match open_ctx_db() {
+    let (stats, tools, feed, compaction, loop_health, surfaces, attribution, wnad, insight_actions) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
             let progress = crate::db::compress_tool_progress(&conn);
@@ -425,7 +431,9 @@ async fn api_context() -> Json<ContextView> {
             let home = dirs::home_dir().unwrap_or_default();
             let surfaces = crate::db::surface_summary_full(&conn, &home);
             let attribution = crate::db::tool_attribution(&conn);
-            (stats, tools, feed, compaction, loop_health, surfaces, attribution)
+            let wnad = crate::db::weekly_net_ahead(&conn);
+            let insight_actions = crate::db::insight_actions(&conn);
+            (stats, tools, feed, compaction, loop_health, surfaces, attribution, wnad, insight_actions)
         }
         None => (
             Default::default(),
@@ -445,6 +453,8 @@ async fn api_context() -> Json<ContextView> {
             },
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Default::default(),
         ),
     };
 
@@ -478,6 +488,8 @@ async fn api_context() -> Json<ContextView> {
         loop_health,
         surfaces,
         attribution,
+        wnad,
+        insight_actions,
     })
 }
 

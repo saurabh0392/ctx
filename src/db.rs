@@ -2082,6 +2082,164 @@ pub fn causal_tool_outcomes(
     }
 }
 
+/// The north-star metric, made real (CTX-63). A developer-week is net-ahead when, that week, ctx
+/// reclaimed a meaningful share of the developer's context AND trimming did not raise harm above the
+/// developer's own baseline. Defined in the revamp plan, never instrumented until now. One machine =
+/// one developer, so this is a per-week scoreboard for this developer.
+///
+/// Fail-closed: a week only counts as net-ahead when its safety can actually be confirmed (enough
+/// scored trims to compare harm). A week that reclaimed room but has not yet proven the trims were
+/// safe is honest "reclaiming, safety not yet confirmed", not a win. That matches ctx's discipline
+/// and keeps WNAD from being gamed by volume alone.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct WeekNetAhead {
+    /// ISO-ish week label (e.g. "2026-W26") and the Monday-or-first date seen, for display.
+    pub week: String,
+    pub first_day: String,
+    /// Tokens ctx actually removed this week (applied trims), and the tokens it could have removed
+    /// across every would-trim decision (eligible). Capture is reclaimed / eligible.
+    pub reclaimed_tokens: i64,
+    pub eligible_tokens: i64,
+    pub capture_rate: f64,
+    /// The reclaim bar for the week: the lower of 50K tokens or 25% of eligible.
+    pub reclaim_bar_tokens: i64,
+    pub reclaim_ok: bool,
+    /// Harm arms this week, over scored (joined) trims. Re-touch is re-read for reference tools,
+    /// re-edit for edit tools, so each tool is judged by the signal that means harm for it.
+    pub trimmed_scored: i64,
+    pub trimmed_harm: i64,
+    pub baseline_scored: i64,
+    pub baseline_harm: i64,
+    /// True when the trimmed re-touch rate did not exceed the baseline rate by more than the margin.
+    pub harm_ok: bool,
+    /// Too few scored trims to confirm safety this week, so net-ahead stays false (fail-closed).
+    pub harm_unconfirmed: bool,
+    pub net_ahead: bool,
+}
+
+/// Insight-actions: behavior changes the developer made from what ctx showed them (CTX-63 / L4).
+/// The plan's insight-engagement KPI ("education only counts when it changes behavior"). ctx has no
+/// telemetry, so this counts only actions it logs locally: recovering a trim with ctx_expand, and
+/// pruning MCP servers by switching to a leaner profile. Session splits are not tracked, so they are
+/// honestly absent rather than guessed.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct InsightActions {
+    /// Times the agent pulled a trimmed original back with ctx_expand (engaged with reversibility).
+    pub recoveries: i64,
+    /// Profile switches that removed at least one MCP server (acted on the waste / bill insight).
+    pub mcp_prunes: i64,
+    pub total: i64,
+}
+
+pub fn insight_actions(conn: &Connection) -> InsightActions {
+    let recoveries: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM rewind_store WHERE expanded_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    // A prune is a profile change that removed a server. `servers_removed` is a JSON array string;
+    // empty ('[]', '', NULL) means the switch added or kept servers, not a prune.
+    let mcp_prunes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM profile_changes
+             WHERE servers_removed IS NOT NULL
+               AND TRIM(servers_removed) NOT IN ('', '[]')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    InsightActions {
+        recoveries,
+        mcp_prunes,
+        total: recoveries + mcp_prunes,
+    }
+}
+
+/// Reclaim floor and eligible fraction from the plan's WNAD definition, and the harm margin (shared
+/// with the causal gate) plus the minimum scored trims to confirm a week's safety.
+const WNAD_RECLAIM_FLOOR_TOKENS: i64 = 50_000;
+const WNAD_ELIGIBLE_FRACTION: f64 = 0.25;
+const WNAD_HARM_MARGIN: f64 = 0.10;
+const WNAD_MIN_SCORED_TRIMS: i64 = 10;
+
+pub fn weekly_net_ahead(conn: &Connection) -> Vec<WeekNetAhead> {
+    let retouch = format!(
+        "(CASE WHEN {edit} THEN COALESCE(outcome_edit_follow,0) ELSE COALESCE(outcome_reread,0) END)",
+        edit = crate::outcome_signals::edit_tool_sql_in_list("tool_name")
+    );
+    let sql = format!(
+        "SELECT strftime('%Y-W%W', ts) AS wk,
+                MIN(date(ts)),
+                COALESCE(SUM(CASE WHEN applied=1 THEN (chars_in - would_chars_out) ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN lines_drop>0 THEN (chars_in - would_chars_out) ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND {retouch}=1 THEN 1 ELSE 0 END),0)
+         FROM compress_decisions
+         WHERE 1=1{EXCLUDE_SELF_DEV}
+         GROUP BY wk
+         ORDER BY wk DESC"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |r| {
+        let reclaimed_chars: i64 = r.get(2)?;
+        let eligible_chars: i64 = r.get(3)?;
+        let trimmed_scored: i64 = r.get(4)?;
+        let trimmed_harm: i64 = r.get(5)?;
+        let baseline_scored: i64 = r.get(6)?;
+        let baseline_harm: i64 = r.get(7)?;
+
+        let reclaimed_tokens = reclaimed_chars / 4;
+        let eligible_tokens = eligible_chars / 4;
+        let reclaim_bar_tokens =
+            WNAD_RECLAIM_FLOOR_TOKENS.min((eligible_tokens as f64 * WNAD_ELIGIBLE_FRACTION) as i64);
+        let reclaim_ok = reclaimed_tokens >= reclaim_bar_tokens && reclaimed_tokens > 0;
+
+        let harm_unconfirmed = trimmed_scored < WNAD_MIN_SCORED_TRIMS || baseline_scored == 0;
+        let trimmed_rate = if trimmed_scored > 0 {
+            trimmed_harm as f64 / trimmed_scored as f64
+        } else {
+            0.0
+        };
+        let baseline_rate = if baseline_scored > 0 {
+            baseline_harm as f64 / baseline_scored as f64
+        } else {
+            0.0
+        };
+        let harm_ok = !harm_unconfirmed && trimmed_rate <= baseline_rate + WNAD_HARM_MARGIN;
+
+        Ok(WeekNetAhead {
+            week: r.get(0)?,
+            first_day: r.get(1)?,
+            reclaimed_tokens,
+            eligible_tokens,
+            capture_rate: if eligible_tokens > 0 {
+                reclaimed_tokens as f64 / eligible_tokens as f64
+            } else {
+                0.0
+            },
+            reclaim_bar_tokens,
+            reclaim_ok,
+            trimmed_scored,
+            trimmed_harm,
+            baseline_scored,
+            baseline_harm,
+            harm_ok,
+            harm_unconfirmed,
+            net_ahead: reclaim_ok && harm_ok,
+        })
+    });
+    match rows {
+        Ok(it) => it.filter_map(|x| x.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Phase 2 randomized per-tool outcome counts (ADR 0009). Unlike `causal_tool_outcomes`, which
 /// compares observational shadow vs applied rows, this compares only rows that entered the
 /// randomized experiment (`explore_arm` set): control (deliberately kept) vs treatment (trimmed).
@@ -5471,6 +5629,52 @@ mod compress_decision_tests {
         assert_eq!(read.applied_trims, 1);
         assert_eq!(read.reexpanded, 1);
         assert_eq!(read.suspect, 1);
+    }
+
+    #[test]
+    fn weekly_net_ahead_is_fail_closed_on_unconfirmed_safety() {
+        // A week that reclaimed plenty but has too few scored trims to confirm safety is NOT
+        // net-ahead: safety must be measured, never assumed (CTX-63).
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // One big applied trim: ~250K chars saved (well over the 50K-token bar), but only 1 scored
+        // trim, so safety is unconfirmed.
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-06-14T00:00:00+00:00",
+                session_id: Some("s1"),
+                tool_name: "Bash",
+                server_prefix: None,
+                kind: "generic",
+                task_mode: "scan",
+                lines_total: 100,
+                lines_keep: 20,
+                lines_drop: 80,
+                chars_in: 1_000_000,
+                would_chars_out: 4_000,
+                features_json: "{}",
+                command_or_path: "big",
+                applied: true,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+        conn.execute("UPDATE compress_decisions SET outcome_joined=1", []).unwrap();
+
+        let wk = weekly_net_ahead(&conn);
+        let w = wk.first().expect("one week");
+        assert!(w.reclaimed_tokens > 50_000, "reclaimed well over the bar");
+        assert!(w.reclaim_ok);
+        assert!(w.harm_unconfirmed, "1 scored trim cannot confirm safety");
+        assert!(!w.net_ahead, "fail-closed: no net-ahead without confirmed safety");
     }
 
     #[test]
