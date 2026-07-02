@@ -3,6 +3,7 @@
 pub mod activation;
 pub mod classify;
 mod context;
+mod edit;
 pub mod edit_intent;
 mod generic;
 pub mod path_role;
@@ -100,6 +101,7 @@ pub fn compress_tool_output(
             compress_read_output(raw_output, file_path.unwrap_or("unknown"), &opts, &ctx)
         }
         CompressKind::Mcp => compress_mcp_output(raw_output, &opts, &ctx),
+        CompressKind::Edit => edit::compress_edit_output(raw_output, &opts, &ctx),
         CompressKind::Generic | CompressKind::Passthrough => {
             generic::compress_generic(raw_output, &opts, &ctx, "generic")
         }

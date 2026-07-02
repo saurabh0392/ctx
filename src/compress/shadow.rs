@@ -144,6 +144,7 @@ pub fn kind_str(k: CompressKind) -> &'static str {
         CompressKind::Grep => "grep",
         CompressKind::Read => "read",
         CompressKind::Mcp => "mcp",
+        CompressKind::Edit => "edit",
     }
 }
 
