@@ -109,6 +109,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/context/preset", post(api_context_preset))
         .route("/api/context/proof", get(api_context_proof))
         .route("/api/context/bill", get(api_context_bill))
+        .route("/api/context/tool-bill", get(api_context_tool_bill))
         .route("/api/context/rewind", post(api_context_rewind))
         .route(
             "/api/context/model-progress",
@@ -359,6 +360,19 @@ async fn api_context_bill() -> Json<crate::db::ContextBill> {
     match open_ctx_db() {
         Some(conn) => Json(crate::db::context_bill(&conn)),
         None => Json(crate::db::ContextBill::default()),
+    }
+}
+
+/// GET /api/context/tool-bill: the input-side Context Bill (CTX-63 / M-A). Per connected MCP server,
+/// the full catalog carried on every request versus what was actually invoked, ranked by dead
+/// weight. The fixed-cost, input-tax mirror of `/api/context/bill`.
+async fn api_context_tool_bill() -> Json<crate::db::ToolMenuBill> {
+    let lookback = crate::config::Config::load()
+        .profile_thresholds
+        .lookback_days;
+    match open_ctx_db() {
+        Some(conn) => Json(crate::db::tool_menu_bill(&conn, lookback)),
+        None => Json(crate::db::ToolMenuBill::default()),
     }
 }
 

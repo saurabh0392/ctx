@@ -479,6 +479,7 @@
       <nav class="nav">
         <a data-view="home" onclick="go('home')">Home</a>
         <a data-view="bill" onclick="go('bill')">Context bill</a>
+        <a data-view="toolbill" onclick="go('toolbill')">Tool tax</a>
         <a data-view="loop" onclick="go('loop')">Tool report</a>
         <a data-view="compaction" onclick="go('compaction')">Compaction</a>
         <a data-view="surfaces" onclick="go('surfaces')">Surfaces</a>
@@ -579,6 +580,18 @@
       <div id="bill-summary"></div>
       <div id="bill-list"></div>
     </section>
+
+    <!-- ══ TOOL MENU BILL (input tax, CTX-63 / M-A) ══ -->
+    <section class="view" id="view-toolbill">
+      <div class="hero">
+        <div class="eyebrow"><span class="pip"></span> The other half of the tax</div>
+        <h1 class="title">Your tool tax</h1>
+        <p class="lede">Every MCP server loads its whole tool list on every request, whether you call it or not. That fixed cost repeats every turn. Here it is, per server, worst first.</p>
+      </div>
+      <div id="toolbill-summary"></div>
+      <div id="toolbill-list"></div>
+    </section>
+
     <section class="view" id="view-compaction">
       <div style="padding-top:40px">
         <div class="page-title">Compaction health</div>
@@ -640,17 +653,18 @@
 
   // ── router ──
   function go(view) {
-    const v = ["home", "bill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(view) ? view : "home";
+    const v = ["home", "bill", "toolbill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(view) ? view : "home";
     location.hash = v;
   }
   function render() {
     const v = (location.hash || "#home").slice(1);
-    const view = ["home", "bill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(v) ? v : "home";
+    const view = ["home", "bill", "toolbill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(v) ? v : "home";
     document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === "view-" + view));
     document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view));
     window.scrollTo(0, 0);
     if (view === "home") loadHome();
     if (view === "bill") loadBill();
+    if (view === "toolbill") loadToolBill();
     if (view === "loop") loadLoop();
     if (view === "compaction") loadCompaction();
     if (view === "surfaces") loadSurfaces();
@@ -1289,6 +1303,56 @@
             '<div class="bstat"><div class="sv">' + fmtK(avg) + '</div><div class="sl">avg per call</div></div>' +
           '</div>' +
           '<div class="bsrc-h">Top sources</div>' + srcHtml + rwHtml +
+        '</div>' +
+      '</div>';
+    }).join("");
+  }
+
+  // ════ TOOL MENU BILL (input tax, CTX-63 / M-A) ════
+  // Token fields from /api/context/tool-bill are already tokens, not chars, so they render with
+  // fmtK() directly (no tok() divide-by-4 like the output bill).
+  async function loadToolBill() {
+    let b;
+    try { b = await getJSON("/api/context/tool-bill"); setHealth(true); }
+    catch (e) { setHealth(false); $("toolbill-summary").innerHTML = '<div class="status" style="margin-top:22px"><div class="big">Could not reach ctx. Is the dashboard running?</div></div>'; return; }
+    const servers = (b.servers || []).filter((s) => (s.catalog_tools || 0) > 0);
+    if (!servers.length) {
+      $("toolbill-summary").innerHTML = '<div class="status" style="margin-top:22px"><div class="big">No MCP servers seen yet. Connect a server and invoke a tool or two, and your tool menu bill fills in here.</div></div>';
+      $("toolbill-list").innerHTML = "";
+      return;
+    }
+    const days = b.lookback_days || 30;
+    const tpt = b.tokens_per_tool || 600;
+    const deadPctTotal = b.total_carried_tokens > 0 ? Math.round((b.total_dead_tokens / b.total_carried_tokens) * 100) : 0;
+    $("toolbill-summary").innerHTML =
+      '<div class="bill-tot">' +
+      '<div class="bt"><div class="bt-n">' + fmtK(b.total_carried_tokens) + '</div><div class="bt-l">tokens carried every request</div></div>' +
+      '<div class="bt"><div class="bt-n">' + fmtK(b.total_dead_tokens) + '</div><div class="bt-l">dead weight · ' + deadPctTotal + '% never called in ' + days + 'd</div></div>' +
+      '<div class="bt"><div class="bt-n">' + num(b.total_catalog_tools) + ' <span style="color:var(--t3);font-weight:600">&rsaquo; ' + num(b.total_invoked_tools) + '</span></div><div class="bt-l">tools carried, then actually used</div></div>' +
+      '</div>';
+    const cap =
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between;margin:24px 2px 12px">' +
+      '<span style="font-size:13px;color:var(--t2)">Ranked by dead weight' + (b.biggest_dead_server ? '. <b style="color:var(--t1)">' + esc(b.biggest_dead_server) + '</b> is worst, ' + fmtK(b.biggest_dead_tokens) + ' tok/request.' : '.') + '</span>' +
+      '<span style="font-size:11.5px;color:var(--t4)">bright bar = never called · ~' + tpt + ' tok/schema est.</span>' +
+      '</div>';
+    $("toolbill-list").innerHTML = cap + servers.map((s) => {
+      const deadPct = s.catalog_tools > 0 ? Math.round((s.dead_tools / s.catalog_tools) * 100) : 0;
+      const usedPct = Math.max(0, 100 - deadPct);
+      const last = s.last_used ? String(s.last_used).slice(0, 10) : "never";
+      return '<div class="bcard">' +
+        '<div class="bhead" onclick="this.parentNode.classList.toggle(\'open\')">' +
+          '<span class="caret">&#9656;</span><span class="bname">' + esc(s.server) + '</span><span class="spacer"></span>' +
+          '<span class="bmeta"><b>' + fmtK(s.dead_tokens) + '</b> tok dead weight · ' + s.invoked_tools + '/' + s.catalog_tools + ' tools used · ' + num(s.calls) + ' calls</span>' +
+        '</div>' +
+        '<div class="bbar"><span class="kept" style="width:' + usedPct + '%"></span><span class="recl" style="width:' + deadPct + '%"></span></div>' +
+        '<div class="bdetail">' +
+          '<div class="bstats">' +
+            '<div class="bstat"><div class="sv">' + s.catalog_tools + '</div><div class="sl">tools carried / request</div></div>' +
+            '<div class="bstat"><div class="sv">' + s.invoked_tools + '</div><div class="sl">actually invoked</div></div>' +
+            '<div class="bstat"><div class="sv">' + s.dead_tools + '</div><div class="sl">dead weight (' + deadPct + '%)</div></div>' +
+            '<div class="bstat"><div class="sv">' + fmtK(s.carried_tokens) + '</div><div class="sl">tokens / request</div></div>' +
+          '</div>' +
+          '<p style="font-size:12.5px;color:var(--t3);line-height:1.5;margin:12px 2px 2px"><b style="color:var(--t2)">' + s.dead_tools + ' of ' + s.catalog_tools + '</b> tools here are never called, about <b style="color:var(--t2)">' + fmtK(s.dead_tokens) + ' tokens</b> of every request spent on nothing. Last used ' + esc(last) + '.</p>' +
         '</div>' +
       '</div>';
     }).join("");
