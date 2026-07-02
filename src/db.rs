@@ -2003,28 +2003,48 @@ pub struct CausalToolOutcome {
     pub tool_name: String,
     pub baseline_n: i64,
     pub baseline_corrections: i64,
+    /// The tool's re-touch harm count in the baseline arm. Re-reads for reference tools, re-edits
+    /// (outcome_edit_follow) for edit tools, so the gate judges each tool by the signal that means
+    /// harm for it (CTX-62). The field name is historical; `is_edit_tool` says which it holds.
     pub baseline_rereads: i64,
     pub trimmed_n: i64,
     pub trimmed_corrections: i64,
     pub trimmed_rereads: i64,
+    /// Applied trims collected so far, whether or not their outcome window has closed. `trimmed_n`
+    /// only counts scored (joined) trims, so during a fresh trial it sits at 0 while trims are
+    /// already happening; this is the count that matches what the user just watched (CTX-62).
+    pub trimmed_collected: i64,
+    /// True when the re-touch counts above are re-edits, so the UI can label them honestly.
+    pub is_edit_tool: bool,
 }
 
 /// Per-tool causal before/after outcome counts over joined decisions. `tool_filter` is an
-/// exact `tool_name` match (None = all tools, ordered by total decided volume).
+/// exact `tool_name` match (None = all tools, ordered by total decided volume). Edit tools are
+/// included and judged by re-edit rather than re-read (CTX-62).
 pub fn causal_tool_outcomes(
     conn: &Connection,
     tool_filter: Option<&str>,
 ) -> Vec<CausalToolOutcome> {
+    // The re-touch signal that means harm for this tool: a re-edit of the same file for edit tools,
+    // a re-read for everything else. One expression so the gate stays uniform across tool families.
+    let retouch = format!(
+        "(CASE WHEN {edit} THEN COALESCE(outcome_edit_follow,0) ELSE COALESCE(outcome_reread,0) END)",
+        edit = crate::outcome_signals::edit_tool_sql_in_list("tool_name")
+    );
+    // Joined-only counts feed the causal verdict; `trimmed_collected` counts every applied trim so a
+    // fresh trial does not read as "0 trimmed" while its outcomes are still landing. The joined
+    // filter moved from the WHERE into each CASE so both live side by side.
     let base = format!(
         "SELECT tool_name,
-            COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0)
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND {retouch}=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
-         WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}{EXCLUDE_EDIT_TOOLS}"
+         WHERE 1=1{EXCLUDE_SELF_DEV}"
     );
     let sql = match tool_filter {
         Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
@@ -2039,14 +2059,17 @@ pub fn causal_tool_outcomes(
         Err(_) => return Vec::new(),
     };
     let map = |r: &rusqlite::Row<'_>| {
+        let tool_name: String = r.get(0)?;
         Ok(CausalToolOutcome {
-            tool_name: r.get(0)?,
+            is_edit_tool: crate::outcome_signals::is_edit_tool(&tool_name),
+            tool_name,
             baseline_n: r.get(1)?,
             baseline_corrections: r.get(2)?,
             baseline_rereads: r.get(3)?,
             trimmed_n: r.get(4)?,
             trimmed_corrections: r.get(5)?,
             trimmed_rereads: r.get(6)?,
+            trimmed_collected: r.get(7)?,
         })
     };
     let rows = match tool_filter {
