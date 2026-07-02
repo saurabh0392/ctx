@@ -109,6 +109,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/context/preset", post(api_context_preset))
         .route("/api/context/proof", get(api_context_proof))
         .route("/api/context/bill", get(api_context_bill))
+        .route("/api/context/rewind", post(api_context_rewind))
         .route(
             "/api/context/model-progress",
             get(api_context_model_progress),
@@ -325,6 +326,20 @@ struct ContextView {
     /// Per-agent activity for the cross-surface view (ADR 0018 / CTX-34). Always Claude Code and
     /// Cursor, each with a `seen` flag so the UI can show an honest empty state.
     surfaces: Vec<crate::db::SurfaceSummary>,
+}
+
+/// POST /api/context/rewind: return the verbatim original ctx trimmed, by rewind id (CTX-57).
+async fn api_context_rewind(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    match open_ctx_db().and_then(|c| crate::db::get_rewind(&c, id)) {
+        Some(e) => Json(serde_json::json!({
+            "id": e.id,
+            "source": e.command_or_path,
+            "chars": e.chars,
+            "original": e.original,
+        })),
+        None => Json(serde_json::json!({ "error": "not found" })),
+    }
 }
 
 /// GET /api/context/bill: where your context goes, per tool. The education front door, ranked

@@ -501,6 +501,15 @@ pub struct ContextBillSource {
     pub sink_chars: i64,
 }
 
+/// A stored trim of a tool the user can re-expand from the bill (CTX-57 drill-down).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBillRewind {
+    pub id: String,
+    pub source: String,
+    pub chars: i64,
+    pub expanded: bool,
+}
+
 /// One tool's line on the context bill.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct ContextBillTool {
@@ -514,6 +523,8 @@ pub struct ContextBillTool {
     pub reclaimed_chars: i64,
     /// Top commands or paths within this tool, biggest first.
     pub sources: Vec<ContextBillSource>,
+    /// Recent verbatim trims of this tool the user can re-expand (CTX-57 drill-down).
+    pub rewinds: Vec<ContextBillRewind>,
 }
 
 /// Where context goes, itemized from `compress_decisions`. Needs no labels, so it renders on day
@@ -656,6 +667,7 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
             reclaimable_chars: r.get(3)?,
             reclaimed_chars: r.get(4)?,
             sources: Vec::new(),
+            rewinds: Vec::new(),
         })
     });
     if let Ok(rows) = rows {
@@ -702,6 +714,34 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
             }
         }
     }
+    // Recent verbatim trims per tool for the drill-down (CTX-57).
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tool_name, id, COALESCE(command_or_path, ''), chars,
+                CASE WHEN expanded_at IS NOT NULL THEN 1 ELSE 0 END
+         FROM rewind_store ORDER BY ts DESC",
+    ) {
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                ContextBillRewind {
+                    id: r.get(1)?,
+                    source: r.get(2)?,
+                    chars: r.get(3)?,
+                    expanded: r.get::<_, i64>(4)? == 1,
+                },
+            ))
+        });
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                if let Some(&i) = idx.get(&row.0) {
+                    if bill.tools[i].rewinds.len() < 5 {
+                        bill.tools[i].rewinds.push(row.1);
+                    }
+                }
+            }
+        }
+    }
+
     bill.since = conn
         .query_row("SELECT MIN(ts) FROM compress_decisions", [], |r| {
             r.get::<_, Option<String>>(0)

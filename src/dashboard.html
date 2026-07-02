@@ -504,6 +504,11 @@
         .bsrc .sbar { width:70px; height:5px; background:var(--bg); border-radius:3px; overflow:hidden; flex-shrink:0; }
         .bsrc .sbar > span { display:block; height:100%; background:var(--primary); }
         .bsrc .stok { font-size:11.5px; color:var(--t3); width:64px; text-align:right; flex-shrink:0; }
+        .brw { display:flex; align-items:center; gap:10px; padding:5px 0; }
+        .rwbtn { background:var(--bg); color:var(--t2); border:1px solid var(--border2); border-radius:7px; padding:3px 11px; font-size:11px; cursor:pointer; flex-shrink:0; }
+        .rwbtn:hover { color:var(--t1); border-color:var(--primary); }
+        .rwpre { display:none; white-space:pre-wrap; word-break:break-word; max-height:280px; overflow:auto; background:var(--bg); border-radius:8px; padding:10px 12px; margin:2px 0 8px; font-size:11.5px; line-height:1.5; color:var(--t2); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .rwpre.open { display:block; }
       </style>
       <div id="bill-summary"></div>
       <div id="bill-list"></div>
@@ -999,6 +1004,20 @@
     if (s < 86400) return Math.floor(s / 3600) + "h ago";
     return Math.floor(s / 86400) + "d ago";
   }
+  async function viewOriginal(ev, id) {
+    ev.stopPropagation();
+    const pre = document.getElementById("rw-" + id);
+    if (!pre) return;
+    if (pre.classList.contains("open")) { pre.classList.remove("open"); pre.textContent = ""; return; }
+    pre.textContent = "loading...";
+    pre.classList.add("open");
+    try {
+      const r = await fetch("/api/context/rewind", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+      const d = await r.json();
+      pre.textContent = d.original || d.error || "(unavailable)";
+    } catch (e) { pre.textContent = "(failed to load)"; }
+  }
+
   async function loadBill() {
     let b;
     try { b = await getJSON("/api/context/bill"); setHealth(true); }
@@ -1035,6 +1054,13 @@
           '<span class="sbar"><span style="width:' + sw + '%"></span></span>' +
           '<span class="stok">' + fmtK(tok(s.sink_chars)) + ' tok</span></div>';
       }).join("") : '<div class="bsrc"><span class="sname" style="color:var(--t4)">No per-source detail recorded.</span></div>';
+      const rewinds = t.rewinds || [];
+      const rwHtml = rewinds.length ? '<div class="bsrc-h">Recent trims, view the original</div>' + rewinds.map((rw) =>
+        '<div class="brw"><span class="sname" title="' + esc(rw.source) + '">' + esc(shortSource(rw.source)) + '</span>' +
+        '<span class="stok">' + fmtK(tok(rw.chars)) + ' tok' + (rw.expanded ? ', recovered' : '') + '</span>' +
+        '<button class="rwbtn" onclick="viewOriginal(event, \'' + rw.id + '\')">view</button></div>' +
+        '<pre class="rwpre" id="rw-' + rw.id + '"></pre>'
+      ).join("") : '';
       return '<div class="bcard">' +
         '<div class="bhead" onclick="this.parentNode.classList.toggle(\'open\')">' +
           '<span class="caret">&#9656;</span><span class="bname">' + esc(prettyTool(t.tool)) + '</span><span class="spacer"></span>' +
@@ -1048,7 +1074,7 @@
             '<div class="bstat"><div class="sv">' + fmtK(tok(t.reclaimed_chars)) + '</div><div class="sl">reclaimed so far</div></div>' +
             '<div class="bstat"><div class="sv">' + fmtK(avg) + '</div><div class="sl">avg per call</div></div>' +
           '</div>' +
-          '<div class="bsrc-h">Top sources</div>' + srcHtml +
+          '<div class="bsrc-h">Top sources</div>' + srcHtml + rwHtml +
         '</div>' +
       '</div>';
     }).join("");
