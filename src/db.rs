@@ -690,7 +690,11 @@ pub struct ToolAttribution {
 
 pub fn tool_attribution(conn: &Connection) -> Vec<ToolAttribution> {
     let mut out = Vec::new();
-    let Ok(mut stmt) = conn.prepare(
+    // Exclude ctx self-dev rows the same way the model corpus does: building and editing ctx is the
+    // developer's own churn (exactly the source-heavy work trimming hurts most), so counting it would
+    // overstate the per-tool suspect rate for everyone else. `features_json` is unambiguous here;
+    // the LEFT-joined rewind_store has no such column.
+    let sql = format!(
         "SELECT d.tool_name,
                 SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 THEN 1 ELSE 0 END),
                 SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
@@ -706,10 +710,12 @@ pub fn tool_attribution(conn: &Connection) -> Vec<ToolAttribution> {
                       OR r.expanded_at IS NOT NULL) THEN 1 ELSE 0 END)
          FROM compress_decisions d
          LEFT JOIN rewind_store r ON d.rewind_id = r.id
+         WHERE 1=1{EXCLUDE_SELF_DEV}
          GROUP BY d.tool_name
          HAVING SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 THEN 1 ELSE 0 END) > 0
-         ORDER BY 6 DESC, 2 DESC",
-    ) else {
+         ORDER BY 6 DESC, 2 DESC"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
         return out;
     };
     let rows = stmt.query_map([], |r| {

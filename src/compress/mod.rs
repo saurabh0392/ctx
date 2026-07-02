@@ -38,6 +38,10 @@ use retain::apply_line_retention;
 use test_runner::compress_test_output;
 use types::CompressOptions;
 
+/// A command that explicitly narrowed its output to at most this many lines is left whole (CTX-58).
+/// Above it, the narrowing is loose enough that trimming still helps.
+const EXPLICIT_NARROW_MAX_LINES: usize = 200;
+
 pub fn compress_tool_output(
     tool_name: &str,
     tool_input: &serde_json::Value,
@@ -60,6 +64,15 @@ pub fn compress_tool_output(
         .get("file_path")
         .or_else(|| tool_input.get("path"))
         .and_then(|v| v.as_str());
+
+    // Respect explicit narrowing (CTX-58): a command that already capped its own output to a modest
+    // number of lines (`| head -50`, `grep -m 30`) asked for exactly that; trimming below it is the
+    // doubly-wrong case that drove the workarounds. Leave it whole.
+    if let Some(cap) = command.and_then(classify::explicit_output_cap) {
+        if cap <= EXPLICIT_NARROW_MAX_LINES {
+            return None;
+        }
+    }
 
     let kind = classify_tool(tool_name, command, file_path);
     let prompt = load_prompt_from_session(session_id);
