@@ -663,6 +663,7 @@ pub fn expand(id: &str) -> Result<()> {
     let _ = crate::db::ensure_schema(&conn);
     match crate::db::get_rewind(&conn, id) {
         Some(e) => {
+            crate::db::mark_rewind_expanded(&conn, id);
             println!("{}", e.original);
             Ok(())
         }

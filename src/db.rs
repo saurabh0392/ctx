@@ -315,6 +315,27 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     // stamps which agent surface produced a decision so training can exclude the
     // lower-confidence (transcript-derived) labels until their precision is proven.
     let _ = conn.execute("ALTER TABLE compress_decisions ADD COLUMN surface TEXT", []);
+    // CTX-51 L2: link a trim to its rewind entry and record when the agent recovered it via
+    // ctx_expand, so the gate can treat a recovery as a benign outcome, not a harmful re-read.
+    let _ = conn.execute("ALTER TABLE compress_decisions ADD COLUMN rewind_id TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN outcome_recovered INTEGER",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS rewind_store (
+            id TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            tool_name TEXT NOT NULL,
+            command_or_path TEXT,
+            original TEXT NOT NULL,
+            chars INTEGER NOT NULL,
+            expanded_at TEXT
+        )",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN expanded_at TEXT", []);
     // Phase 2 randomized exploration arm (ADR 0009): "treatment" (trimmed) or "control"
     // (deliberately kept) for rows that entered the experiment; NULL for every prior and
     // non-experiment decision. Kept separate from `applied` because a randomized control and an
@@ -560,6 +581,35 @@ pub fn insert_rewind(
         "DELETE FROM rewind_store WHERE id NOT IN
          (SELECT id FROM rewind_store ORDER BY ts DESC LIMIT 500)",
         [],
+    );
+}
+
+/// Mark a stored trim as recovered when the agent re-expands it (CTX-51 L2). A recovery is a
+/// benign outcome, so the gate later discounts it from the tool's harmful re-read count.
+pub fn mark_rewind_expanded(conn: &Connection, id: &str) {
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN expanded_at TEXT", []);
+    let _ = conn.execute(
+        "UPDATE rewind_store SET expanded_at = ?2 WHERE id = ?1 AND expanded_at IS NULL",
+        params![id, chrono::Utc::now().to_rfc3339()],
+    );
+}
+
+/// Link the just-recorded applied decision to the rewind entry it produced, so a later recovery
+/// joins back to it. Runs right after the decision insert, so the latest applied row for this
+/// session and tool is the one to stamp.
+pub fn link_decision_rewind(
+    conn: &Connection,
+    session_id: Option<&str>,
+    tool_name: &str,
+    rewind_id: &str,
+) {
+    let _ = conn.execute(
+        "UPDATE compress_decisions SET rewind_id = ?3
+         WHERE id = (
+             SELECT MAX(id) FROM compress_decisions
+             WHERE applied = 1 AND tool_name = ?2 AND session_id IS ?1
+         )",
+        params![session_id, tool_name, rewind_id],
     );
 }
 
@@ -971,6 +1021,12 @@ pub fn join_compress_outcomes(conn: &Connection) -> Result<usize> {
                 ) THEN 1 ELSE 0 END
             ),
             outcome_reread = {reread},
+            outcome_recovered = (
+                SELECT CASE WHEN compress_decisions.rewind_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM rewind_store r
+                    WHERE r.id = compress_decisions.rewind_id AND r.expanded_at IS NOT NULL
+                ) THEN 1 ELSE 0 END
+            ),
             -- Same nearest-preceding rule as the re-read, but only a later *edit* of the same path
             -- counts: the agent acted on the file, the strongest "needed it whole" signal. A plain
             -- re-read does not set this; it sets outcome_reread (CTX-46 / ADR 0031).
@@ -1656,7 +1712,7 @@ pub fn causal_tool_outcomes(
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0)
+            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND COALESCE(outcome_reread,0)=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
          WHERE outcome_joined = 1{EXCLUDE_SELF_DEV}{EXCLUDE_EDIT_TOOLS}"
     );

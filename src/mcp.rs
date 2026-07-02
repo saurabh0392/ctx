@@ -190,13 +190,16 @@ fn tool_expand(args: &Value) -> Result<Value, String> {
     let conn = crate::db::open_db().map_err(|e| e.to_string())?;
     let _ = crate::db::ensure_schema(&conn);
     match crate::db::get_rewind(&conn, id) {
-        Some(e) => Ok(json!({
-            "id": e.id,
-            "tool": e.tool_name,
-            "source": e.command_or_path,
-            "chars": e.chars,
-            "original": e.original,
-        })),
+        Some(e) => {
+            crate::db::mark_rewind_expanded(&conn, id);
+            Ok(json!({
+                "id": e.id,
+                "tool": e.tool_name,
+                "source": e.command_or_path,
+                "chars": e.chars,
+                "original": e.original,
+            }))
+        }
         None => Err(format!(
             "No stored output for id \"{id}\". It may have aged out of the rewind store."
         )),

@@ -145,6 +145,7 @@ pub fn post_tool_use() -> Result<()> {
             &command_or_path,
             &raw,
         );
+        crate::db::link_decision_rewind(&conn, session_id, tool_name, &rewind_id);
     }
 
     analytics::record_compress(
