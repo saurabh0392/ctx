@@ -371,8 +371,24 @@
   .wnad-bar { height: 6px; border-radius: 999px; background: var(--surface3); overflow: hidden; margin-top: 10px; }
   .wnad-bar-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--primary-lt)); }
   .wnad-note { font-size: 13px; color: var(--t2); line-height: 1.6; margin-top: 15px; }
-  .wnad-actions { font-size: 12.5px; color: var(--t3); line-height: 1.6; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border); }
-  .wnad-actions b { color: var(--t1); }
+  .wnad-cond { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+  .wnad-c { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .wnad-c.pass { border-color: #1e3b30; }
+  .wnad-c-h { display: flex; align-items: center; gap: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--t3); font-weight: 700; }
+  .wnad-c-mark { width: 17px; height: 17px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; flex-shrink: 0; }
+  .wnad-c-mark.pass { background: var(--primary); color: #04231a; }
+  .wnad-c-mark.wait { background: var(--surface3); color: var(--t3); box-shadow: inset 0 0 0 1px var(--border2); }
+  .wnad-c-v { font-size: 21px; font-weight: 800; color: var(--t1); margin-top: 9px; font-variant-numeric: tabular-nums; }
+  .wnad-c-v span { font-size: 13px; font-weight: 600; color: var(--t3); }
+  .wnad-c-explain { font-size: 12.5px; color: var(--t3); line-height: 1.6; margin-top: 9px; }
+  .wnad-verdict-line { font-size: 13.5px; color: var(--t2); line-height: 1.65; margin-top: 16px; }
+  .ins { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; max-width: 760px; }
+  .ins-row { display: flex; gap: 11px; font-size: 13px; color: var(--t3); line-height: 1.6; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .ins-row b { color: var(--t1); font-weight: 600; }
+  .ins-mark { flex-shrink: 0; font-size: 13px; font-weight: 800; margin-top: 1px; }
+  .ins-mark.done { color: var(--primary-lt); }
+  .ins-mark.todo { color: var(--t4); }
+  @media (max-width: 640px) { .wnad-cond { grid-template-columns: 1fr; } }
   @media (max-width: 640px) { .wnad-grid { grid-template-columns: 1fr; } }
 
   /* ── payoff ── */
@@ -729,68 +745,90 @@
   // trimming stayed at or below the developer's own harm baseline. Fail-closed: safety must be
   // confirmed, never assumed, so a week that reclaimed room but has not proven its trims safe reads
   // as "reclaiming, not yet confirmed", not a win.
-  // Insight-actions: behavior changes ctx can see (CTX-63). Education only counts when it changes
-  // what you do. ctx has no telemetry, so this reflects only locally logged actions.
-  function insightActionsLine(a) {
-    const total = a.total || 0;
-    if (!total) {
-      return `<div class="wnad-actions"><b>0</b> insight-actions yet. Recovering a trim with ctx_expand or pruning MCP servers to a leaner profile shows up here, the sign the education changed what you do.</div>`;
-    }
-    const parts = [];
-    if (a.recoveries) parts.push(`${num(a.recoveries)} trim${a.recoveries === 1 ? "" : "s"} recovered with ctx_expand`);
-    if (a.mcp_prunes) parts.push(`${num(a.mcp_prunes)} MCP prune${a.mcp_prunes === 1 ? "" : "s"}`);
-    return `<div class="wnad-actions"><b>${num(total)}</b> insight-action${total === 1 ? "" : "s"} so far: ${esc(parts.join(", "))}. These are the moments the education changed what you did.</div>`;
+  // Rough share of a 200K-token context window, so a token count means something to a reader.
+  function windowShare(tokens) {
+    const p = Math.round((tokens / 200000) * 100);
+    if (p <= 0) return "";
+    return `about ${p}% of a full 200K-token context window`;
+  }
+
+  // Insight-actions, taught (CTX-63): what each action is, why it matters, and what is still on the
+  // table. Education only counts when it changes what you do, so this explains the actions rather
+  // than tallying them. ctx has no telemetry; it can only see actions it logs locally.
+  function insightActionsBlock(a) {
+    const rec = a.recoveries || 0, prunes = a.mcp_prunes || 0;
+    const recRow = rec > 0
+      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. That is the safety net working: ctx can trim hard because nothing is ever truly lost, the original is one call away.</div></div>`
+      : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No trims recovered yet.</b> When ctx trims something your agent still needs, it calls ctx_expand to get the verbatim original back. You will see that here, and it is the reason trimming stays safe.</div></div>`;
+    const pruneRow = prunes > 0
+      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(prunes)} MCP prune${prunes === 1 ? "" : "s"}.</b> You switched to a leaner profile and dropped MCP servers that were loading their whole tool list into every request. That is context tax cut at the source.</div></div>`
+      : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No MCP servers pruned yet.</b> Every MCP server you connect loads its full tool list into context on every request, whether you use it or not. The <span class="link" onclick="go('bill')">Context bill</span> shows which ones you load but rarely call, those are free to cut.</div></div>`;
+    return `<div class="sec" style="margin-top:26px">
+      <div class="sec-eyebrow">What you have done with what ctx showed you</div>
+      <p class="sec-note">Seeing where your context goes only matters if it changes how you work. These are the moves ctx can see you make, and the ones still on the table.</p>
+      <div class="ins">${recRow}${pruneRow}</div>
+    </div>`;
   }
 
   function wnadScoreboard(weeks, actions) {
-    const actionsLine = insightActionsLine(actions || {});
+    const actionsBlock = insightActionsBlock(actions || {});
     if (!weeks.length) {
-      return `<div class="sec-eyebrow">This week: net-ahead scoreboard</div><p class="sec-note">Once ctx has trimmed and scored a few runs, this shows whether your week is net-ahead: enough context reclaimed, with harm at or below your own baseline.</p>${actionsLine}`;
+      return `<div class="sec-eyebrow">Are you net-ahead this week?</div><p class="sec-note">Net-ahead means ctx freed real room in your agent's context window without making it work harder. Once it has trimmed and scored a few runs, that verdict shows here.</p>${actionsBlock}`;
     }
     const w = weeks[0];
     const aheadCount = weeks.filter((x) => x.net_ahead).length;
     const reclaimPct = w.reclaim_bar_tokens > 0 ? Math.min(100, Math.round((w.reclaimed_tokens / w.reclaim_bar_tokens) * 100)) : 0;
     const trimRate = w.trimmed_scored > 0 ? Math.round((w.trimmed_harm / w.trimmed_scored) * 100) : null;
     const baseRate = w.baseline_scored > 0 ? Math.round((w.baseline_harm / w.baseline_scored) * 100) : null;
+    const short = Math.max(0, w.reclaim_bar_tokens - w.reclaimed_tokens);
 
-    const verdict = w.net_ahead ? "Net-ahead this week" : "Not net-ahead yet";
-    const reclaimCell = `<div class="wnad-cell">
-      <div class="wnad-k">Reclaimed</div>
-      <div class="wnad-v ${w.reclaim_ok ? "ok" : ""}">${fmtK(w.reclaimed_tokens)}</div>
-      <div class="wnad-s">of ${fmtK(w.reclaim_bar_tokens)} tokens needed (${pct(w.capture_rate)} of eligible)</div>
+    const verdict = w.net_ahead ? "Yes, net-ahead" : "Not yet";
+    const count = `<div class="wnad-week">${num(aheadCount)} net-ahead week${aheadCount === 1 ? "" : "s"} so far &middot; ${esc(w.week)}</div>`;
+
+    // Condition 1: room reclaimed, explained.
+    const share = windowShare(w.reclaimed_tokens);
+    const reclaimCard = `<div class="wnad-c ${w.reclaim_ok ? "pass" : ""}">
+      <div class="wnad-c-h"><span class="wnad-c-mark ${w.reclaim_ok ? "pass" : "wait"}">${w.reclaim_ok ? "✓" : "1"}</span> Enough room reclaimed</div>
+      <div class="wnad-c-v">${fmtK(w.reclaimed_tokens)} <span>of ${fmtK(w.reclaim_bar_tokens)} tokens</span></div>
       <div class="wnad-bar"><div class="wnad-bar-fill" style="width:${reclaimPct}%"></div></div>
+      <div class="wnad-c-explain">ctx removed ${fmtK(w.reclaimed_tokens)} tokens of tool output your agent never needed to read, ${share}. To count as meaningful it has to clear ${fmtK(w.reclaim_bar_tokens)} (the lower of 50K or a quarter of everything reclaimable). ${w.reclaim_ok ? "Cleared." : `You are ${fmtK(short)} short.`}</div>
     </div>`;
-    let safetyV, safetyS;
+
+    // Condition 2: no extra work, explained.
+    let harmV, harmExplain, harmPass;
     if (w.harm_unconfirmed) {
-      safetyV = `<div class="wnad-v">unconfirmed</div>`;
-      safetyS = `only ${num(w.trimmed_scored)} scored trims so far, too few to confirm safety`;
+      harmPass = false;
+      harmV = `not enough data`;
+      harmExplain = `The risk with trimming is that your agent just re-reads or re-edits what got cut, wasting more than ctx saved. To confirm it is not happening, ctx needs at least ${10} scored trims this week; it has ${num(w.trimmed_scored)}. Until then, no net-ahead call.`;
     } else {
-      safetyV = `<div class="wnad-v ${w.harm_ok ? "ok" : "bad"}">${w.harm_ok ? "at or below baseline" : "above baseline"}</div>`;
-      safetyS = `${trimRate}% re-touch on trimmed vs ${baseRate}% on your baseline`;
+      harmPass = w.harm_ok;
+      harmV = `${trimRate}% vs ${baseRate}%`;
+      harmExplain = `When ctx trimmed, your agent went back to the source ${trimRate}% of the time. When it left output whole, ${baseRate}%. Lower on the trimmed side means trimming is not making your agent work harder. ${harmPass ? "So the safety check passes." : "Here it is higher, so trimming is costing you and ctx holds those tools whole."}`;
     }
-    const safetyCell = `<div class="wnad-cell"><div class="wnad-k">Safety</div>${safetyV}<div class="wnad-s">${safetyS}</div></div>`;
+    const harmCard = `<div class="wnad-c ${harmPass ? "pass" : ""}">
+      <div class="wnad-c-h"><span class="wnad-c-mark ${harmPass ? "pass" : "wait"}">${harmPass ? "✓" : "2"}</span> No extra work for your agent</div>
+      <div class="wnad-c-v">${harmV}</div>
+      <div class="wnad-c-explain">${harmExplain}</div>
+    </div>`;
 
-    let note;
+    // Plain-language verdict + what happens next.
+    let outcome;
     if (w.net_ahead) {
-      note = `You reclaimed enough context this week and trimming stayed at or below your own baseline. That is a net-ahead week.`;
-    } else if (!w.reclaim_ok && w.harm_ok) {
-      const short = fmtK(Math.max(0, w.reclaim_bar_tokens - w.reclaimed_tokens));
-      note = `About <b>${short} tokens</b> short of net-ahead. Safety is fine: trimming re-touches ${trimRate ?? 0}% versus ${baseRate ?? 0}% at baseline. As the tools on trial finish accruing this week, reclaimed crosses the line.`;
-    } else if (w.harm_unconfirmed) {
-      note = `Reclaiming context, but ctx will not call the week net-ahead until enough trims are scored to confirm trimming did not raise harm. Fail-closed on purpose.`;
+      outcome = `Both true, so this week is net-ahead: ctx bought back real context room and your agent did not pay for it. This is the number the whole tool is trying to move.`;
+    } else if (!w.reclaim_ok && (w.harm_ok || w.harm_unconfirmed)) {
+      outcome = `One step away, and it is the easy one. ${w.harm_ok ? "Safety already checks out" : "Safety is still being confirmed"}; you just need ${fmtK(short)} more tokens reclaimed. The tools on trial (Edit, Read) are still proving themselves; as they earn, ctx trims more and this crosses 50K on its own. Nothing for you to do.`;
     } else {
-      note = `Trimming raised re-touch above your baseline this week, so ctx holds the affected tools whole. Safety vetoes the week even when room was reclaimed.`;
+      outcome = `Room was reclaimed, but trimming pushed your agent back to the source more than leaving output whole did, so ctx holds the affected tools whole. Safety vetoes the week even when there were savings. That is the guardrail doing its job.`;
     }
 
-    const count = `<div class="wnad-week">${aheadCount} net-ahead week${aheadCount === 1 ? "" : "s"} so far &middot; ${esc(w.week)}</div>`;
-    return `<div class="sec-eyebrow">This week: net-ahead scoreboard</div>
-      <p class="sec-note">The north star: a week is net-ahead when ctx reclaimed a meaningful share of your context AND trimming stayed at or below your own harm baseline. On your own machine, no account, no telemetry.</p>
+    return `<div class="sec-eyebrow">Are you net-ahead this week?</div>
+      <p class="sec-note">This is the one number ctx is built to move. A week is net-ahead when ctx freed real room in your agent's context window <b>and</b> your agent did not work any harder for it. Both have to be true. Here is where you stand, on your own machine.</p>
       <div class="wnad ${w.net_ahead ? "ahead" : ""}">
         <div class="wnad-top"><div class="wnad-verdict">${verdict}</div>${count}</div>
-        <div class="wnad-grid">${reclaimCell}${safetyCell}</div>
-        <div class="wnad-note">${note}</div>
-        ${actionsLine}
-      </div>`;
+        <div class="wnad-cond">${reclaimCard}${harmCard}</div>
+        <div class="wnad-verdict-line">${outcome}</div>
+      </div>
+      ${actionsBlock}`;
   }
 
   async function loadHome() {
