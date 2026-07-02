@@ -331,11 +331,13 @@ fn migrate_compress_decisions_table(conn: &Connection) {
             command_or_path TEXT,
             original TEXT NOT NULL,
             chars INTEGER NOT NULL,
-            expanded_at TEXT
+            expanded_at TEXT,
+            trimmed TEXT
         )",
         [],
     );
     let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN expanded_at TEXT", []);
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN trimmed TEXT", []);
     // Phase 2 randomized exploration arm (ADR 0009): "treatment" (trimmed) or "control"
     // (deliberately kept) for rows that entered the experiment; NULL for every prior and
     // non-experiment decision. Kept separate from `applied` because a randomized control and an
@@ -527,6 +529,14 @@ pub struct ContextBillTool {
     pub rewinds: Vec<ContextBillRewind>,
 }
 
+/// One day of context volume for the leaner-or-heavier trend (CTX-57).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct BillDay {
+    pub day: String,
+    pub sink_chars: i64,
+    pub reclaimable_chars: i64,
+}
+
 /// Where context goes, itemized from `compress_decisions`. Needs no labels, so it renders on day
 /// one: ranked output sinks with what ctx could reclaim and what it already has.
 #[derive(Debug, Default, serde::Serialize)]
@@ -537,6 +547,7 @@ pub struct ContextBill {
     pub total_reclaimed_chars: i64,
     pub decisions: i64,
     pub since: Option<String>,
+    pub trend: Vec<BillDay>,
 }
 
 /// A verbatim tool output ctx trimmed, kept so the agent can re-expand it on demand (CTX-51).
@@ -547,6 +558,7 @@ pub struct RewindEntry {
     pub tool_name: String,
     pub command_or_path: String,
     pub original: String,
+    pub trimmed: String,
     pub chars: i64,
 }
 
@@ -560,6 +572,7 @@ pub fn insert_rewind(
     tool_name: &str,
     command_or_path: &str,
     original: &str,
+    trimmed: &str,
 ) {
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS rewind_store (
@@ -569,14 +582,16 @@ pub fn insert_rewind(
             tool_name TEXT NOT NULL,
             command_or_path TEXT,
             original TEXT NOT NULL,
-            chars INTEGER NOT NULL
+            chars INTEGER NOT NULL,
+            trimmed TEXT
         )",
         [],
     );
+    let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN trimmed TEXT", []);
     let _ = conn.execute(
         "INSERT OR REPLACE INTO rewind_store
-         (id, ts, session_id, tool_name, command_or_path, original, chars)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (id, ts, session_id, tool_name, command_or_path, original, chars, trimmed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             id,
             ts,
@@ -584,7 +599,8 @@ pub fn insert_rewind(
             tool_name,
             command_or_path,
             original,
-            original.chars().count() as i64
+            original.chars().count() as i64,
+            trimmed
         ],
     );
     // Keep only the most recent entries so verbatim blobs do not accumulate forever.
@@ -627,7 +643,7 @@ pub fn link_decision_rewind(
 /// Fetch a stored original by id. None if the id is unknown or the store is empty.
 pub fn get_rewind(conn: &Connection, id: &str) -> Option<RewindEntry> {
     conn.query_row(
-        "SELECT id, ts, tool_name, COALESCE(command_or_path, ''), original, chars
+        "SELECT id, ts, tool_name, COALESCE(command_or_path, ''), original, chars, COALESCE(trimmed, '')
          FROM rewind_store WHERE id = ?1",
         params![id],
         |r| {
@@ -638,6 +654,7 @@ pub fn get_rewind(conn: &Connection, id: &str) -> Option<RewindEntry> {
                 command_or_path: r.get(3)?,
                 original: r.get(4)?,
                 chars: r.get(5)?,
+                trimmed: r.get(6)?,
             })
         },
     )
@@ -739,6 +756,28 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
                     }
                 }
             }
+        }
+    }
+
+    // Per-day context volume for the leaner-or-heavier trend (CTX-57).
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT substr(ts, 1, 10) AS day,
+                COALESCE(SUM(chars_in), 0),
+                COALESCE(SUM(chars_in - would_chars_out), 0)
+         FROM compress_decisions
+         GROUP BY day ORDER BY day DESC LIMIT 14",
+    ) {
+        let rows = stmt.query_map([], |r| {
+            Ok(BillDay {
+                day: r.get(0)?,
+                sink_chars: r.get(1)?,
+                reclaimable_chars: r.get(2)?,
+            })
+        });
+        if let Ok(rows) = rows {
+            let mut days: Vec<BillDay> = rows.flatten().collect();
+            days.reverse();
+            bill.trend = days;
         }
     }
 

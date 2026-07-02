@@ -144,6 +144,7 @@ pub fn post_tool_use() -> Result<()> {
             tool_name,
             &command_or_path,
             &raw,
+            &result.text,
         );
         crate::db::link_decision_rewind(&conn, session_id, tool_name, &rewind_id);
     }

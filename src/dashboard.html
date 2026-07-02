@@ -509,6 +509,18 @@
         .rwbtn:hover { color:var(--t1); border-color:var(--primary); }
         .rwpre { display:none; white-space:pre-wrap; word-break:break-word; max-height:280px; overflow:auto; background:var(--bg); border-radius:8px; padding:10px 12px; margin:2px 0 8px; font-size:11.5px; line-height:1.5; color:var(--t2); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
         .rwpre.open { display:block; }
+        .rwpre .dl { white-space:pre-wrap; word-break:break-word; padding:0 5px; border-radius:2px; }
+        .rwpre .dl.k { color:var(--t2); }
+        .rwpre .dl.d { color:var(--t4); background:rgba(248,113,113,.08); text-decoration:line-through; text-decoration-color:rgba(248,113,113,.45); }
+        .difflegend { display:flex; gap:14px; margin-bottom:9px; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; position:sticky; top:0; background:var(--bg); padding:2px 0 7px; }
+        .difflegend .k { color:var(--primary-lt); }
+        .difflegend .d { color:var(--danger); }
+        .difflegend .dd { color:var(--t4); margin-left:auto; }
+        .btrend { margin:16px 0 2px; }
+        .btrend-h { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--t4); margin-bottom:9px; display:flex; justify-content:space-between; }
+        .btrend-bars { display:flex; align-items:flex-end; gap:4px; height:56px; }
+        .btrend-bars .col { flex:1; background:rgba(52,211,153,.14); border-radius:3px 3px 0 0; min-height:2px; display:flex; flex-direction:column; }
+        .btrend-bars .col > span { display:block; width:100%; background:linear-gradient(180deg,var(--primary-lt),var(--primary)); border-radius:3px 3px 0 0; }
       </style>
       <div id="bill-summary"></div>
       <div id="bill-list"></div>
@@ -1004,18 +1016,34 @@
     if (s < 86400) return Math.floor(s / 3600) + "h ago";
     return Math.floor(s / 86400) + "d ago";
   }
-  async function viewOriginal(ev, id) {
+  async function viewDiff(ev, id) {
     ev.stopPropagation();
-    const pre = document.getElementById("rw-" + id);
-    if (!pre) return;
-    if (pre.classList.contains("open")) { pre.classList.remove("open"); pre.textContent = ""; return; }
-    pre.textContent = "loading...";
-    pre.classList.add("open");
+    const box = document.getElementById("rw-" + id);
+    if (!box) return;
+    if (box.classList.contains("open")) { box.classList.remove("open"); box.innerHTML = ""; return; }
+    box.textContent = "loading...";
+    box.classList.add("open");
     try {
       const r = await fetch("/api/context/rewind", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
       const d = await r.json();
-      pre.textContent = d.original || d.error || "(unavailable)";
-    } catch (e) { pre.textContent = "(failed to load)"; }
+      if (!d.original) { box.textContent = d.error || "(unavailable)"; return; }
+      const lines = String(d.original).split("\n");
+      const keptLine = (l) => '<div class="dl k">' + (esc(l) || "&nbsp;") + '</div>';
+      if (!d.trimmed) {
+        box.innerHTML = '<div class="difflegend"><span class="dd">original, trim detail not recorded for this one</span></div>' + lines.map(keptLine).join("");
+        return;
+      }
+      const keptSet = new Set(String(d.trimmed).split("\n").map((s) => s.trim()).filter((s) => s.length));
+      let dropped = 0;
+      const body = lines.map((l) => {
+        const t = l.trim();
+        const kept = t.length === 0 || keptSet.has(t);
+        if (!kept) dropped++;
+        return '<div class="dl ' + (kept ? "k" : "d") + '">' + (esc(l) || "&nbsp;") + '</div>';
+      }).join("");
+      const pct = Math.round((dropped / Math.max(1, lines.length)) * 100);
+      box.innerHTML = '<div class="difflegend"><span class="k">kept ' + (lines.length - dropped) + '</span><span class="d">ctx cut ' + dropped + '</span><span class="dd">' + pct + '% of lines</span></div>' + body;
+    } catch (e) { box.textContent = "(failed to load)"; }
   }
 
   async function loadBill() {
@@ -1029,12 +1057,27 @@
       return;
     }
     const since = b.since ? (" since " + esc(String(b.since).slice(0, 10))) : "";
+    const trend = b.trend || [];
+    let trendHtml = "";
+    if (trend.length >= 2) {
+      const maxD = Math.max.apply(null, trend.map((d) => d.sink_chars).concat([1]));
+      const bars = trend.map((d) => {
+        const h = Math.max(2, Math.round((d.sink_chars / maxD) * 56));
+        const rp = d.sink_chars > 0 ? Math.round((d.reclaimable_chars / d.sink_chars) * 100) : 0;
+        return '<div class="col" title="' + esc(d.day) + ': ' + fmtK(tok(d.sink_chars)) + ' tok, ' + rp + '% trimmable" style="height:' + h + 'px"><span style="height:' + rp + '%"></span></div>';
+      }).join("");
+      const half = Math.floor(trend.length / 2);
+      const avg = (arr) => arr.reduce((a, d) => a + d.sink_chars, 0) / Math.max(1, arr.length);
+      const early = avg(trend.slice(0, half)), late = avg(trend.slice(half));
+      const dir = late < early * 0.9 ? "leaner" : late > early * 1.1 ? "heavier" : "holding steady";
+      trendHtml = '<div class="btrend"><div class="btrend-h"><span>Context per day</span><span>trending ' + dir + '</span></div><div class="btrend-bars">' + bars + '</div></div>';
+    }
     $("bill-summary").innerHTML =
       '<div class="bill-tot">' +
       '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_sink_chars)) + '</div><div class="bt-l">tokens of tool output' + since + '</div></div>' +
       '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_reclaimable_chars)) + '</div><div class="bt-l">reclaimable, on the table</div></div>' +
       '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_reclaimed_chars)) + '</div><div class="bt-l">reclaimed so far</div></div>' +
-      '</div>';
+      '</div>' + trendHtml;
     const shortSource = (s) => {
       s = String(s || "").trim();
       if (!s || s === "(unlabeled)") return "(unlabeled)";
@@ -1055,11 +1098,11 @@
           '<span class="stok">' + fmtK(tok(s.sink_chars)) + ' tok</span></div>';
       }).join("") : '<div class="bsrc"><span class="sname" style="color:var(--t4)">No per-source detail recorded.</span></div>';
       const rewinds = t.rewinds || [];
-      const rwHtml = rewinds.length ? '<div class="bsrc-h">Recent trims, view the original</div>' + rewinds.map((rw) =>
+      const rwHtml = rewinds.length ? '<div class="bsrc-h">Recent trims, see what ctx cut</div>' + rewinds.map((rw) =>
         '<div class="brw"><span class="sname" title="' + esc(rw.source) + '">' + esc(shortSource(rw.source)) + '</span>' +
         '<span class="stok">' + fmtK(tok(rw.chars)) + ' tok' + (rw.expanded ? ', recovered' : '') + '</span>' +
-        '<button class="rwbtn" onclick="viewOriginal(event, \'' + rw.id + '\')">view</button></div>' +
-        '<pre class="rwpre" id="rw-' + rw.id + '"></pre>'
+        '<button class="rwbtn" onclick="viewDiff(event, \'' + rw.id + '\')">diff</button></div>' +
+        '<div class="rwpre" id="rw-' + rw.id + '"></div>'
       ).join("") : '';
       return '<div class="bcard">' +
         '<div class="bhead" onclick="this.parentNode.classList.toggle(\'open\')">' +

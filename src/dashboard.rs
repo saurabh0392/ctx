@@ -337,6 +337,7 @@ async fn api_context_rewind(Json(body): Json<serde_json::Value>) -> Json<serde_j
             "source": e.command_or_path,
             "chars": e.chars,
             "original": e.original,
+            "trimmed": e.trimmed,
         })),
         None => Json(serde_json::json!({ "error": "not found" })),
     }
