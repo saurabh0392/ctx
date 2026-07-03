@@ -575,6 +575,9 @@ pub struct ToolMenuBillServer {
     /// True when this server is currently pruned from the tool menu (CTX-64), so the UI shows an
     /// "undo" instead of a "prune". Set by the API handler from config, not computed here.
     pub pruned: bool,
+    /// Reaches for a hidden tool of this server in the window (CTX-66): the harm a prune must not
+    /// raise. Set by the API handler from `tool_miss_stats`, not computed here.
+    pub misses: i64,
 }
 
 /// The input-side Context Bill: the fixed per-request tool-menu tax, itemized per server and ranked
@@ -595,6 +598,11 @@ pub struct ToolMenuBill {
     pub biggest_dead_tokens: i64,
     pub lookback_days: i64,
     pub since: Option<String>,
+    /// Tool-miss harm read (CTX-66 / M-D): reaches for hidden tools in the window, and the coarse
+    /// per-session rate the earn-it gate holds prunes against. Set by the API handler.
+    pub total_misses: i64,
+    pub miss_rate: f64,
+    pub miss_sessions: i64,
 }
 
 /// One repo ctx has recorded decisions for, for the shareable report's repo picker (CTX-56).
@@ -1099,6 +1107,7 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
                 dead_ratio,
                 last_used,
                 pruned: false,
+                misses: 0,
             });
         }
     }
@@ -3346,6 +3355,22 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_tool_inv_ts ON tool_invocations(ts);
         CREATE INDEX IF NOT EXISTS idx_tool_inv_session_server ON tool_invocations(session_id, server_prefix);
 
+        -- Tool-miss harm signal (CTX-66 / M-D): the input-side re-read. Each row is a reach for a
+        -- tool ctx had hidden (pruned or profile-denied), so the developer's own usage says the hide
+        -- cost them a round trip. `hidden_by` records why it was hidden so the earn-it gate can judge
+        -- prunes apart from profile denials.
+        CREATE TABLE IF NOT EXISTS tool_misses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            session_id TEXT,
+            tool_name TEXT,
+            server_prefix TEXT NOT NULL,
+            hidden_by TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tool_misses_server ON tool_misses(server_prefix);
+        CREATE INDEX IF NOT EXISTS idx_tool_misses_ts ON tool_misses(ts);
+
         CREATE TABLE IF NOT EXISTS profile_changes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,
@@ -4565,6 +4590,95 @@ pub fn insert_tool_invocation(
     Ok(())
 }
 
+/// Record a tool-miss: the agent reached for a tool ctx had hidden (CTX-66 / M-D). `hidden_by` is
+/// "prune" for a server pruned from the tool menu, or "profile" for a profile deny. Best-effort.
+pub fn insert_tool_miss(
+    conn: &Connection,
+    session_id: Option<&str>,
+    tool_name: &str,
+    server_prefix: &str,
+    hidden_by: &str,
+    ts: &str,
+) -> Result<()> {
+    ensure_schema(conn)?;
+    conn.execute(
+        r#"INSERT INTO tool_misses (ts, session_id, tool_name, server_prefix, hidden_by)
+           VALUES (?1, ?2, ?3, ?4, ?5)"#,
+        params![ts, session_id, tool_name, server_prefix, hidden_by],
+    )?;
+    Ok(())
+}
+
+/// One server's tool-miss line for the harm read.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct ToolMissServer {
+    pub server: String,
+    pub prefix: String,
+    pub misses: i64,
+    pub sessions_with_miss: i64,
+    pub last_miss: Option<String>,
+}
+
+/// The input-side harm read (CTX-66 / M-D): reaches for hidden tools, per server, over a window,
+/// plus the coarse miss rate the earn-it gate holds a prune against. The mirror of the output-side
+/// re-read rate. Baseline is honest: 0 until a hidden tool is actually reached for.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct ToolMissStats {
+    pub servers: Vec<ToolMissServer>,
+    pub total_misses: i64,
+    /// Distinct sessions with any tool activity in the window (the rate denominator).
+    pub sessions: i64,
+    /// total_misses / sessions: the machine's overall tool-miss rate this window.
+    pub miss_rate: f64,
+    pub window_days: i64,
+}
+
+pub fn tool_miss_stats(conn: &Connection, days: u32) -> ToolMissStats {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339();
+    let mut stats = ToolMissStats {
+        window_days: days as i64,
+        ..Default::default()
+    };
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT server_prefix, COUNT(*), COUNT(DISTINCT session_id), MAX(ts)
+         FROM tool_misses
+         WHERE ts >= ?1 AND server_prefix IS NOT NULL AND server_prefix != ''
+         GROUP BY server_prefix
+         ORDER BY COUNT(*) DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![cutoff], |r| {
+            Ok(ToolMissServer {
+                server: crate::profiles::mcp_prefix_to_server_display(&r.get::<_, String>(0)?),
+                prefix: r.get(0)?,
+                misses: r.get(1)?,
+                sessions_with_miss: r.get(2)?,
+                last_miss: r.get(3)?,
+            })
+        }) {
+            for row in rows.flatten() {
+                stats.total_misses += row.misses;
+                stats.servers.push(row);
+            }
+        }
+    }
+
+    // Denominator: distinct sessions with any tool activity in the window.
+    stats.sessions = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM tool_invocations WHERE ts >= ?1",
+            params![cutoff],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    stats.miss_rate = if stats.sessions > 0 {
+        stats.total_misses as f64 / stats.sessions as f64
+    } else {
+        0.0
+    };
+    stats
+}
+
 pub fn set_session_embedding_blob(conn: &Connection, session_id: i64, blob: &[u8]) -> Result<()> {
     ensure_schema(conn)?;
     conn.execute(
@@ -5013,6 +5127,52 @@ mod compress_decision_tests {
         assert!(s.catalog_tools >= 5, "catalog floored at observed distinct");
         assert_eq!(s.dead_tools, s.catalog_tools - s.invoked_tools);
         assert!(s.dead_tools >= 0);
+    }
+
+    #[test]
+    fn tool_miss_stats_counts_reaches_per_server_with_a_rate() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // Baseline: no reaches recorded yet, so the harm read is honestly zero.
+        let empty = tool_miss_stats(&conn, 30);
+        assert_eq!(empty.total_misses, 0);
+        assert_eq!(empty.miss_rate, 0.0);
+
+        // Two sessions of activity (the rate denominator), and two reaches for a pruned Canva tool.
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('s1', 'p', '2026-05-31')",
+            [],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        let now = chrono::Utc::now().to_rfc3339();
+        for _ in 0..2 {
+            insert_tool_invocation(&conn, sid, None, "mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__", &now).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('s2', 'p', '2026-05-31')",
+            [],
+        )
+        .unwrap();
+        let sid2 = conn.last_insert_rowid();
+        insert_tool_invocation(&conn, sid2, None, "mcp__claude_ai_Notion__notion-fetch", "mcp__claude_ai_Notion__", &now).unwrap();
+
+        insert_tool_miss(&conn, Some("s1"), "mcp__claude_ai_Canva__export-design", "mcp__claude_ai_Canva__", "prune", &now).unwrap();
+        insert_tool_miss(&conn, Some("s1"), "mcp__claude_ai_Canva__get-design", "mcp__claude_ai_Canva__", "prune", &now).unwrap();
+
+        let stats = tool_miss_stats(&conn, 30);
+        assert_eq!(stats.total_misses, 2);
+        assert_eq!(stats.servers.len(), 1);
+        assert_eq!(stats.servers[0].server, "Canva");
+        assert_eq!(stats.servers[0].misses, 2);
+        assert_eq!(stats.sessions, 2, "distinct sessions with tool activity");
+        assert_eq!(stats.miss_rate, 1.0, "2 misses over 2 active sessions");
     }
 
     #[test]
