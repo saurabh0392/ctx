@@ -5,7 +5,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-const SCHEMA_VERSION: i32 = 7;
+// Bumped to 8 for the tool_misses table (CTX-66 / M-D); the CREATE TABLE batch is version-gated, so
+// a new table only lands on existing installs when this rises.
+const SCHEMA_VERSION: i32 = 8;
 
 pub fn open_db() -> Result<Connection> {
     let path = crate::config::db_path();
