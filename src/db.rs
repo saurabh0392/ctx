@@ -583,6 +583,10 @@ pub struct ToolMenuBillServer {
     /// Earn-it gate stage for auto-prune (CTX-67): active | watching | candidate | earned | blocked.
     /// Set by the API handler from `server_prune_outcomes`, not computed here.
     pub prune_stage: String,
+    /// Sessions this server has run hidden so far, and how many clean ones the gate needs to
+    /// confirm the prune is safe. Lets the UI teach what "proving it's safe" actually means.
+    pub hidden_sessions: i64,
+    pub hidden_needed: i64,
 }
 
 /// The input-side Context Bill: the fixed per-request tool-menu tax, itemized per server and ranked
@@ -1114,6 +1118,8 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
                 pruned: false,
                 misses: 0,
                 prune_stage: String::new(),
+                hidden_sessions: 0,
+                hidden_needed: 0,
             });
         }
     }

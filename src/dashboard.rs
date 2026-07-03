@@ -390,15 +390,13 @@ async fn api_context_tool_bill() -> Json<crate::db::ToolMenuBill> {
                     .find(|m| m.prefix == s.prefix)
                     .map(|m| m.misses)
                     .unwrap_or(0);
-                s.prune_stage = outcomes
-                    .iter()
-                    .find(|o| o.prefix == s.prefix)
-                    .map(|o| {
-                        crate::compress::tool_activation::server_prune_stage(o, &th)
-                            .label()
-                            .to_string()
-                    })
-                    .unwrap_or_default();
+                if let Some(o) = outcomes.iter().find(|o| o.prefix == s.prefix) {
+                    s.prune_stage = crate::compress::tool_activation::server_prune_stage(o, &th)
+                        .label()
+                        .to_string();
+                    s.hidden_sessions = o.hidden_sessions;
+                    s.hidden_needed = th.min_hidden_sessions;
+                }
             }
             Json(bill)
         }

@@ -1351,12 +1351,22 @@
       const deadPct = s.catalog_tools > 0 ? Math.round((s.dead_tools / s.catalog_tools) * 100) : 0;
       const usedPct = Math.max(0, 100 - deadPct);
       const last = s.last_used ? String(s.last_used).slice(0, 10) : "never";
-      // Earn-it gate stage (CTX-67): what the causal auto-prune makes of this server.
-      const stageLabel = { candidate: "proving it's safe", earned: "prune earned", blocked: "reached for, consider undo" };
-      const pruneNote = stageLabel[s.prune_stage] || "reversible";
-      const noteColor = s.prune_stage === "blocked" ? "var(--danger)" : "var(--primary-lt)";
+      // Earn-it gate stage (CTX-67), shown as progress so it teaches instead of labels.
+      let pruneNote, noteColor = "var(--primary-lt)", earnit = "";
+      if (s.prune_stage === "earned") {
+        pruneNote = "earned ✓";
+        earnit = " Hidden across <b>" + s.hidden_sessions + " sessions</b> since you pruned it and never reached for, so ctx now counts this prune as earned: safe to keep hidden.";
+      } else if (s.prune_stage === "blocked") {
+        pruneNote = "reached " + s.misses + "x"; noteColor = "var(--danger)";
+        earnit = " You reached for it <b>" + s.misses + " times</b> while it was hidden, so hiding it is costing you round trips. ctx suggests undoing this prune, and autopilot reverses it for you.";
+      } else if (s.prune_stage === "candidate") {
+        pruneNote = "proving safe " + s.hidden_sessions + "/" + s.hidden_needed;
+        earnit = " ctx is checking the prune is safe: it watches whether you reach for this server while it is hidden. <b>" + s.hidden_sessions + " of " + s.hidden_needed + "</b> clean sessions in, <b>" + (s.misses || 0) + " reaches</b>. Stay at zero and the prune is confirmed earned; reach for it and it comes back and the prune reverses.";
+      } else {
+        pruneNote = "reversible";
+      }
       const btn = s.pruned
-        ? '<span style="font-size:11px;color:' + noteColor + ';margin-right:9px">pruned, ' + pruneNote + '</span>' +
+        ? '<span style="font-size:11px;color:' + noteColor + ';margin-right:9px">pruned · ' + pruneNote + '</span>' +
           '<button class="rwbtn" onclick="pruneServer(event,\'' + s.prefix + '\',true)">undo</button>'
         : '<button class="rwbtn" onclick="pruneServer(event,\'' + s.prefix + '\',false)" title="Hide this whole server. A reach re-adds it for the session.">Prune, save ' + fmtK(s.carried_tokens) + '/req</button>';
       return '<div class="bcard"' + (s.pruned ? ' style="opacity:.6"' : '') + '>' +
@@ -1373,7 +1383,7 @@
             '<div class="bstat"><div class="sv">' + s.dead_tools + '</div><div class="sl">dead weight (' + deadPct + '%)</div></div>' +
             '<div class="bstat"><div class="sv">' + fmtK(s.carried_tokens) + '</div><div class="sl">tokens / request</div></div>' +
           '</div>' +
-          '<p style="font-size:12.5px;color:var(--t3);line-height:1.5;margin:12px 2px 2px"><b style="color:var(--t2)">' + s.dead_tools + ' of ' + s.catalog_tools + '</b> tools here are never called, about <b style="color:var(--t2)">' + fmtK(s.dead_tokens) + ' tokens</b> of every request spent on nothing. Last used ' + esc(last) + '.</p>' +
+          '<p style="font-size:12.5px;color:var(--t3);line-height:1.5;margin:12px 2px 2px"><b style="color:var(--t2)">' + s.dead_tools + ' of ' + s.catalog_tools + '</b> tools here are never called, about <b style="color:var(--t2)">' + fmtK(s.dead_tokens) + ' tokens</b> of every request spent on nothing. Last used ' + esc(last) + '.' + earnit + '</p>' +
         '</div>' +
       '</div>';
     }).join("");
