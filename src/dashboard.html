@@ -1005,7 +1005,7 @@
         if (bad) lean = " Early signal: trimming may be costing you. ctx is being careful.";
         else if (good) lean = " <span class=\"good\">Early signs look fine</span>, but the range is still wide.";
       }
-      return `<b>${esc(r.tool)}</b> is on a <b>live trial</b>. ctx trims it on your runs now and compares what you do next against when it left the output whole.${lean}`;
+      return `ctx is trimming <b>${esc(r.tool)}</b>'s output on your real runs to test whether that is safe. After each trim it watches what you do next: going back for the content it cut counts against trimming this tool.${lean}`;
     }
     if (r.stage === "proving") {
       if (p && p.verdict === "unclear") {
@@ -1066,8 +1066,8 @@
       // both so it does not read as "0 trimmed" while trims are visibly happening (CTX-62).
       const pending = collected - done;
       const label = pending > 0
-        ? `${num(collected)} trimmed so far, ${done} scored of about ${need}. The rest are waiting for those sessions to move on so the outcome window closes.`
-        : `${done} of about ${need} trial runs done. ctx will not rely on this until the proof fills up.`;
+        ? `Trimmed <b>${num(collected)}</b> so far. ctx waits a few of your turns after each trim to see if you needed the content back, so <b>${done} are judged</b> and the rest are still too recent. It needs about <b>${need}</b> judged before it can say whether trimming this is safe.`
+        : `<b>${done}</b> of about <b>${need}</b> judged. ctx will not rely on trimming this until enough are.`;
       return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${label}</div></div>`;
     }
     if (r.stage === "proving") {
@@ -1206,7 +1206,7 @@
     const p = r.p, c = r.c, chips = [];
     if (c) chips.push(`<span class="report-chip"><strong>${num(c.joined)}</strong> judged</span>`);
     if (p && (p.baseline_n || p.trimmed_collected || p.trimmed_n)) {
-      chips.push(`<span class="report-chip"><strong>${num(p.baseline_n || 0)}</strong> left whole</span>`);
+      chips.push(`<span class="report-chip"><strong>${num(p.baseline_n || 0)}</strong> left untrimmed</span>`);
       chips.push(`<span class="report-chip"><strong>${num(p.trimmed_collected || p.trimmed_n || 0)}</strong> trimmed</span>`);
     }
     if (p && p.correction_delta) {
