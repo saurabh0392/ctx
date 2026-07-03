@@ -580,6 +580,9 @@ pub struct ToolMenuBillServer {
     /// Reaches for a hidden tool of this server in the window (CTX-66): the harm a prune must not
     /// raise. Set by the API handler from `tool_miss_stats`, not computed here.
     pub misses: i64,
+    /// Earn-it gate stage for auto-prune (CTX-67): active | watching | candidate | earned | blocked.
+    /// Set by the API handler from `server_prune_outcomes`, not computed here.
+    pub prune_stage: String,
 }
 
 /// The input-side Context Bill: the fixed per-request tool-menu tax, itemized per server and ranked
@@ -1110,6 +1113,7 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
                 last_used,
                 pruned: false,
                 misses: 0,
+                prune_stage: String::new(),
             });
         }
     }
@@ -4679,6 +4683,80 @@ pub fn tool_miss_stats(conn: &Connection, days: u32) -> ToolMissStats {
         0.0
     };
     stats
+}
+
+/// Per-server before/after evidence for the auto-prune earn-it gate (CTX-67 / M-E): usage (the
+/// dead-weight signal), hidden exposure (sessions active after the server was pruned, the causal
+/// arm), and reaches while hidden. One row per server observed in the window.
+pub fn server_prune_outcomes(
+    conn: &Connection,
+    days: u32,
+) -> Vec<crate::compress::tool_activation::ServerPruneOutcome> {
+    use crate::compress::tool_activation::ServerPruneOutcome;
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339();
+    let mut out = Vec::new();
+
+    let total_sessions: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM tool_invocations WHERE ts >= ?1",
+            params![cutoff],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let mut stmt = match conn.prepare(
+        "SELECT server_prefix, COUNT(DISTINCT session_id)
+         FROM tool_invocations
+         WHERE ts >= ?1 AND server_prefix IS NOT NULL AND server_prefix != ''
+         GROUP BY server_prefix",
+    ) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    let rows = stmt.query_map(params![cutoff], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    });
+    if let Ok(rows) = rows {
+        for (prefix, used_sessions) in rows.flatten() {
+            let display = crate::profiles::mcp_prefix_to_server_display(&prefix);
+            // The server's most recent prune time, if ever pruned. Sessions active after it are the
+            // hidden arm: the server was denied in the menu while those sessions ran.
+            let prune_ts: Option<String> = conn
+                .query_row(
+                    "SELECT MAX(ts) FROM profile_changes WHERE servers_removed LIKE '%' || ?1 || '%'",
+                    params![display],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            let hidden_sessions: i64 = match &prune_ts {
+                Some(ts) => conn
+                    .query_row(
+                        "SELECT COUNT(DISTINCT session_id) FROM tool_invocations WHERE ts > ?1",
+                        params![ts],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0),
+                None => 0,
+            };
+            let misses: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM tool_misses WHERE server_prefix = ?1 AND ts >= ?2",
+                    params![prefix, cutoff],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            out.push(ServerPruneOutcome {
+                server: display,
+                prefix,
+                total_sessions,
+                used_sessions,
+                hidden_sessions,
+                misses,
+            });
+        }
+    }
+    out
 }
 
 pub fn set_session_embedding_blob(conn: &Connection, session_id: i64, blob: &[u8]) -> Result<()> {
