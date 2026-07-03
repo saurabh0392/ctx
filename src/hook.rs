@@ -366,6 +366,28 @@ pub fn user_prompt_submit() -> Result<()> {
         trace_profile = "all".to_string();
     }
 
+    // Carried-set snapshot (CTX-66 / M-D, Part 2): once the menu is actively managed (a server is
+    // pruned), record what this prompt carries per server so the literal invoked-vs-carried
+    // cross-check has forward data. The primary harm signal is the reach-based tool-miss, not this,
+    // so it stays cheap and only fires under active management. Best-effort; never fails the hook.
+    if cfg.filter_mode == crate::config::FilterMode::Soft && !cfg.pruned_servers.is_empty() {
+        let by_server = crate::profiles::carried_menu_by_server();
+        if !by_server.is_empty() {
+            let rec = crate::analytics::Record {
+                ts: chrono::Utc::now().to_rfc3339(),
+                profile: trace_profile.clone(),
+                working_directory: cwd.to_string(),
+                kept_servers: by_server.keys().cloned().collect(),
+                tools_sent_count: by_server.values().sum(),
+                tools_sent_by_server: by_server,
+                ..Default::default()
+            };
+            if let Ok(conn) = crate::db::open_db() {
+                let _ = crate::db::insert_request(&conn, &rec);
+            }
+        }
+    }
+
     let trace_effective = if auto_selected {
         Some(effective_profile.as_str())
     } else {

@@ -1086,6 +1086,29 @@ pub fn deny_patterns_for_profile(
     patterns
 }
 
+/// The carried tool menu per connected server right now, keyed by server prefix: the catalog size
+/// for each observed server, minus servers pruned from the menu (CTX-64), which carry nothing unless
+/// a session reach re-added them. Feeds the per-request carried-set snapshot (CTX-66 / M-D) the
+/// literal invoked-vs-carried cross-check reads.
+pub fn carried_menu_by_server() -> HashMap<String, usize> {
+    let cfg = Config::load();
+    let mut expansion = cfg.session_expansion.clone();
+    expansion.extend(cfg.session_semantic_tools.clone());
+    let mut out = HashMap::new();
+    for prefix in collect_observed_prefixes() {
+        let pruned = cfg
+            .pruned_servers
+            .iter()
+            .any(|p| prefix_covers_expansion_entry(p, &prefix))
+            && !prefix_matches_expansion(&prefix, &expansion);
+        if pruned {
+            continue;
+        }
+        out.insert(prefix.clone(), catalog_tool_count(&prefix));
+    }
+    out
+}
+
 /// True when a `session_expansion` entry belongs to `prefix`'s server: the prefix itself, a tool
 /// under it, or the bare server id/display. Used to clear a stale reach when (un)pruning a server.
 pub fn prefix_covers_expansion_entry(prefix: &str, entry: &str) -> bool {

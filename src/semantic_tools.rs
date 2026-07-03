@@ -510,6 +510,27 @@ pub fn process_stop_hook_recovery(payload: &Value) -> Result<Vec<ToolExpansionEn
         return Ok(vec![]);
     }
 
+    // Record the tool-miss harm signal (CTX-66 / M-D): each reach for a hidden tool. Recorded here
+    // in the live Stop hook only, so the ingest replay path never double-counts the same reach.
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        let ts = chrono::Utc::now().to_rfc3339();
+        for tool in &tools {
+            let prefix =
+                crate::filter::server_prefix_from_tool(tool).unwrap_or_else(|| tool.clone());
+            let hidden_by = if cfg
+                .pruned_servers
+                .iter()
+                .any(|p| profiles::prefix_covers_expansion_entry(p, &prefix))
+            {
+                "prune"
+            } else {
+                "profile"
+            };
+            let _ = crate::db::insert_tool_miss(&conn, session_id, tool, &prefix, hidden_by, &ts);
+        }
+    }
+
     let added = record_access_friction(&tools)?;
     if !added.is_empty() {
         if let (Some(sid), Ok(conn)) = (session_id, crate::db::open_db()) {

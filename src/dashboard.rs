@@ -373,11 +373,21 @@ async fn api_context_tool_bill() -> Json<crate::db::ToolMenuBill> {
     match open_ctx_db() {
         Some(conn) => {
             let mut bill = crate::db::tool_menu_bill(&conn, lookback);
+            let miss = crate::db::tool_miss_stats(&conn, lookback);
+            bill.total_misses = miss.total_misses;
+            bill.miss_rate = miss.miss_rate;
+            bill.miss_sessions = miss.sessions;
             for s in &mut bill.servers {
                 s.pruned = cfg
                     .pruned_servers
                     .iter()
                     .any(|p| crate::profiles::prefix_covers_expansion_entry(p, &s.prefix));
+                s.misses = miss
+                    .servers
+                    .iter()
+                    .find(|m| m.prefix == s.prefix)
+                    .map(|m| m.misses)
+                    .unwrap_or(0);
             }
             Json(bill)
         }

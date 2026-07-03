@@ -1336,6 +1336,11 @@
       '<div class="bt"><div class="bt-n">' + fmtK(b.total_carried_tokens) + '</div><div class="bt-l">tokens carried every request</div></div>' +
       '<div class="bt"><div class="bt-n">' + fmtK(b.total_dead_tokens) + '</div><div class="bt-l">dead weight · ' + deadPctTotal + '% never called in ' + days + 'd</div></div>' +
       '<div class="bt"><div class="bt-n">' + num(b.total_catalog_tools) + ' <span style="color:var(--t3);font-weight:600">&rsaquo; ' + num(b.total_invoked_tools) + '</span></div><div class="bt-l">tools carried, then actually used</div></div>' +
+      '</div>' +
+      '<div style="margin:14px 2px 0;font-size:12.5px;color:var(--t3)">' +
+      (b.total_misses > 0
+        ? '<b style="color:var(--danger)">' + num(b.total_misses) + '</b> tool-miss' + (b.total_misses === 1 ? '' : 'es') + ' in ' + days + 'd, ' + (b.miss_rate || 0).toFixed(2) + '/session (a reach for a hidden tool). This is the harm a prune must not raise.'
+        : 'Harm read: <b style="color:var(--primary-lt)">0 tool-misses</b>. Nothing hidden has been reached for, so the prune baseline is clean.') +
       '</div>';
     const cap =
       '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between;margin:24px 2px 12px">' +
@@ -1353,7 +1358,7 @@
       return '<div class="bcard"' + (s.pruned ? ' style="opacity:.6"' : '') + '>' +
         '<div class="bhead" onclick="this.parentNode.classList.toggle(\'open\')">' +
           '<span class="caret">&#9656;</span><span class="bname">' + esc(s.server) + '</span><span class="spacer"></span>' +
-          '<span class="bmeta"><b>' + fmtK(s.dead_tokens) + '</b> tok dead weight · ' + s.invoked_tools + '/' + s.catalog_tools + ' used · ' + num(s.calls) + ' calls</span>' +
+          '<span class="bmeta"><b>' + fmtK(s.dead_tokens) + '</b> tok dead weight · ' + s.invoked_tools + '/' + s.catalog_tools + ' used · ' + num(s.calls) + ' calls' + (s.misses > 0 ? ' · <span style="color:var(--danger)">' + s.misses + ' missed</span>' : '') + '</span>' +
           '<span style="margin-left:12px;flex-shrink:0">' + btn + '</span>' +
         '</div>' +
         '<div class="bbar"><span class="kept" style="width:' + usedPct + '%"></span><span class="recl" style="width:' + deadPct + '%"></span></div>' +
