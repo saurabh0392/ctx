@@ -812,17 +812,17 @@
     const verdict = w.net_ahead ? "Yes, net-ahead" : "Not yet";
     const count = `<div class="wnad-week">${num(aheadCount)} net-ahead week${aheadCount === 1 ? "" : "s"} so far &middot; ${esc(w.week)}</div>`;
 
-    // Condition 1: room reclaimed, explained. Both taxes: output trimmed + input pruned (CTX-68).
-    const share = windowShare(w.reclaimed_tokens);
+    // Condition 1: room reclaimed this week, explained. Both taxes: output trimmed + input pruned.
+    // Scoped to the week, so it reads as a slice of the all-time headline on Home, not a rival total.
     const outT = w.output_reclaimed_tokens || 0, inT = w.input_reclaimed_tokens || 0;
     const breakdown = inT > 0
-      ? `<b>${fmtK(outT)}</b> trimmed from tool output plus <b>${fmtK(inT)}</b> of fixed tool-menu tax pruned from every request`
-      : `${fmtK(w.reclaimed_tokens)} tokens of tool output your agent never needed to read`;
+      ? `<b>${fmtK(outT)}</b> trimmed from tool output plus <b>${fmtK(inT)}</b> of tool-menu tax pruned`
+      : `<b>${fmtK(w.reclaimed_tokens)}</b> tokens of tool output your agent never needed to read`;
     const reclaimCard = `<div class="wnad-c ${w.reclaim_ok ? "pass" : ""}">
-      <div class="wnad-c-h"><span class="wnad-c-mark ${w.reclaim_ok ? "pass" : "wait"}">${w.reclaim_ok ? "✓" : "1"}</span> Enough room reclaimed</div>
+      <div class="wnad-c-h"><span class="wnad-c-mark ${w.reclaim_ok ? "pass" : "wait"}">${w.reclaim_ok ? "✓" : "1"}</span> Enough room reclaimed this week</div>
       <div class="wnad-c-v">${fmtK(w.reclaimed_tokens)} <span>of ${fmtK(w.reclaim_bar_tokens)} tokens</span></div>
       <div class="wnad-bar"><div class="wnad-bar-fill" style="width:${reclaimPct}%"></div></div>
-      <div class="wnad-c-explain">ctx reclaimed ${breakdown}, ${share}. To count as meaningful it has to clear ${fmtK(w.reclaim_bar_tokens)} (the lower of 50K or a quarter of everything reclaimable). ${w.reclaim_ok ? "Cleared." : `You are ${fmtK(short)} short.`}</div>
+      <div class="wnad-c-explain">This week ctx reclaimed ${breakdown}. To count as meaningful it has to clear ${fmtK(w.reclaim_bar_tokens)} (the lower of 50K or a quarter of everything reclaimable). ${w.reclaim_ok ? "Cleared." : `You are ${fmtK(short)} short.`}</div>
     </div>`;
 
     // Condition 2: no extra work, explained.
@@ -872,7 +872,7 @@
     const carried = tbill.total_carried_tokens || 0;
     const dead = tbill.total_dead_tokens || 0;
     const misses = tbill.total_misses || 0;
-    const prunedSave = (tbill.servers || []).filter((s) => s.pruned).reduce((a, s) => a + (s.carried_tokens || 0), 0);
+    const inReclaimed = tbill.total_reclaimed_tokens || 0;
     if (!outSink && !carried) return "";
 
     const outCard =
@@ -886,7 +886,7 @@
       '<div class="tax" onclick="go(\'toolbill\')">' +
       '<div class="tax-eyebrow">Input tax</div><div class="tax-sub">what it carries out, every request</div>' +
       '<div class="tax-big">' + fmtK(carried) + ' <span class="u">tok of tool menu / request</span></div>' +
-      '<div class="tax-row">' + (prunedSave > 0 ? '<span class="g">' + fmtK(prunedSave) + '/req</span> pruned, ' + fmtK(dead) + ' dead weight still carried' : fmtK(dead) + ' dead weight, nothing pruned yet') + '</div>' +
+      '<div class="tax-row">' + (inReclaimed > 0 ? '<span class="g">' + fmtK(inReclaimed) + '</span> reclaimed, ' + fmtK(dead) + ' dead weight still carried' : fmtK(dead) + ' dead weight, nothing pruned yet') + '</div>' +
       '<div class="tax-link">See the tool tax &rarr;</div></div>';
 
     const missTag = misses > 0
@@ -942,20 +942,24 @@
     const harmLine = tn > 0
       ? `On the ${num(tn)} trimmed results ctx could check, the agent corrected ${tc} and re-read ${tr}. That is ${pct((tc + tr) / tn)} of trimmed calls.`
       : "";
+    // Reclaimed so far: the one all-time number, both taxes. Output trims (chars to tokens) plus
+    // input prunes (already tokens). This equals the sum of the two tax cards below, so the page
+    // tells one story instead of three different saved figures.
+    const outReclaimed = tok((bill && bill.total_reclaimed_chars) || 0);
+    const inReclaimed = (tbill && tbill.total_reclaimed_tokens) || 0;
+    const reclaimed = outReclaimed + inReclaimed;
     const snap = $("home-savings").parentElement;
-    if (safe > 0) {
+    if (reclaimed > 0) {
       snap.classList.remove("solo");
       $("home-savings").style.display = "";
       $("home-savings").className = "savings";
-      $("home-savings").innerHTML = `<div class="sv-label">Saved so far</div><div class="sv-val">~${fmtK(tok(safe))}<span class="sv-unit">tokens</span></div><div class="sv-sub">About ${usd(safe)} of context kept out of your window, and counting. It compounds every later turn.</div>`;
+      $("home-savings").innerHTML = `<div class="sv-label">Reclaimed so far</div><div class="sv-val">~${fmtK(reclaimed)}<span class="sv-unit">tokens</span></div><div class="sv-sub"><b>${fmtK(outReclaimed)}</b> trimmed from tool output plus <b>${fmtK(inReclaimed)}</b> of tool-menu tax pruned, kept out of your window and counting. It compounds every later turn.</div>`;
     } else {
-      // The reclaimable "on the table" figure now lives once in the both-taxes console below, so
-      // drop the redundant card here and let the status card use the full width.
       snap.classList.add("solo");
       $("home-savings").style.display = "none";
       $("home-savings").innerHTML = "";
     }
-    void harmLine; void trial;
+    void harmLine; void trial; void safe;
   }
 
   // Tidy a raw tool name for a chip: "mcp__claude_ai_Linear__save_issue" -> "Linear: save issue".

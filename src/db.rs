@@ -601,6 +601,9 @@ pub struct ToolMenuBill {
     pub total_invoked_tools: i64,
     /// Reclaimable input tax per request (dead weight across all servers).
     pub total_dead_tokens: i64,
+    /// Input tax actually reclaimed so far: the fixed per-request prune saving summed over every
+    /// managed request (CTX-68). This is the input side of the one all-time "reclaimed" number.
+    pub total_reclaimed_tokens: i64,
     /// The flat per-schema token estimate used, surfaced so the UI can label the figures.
     pub tokens_per_tool: i64,
     pub biggest_dead_server: Option<String>,
@@ -1145,6 +1148,16 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
         )
         .ok()
         .flatten();
+
+    // Input tax reclaimed so far, all-time: the per-request prune saving the hook recorded on every
+    // managed request. The input half of the single "reclaimed" headline.
+    bill.total_reclaimed_tokens = conn
+        .query_row(
+            "SELECT COALESCE(SUM(tokens_saved), 0) FROM requests WHERE tokens_saved > 0",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
 
     bill
 }
