@@ -2242,7 +2242,7 @@ pub fn causal_tool_outcomes(
             COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND {region_ok} THEN 1 ELSE 0 END),0)
+            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
          WHERE 1=1{EXCLUDE_SELF_DEV}"
     );

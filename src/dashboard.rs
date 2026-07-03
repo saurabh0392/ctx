@@ -474,7 +474,7 @@ async fn api_context() -> Json<ContextView> {
             // measure.
             let lh_tools = causal
                 .iter()
-                .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0)
+                .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0 || o.trimmed_collected > 0)
                 .map(|o| LoopHealthToolView {
                     stage: tool_stage(o, &th),
                     outcome: o.clone(),
@@ -942,7 +942,7 @@ async fn api_context_proof() -> Json<ProofView> {
             let outcomes: Vec<crate::db::CausalToolOutcome> =
                 crate::db::causal_tool_outcomes(&conn, None)
                     .into_iter()
-                    .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0)
+                    .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0 || o.trimmed_collected > 0)
                     .collect();
             trimmed_n_total = outcomes.iter().map(|o| o.trimmed_n).sum();
             trimmed_corrections_total = outcomes.iter().map(|o| o.trimmed_corrections).sum();
