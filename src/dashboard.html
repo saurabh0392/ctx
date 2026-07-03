@@ -39,12 +39,12 @@
   }
   a { color: inherit; }
   b { font-weight: 700; }
-  .wrap { max-width: 920px; margin: 0 auto; padding: 0 28px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
 
   /* ── top bar ── */
   .topbar { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(14px);
     background: rgba(10,14,22,.72); border-bottom: 1px solid var(--border); }
-  .topbar-inner { max-width: 920px; margin: 0 auto; padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .topbar-inner { max-width: 1120px; margin: 0 auto; padding: 14px 32px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .brand { display: flex; align-items: baseline; gap: 10px; }
   .brand-mark { font-size: 19px; font-weight: 800; letter-spacing: -.5px; }
   .brand-mark span { color: var(--primary); }
@@ -183,8 +183,9 @@
   .sec-note { font-size: 13px; color: var(--t3); line-height: 1.6; margin: 4px 0 0; max-width: 720px; }
 
   /* snapshot: summary + savings, side by side at the top */
-  .snapshot { margin-top: 26px; display: grid; grid-template-columns: 1.7fr 1fr; gap: 14px; align-items: stretch; }
-  .snapshot .status { margin-top: 0; height: 100%; }
+  .snapshot { margin-top: 22px; display: grid; grid-template-columns: 1.7fr 1fr; gap: 14px; align-items: start; }
+  .snapshot.solo { grid-template-columns: 1fr; }
+  .snapshot .status { margin-top: 0; }
   .savings { background: linear-gradient(150deg, #0f2920 0%, var(--surface) 75%); border: 1px solid #1e3b30; border-radius: var(--radius); padding: 18px 20px; display: flex; flex-direction: column; justify-content: center; }
   .savings.muted { background: var(--surface); border-color: var(--border); }
   .sv-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--primary-lt); }
@@ -355,8 +356,8 @@
   .report-compact .report-card-head { padding-top: 14px; }
 
   /* ── both-taxes console (CTX-69) ── */
-  .taxes-head { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--primary-lt); margin: 2px 2px 10px; }
-  .taxes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-width: 760px; }
+  .taxes-head { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--primary-lt); margin: 30px 2px 10px; }
+  .taxes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .tax { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 18px 20px; cursor: pointer; transition: border-color .15s; }
   .tax:hover { border-color: var(--border2); }
   .tax-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--t4); }
@@ -367,11 +368,11 @@
   .tax-row .g { color: var(--primary-lt); font-weight: 700; }
   .tax-harm { font-size: 12px; color: var(--t3); margin-top: 10px; }
   .tax-link { font-size: 12px; color: var(--primary-lt); margin-top: 12px; }
-  .taxes-tie { font-size: 13px; color: var(--t2); line-height: 1.6; margin: 13px 2px 0; max-width: 760px; }
+  .taxes-tie { font-size: 13px; color: var(--t2); line-height: 1.6; margin: 14px 2px 0; }
   @media (max-width: 640px) { .taxes { grid-template-columns: 1fr; } }
 
   /* ── wnad scoreboard (CTX-63) ── */
-  .wnad { border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); padding: 22px 24px; max-width: 760px; margin-top: 14px; }
+  .wnad { border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); padding: 22px 26px; margin-top: 14px; }
   .wnad.ahead { background: linear-gradient(150deg, #0f2920 0%, var(--surface) 74%); border-color: #1e3b30; }
   .wnad-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .wnad-verdict { font-size: 24px; font-weight: 800; letter-spacing: -0.4px; color: var(--t1); }
@@ -512,7 +513,7 @@
       <div class="hero">
         <div class="eyebrow"><span class="pip"></span> Context education and savings</div>
         <h1 class="title">ctx makes your agent leaner without losing the thread.</h1>
-        <p class="lede">First it shows you where your agent's context actually goes, tool by tool. Then it reclaims the room it can prove is safe to drop, and only that. Everything stays on your machine, and the tool always runs in full.</p>
+        <p class="lede">Shows where your agent's context goes and reclaims only the room it can prove is safe. Local, reversible, and the tool always runs in full.</p>
         <div class="snapshot">
           <div class="status"><span class="pip"></span><div class="big" id="home-status">Getting your numbers.</div></div>
           <div class="savings" id="home-savings"></div>
@@ -852,7 +853,7 @@
     }
 
     return `<div class="sec-eyebrow">Are you net-ahead this week?</div>
-      <p class="sec-note">This is the one number ctx is built to move. A week is net-ahead when ctx freed real room in your agent's context window <b>and</b> your agent did not work any harder for it. Both have to be true. Here is where you stand, on your own machine.</p>
+      <p class="sec-note">Net-ahead when ctx freed real room <b>and</b> your agent did not work any harder for it. Both have to be true.</p>
       <div class="wnad ${w.net_ahead ? "ahead" : ""}">
         <div class="wnad-top"><div class="wnad-verdict">${verdict}</div>${count}</div>
         <div class="wnad-cond">${reclaimCard}${harmCard}</div>
@@ -888,7 +889,10 @@
       '<div class="tax-row">' + (prunedSave > 0 ? '<span class="g">' + fmtK(prunedSave) + '/req</span> pruned, ' + fmtK(dead) + ' dead weight still carried' : fmtK(dead) + ' dead weight, nothing pruned yet') + '</div>' +
       '<div class="tax-link">See the tool tax &rarr;</div></div>';
 
-    const harm = 'Harm read: ' + (misses > 0 ? '<b style="color:var(--danger)">' + misses + ' tool-misses</b> on the input side' : '<b style="color:var(--primary-lt)">0 tool-misses</b> on the input side') + ', re-reads and re-edits checked on the output side. Both roll into the one net-ahead verdict below.';
+    const missTag = misses > 0
+      ? '<b style="color:var(--danger)">' + misses + ' tool-misses</b>'
+      : '<b style="color:var(--primary-lt)">0 tool-misses</b>';
+    const harm = 'One harm read across both, one verdict below. Input side ' + missTag + ', output side re-reads and re-edits checked.';
 
     return '<div class="taxes-head">ctx manages both sides of your context window</div>' +
       '<div class="taxes">' + outCard + inCard + '</div>' +
@@ -938,22 +942,20 @@
     const harmLine = tn > 0
       ? `On the ${num(tn)} trimmed results ctx could check, the agent corrected ${tc} and re-read ${tr}. That is ${pct((tc + tr) / tn)} of trimmed calls.`
       : "";
+    const snap = $("home-savings").parentElement;
     if (safe > 0) {
+      snap.classList.remove("solo");
+      $("home-savings").style.display = "";
       $("home-savings").className = "savings";
-      $("home-savings").innerHTML = `<div class="sv-label">Saved so far</div><div class="sv-val">~${fmtK(tok(safe))}<span class="sv-unit">tokens</span></div><div class="sv-sub">About ${usd(safe)} of context kept out of your window, and counting. It compounds, because a trimmed result stays out on every later turn.${harmLine ? " " + harmLine : ""}</div>`;
+      $("home-savings").innerHTML = `<div class="sv-label">Saved so far</div><div class="sv-val">~${fmtK(tok(safe))}<span class="sv-unit">tokens</span></div><div class="sv-sub">About ${usd(safe)} of context kept out of your window, and counting. It compounds every later turn.</div>`;
     } else {
-      const onTable = (bill && bill.total_reclaimable_chars) || 0;
-      if (onTable > 0) {
-        $("home-savings").className = "savings";
-        $("home-savings").innerHTML = `<div class="sv-label">On the table</div><div class="sv-val">~${fmtK(tok(onTable))}<span class="sv-unit">tokens</span></div><div class="sv-sub">Context ctx could reclaim across your tools, about ${usd(onTable)} a pass. It banks as saved once a tool clears its proof. <span class="link" onclick="go('bill')">See the bill</span>.${harmLine ? " " + harmLine : ""}</div>`;
-      } else {
-        const tail = trial > 0
-          ? `Output is being trimmed while ctx tests it, but nothing counts as saved until a tool clears its proof.${harmLine ? " " + harmLine : ""}`
-          : "Run a few agent turns and ctx will show what is on the table here.";
-        $("home-savings").className = "savings muted";
-        $("home-savings").innerHTML = `<div class="sv-label">On the table</div><div class="sv-val">none yet</div><div class="sv-sub">${tail}</div>`;
-      }
+      // The reclaimable "on the table" figure now lives once in the both-taxes console below, so
+      // drop the redundant card here and let the status card use the full width.
+      snap.classList.add("solo");
+      $("home-savings").style.display = "none";
+      $("home-savings").innerHTML = "";
     }
+    void harmLine; void trial;
   }
 
   // Tidy a raw tool name for a chip: "mcp__claude_ai_Linear__save_issue" -> "Linear: save issue".
