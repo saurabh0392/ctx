@@ -120,6 +120,13 @@ pub struct ShadowFeatures {
     pub edit_wrote: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit_sought: Option<String>,
+    /// For a targeted read, the `[start, end]` line range the `offset`/`limit` covered (CTX-62). A
+    /// re-read only counts as harm when a later read of the same file overlaps this range: paging
+    /// through a large file with several non-overlapping targeted views is normal, not the agent
+    /// re-reading because a trim cut what it needed. `None` for a whole-file read (no offset/limit),
+    /// which covers everything and so overlaps any later read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_lines: Option<[u32; 2]>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +179,23 @@ pub(crate) fn edit_content_anchor(s: &str) -> Option<String> {
         return None;
     }
     Some(norm.chars().take(160).collect())
+}
+
+/// The `[start, end]` line range a Read's `offset`/`limit` covered (CTX-62). `None` for a whole-file
+/// read (neither present), which the re-read join treats as covering everything. An `offset` with no
+/// `limit` reads to end of file, so its end is left open (a large sentinel).
+pub(crate) fn read_line_range(tool_input: &Value) -> Option<[u32; 2]> {
+    let offset = tool_input.get("offset").and_then(|v| v.as_u64());
+    let limit = tool_input.get("limit").and_then(|v| v.as_u64());
+    if offset.is_none() && limit.is_none() {
+        return None;
+    }
+    let start = offset.unwrap_or(1).max(1) as u32;
+    let end = match limit {
+        Some(l) if l > 0 => start.saturating_add((l - 1) as u32),
+        _ => u32::MAX, // offset to end of file
+    };
+    Some([start, end])
 }
 
 /// Server prefix for an MCP tool name (`mcp__linear__list` -> `mcp__linear`), else None.
@@ -290,6 +314,11 @@ pub fn compute_shadow_decision(
             } else {
                 None
             },
+            read_lines: if matches!(kind, CompressKind::Read) {
+                read_line_range(tool_input)
+            } else {
+                None
+            },
         },
     })
 }
@@ -306,6 +335,18 @@ mod tests {
             compress_redact_secrets: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn read_line_range_from_offset_and_limit() {
+        assert_eq!(
+            read_line_range(&serde_json::json!({"offset": 500, "limit": 50})),
+            Some([500, 549])
+        );
+        // Whole-file read (no offset/limit) -> None, so it overlaps any later read.
+        assert_eq!(read_line_range(&serde_json::json!({"file_path": "/a.rs"})), None);
+        // offset with no limit reads to end of file.
+        assert_eq!(read_line_range(&serde_json::json!({"offset": 10})), Some([10, u32::MAX]));
     }
 
     #[test]

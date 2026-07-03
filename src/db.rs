@@ -1644,6 +1644,7 @@ fn compression_workaround_from_db(
 /// State-mutation tools with legacy bare fingerprints skip routine follow-up calls (CTX-49).
 fn reread_value_sql() -> String {
     let legacy_exclude = crate::outcome_signals::reread_legacy_state_mutation_exclusion_sql();
+    let overlap = read_range_overlap_sql();
     format!(
         r#"(
                 SELECT CASE WHEN EXISTS (
@@ -1652,6 +1653,7 @@ fn reread_value_sql() -> String {
                       AND d2.command_or_path = compress_decisions.command_or_path
                       AND d2.command_or_path IS NOT NULL
                       AND d2.id <> compress_decisions.id
+                      AND {overlap}
                       AND julianday(d2.ts) > julianday(compress_decisions.ts)
                       AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
                       {legacy_exclude}
@@ -1665,8 +1667,21 @@ fn reread_value_sql() -> String {
                       )
                 ) THEN 1 ELSE 0 END
             )"#,
+        overlap = overlap,
         legacy_exclude = legacy_exclude
     )
+}
+
+/// SQL predicate: a re-read only counts when the follow-up read's line range overlaps the trimmed
+/// read's (CTX-62). Paging a large file with several non-overlapping targeted views (offset 1 then
+/// offset 500) is normal, not a re-read. A whole-file read carries no `read_lines`, so it covers
+/// everything and overlaps any later read, which keeps the signal for the common untargeted case.
+fn read_range_overlap_sql() -> String {
+    let cd_lo = "CAST(json_extract(compress_decisions.features_json,'$.read_lines[0]') AS INTEGER)";
+    let cd_hi = "CAST(json_extract(compress_decisions.features_json,'$.read_lines[1]') AS INTEGER)";
+    let d2_lo = "CAST(json_extract(d2.features_json,'$.read_lines[0]') AS INTEGER)";
+    let d2_hi = "CAST(json_extract(d2.features_json,'$.read_lines[1]') AS INTEGER)";
+    format!("({cd_lo} IS NULL OR {d2_lo} IS NULL OR ({d2_lo} <= {cd_hi} AND {d2_hi} >= {cd_lo}))")
 }
 
 /// The `outcome_edit_follow` value subquery (CTX-46 / ADR 0031): 1 when the same file was edited
@@ -5676,6 +5691,75 @@ mod compress_decision_tests {
             first_edit_follow("small.rs"),
             1,
             "a follow-up that edits the exact text just written is a real same-region re-edit"
+        );
+    }
+
+    #[test]
+    fn reread_requires_overlapping_view_for_targeted_reads() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (external_key, project, started_at) VALUES ('proj-sess-view', 'p', '2026-05-31T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let sid: i64 = conn
+            .query_row("SELECT id FROM sessions WHERE external_key='proj-sess-view'", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
+            params![sid],
+        )
+        .unwrap();
+
+        let read_at = |ts: &str, path: &str, lo: u32, hi: u32| {
+            let features = format!("{{\"read_lines\":[{lo},{hi}]}}");
+            let row = CompressDecision {
+                kind: "read",
+                tool_name: "Read",
+                features_json: &features,
+                command_or_path: path,
+                applied: true,
+                lines_drop: 40,
+                ..decision(ts, "sess-view", "Read", path)
+            };
+            insert_compress_decision(&conn, &row).unwrap();
+        };
+
+        // big.rs: two non-overlapping targeted views of a large file -> not a re-read.
+        read_at("2026-05-31T10:01:00+00:00", "big.rs", 1, 50);
+        read_at("2026-05-31T10:03:00+00:00", "big.rs", 500, 549);
+        // small.rs: the follow-up view overlaps the first -> a real re-read.
+        read_at("2026-05-31T10:01:00+00:00", "small.rs", 1, 50);
+        read_at("2026-05-31T10:03:00+00:00", "small.rs", 40, 90);
+
+        join_compress_outcomes(&conn).unwrap();
+
+        let first_reread = |path: &str| -> i64 {
+            conn.query_row(
+                "SELECT COALESCE(outcome_reread,0) FROM compress_decisions
+                 WHERE command_or_path = ?1 AND ts = '2026-05-31T10:01:00+00:00'",
+                params![path],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            first_reread("big.rs"),
+            0,
+            "a second targeted view of a different part of the file is not a re-read"
+        );
+        assert_eq!(
+            first_reread("small.rs"),
+            1,
+            "an overlapping second view is a real re-read"
         );
     }
 
