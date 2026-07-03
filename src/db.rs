@@ -572,6 +572,9 @@ pub struct ToolMenuBillServer {
     /// dead_tools / catalog_tools, 0..1.
     pub dead_ratio: f64,
     pub last_used: Option<String>,
+    /// True when this server is currently pruned from the tool menu (CTX-64), so the UI shows an
+    /// "undo" instead of a "prune". Set by the API handler from config, not computed here.
+    pub pruned: bool,
 }
 
 /// The input-side Context Bill: the fixed per-request tool-menu tax, itemized per server and ranked
@@ -1095,6 +1098,7 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
                 dead_tokens,
                 dead_ratio,
                 last_used,
+                pruned: false,
             });
         }
     }

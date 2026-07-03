@@ -504,6 +504,12 @@ pub struct Config {
     /// Server IDs or tool prefixes temporarily un-denied for the current session(s).
     #[serde(default)]
     pub session_expansion: Vec<String>,
+    /// MCP server prefixes the developer pruned from the tool menu (CTX-64). Persistent, unlike
+    /// `session_expansion`: a pruned server stays hidden across sessions until un-pruned or reached
+    /// for. In soft mode this adds a server wildcard to `permissions.deny`; a reach re-adds the
+    /// server for the session via `session_expansion`, which overrides this list.
+    #[serde(default)]
+    pub pruned_servers: Vec<String>,
     /// Port for `ctx dashboard` (used by filter.js POST /api/ingest-request).
     #[serde(default)]
     pub dashboard_port: Option<u16>,

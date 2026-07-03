@@ -110,6 +110,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/context/proof", get(api_context_proof))
         .route("/api/context/bill", get(api_context_bill))
         .route("/api/context/tool-bill", get(api_context_tool_bill))
+        .route("/api/context/prune-server", post(api_context_prune_server))
         .route("/api/context/rewind", post(api_context_rewind))
         .route(
             "/api/context/model-progress",
@@ -367,12 +368,46 @@ async fn api_context_bill() -> Json<crate::db::ContextBill> {
 /// the full catalog carried on every request versus what was actually invoked, ranked by dead
 /// weight. The fixed-cost, input-tax mirror of `/api/context/bill`.
 async fn api_context_tool_bill() -> Json<crate::db::ToolMenuBill> {
-    let lookback = crate::config::Config::load()
-        .profile_thresholds
-        .lookback_days;
+    let cfg = crate::config::Config::load();
+    let lookback = cfg.profile_thresholds.lookback_days;
     match open_ctx_db() {
-        Some(conn) => Json(crate::db::tool_menu_bill(&conn, lookback)),
+        Some(conn) => {
+            let mut bill = crate::db::tool_menu_bill(&conn, lookback);
+            for s in &mut bill.servers {
+                s.pruned = cfg
+                    .pruned_servers
+                    .iter()
+                    .any(|p| crate::profiles::prefix_covers_expansion_entry(p, &s.prefix));
+            }
+            Json(bill)
+        }
         None => Json(crate::db::ToolMenuBill::default()),
+    }
+}
+
+#[derive(Deserialize)]
+struct PruneServerBody {
+    server: String,
+    /// When true, reverse a prune instead of applying one.
+    #[serde(default)]
+    unprune: bool,
+}
+
+/// POST /api/context/prune-server: prune a whole MCP server from the tool menu, or undo it (CTX-64 /
+/// M-B). Reversible: a session reach also re-adds it. Records the prune as an insight-action.
+async fn api_context_prune_server(Json(body): Json<PruneServerBody>) -> impl IntoResponse {
+    let server = body.server.trim();
+    if server.is_empty() {
+        return (StatusCode::BAD_REQUEST, "name a server to prune".to_string()).into_response();
+    }
+    let res = if body.unprune {
+        crate::filter_control::unprune_server(server)
+    } else {
+        crate::filter_control::prune_server(server)
+    };
+    match res {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
 

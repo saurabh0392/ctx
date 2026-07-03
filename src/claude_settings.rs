@@ -387,7 +387,14 @@ pub fn merge_profile_deny_rules(settings: &mut Value, slug: &str) -> Result<()> 
     let mut expansion = cfg.session_expansion.clone();
     expansion.extend(cfg.session_semantic_tools.clone());
     let local_names = crate::profiles::local_mcp_server_names(settings);
-    let patterns = crate::profiles::deny_patterns_for_profile(&profile, &expansion, &local_names);
+    let mut patterns = crate::profiles::deny_patterns_for_profile(&profile, &expansion, &local_names);
+    // Servers the developer explicitly pruned from the tool menu (CTX-64), on top of the profile's
+    // own rules. A session reach re-adds them (they drop out of `expansion` above).
+    patterns.extend(crate::profiles::pruned_server_deny_patterns(
+        &cfg.pruned_servers,
+        &expansion,
+        &local_names,
+    ));
 
     if !settings
         .get("permissions")
@@ -617,6 +624,45 @@ mod tests {
         assert!(!deny
             .iter()
             .any(|v| v.as_str() == Some("mcp__claude_ai_Data_Shippo__*")));
+    }
+
+    #[test]
+    fn pruned_server_is_denied_and_a_reach_restores_it() {
+        let _g = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+
+        // Prune Canva under the "all" profile, which otherwise denies nothing.
+        let mut cfg = crate::config::Config::load();
+        cfg.filter_mode = FilterMode::Soft;
+        cfg.active_profile = Some("all".into());
+        cfg.pruned_servers = vec!["mcp__claude_ai_Canva__".into()];
+        cfg.save().unwrap();
+
+        let mut doc = json!({});
+        merge_profile_deny_rules(&mut doc, "all").unwrap();
+        let denied = |d: &Value| {
+            d["permissions"]["deny"]
+                .as_array()
+                .map(|a| a.iter().any(|v| v.as_str() == Some("mcp__claude_ai_Canva__*")))
+                .unwrap_or(false)
+        };
+        assert!(denied(&doc), "a pruned server is denied even under profile 'all'");
+
+        // A session reach for a Canva tool overrides the prune for the session.
+        let mut cfg = crate::config::Config::load();
+        cfg.session_expansion = vec!["mcp__claude_ai_Canva__export-design".into()];
+        cfg.save().unwrap();
+
+        let mut doc2 = json!({});
+        merge_profile_deny_rules(&mut doc2, "all").unwrap();
+        assert!(
+            !denied(&doc2),
+            "a reach re-adds the pruned server for the session"
+        );
+        std::env::remove_var("CTX_HOME");
     }
 
     #[test]

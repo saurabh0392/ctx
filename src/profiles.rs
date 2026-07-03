@@ -1086,6 +1086,38 @@ pub fn deny_patterns_for_profile(
     patterns
 }
 
+/// True when a `session_expansion` entry belongs to `prefix`'s server: the prefix itself, a tool
+/// under it, or the bare server id/display. Used to clear a stale reach when (un)pruning a server.
+pub fn prefix_covers_expansion_entry(prefix: &str, entry: &str) -> bool {
+    let e = entry.trim();
+    if e.eq_ignore_ascii_case(prefix) || e.starts_with(prefix) {
+        return true;
+    }
+    let id = mcp_prefix_to_server_id(prefix);
+    e.eq_ignore_ascii_case(&id) || e.eq_ignore_ascii_case(&id.replace('_', " "))
+}
+
+/// Server-wildcard deny patterns for servers the developer pruned from the tool menu (CTX-64),
+/// skipping any that a session reach has re-added (present in `expansion`) or that are locally
+/// configured MCP servers. This is additive to the profile's own deny rules: a server can be pruned
+/// even when the active profile would otherwise keep it, and a reach still overrides the prune.
+pub fn pruned_server_deny_patterns(
+    pruned: &[String],
+    expansion: &[String],
+    local_names: &[String],
+) -> Vec<String> {
+    let mut patterns: Vec<String> = pruned
+        .iter()
+        .filter(|prefix| {
+            !prefix_matches_expansion(prefix, expansion) && !prefix_is_local_mcp(prefix, local_names)
+        })
+        .map(|prefix| deny_wildcard_for_prefix(prefix))
+        .collect();
+    patterns.sort();
+    patterns.dedup();
+    patterns
+}
+
 fn prefix_is_local_mcp(prefix: &str, local_names: &[String]) -> bool {
     let id = mcp_prefix_to_server_id(prefix);
     let display = mcp_prefix_to_server_display(prefix);

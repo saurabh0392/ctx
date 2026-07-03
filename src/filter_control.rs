@@ -74,6 +74,69 @@ pub fn expand_session_server(server: &str) -> Result<()> {
     expand_session_target(server)
 }
 
+/// Normalize a server reference (display name, id, or prefix) to the canonical
+/// `mcp__claude_ai_<Id>__` prefix used in deny rules and `pruned_servers`.
+fn canonical_server_prefix(server: &str) -> String {
+    let s = server.trim();
+    if s.starts_with("mcp__claude_ai_") {
+        let base = s.trim_end_matches('*').trim_end_matches('_');
+        return format!("{base}__");
+    }
+    let id = s.replace([' ', '-'], "_");
+    format!("mcp__claude_ai_{id}__")
+}
+
+/// Prune a whole MCP server from the tool menu (CTX-64): persistently deny its tools in soft mode,
+/// reversible via a session reach (`ctx filter expand`) or `unprune_server`. Records the prune as an
+/// insight-action. Returns true when the server was newly pruned (state changed).
+pub fn prune_server(server: &str) -> Result<bool> {
+    let prefix = canonical_server_prefix(server);
+    let mut cfg = Config::load();
+    if cfg
+        .pruned_servers
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(&prefix))
+    {
+        return Ok(false);
+    }
+    // A fresh prune overrides any leftover session reach for this server.
+    cfg.session_expansion
+        .retain(|e| !crate::profiles::prefix_covers_expansion_entry(&prefix, e));
+    cfg.pruned_servers.push(prefix.clone());
+    cfg.save()?;
+
+    let slug = cfg.active_profile.as_deref().unwrap_or("all");
+    let dash = cfg.dashboard_port.unwrap_or(8789);
+    crate::claude_settings::write_native_ctx_to_user_settings(slug, dash)?;
+
+    // Record the insight-action: a prune that removed a server (feeds the Home counter).
+    let display = crate::profiles::mcp_prefix_to_server_display(&prefix);
+    if let Ok(conn) = crate::db::open_db() {
+        let removed = serde_json::to_string(&[&display]).unwrap_or_else(|_| "[]".into());
+        let _ = crate::db::insert_profile_change(&conn, slug, slug, "[]", &removed);
+    }
+    Ok(true)
+}
+
+/// Reverse a prune (CTX-64): drop the server from `pruned_servers` and any lingering session reach,
+/// then rewrite settings so the full server returns. Returns true when it had been pruned.
+pub fn unprune_server(server: &str) -> Result<bool> {
+    let prefix = canonical_server_prefix(server);
+    let mut cfg = Config::load();
+    let before = cfg.pruned_servers.len();
+    cfg.pruned_servers
+        .retain(|p| !p.eq_ignore_ascii_case(&prefix));
+    if cfg.pruned_servers.len() == before {
+        return Ok(false);
+    }
+    cfg.save()?;
+
+    let slug = cfg.active_profile.as_deref().unwrap_or("all");
+    let dash = cfg.dashboard_port.unwrap_or(8789);
+    crate::claude_settings::write_native_ctx_to_user_settings(slug, dash)?;
+    Ok(true)
+}
+
 pub fn clear_session_expansion() -> Result<()> {
     let mut cfg = Config::load();
     if cfg.session_expansion.is_empty() {

@@ -335,16 +335,36 @@ const ACCESS_PATTERNS: &[&str] = &[
     "no access to",
 ];
 
-/// Scan assistant text for access-friction signals against denied tools.
+/// Scan assistant text for access-friction signals against denied tools. Covers both the active
+/// profile's denied tools and any servers pruned from the tool menu (CTX-64), so a reach for a
+/// pruned server re-adds it for the session even when the profile itself would have kept it.
 pub fn detect_access_friction_tools(text: &str, profile: &Profile) -> Vec<String> {
-    if text.trim().is_empty() || !profile.filtering_enabled() {
+    if text.trim().is_empty() {
         return vec![];
     }
     let lower = text.to_lowercase();
     if !ACCESS_PATTERNS.iter().any(|p| lower.contains(p)) {
         return vec![];
     }
-    profiles::detect_expansion_candidates(text, "", profile)
+    let mut out = if profile.filtering_enabled() {
+        profiles::detect_expansion_candidates(text, "", profile)
+    } else {
+        vec![]
+    };
+    for prefix in &Config::load().pruned_servers {
+        let display = profiles::mcp_prefix_to_server_display(prefix).to_lowercase();
+        let id = profiles::mcp_prefix_to_server_id(prefix)
+            .to_lowercase()
+            .replace('_', " ");
+        if (!display.is_empty() && lower.contains(&display))
+            || (!id.is_empty() && lower.contains(&id))
+        {
+            out.push(prefix.clone());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn load_friction_counts(conn: &Connection) -> HashMap<String, u32> {
@@ -599,6 +619,28 @@ mod tests {
                 "expected Notion tool, got {tools:?}"
             );
             let _ = session_id;
+        });
+    }
+
+    #[test]
+    fn pruned_server_is_recovered_from_denial_text() {
+        with_ctx_home(|_tmp| {
+            let mut cfg = Config::load();
+            cfg.filter_mode = FilterMode::Soft;
+            cfg.pruned_servers = vec!["mcp__claude_ai_Canva__".into()];
+            cfg.save().unwrap();
+
+            // Profile "all" keeps everything (filtering disabled), yet a reach for the pruned Canva
+            // server must still surface so the session re-adds it.
+            let profile = Profile::default();
+            let tools = detect_access_friction_tools(
+                "Sorry, I don't have access to Canva right now.",
+                &profile,
+            );
+            assert!(
+                tools.iter().any(|t| t.contains("Canva")),
+                "pruned Canva should be recoverable on a reach, got {tools:?}"
+            );
         });
     }
 
