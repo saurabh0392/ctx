@@ -2293,9 +2293,16 @@ pub struct WeekNetAhead {
     /// ISO-ish week label (e.g. "2026-W26") and the Monday-or-first date seen, for display.
     pub week: String,
     pub first_day: String,
-    /// Tokens ctx actually removed this week (applied trims), and the tokens it could have removed
-    /// across every would-trim decision (eligible). Capture is reclaimed / eligible.
+    /// Tokens ctx actually removed this week: the total of both taxes, output trims plus input
+    /// prunes. This is the scoreboard figure and what the reclaim bar checks. The split below labels
+    /// where it came from (CTX-68 folds the input side in).
     pub reclaimed_tokens: i64,
+    /// Output tax reclaimed: tool-result characters trimmed, in tokens.
+    pub output_reclaimed_tokens: i64,
+    /// Input tax reclaimed: tool-menu tokens no longer carried because a server is pruned, summed
+    /// over the week's managed requests. Fixed savings that repeat every request.
+    pub input_reclaimed_tokens: i64,
+    /// Tokens ctx could have removed across every would-trim decision (output eligible).
     pub eligible_tokens: i64,
     pub capture_rate: f64,
     /// The reclaim bar for the week: the lower of 50K tokens or 25% of eligible.
@@ -2362,6 +2369,20 @@ const WNAD_HARM_MARGIN: f64 = 0.10;
 const WNAD_MIN_SCORED_TRIMS: i64 = 10;
 
 pub fn weekly_net_ahead(conn: &Connection) -> Vec<WeekNetAhead> {
+    // Input tax reclaimed per week: the fixed per-request prune savings the hook recorded on every
+    // managed request (CTX-68), summed by week and keyed the same way as the output query below.
+    let mut input_by_week: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT strftime('%Y-W%W', ts) AS wk, COALESCE(SUM(tokens_saved), 0)
+         FROM requests WHERE tokens_saved > 0 GROUP BY wk",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+            for (wk, toks) in rows.flatten() {
+                input_by_week.insert(wk, toks);
+            }
+        }
+    }
+
     let retouch = format!(
         "(CASE WHEN {edit} THEN COALESCE(outcome_edit_follow,0) ELSE COALESCE(outcome_reread,0) END)",
         edit = crate::outcome_signals::edit_tool_sql_in_list("tool_name")
@@ -2384,6 +2405,7 @@ pub fn weekly_net_ahead(conn: &Connection) -> Vec<WeekNetAhead> {
         return Vec::new();
     };
     let rows = stmt.query_map([], |r| {
+        let week: String = r.get(0)?;
         let reclaimed_chars: i64 = r.get(2)?;
         let eligible_chars: i64 = r.get(3)?;
         let trimmed_scored: i64 = r.get(4)?;
@@ -2391,7 +2413,10 @@ pub fn weekly_net_ahead(conn: &Connection) -> Vec<WeekNetAhead> {
         let baseline_scored: i64 = r.get(6)?;
         let baseline_harm: i64 = r.get(7)?;
 
-        let reclaimed_tokens = reclaimed_chars / 4;
+        let output_reclaimed_tokens = reclaimed_chars / 4;
+        let input_reclaimed_tokens = input_by_week.get(&week).copied().unwrap_or(0);
+        // The scoreboard figure and the reclaim bar both run on the total of both taxes.
+        let reclaimed_tokens = output_reclaimed_tokens + input_reclaimed_tokens;
         let eligible_tokens = eligible_chars / 4;
         let reclaim_bar_tokens =
             WNAD_RECLAIM_FLOOR_TOKENS.min((eligible_tokens as f64 * WNAD_ELIGIBLE_FRACTION) as i64);
@@ -2411,12 +2436,14 @@ pub fn weekly_net_ahead(conn: &Connection) -> Vec<WeekNetAhead> {
         let harm_ok = !harm_unconfirmed && trimmed_rate <= baseline_rate + WNAD_HARM_MARGIN;
 
         Ok(WeekNetAhead {
-            week: r.get(0)?,
+            week,
             first_day: r.get(1)?,
             reclaimed_tokens,
+            output_reclaimed_tokens,
+            input_reclaimed_tokens,
             eligible_tokens,
             capture_rate: if eligible_tokens > 0 {
-                reclaimed_tokens as f64 / eligible_tokens as f64
+                output_reclaimed_tokens as f64 / eligible_tokens as f64
             } else {
                 0.0
             },

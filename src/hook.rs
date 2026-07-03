@@ -373,6 +373,15 @@ pub fn user_prompt_submit() -> Result<()> {
     if cfg.filter_mode == crate::config::FilterMode::Soft && !cfg.pruned_servers.is_empty() {
         let by_server = crate::profiles::carried_menu_by_server();
         if !by_server.is_empty() {
+            // Input tax reclaimed on this request: the fixed per-request cost of every pruned
+            // server's catalog, which the developer no longer pays. Folds into WNAD (CTX-68).
+            let tokens_saved: usize = cfg
+                .pruned_servers
+                .iter()
+                .map(|p| {
+                    crate::profiles::catalog_tool_count(p) * crate::profiles::TOKENS_PER_TOOL
+                })
+                .sum();
             let rec = crate::analytics::Record {
                 ts: chrono::Utc::now().to_rfc3339(),
                 profile: trace_profile.clone(),
@@ -380,6 +389,7 @@ pub fn user_prompt_submit() -> Result<()> {
                 kept_servers: by_server.keys().cloned().collect(),
                 tools_sent_count: by_server.values().sum(),
                 tools_sent_by_server: by_server,
+                tokens_saved,
                 ..Default::default()
             };
             if let Ok(conn) = crate::db::open_db() {
