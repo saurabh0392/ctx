@@ -1670,13 +1670,15 @@ fn reread_value_sql() -> String {
 /// is the window in days; the edit-tool predicate comes from the one shared edit-tool set.
 fn edit_follow_value_sql() -> String {
     let edit_is_d2 = crate::outcome_signals::edit_tool_sql_in_list("d2.tool_name");
-    // Same-region requirement (CTX-62 refinement): when both the trimmed edit and the follow-up
-    // edit recorded the line range their `cat -n` echo covered (`features_json.edit_lines`), the
-    // follow-up only counts as a re-edit if those ranges overlap within a small tolerance. Editing
-    // line 12 then line 500 of one big file is normal multi-part work, not a botched-edit redo.
-    // When either side lacks a range (a read-then-edit, a new-file Write, a legacy row), it falls
-    // back to the original same-file rule, so read "needed whole" signals are unchanged.
-    let overlap = edit_region_overlap_sql();
+    // Same-region requirement (CTX-62 content-overlap fix). When the decision is itself an edit, a
+    // later edit of the same file only counts as a re-edit if it *sought the exact text this edit
+    // wrote* (`d2.edit_sought` == `decision.edit_wrote`): the agent went back and changed the very
+    // lines it just wrote. Editing a different part of the same big file is normal multi-part work,
+    // not a botched-edit redo, and no longer fires. An edit with no anchor (an older row, or a
+    // trivial edit) never matches, so the old ~70% file-level noise drops out. When the decision is
+    // a read, this whole clause is skipped and the original same-file rule stands, so the read
+    // "needed whole" signal is unchanged.
+    let region = edit_content_match_sql();
     format!(
         r#"(
                 SELECT CASE WHEN EXISTS (
@@ -1686,7 +1688,7 @@ fn edit_follow_value_sql() -> String {
                       AND d2.command_or_path IS NOT NULL
                       AND d2.id <> compress_decisions.id
                       AND {edit_is_d2}
-                      AND {overlap}
+                      AND {region}
                       AND julianday(d2.ts) > julianday(compress_decisions.ts)
                       AND julianday(d2.ts) <= julianday(compress_decisions.ts) + ?1
                       AND NOT EXISTS (
@@ -1700,27 +1702,19 @@ fn edit_follow_value_sql() -> String {
                 ) THEN 1 ELSE 0 END
             )"#,
         edit_is_d2 = edit_is_d2,
-        overlap = overlap,
+        region = region,
     )
 }
 
-/// Lines of slack when comparing two edit echo ranges. The echo already shows a few context lines
-/// around the change, and an intervening edit can shift line numbers slightly, so ranges within a
-/// few lines of each other still count as the same region.
-const REEDIT_OVERLAP_TOLERANCE_LINES: i64 = 3;
-
-/// SQL predicate: the decision's edit range and `d2`'s edit range overlap (within tolerance), or
-/// either side has no range and we defer to the same-file rule. Reads have no `edit_lines`, so a
-/// read-then-edit always takes the fallback and keeps its existing "needed whole" meaning.
-fn edit_region_overlap_sql() -> String {
-    let tol = REEDIT_OVERLAP_TOLERANCE_LINES;
-    let cd_lo = "CAST(json_extract(compress_decisions.features_json,'$.edit_lines[0]') AS INTEGER)";
-    let cd_hi = "CAST(json_extract(compress_decisions.features_json,'$.edit_lines[1]') AS INTEGER)";
-    let d2_lo = "CAST(json_extract(d2.features_json,'$.edit_lines[0]') AS INTEGER)";
-    let d2_hi = "CAST(json_extract(d2.features_json,'$.edit_lines[1]') AS INTEGER)";
-    format!(
-        "({cd_lo} IS NULL OR {d2_lo} IS NULL OR ({d2_lo} <= {cd_hi} + {tol} AND {d2_hi} >= {cd_lo} - {tol}))"
-    )
+/// SQL predicate for the same-region requirement. If the decision is not an edit tool (a read),
+/// pass through and keep the same-file rule. If it is an edit, require the follow-up edit to have
+/// sought the exact text this edit wrote, so only a genuine same-region redo counts.
+fn edit_content_match_sql() -> String {
+    let decision_is_edit =
+        crate::outcome_signals::edit_tool_sql_in_list("compress_decisions.tool_name");
+    let wrote = "json_extract(compress_decisions.features_json,'$.edit_wrote')";
+    let sought = "json_extract(d2.features_json,'$.edit_sought')";
+    format!("(NOT ({decision_is_edit}) OR ({wrote} IS NOT NULL AND {sought} = {wrote}))")
 }
 
 /// A shadow decision still awaiting an outcome, with the fields a transcript-based join
@@ -2228,18 +2222,27 @@ pub fn causal_tool_outcomes(
         "(CASE WHEN {edit} THEN COALESCE(outcome_edit_follow,0) ELSE COALESCE(outcome_reread,0) END)",
         edit = crate::outcome_signals::edit_tool_sql_in_list("tool_name")
     );
+    // Region-aware scoping (CTX-62): for an edit tool, a row can only be a scored re-edit observation
+    // if it carries the content anchor (`edit_wrote`). Rows recorded before the anchor cannot be
+    // measured for a same-region redo, so they are not counted, and the edit gate stays fail-closed
+    // until enough anchored edits accrue instead of earning on the old file-level noise. Non-edit
+    // tools are unaffected.
+    let region_ok = format!(
+        "(NOT ({edit}) OR features_json LIKE '%edit_wrote%')",
+        edit = crate::outcome_signals::edit_tool_sql_in_list("tool_name")
+    );
     // Joined-only counts feed the causal verdict; `trimmed_collected` counts every applied trim so a
     // fresh trial does not read as "0 trimmed" while its outcomes are still landing. The joined
     // filter moved from the WHERE into each CASE so both live side by side.
     let base = format!(
         "SELECT tool_name,
-            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND {retouch}=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0)
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND {region_ok} THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND {region_ok} AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND {region_ok} AND {retouch}=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 AND {region_ok} THEN 1 ELSE 0 END),0)
          FROM compress_decisions
          WHERE 1=1{EXCLUDE_SELF_DEV}"
     );
@@ -2944,6 +2947,47 @@ fn backfill_edit_follow_label(conn: &Connection) {
     );
 }
 
+/// Recompute `outcome_edit_follow` for existing rows under the content-overlap rule (CTX-62 fix).
+/// The old file-level signal fired on any second edit to a file and read as ~70% harm on normal
+/// multi-part editing. The new rule requires a follow-up edit to have sought the exact text an edit
+/// wrote. Rows recorded before the content anchor existed have none, so they resolve to 0 here and
+/// the inflated file-level rate drops out; reads keep their unchanged "needed whole" meaning. Runs
+/// once (its own meta key), overwriting the old values rather than only filling NULLs.
+fn recompute_edit_follow_content_anchor(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        [],
+    );
+    if conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='edit_follow_content_anchor_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok()
+    {
+        return;
+    }
+    let window_days = CORRECTION_WINDOW_MINUTES / 1440.0;
+    let edit_follow = edit_follow_value_sql();
+    let _ = conn.execute(
+        &format!(
+            "UPDATE compress_decisions
+             SET outcome_edit_follow = {edit_follow}
+             WHERE outcome_joined = 1
+               AND session_id IS NOT NULL
+               AND COALESCE(surface,'') != 'cursor'",
+            edit_follow = edit_follow
+        ),
+        params![window_days],
+    );
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('edit_follow_content_anchor_v1', '1')",
+        [],
+    );
+    let _ = refresh_outcome_signals(conn);
+}
+
 /// One-time backfill of `path_role` on read decisions recorded before CTX-45 wired live logging.
 /// Uses `command_or_path`, the same path the activity feed shows. Meta-guarded, idempotent.
 fn backfill_path_role(conn: &Connection) {
@@ -3279,6 +3323,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     migrate_cursor_compactions_table(conn);
     backfill_self_dev_tag(conn);
     backfill_edit_follow_label(conn);
+    recompute_edit_follow_content_anchor(conn);
     backfill_path_role(conn);
     backfill_rejoin_outcome_labels_v3(conn);
     backfill_interrupt_turn_flags_v1(conn);
@@ -5582,9 +5627,9 @@ mod compress_decision_tests {
         )
         .unwrap();
 
-        // An edit decision that records the line range its echo covered.
-        let edit_at = |ts: &str, path: &str, lo: u32, hi: u32| {
-            let features = format!("{{\"edit_lines\":[{lo},{hi}]}}");
+        // An edit decision that records what it wrote and sought (the content anchors).
+        let edit_at = |ts: &str, path: &str, wrote: &str, sought: &str| {
+            let features = format!("{{\"edit_wrote\":\"{wrote}\",\"edit_sought\":\"{sought}\"}}");
             let row = CompressDecision {
                 kind: "edit",
                 tool_name: "Edit",
@@ -5597,12 +5642,12 @@ mod compress_decision_tests {
             insert_compress_decision(&conn, &row).unwrap();
         };
 
-        // big.rs: first edit at lines 10-12, follow-up edit far away at 500-502 -> not a re-edit.
-        edit_at("2026-05-31T10:01:00+00:00", "big.rs", 10, 12);
-        edit_at("2026-05-31T10:03:00+00:00", "big.rs", 500, 502);
-        // small.rs: first edit at 10-12, follow-up overlaps at 11-13 -> a real re-edit.
-        edit_at("2026-05-31T10:01:00+00:00", "small.rs", 10, 12);
-        edit_at("2026-05-31T10:03:00+00:00", "small.rs", 11, 13);
+        // big.rs: first edit writes one region, the follow-up seeks a different line -> not a re-edit.
+        edit_at("2026-05-31T10:01:00+00:00", "big.rs", "let alpha = compute_one()", "let alpha = old_one()");
+        edit_at("2026-05-31T10:03:00+00:00", "big.rs", "return other_helper(z)", "call other_helper()");
+        // small.rs: the follow-up seeks the exact text the first edit wrote -> a real same-region redo.
+        edit_at("2026-05-31T10:01:00+00:00", "small.rs", "let beta = compute_two()", "let beta = old_two()");
+        edit_at("2026-05-31T10:03:00+00:00", "small.rs", "let beta = fixed_two()", "let beta = compute_two()");
 
         join_compress_outcomes(&conn).unwrap();
 
@@ -5619,12 +5664,12 @@ mod compress_decision_tests {
         assert_eq!(
             first_edit_follow("big.rs"),
             0,
-            "an edit 490 lines away is normal multi-part work, not a re-edit"
+            "an edit elsewhere in the same file is normal multi-part work, not a re-edit"
         );
         assert_eq!(
             first_edit_follow("small.rs"),
             1,
-            "an overlapping follow-up edit is a real same-region re-edit"
+            "a follow-up that edits the exact text just written is a real same-region re-edit"
         );
     }
 

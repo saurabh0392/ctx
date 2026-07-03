@@ -109,13 +109,17 @@ pub struct ShadowFeatures {
     /// `"self_dev":true`, which the corpus-exclusion SQL matches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_dev: Option<bool>,
-    /// For edit tools, the `[min, max]` line numbers the echoed `cat -n` snippet covered. It lets
-    /// the re-edit harm signal require a *same-region* follow-up edit instead of firing on any later
-    /// edit anywhere in a large file (CTX-62 refinement): editing line 12 then line 500 of one file
-    /// is normal multi-part work, not a botched-edit redo. `None` for non-edit decisions or when the
-    /// echo carried no parseable line numbers, in which case the join falls back to same-file.
+    /// For edit tools, a distinctive signature line of what this edit *wrote* (`new_string`) and what
+    /// it *sought* (`old_string`), taken from the tool input (CTX-62 content-overlap fix). A re-edit
+    /// only counts as harm when a later edit sought the exact text this one wrote, i.e. the agent
+    /// went back and changed the very lines it just wrote. This replaces the old file-level signal,
+    /// which fired on any second edit anywhere in a big file and read as ~70% harm on normal
+    /// multi-part editing. `None` when the strings carry nothing distinctive, in which case the
+    /// re-edit does not fire for that edit.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub edit_lines: Option<[u32; 2]>,
+    pub edit_wrote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_sought: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,25 +159,19 @@ pub fn kind_str(k: CompressKind) -> &'static str {
     }
 }
 
-/// Parse the `[min, max]` line numbers from an edit tool's `cat -n` echo (rows like
-/// "   12\t    fn foo() {"). Requires a tab right after the digits so prose numbers in the header
-/// ("The file ... has been updated") never match. Returns `None` when nothing parses (a new-file
-/// Write, an unfamiliar shape), which makes the re-edit join fall back to same-file matching.
-pub(crate) fn parse_edit_echo_range(echo: &str) -> Option<[u32; 2]> {
-    let mut lo = u32::MAX;
-    let mut hi = 0u32;
-    for line in echo.lines() {
-        let trimmed = line.trim_start();
-        let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if digits.is_empty() || !trimmed[digits.len()..].starts_with('\t') {
-            continue;
-        }
-        if let Ok(n) = digits.parse::<u32>() {
-            lo = lo.min(n);
-            hi = hi.max(n);
-        }
+/// A distinctive signature line from an edit's `old_string` or `new_string`: the longest meaningful
+/// line, whitespace-normalized and capped. It lets the re-edit harm signal tell a same-region redo
+/// (a later edit that sought the exact text this edit wrote) apart from a normal edit elsewhere in
+/// the same file (CTX-62). Taken from the tool input, so it does not depend on the echo format the
+/// way the old `cat -n` parse did. `None` when nothing distinctive enough exists, in which case the
+/// re-edit does not fire for that edit.
+pub(crate) fn edit_content_anchor(s: &str) -> Option<String> {
+    let best = s.lines().map(str::trim).max_by_key(|l| l.len()).unwrap_or("");
+    let norm = best.split_whitespace().collect::<Vec<_>>().join(" ");
+    if norm.chars().count() < 8 {
+        return None;
     }
-    (hi > 0 && lo != u32::MAX).then_some([lo, hi])
+    Some(norm.chars().take(160).collect())
 }
 
 /// Server prefix for an MCP tool name (`mcp__linear__list` -> `mcp__linear`), else None.
@@ -282,8 +280,13 @@ pub fn compute_shadow_decision(
             would_model_apply: None,
             model_proposed: None,
             self_dev: None,
-            edit_lines: if matches!(kind, CompressKind::Edit) {
-                parse_edit_echo_range(raw_output)
+            edit_wrote: if matches!(kind, CompressKind::Edit) {
+                edit_content_anchor(tool_input.get("new_string").and_then(|v| v.as_str()).unwrap_or(""))
+            } else {
+                None
+            },
+            edit_sought: if matches!(kind, CompressKind::Edit) {
+                edit_content_anchor(tool_input.get("old_string").and_then(|v| v.as_str()).unwrap_or(""))
             } else {
                 None
             },
@@ -306,30 +309,34 @@ mod tests {
     }
 
     #[test]
-    fn parses_edit_echo_line_range_and_skips_prose() {
-        let echo = "The file /a/b.rs has been updated. Here's the result of running `cat -n`:\n   10\tfn foo() {\n   11\t    bar();\n   12\t}";
-        assert_eq!(parse_edit_echo_range(echo), Some([10, 12]));
-        // No cat -n rows (a new-file Write confirmation) -> None, so the join falls back to same-file.
+    fn edit_content_anchor_takes_the_longest_meaningful_line() {
         assert_eq!(
-            parse_edit_echo_range("File created successfully at /a/b.rs"),
-            None
+            edit_content_anchor("if x {\n    let value = compute(a, b, c)\n}"),
+            Some("let value = compute(a, b, c)".into())
         );
+        // Nothing distinctive enough -> None, so a re-edit of it never fires.
+        assert_eq!(edit_content_anchor("x"), None);
+        assert_eq!(edit_content_anchor("  \n\t"), None);
     }
 
     #[test]
-    fn edit_decision_records_its_line_range() {
-        let echo = "The file /a/b.rs has been updated. Here's the result of running `cat -n`:\n  40\tlet x = 1;\n  41\tlet y = 2;";
+    fn edit_decision_records_what_it_wrote_and_sought_from_the_input() {
         let d = compute_shadow_decision(
             "Edit",
-            &serde_json::json!({"file_path": "/a/b.rs"}),
-            echo,
+            &serde_json::json!({
+                "file_path": "/a/b.rs",
+                "old_string": "let total = old_value + 1",
+                "new_string": "let total = new_value + 2",
+            }),
+            // The echo format no longer matters; anchors come from the input.
+            "The file /a/b.rs has been updated successfully.",
             &cfg(),
             None,
             "/tmp",
         )
         .expect("decision");
-        assert_eq!(d.features.edit_lines, Some([40, 41]));
-        assert!(d.features_json().contains("\"edit_lines\":[40,41]"));
+        assert_eq!(d.features.edit_wrote.as_deref(), Some("let total = new_value + 2"));
+        assert_eq!(d.features.edit_sought.as_deref(), Some("let total = old_value + 1"));
     }
 
     #[test]
