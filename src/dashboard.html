@@ -1205,8 +1205,8 @@
   function reportMetaChips(r) {
     const p = r.p, c = r.c, chips = [];
     if (c) chips.push(`<span class="report-chip"><strong>${num(c.joined)}</strong> judged</span>`);
-    if (p && (p.baseline_n || p.trimmed_collected || p.trimmed_n)) {
-      chips.push(`<span class="report-chip"><strong>${num(p.baseline_n || 0)}</strong> left untrimmed</span>`);
+    if (p && (p.baseline_n || p.baseline_collected || p.trimmed_collected || p.trimmed_n)) {
+      chips.push(`<span class="report-chip"><strong>${num(Math.max(p.baseline_n || 0, p.baseline_collected || 0))}</strong> left untrimmed</span>`);
       chips.push(`<span class="report-chip"><strong>${num(p.trimmed_collected || p.trimmed_n || 0)}</strong> trimmed</span>`);
     }
     if (p && p.correction_delta) {

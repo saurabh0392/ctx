@@ -807,6 +807,9 @@ struct ProofToolView {
     /// fresh trial reads as "0 trimmed" while trims are visibly happening; this matches what the
     /// user just watched (CTX-62).
     trimmed_collected: i64,
+    /// Left-untrimmed (control-arm) runs collected so far, joined or not. The baseline mirror of
+    /// `trimmed_collected` so the untrimmed slice is visible before each run's window closes.
+    baseline_collected: i64,
     /// True when this tool is judged by re-edit rather than re-read, for honest UI labels.
     is_edit_tool: bool,
 }
@@ -916,6 +919,7 @@ fn proof_tool_view(
         verdict: verdict.to_string(),
         applied_chars_saved: 0,
         trimmed_collected: o.trimmed_collected,
+        baseline_collected: o.baseline_collected,
         is_edit_tool: o.is_edit_tool,
     }
 }

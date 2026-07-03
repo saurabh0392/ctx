@@ -2226,6 +2226,10 @@ pub struct CausalToolOutcome {
     /// only counts scored (joined) trims, so during a fresh trial it sits at 0 while trims are
     /// already happening; this is the count that matches what the user just watched (CTX-62).
     pub trimmed_collected: i64,
+    /// Left-untrimmed (control-arm) runs collected so far, joined or not. The baseline mirror of
+    /// `trimmed_collected`, so the UI can show the untrimmed slice building the same way the trimmed
+    /// side does instead of reading 0 until each control run's window closes (CTX-62).
+    pub baseline_collected: i64,
     /// True when the re-touch counts above are re-edits, so the UI can label them honestly.
     pub is_edit_tool: bool,
 }
@@ -2263,7 +2267,8 @@ pub fn causal_tool_outcomes(
             COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {region_ok} AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0)
+            COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND explore_arm='control' THEN 1 ELSE 0 END),0)
          FROM compress_decisions
          WHERE 1=1{EXCLUDE_SELF_DEV}"
     );
@@ -2291,6 +2296,7 @@ pub fn causal_tool_outcomes(
             trimmed_corrections: r.get(5)?,
             trimmed_rereads: r.get(6)?,
             trimmed_collected: r.get(7)?,
+            baseline_collected: r.get(8)?,
         })
     };
     let rows = match tool_filter {
