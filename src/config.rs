@@ -729,14 +729,18 @@ fn default_similarity_min_confidence() -> f32 {
 fn default_similarity_min_avg_match() -> f32 {
     0.5
 }
+// Recall-first defaults tuned on the real corpus (CTX-65 / M-C): a leave-one-out kNN over session
+// embeddings covered 96% of the servers a held-out session actually used at K=5 while cutting the
+// menu ~37%. A missed tool is a reach that access-friction re-adds (CTX-66), so we bias toward
+// recall: a low neighbor fraction (union-like) and a mild similarity floor over a tight top-K.
 fn default_semantic_tool_mix_min_similarity() -> f32 {
-    0.75
+    0.3
 }
 fn default_semantic_tool_mix_min_neighbor_fraction() -> f32 {
-    0.6
+    0.2
 }
 fn default_semantic_tool_mix_top_k() -> usize {
-    10
+    5
 }
 
 /// One context mode: profile + feature toggles.
