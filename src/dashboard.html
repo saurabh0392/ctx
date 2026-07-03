@@ -793,13 +793,17 @@
     const verdict = w.net_ahead ? "Yes, net-ahead" : "Not yet";
     const count = `<div class="wnad-week">${num(aheadCount)} net-ahead week${aheadCount === 1 ? "" : "s"} so far &middot; ${esc(w.week)}</div>`;
 
-    // Condition 1: room reclaimed, explained.
+    // Condition 1: room reclaimed, explained. Both taxes: output trimmed + input pruned (CTX-68).
     const share = windowShare(w.reclaimed_tokens);
+    const outT = w.output_reclaimed_tokens || 0, inT = w.input_reclaimed_tokens || 0;
+    const breakdown = inT > 0
+      ? `<b>${fmtK(outT)}</b> trimmed from tool output plus <b>${fmtK(inT)}</b> of fixed tool-menu tax pruned from every request`
+      : `${fmtK(w.reclaimed_tokens)} tokens of tool output your agent never needed to read`;
     const reclaimCard = `<div class="wnad-c ${w.reclaim_ok ? "pass" : ""}">
       <div class="wnad-c-h"><span class="wnad-c-mark ${w.reclaim_ok ? "pass" : "wait"}">${w.reclaim_ok ? "✓" : "1"}</span> Enough room reclaimed</div>
       <div class="wnad-c-v">${fmtK(w.reclaimed_tokens)} <span>of ${fmtK(w.reclaim_bar_tokens)} tokens</span></div>
       <div class="wnad-bar"><div class="wnad-bar-fill" style="width:${reclaimPct}%"></div></div>
-      <div class="wnad-c-explain">ctx removed ${fmtK(w.reclaimed_tokens)} tokens of tool output your agent never needed to read, ${share}. To count as meaningful it has to clear ${fmtK(w.reclaim_bar_tokens)} (the lower of 50K or a quarter of everything reclaimable). ${w.reclaim_ok ? "Cleared." : `You are ${fmtK(short)} short.`}</div>
+      <div class="wnad-c-explain">ctx reclaimed ${breakdown}, ${share}. To count as meaningful it has to clear ${fmtK(w.reclaim_bar_tokens)} (the lower of 50K or a quarter of everything reclaimable). ${w.reclaim_ok ? "Cleared." : `You are ${fmtK(short)} short.`}</div>
     </div>`;
 
     // Condition 2: no extra work, explained.
