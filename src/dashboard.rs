@@ -377,6 +377,8 @@ async fn api_context_tool_bill() -> Json<crate::db::ToolMenuBill> {
             bill.total_misses = miss.total_misses;
             bill.miss_rate = miss.miss_rate;
             bill.miss_sessions = miss.sessions;
+            let th = crate::compress::tool_activation::ServerPruneThresholds::default();
+            let outcomes = crate::db::server_prune_outcomes(&conn, lookback);
             for s in &mut bill.servers {
                 s.pruned = cfg
                     .pruned_servers
@@ -388,6 +390,15 @@ async fn api_context_tool_bill() -> Json<crate::db::ToolMenuBill> {
                     .find(|m| m.prefix == s.prefix)
                     .map(|m| m.misses)
                     .unwrap_or(0);
+                s.prune_stage = outcomes
+                    .iter()
+                    .find(|o| o.prefix == s.prefix)
+                    .map(|o| {
+                        crate::compress::tool_activation::server_prune_stage(o, &th)
+                            .label()
+                            .to_string()
+                    })
+                    .unwrap_or_default();
             }
             Json(bill)
         }

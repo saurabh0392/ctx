@@ -2,6 +2,7 @@
 
 pub mod activation;
 pub mod classify;
+pub mod tool_activation;
 mod context;
 mod edit;
 pub mod edit_intent;

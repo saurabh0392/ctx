@@ -1351,8 +1351,12 @@
       const deadPct = s.catalog_tools > 0 ? Math.round((s.dead_tools / s.catalog_tools) * 100) : 0;
       const usedPct = Math.max(0, 100 - deadPct);
       const last = s.last_used ? String(s.last_used).slice(0, 10) : "never";
+      // Earn-it gate stage (CTX-67): what the causal auto-prune makes of this server.
+      const stageLabel = { candidate: "proving it's safe", earned: "prune earned", blocked: "reached for, consider undo" };
+      const pruneNote = stageLabel[s.prune_stage] || "reversible";
+      const noteColor = s.prune_stage === "blocked" ? "var(--danger)" : "var(--primary-lt)";
       const btn = s.pruned
-        ? '<span style="font-size:11px;color:var(--primary-lt);margin-right:9px">pruned, reversible</span>' +
+        ? '<span style="font-size:11px;color:' + noteColor + ';margin-right:9px">pruned, ' + pruneNote + '</span>' +
           '<button class="rwbtn" onclick="pruneServer(event,\'' + s.prefix + '\',true)">undo</button>'
         : '<button class="rwbtn" onclick="pruneServer(event,\'' + s.prefix + '\',false)" title="Hide this whole server. A reach re-adds it for the session.">Prune, save ' + fmtK(s.carried_tokens) + '/req</button>';
       return '<div class="bcard"' + (s.pruned ? ' style="opacity:.6"' : '') + '>' +

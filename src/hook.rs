@@ -388,6 +388,19 @@ pub fn user_prompt_submit() -> Result<()> {
         }
     }
 
+    // Autopilot server management (CTX-67 / M-E): when auto-apply is on, the earn-it gate may
+    // trial-hide a strongly dead-weight server or reverse a prune that started drawing reaches.
+    // Self-gated, fail-closed, reversible; a no-op unless the causal evidence supports an action.
+    if cfg.auto_apply_recommendations {
+        let (pruned, unpruned) = crate::compress::tool_activation::autopilot_manage_servers(&cfg);
+        if !pruned.is_empty() {
+            eprintln!("[ctx] autopilot trial-hid dead-weight server(s): {}", pruned.join(", "));
+        }
+        if !unpruned.is_empty() {
+            eprintln!("[ctx] autopilot re-added reached-for server(s): {}", unpruned.join(", "));
+        }
+    }
+
     let trace_effective = if auto_selected {
         Some(effective_profile.as_str())
     } else {
