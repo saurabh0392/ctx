@@ -862,19 +862,25 @@ pub fn tool_attribution(conn: &Connection) -> Vec<ToolAttribution> {
     // developer's own churn (exactly the source-heavy work trimming hurts most), so counting it would
     // overstate the per-tool suspect rate for everyone else. `features_json` is unambiguous here;
     // the LEFT-joined rewind_store has no such column.
+    // Re-touch that means harm for this tool: a same-region re-edit for edit tools (the
+    // content-anchor `outcome_edit_follow`, CTX-62), a same-path re-read for everything else. Using
+    // the column, not the `reread`/`reedit` text in `outcome_signals`, keeps edits off the old
+    // file-level signal that read as ~70% suspicion on normal multi-part editing.
+    let retouch = format!(
+        "(CASE WHEN {edit} THEN COALESCE(d.outcome_edit_follow,0) ELSE COALESCE(d.outcome_reread,0) END)",
+        edit = crate::outcome_signals::edit_tool_sql_in_list("d.tool_name")
+    );
     let sql = format!(
         "SELECT d.tool_name,
                 SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 THEN 1 ELSE 0 END),
                 SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
                          AND d.outcome_signals LIKE '%compression_workaround%' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
-                         AND d.outcome_signals LIKE '%reread%' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 AND {retouch}=1 THEN 1 ELSE 0 END),
                 SUM(CASE WHEN d.applied=1 AND d.lines_drop>0
                          AND r.expanded_at IS NOT NULL THEN 1 ELSE 0 END),
                 SUM(CASE WHEN d.applied=1 AND d.lines_drop>0 AND (
                          d.outcome_signals LIKE '%compression_workaround%'
-                      OR d.outcome_signals LIKE '%reread%'
-                      OR d.outcome_signals LIKE '%reedit%'
+                      OR {retouch}=1
                       OR r.expanded_at IS NOT NULL) THEN 1 ELSE 0 END)
          FROM compress_decisions d
          LEFT JOIN rewind_store r ON d.rewind_id = r.id
@@ -6239,8 +6245,9 @@ mod compress_decision_tests {
         insert_compress_decision(&conn, &trim("cmd-b", true)).unwrap();
         // Shadow decision with a suspect-looking signal: must be ignored (not applied).
         insert_compress_decision(&conn, &trim("cmd-c", false)).unwrap();
+        // Bash is not an edit tool, so its re-touch signal is the re-read column (CTX-62).
         conn.execute(
-            "UPDATE compress_decisions SET outcome_signals='[\"compression_workaround\",\"reread\"]' WHERE command_or_path='cmd-a'",
+            "UPDATE compress_decisions SET outcome_signals='[\"compression_workaround\",\"reread\"]', outcome_reread=1 WHERE command_or_path='cmd-a'",
             [],
         )
         .unwrap();
