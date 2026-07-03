@@ -241,7 +241,11 @@ pub fn path_role_of(path: &str) -> Option<&'static str> {
 }
 
 fn explore_rate_for(kind_label: &str, cfg: &Config) -> f64 {
-    if kind_label == "read" {
+    // Reads and edits are the working-file tools that only ever trim under a trial or activation, so
+    // without a control (left-untrimmed) arm they run 100% trimmed and can never build the baseline
+    // the causal gate compares against. They share the same explore slice so an edit trial can
+    // actually resolve (CTX-62), instead of reaching its trimmed target with nothing to compare.
+    if kind_label == "read" || kind_label == "edit" {
         cfg.compress_explore_read_rate
     } else {
         cfg.compress_explore_rate
@@ -837,6 +841,36 @@ mod tests {
         let d = decide_inner(&cfg, &reference_read(), 0.01);
         assert_eq!(d.explore_arm, None, "rate 0 disables the experiment");
         assert!(d.apply, "an eligible trial trims as before");
+    }
+
+    #[test]
+    fn exploration_gives_edits_a_control_arm_too() {
+        // An edit on trial with an explore slice must sometimes be left untrimmed, so it can build
+        // the baseline the causal gate compares against (CTX-62). Without it, edits run 100% trimmed
+        // and the trial can never resolve.
+        let cfg = Config {
+            compress_trial_tools: vec!["Edit".into()],
+            compress_explore_read_rate: 0.20,
+            ..read_trial_cfg(true)
+        };
+        let edit = ToolResult {
+            tool_name: "Edit".into(),
+            tool_input: json!({
+                "file_path": "/proj/src/foo.rs",
+                "old_string": "let a = 1",
+                "new_string": "let a = 2",
+            }),
+            raw_output: "some edited line of content here\n".repeat(600),
+            session_id: None,
+            cwd: "/proj".into(),
+            recent_intent_text: None,
+        };
+        let control = decide_inner(&cfg, &edit, 0.05);
+        assert_eq!(control.explore_arm, Some("control"));
+        assert!(!control.apply, "a control-arm edit is left untrimmed to build the baseline");
+        let treatment = decide_inner(&cfg, &edit, 0.80);
+        assert_eq!(treatment.explore_arm, Some("treatment"));
+        assert!(treatment.apply, "the rest still trim on trial");
     }
 
     #[test]
