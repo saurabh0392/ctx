@@ -495,12 +495,8 @@
       </div>
       <nav class="nav">
         <a data-view="home" onclick="go('home')">Home</a>
-        <a data-view="bill" onclick="go('bill')">Context bill</a>
-        <a data-view="toolbill" onclick="go('toolbill')">Tool tax</a>
-        <a data-view="loop" onclick="go('loop')">Tool report</a>
-        <a data-view="compaction" onclick="go('compaction')">Compaction</a>
-        <a data-view="surfaces" onclick="go('surfaces')">Surfaces</a>
-        <a data-view="activity" onclick="go('activity')">Activity</a>
+        <a data-view="see" onclick="go('see')">See</a>
+        <a data-view="save" onclick="go('save')">Save</a>
         <a data-view="settings" onclick="go('settings')">Settings</a>
         <span class="health" id="health"><span class="pip"></span><span id="health-txt">connecting</span></span>
       </nav>
@@ -508,37 +504,395 @@
   </header>
 
   <main class="wrap">
-    <!-- ══ HOME ══ -->
+
+    <!-- ══ HOME (guided story, clean light, CTX redesign 2026) ══ -->
     <section class="view on" id="view-home">
-      <div class="hero">
-        <div class="eyebrow"><span class="pip"></span> Context education and savings</div>
-        <h1 class="title">ctx makes your agent leaner without losing the thread.</h1>
-        <p class="lede">Shows where your agent's context goes and reclaims only the room it can prove is safe. Local, reversible, and the tool always runs in full.</p>
-        <div class="snapshot">
-          <div class="status"><span class="pip"></span><div class="big" id="home-status">Getting your numbers.</div></div>
-          <div class="savings" id="home-savings"></div>
-        </div>
-        <div class="control" id="home-control"></div>
+      <style>
+        /* Clean-light theme, scoped to Home so the other dark views are untouched. */
+        body.paper { background: #f6f7f4; }
+        body.paper .topbar { background: rgba(246,247,244,.8); border-bottom-color: #ecefe9; }
+        body.paper .brand-mark { color: #161a18; }
+        body.paper .brand-mark span { color: #0f7a54; }
+        body.paper .nav a { color: #565e59; }
+        body.paper .nav a:hover { color: #161a18; background: #eef1ec; }
+        body.paper .nav a.on { color: #0b5c40; background: rgba(15,122,84,.09); }
+        body.paper .health { color: #8a918c; }
+        body.paper .health .pip { background: #b9c1ba; }
+        body.paper .health.up .pip { background: #0f7a54; }
+
+        #view-home {
+          --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+          --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+          --accent-soft:rgba(15,122,84,.08); --warn:#9a5b12;
+          --fserif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+          --fsans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+          --fmono: ui-mono, ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+          --measure: 60ch;
+        }
+        .h2-wrap { max-width: 720px; margin: 0 auto; }
+        .h2-rail { position: fixed; left: max(20px, calc(50vw - 470px)); top: 50%;
+          transform: translateY(-50%); z-index: 10; display: flex; flex-direction: column; }
+        .h2-seg { display: flex; flex-direction: column; align-items: center; }
+        .h2-node { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--faint);
+          background: var(--paper); transition: .35s; }
+        .h2-node.on { border-color: var(--accent); background: var(--accent); }
+        .h2-line { width: 1.5px; height: 44px; background: var(--line); transition: .35s; }
+        .h2-seg.on .h2-line { background: var(--accent); }
+        .h2-nw { position: relative; display: flex; align-items: center; }
+        .h2-tag { position: absolute; left: 20px; font-family: var(--fmono); font-size: 10px;
+          letter-spacing: .1em; text-transform: uppercase; color: var(--faint); white-space: nowrap;
+          transition: .35s; }
+        .h2-seg.on .h2-tag { color: var(--accent-ink); }
+        @media (max-width: 1080px) { .h2-rail { display: none; } }
+
+        .h2-beat { padding: 90px 0; }
+        .h2-beat.h2-first { padding-top: 60px; }
+        .h2-eyebrow { font-family: var(--fmono); font-size: 11.5px; letter-spacing: .14em;
+          text-transform: uppercase; color: var(--accent-ink); display: inline-flex; gap: 9px; }
+        .h2-eyebrow .ix { color: var(--faint); }
+        h1.h2-lede { font-family: var(--fserif); font-weight: 500; font-size: clamp(30px, 5.2vw, 46px);
+          line-height: 1.1; letter-spacing: -.015em; margin-top: 20px; max-width: 18ch;
+          text-wrap: balance; color: var(--ink); }
+        h2.h2-head { font-family: var(--fserif); font-weight: 500; font-size: clamp(25px, 4vw, 35px);
+          line-height: 1.14; letter-spacing: -.012em; margin-top: 18px; max-width: 20ch;
+          text-wrap: balance; color: var(--ink); }
+        p.h2-body { font-family: var(--fsans); font-size: 17px; color: var(--muted); margin-top: 18px;
+          max-width: var(--measure); line-height: 1.6; }
+        p.h2-body b { color: var(--ink); font-weight: 600; }
+
+        .h2-figure { margin-top: 44px; display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+        .h2-num { font-family: var(--fmono); font-weight: 700; font-size: clamp(60px, 12vw, 118px);
+          line-height: .82; letter-spacing: -.04em; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .h2-unit { font-family: var(--fmono); font-size: 15px; color: var(--muted); }
+        .h2-cap { font-family: var(--fmono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+          color: var(--faint); margin-top: 6px; }
+        .h2-side { padding-bottom: 10px; }
+        .h2-warm { font-family: var(--fserif); font-size: clamp(22px, 3.4vw, 30px); color: var(--ink);
+          margin-top: 40px; max-width: 22ch; line-height: 1.2; font-weight: 500; }
+        .h2-subline { font-family: var(--fsans); font-size: 16px; color: var(--muted); margin-top: 24px;
+          max-width: var(--measure); line-height: 1.6; }
+        .h2-subline b { color: var(--ink); font-weight: 600; }
+        .h2-cta { display: inline-flex; align-items: center; gap: 9px; margin-top: 28px; font-family: var(--fsans);
+          font-size: 14.5px; font-weight: 600; color: var(--accent-ink); background: var(--accent-soft);
+          border: 1px solid rgba(15,122,84,.24); padding: 11px 18px; border-radius: 11px; cursor: pointer;
+          text-decoration: none; transition: background .18s; }
+        .h2-cta:hover { background: rgba(15,122,84,.13); }
+        .h2-cta:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+        .h2-ladder { margin-top: 42px; max-width: 860px; }
+        .h2-rungs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; }
+        .h2-rung { position: relative; padding: 0 6px; }
+        .h2-rung .h2-track { height: 2px; background: var(--line); border-radius: 2px; overflow: hidden; }
+        .h2-rung .h2-track i { display: block; height: 100%; width: 0; background: var(--accent);
+          transition: width .7s cubic-bezier(.22,.61,.36,1); border-radius: 2px; }
+        .h2-ladder.drawn .h2-rung.on .h2-track i { width: 100%; }
+        .h2-ladder.drawn .h2-rung.part .h2-track i { width: 55%; background: var(--warn); }
+        .h2-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--paper);
+          border: 2px solid var(--faint); position: absolute; top: -4.5px; left: 6px; transition: .5s .3s; }
+        .h2-ladder.drawn .h2-rung.on .h2-dot { border-color: var(--accent); background: var(--accent); }
+        .h2-ladder.drawn .h2-rung.part .h2-dot { border-color: var(--warn); background: var(--warn); }
+        .h2-rname { font-family: var(--fmono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+          color: var(--muted); margin-top: 15px; }
+        .h2-rcount { font-family: var(--fmono); font-size: 24px; font-weight: 700; color: var(--ink);
+          font-variant-numeric: tabular-nums; margin-top: 4px; letter-spacing: -.02em; }
+        .h2-rung.on .h2-rcount { color: var(--accent); }
+        .h2-rung.part .h2-rcount { color: var(--warn); }
+        .h2-rdesc { font-family: var(--fsans); font-size: 12.5px; color: var(--faint); margin-top: 5px;
+          line-height: 1.45; max-width: 20ch; }
+        .h2-kept { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 22px; }
+        .h2-kept b { color: var(--ink); }
+        .h2-revert { margin-top: 26px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px;
+          background: var(--raised); display: flex; gap: 13px; align-items: flex-start; max-width: var(--measure); }
+        .h2-revert .k { font-family: var(--fmono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+          color: var(--accent-ink); flex-shrink: 0; padding-top: 2px; }
+        .h2-revert p { font-family: var(--fsans); font-size: 14px; color: var(--muted); line-height: 1.55; }
+        .h2-revert p b { color: var(--ink); font-weight: 600; }
+        .h2-empty { font-family: var(--fsans); font-size: 15px; color: var(--muted); margin-top: 30px;
+          max-width: var(--measure); line-height: 1.6; }
+
+        .h2-facts { margin-top: 38px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+          background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+        .h2-fact { background: var(--raised); padding: 20px; }
+        .h2-fact .ft { font-family: var(--fmono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+          color: var(--faint); }
+        .h2-fact .fv { font-family: var(--fsans); font-size: 15px; color: var(--ink); margin-top: 9px;
+          line-height: 1.45; font-weight: 500; }
+        @media (max-width: 640px) { .h2-facts { grid-template-columns: 1fr; } }
+        .h2-restate { font-family: var(--fsans); font-size: 15px; color: var(--muted); margin-top: 26px;
+          max-width: var(--measure); line-height: 1.6; }
+        .h2-restate b { font-family: var(--fmono); color: var(--accent-ink); font-weight: 700; }
+
+        .h2-foot { border-top: 1px solid var(--line); margin-top: 30px; padding: 36px 0 90px; }
+        .h2-foot-nav { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+        .h2-foot-nav a { font-family: var(--fmono); font-size: 12px; letter-spacing: .04em; color: var(--muted);
+          text-decoration: none; cursor: pointer; }
+        .h2-foot-nav a:hover { color: var(--accent-ink); }
+        .h2-foot-note { font-family: var(--fsans); font-size: 12.5px; color: var(--faint); margin-top: 18px; }
+
+        .h2-reveal { opacity: 0; transform: translateY(18px);
+          transition: opacity .7s ease, transform .7s cubic-bezier(.22,.61,.36,1); }
+        .h2-reveal.in { opacity: 1; transform: none; }
+        @media (prefers-reduced-motion: reduce) {
+          .h2-reveal { opacity: 1; transform: none; transition: none; }
+          .h2-rung .h2-track i, .h2-dot, .h2-node, .h2-line { transition: none; }
+        }
+      </style>
+
+      <nav class="h2-rail" aria-hidden="true">
+        <div class="h2-seg" data-seg="0"><div class="h2-nw"><span class="h2-node"></span><span class="h2-tag">See</span></div><span class="h2-line"></span></div>
+        <div class="h2-seg" data-seg="1"><div class="h2-nw"><span class="h2-node"></span><span class="h2-tag">Save</span></div><span class="h2-line"></span></div>
+        <div class="h2-seg" data-seg="2"><div class="h2-nw"><span class="h2-node"></span><span class="h2-tag">Trust</span></div></div>
+      </nav>
+
+      <div class="h2-wrap">
+        <section class="h2-beat h2-first" id="h2-see">
+          <div class="h2-reveal">
+            <div class="h2-eyebrow"><span class="ix">01</span> See where your context goes</div>
+            <h1 class="h2-lede">ctx makes your agent leaner without losing the thread.</h1>
+          </div>
+          <div class="h2-reveal" id="h2-hero"></div>
+        </section>
+
+        <section class="h2-beat" id="h2-save">
+          <div class="h2-reveal">
+            <div class="h2-eyebrow"><span class="ix">02</span> Save only what is safe</div>
+            <h2 class="h2-head">It only cuts what your own sessions prove is safe.</h2>
+            <p class="h2-body">ctx watches a tool, tries trimming it on a slice of your real work, and keeps trimming only once that slice shows you did not have to <b>re-read or re-edit</b> to recover. Every tool climbs the same ladder. Nothing skips a rung.</p>
+          </div>
+          <div class="h2-reveal h2-ladder" id="h2-ladder"></div>
+        </section>
+
+        <section class="h2-beat" id="h2-trust">
+          <div class="h2-reveal">
+            <div class="h2-eyebrow"><span class="ix">03</span> Trust that it stays yours</div>
+            <h2 class="h2-head">Local, reversible, and on nobody's side.</h2>
+          </div>
+          <div class="h2-reveal">
+            <div class="h2-facts">
+              <div class="h2-fact"><div class="ft">Where it lives</div><div class="fv">SQLite on this machine. No account, no telemetry.</div></div>
+              <div class="h2-fact"><div class="ft">Who it watches</div><div class="fv">Claude Code and Cursor alike. It takes no side.</div></div>
+              <div class="h2-fact"><div class="ft">What it removes</div><div class="fv">Nothing you cannot get back. Every trim is one command from whole.</div></div>
+            </div>
+            <p class="h2-restate" id="h2-restate"></p>
+          </div>
+        </section>
+
+        <footer class="h2-foot h2-reveal">
+          <div class="h2-foot-nav">
+            <a onclick="go('bill')">Context bill</a>
+            <a onclick="go('toolbill')">Tool tax</a>
+            <a onclick="go('loop')">Tool report</a>
+            <a onclick="go('compaction')">Compaction</a>
+            <a onclick="go('surfaces')">Surfaces</a>
+            <a onclick="go('activity')">Activity</a>
+            <a onclick="go('settings')">Settings</a>
+          </div>
+          <div class="h2-foot-note">All local. Nothing leaves this machine.</div>
+        </footer>
       </div>
+    </section>
 
-      <div id="home-taxes"></div>
-
-      <div class="sec" id="home-wnad"></div>
-
-      <div class="sec">
-        <div class="sec-eyebrow">See, save, trust</div>
-        <div class="pillars">
-          <div class="pillar"><div class="pn">1</div><div class="pt">See where your context goes</div><div class="pb">The Context bill itemizes every tool's output, biggest sinks first, so you can see where your agent actually spends its context. No other tool shows you this.</div></div>
-          <div class="pillar"><div class="pn">2</div><div class="pt">Save the room that is safe to reclaim</div><div class="pb">ctx trims a tool only after your own sessions show that trimming it did not make the agent re-read or correct. The tool always runs in full, and a trimmed detail can be read again on demand.</div></div>
-          <div class="pillar"><div class="pn">3</div><div class="pt">Local, neutral, honest</div><div class="pb">Everything stays in SQLite on this machine. No account, no telemetry. ctx watches Claude Code and Cursor alike and takes no side between them.</div></div>
+    <!-- ══ SEE: output + input tax merged, clean light (pass 2) ══ -->
+    <section class="view" id="view-see">
+      <style>
+        #view-see { --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+          --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+          --accent-soft:rgba(15,122,84,.08); --warn:#9a5b12; --warn-soft:rgba(154,91,18,.1);
+          --fserif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+          --fsans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+          --fmono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; }
+        .see-wrap { max-width: 820px; margin: 0 auto; }
+        .see-top { padding: 40px 0 6px; }
+        .see-eyebrow0 { font-family: var(--fmono); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); }
+        .see-title { font-family: var(--fserif); font-weight: 500; font-size: clamp(30px,4.6vw,42px); line-height: 1.1; letter-spacing: -.015em; margin-top: 14px; max-width: 16ch; text-wrap: balance; color: var(--ink); }
+        .see-lede { font-family: var(--fsans); font-size: 16.5px; color: var(--muted); margin-top: 15px; max-width: 60ch; line-height: 1.6; }
+        .see-band-h { font-family: var(--fmono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent-ink); text-align: center; margin: 34px 0 16px; }
+        .see-taxes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .see-tax { position: relative; border: 1px solid var(--line); border-radius: 16px; background: var(--raised); padding: 24px 24px 20px; overflow: hidden; box-shadow: 0 1px 2px rgba(20,30,24,.03); }
+        .see-tax::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--accent); }
+        .see-tax-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .see-tax-name { font-family: var(--fserif); font-size: 21px; font-weight: 600; color: var(--ink); letter-spacing: -.01em; }
+        .see-tax-kind { font-family: var(--fmono); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-ink); background: var(--accent-soft); padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+        .see-tax-desc { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+        .see-tbig { font-family: var(--fmono); font-size: 36px; font-weight: 700; color: var(--ink); letter-spacing: -.03em; margin-top: 18px; font-variant-numeric: tabular-nums; line-height: 1; }
+        .see-u { font-family: var(--fsans); font-size: 12.5px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+        .see-split { display: flex; gap: 22px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+        .see-n { font-family: var(--fmono); font-size: 16px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+        .see-n.g { color: var(--accent-ink); }
+        .see-l { font-family: var(--fsans); font-size: 11px; color: var(--faint); margin-top: 2px; }
+        @media (max-width: 640px) { .see-taxes { grid-template-columns: 1fr; } }
+        .see-sec { margin-top: 44px; padding-top: 30px; border-top: 1px solid var(--line); }
+        .see-sec-eyebrow { font-family: var(--fmono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); display: inline-flex; align-items: center; gap: 8px; }
+        .see-sec-eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--accent); }
+        .see-sec-h { font-family: var(--fserif); font-weight: 500; font-size: clamp(22px,3vw,28px); margin-top: 10px; letter-spacing: -.01em; color: var(--ink); }
+        .see-note { font-family: var(--fsans); font-size: 13.5px; color: var(--muted); margin-top: 8px; max-width: 60ch; line-height: 1.55; }
+        .see-note b { color: var(--ink); font-weight: 600; }
+        .see-harm { font-family: var(--fsans); font-size: 13.5px; color: var(--muted); margin-top: 12px; }
+        .see-harm b.ok { color: var(--accent-ink); font-family: var(--fmono); }
+        .see-harm b.bad { color: var(--warn); font-family: var(--fmono); }
+        .see-rows { margin-top: 18px; }
+        .see-row { border: 1px solid var(--line); border-radius: 12px; background: var(--raised); margin-bottom: 8px; overflow: hidden; transition: border-color .15s; }
+        .see-row:hover { border-color: #d4dad2; }
+        .see-row.pruned { border-style: dashed; opacity: .82; }
+        .see-rhead { display: grid; grid-template-columns: minmax(96px,160px) 1fr auto; gap: 16px; align-items: center; padding: 15px 18px; cursor: pointer; }
+        .see-rname { font-family: var(--fmono); font-size: 13.5px; font-weight: 700; color: var(--ink); }
+        .see-rsub { display: block; font-family: var(--fsans); font-size: 11.5px; font-weight: 400; color: var(--faint); margin-top: 2px; }
+        .see-barwrap { min-width: 0; }
+        .see-bar { height: 7px; border-radius: 999px; background: #e9ece7; overflow: hidden; display: flex; }
+        .see-used { background: #cfd6cf; height: 100%; }
+        .see-recl { background: var(--accent); height: 100%; }
+        .see-barlbl { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 6px; display: flex; justify-content: space-between; gap: 10px; }
+        .see-hl { color: var(--accent-ink); white-space: nowrap; }
+        .see-meta { text-align: right; white-space: nowrap; }
+        .see-rv { font-family: var(--fmono); font-size: 15px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+        .see-rl { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+        .see-rcta { display: flex; align-items: center; gap: 12px; }
+        .see-caret { color: var(--faint); font-size: 11px; transition: transform .18s; }
+        .see-row.open .see-caret { transform: rotate(90deg); }
+        .see-detail { display: none; padding: 4px 18px 18px; border-top: 1px solid var(--line-soft); }
+        .see-row.open .see-detail { display: block; }
+        .see-dh { font-family: var(--fmono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 14px 0 8px; }
+        .see-src { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
+        .see-sn { font-family: var(--fmono); font-size: 12px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .see-sbar { width: 90px; height: 5px; background: #e9ece7; border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+        .see-sbar span { display: block; height: 100%; background: var(--faint); }
+        .see-st { font-family: var(--fmono); font-size: 11.5px; color: var(--faint); width: 66px; text-align: right; }
+        .see-diffbtn { font-family: var(--fsans); font-size: 11px; color: var(--muted); background: var(--paper); border: 1px solid var(--line); border-radius: 7px; padding: 3px 10px; cursor: pointer; }
+        .see-diffbtn:hover { color: var(--ink); border-color: var(--faint); }
+        .see-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+        .see-tool { font-family: var(--fmono); font-size: 11.5px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 7px; padding: 4px 9px; }
+        .see-deadnote { font-family: var(--fsans); font-size: 12.5px; color: var(--faint); margin-top: 12px; line-height: 1.55; max-width: 62ch; }
+        .see-deadnote b { color: var(--muted); font-family: var(--fmono); }
+        .see-prune { font-family: var(--fsans); font-size: 12.5px; font-weight: 600; padding: 7px 13px; border-radius: 9px; border: 1px solid rgba(15,122,84,.28); background: var(--accent-soft); color: var(--accent-ink); cursor: pointer; white-space: nowrap; }
+        .see-prune:hover { background: rgba(15,122,84,.13); }
+        .see-prune.restore { border-color: var(--line); background: var(--raised); color: var(--muted); }
+        .see-prune.restore:hover { color: var(--ink); border-color: var(--faint); }
+        .see-pruned-tag { font-family: var(--fmono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--line-soft); padding: 3px 8px; border-radius: 6px; }
+        .see-foot { border-top: 1px solid var(--line); margin-top: 56px; padding: 30px 0 80px; font-family: var(--fsans); font-size: 12.5px; color: var(--faint); }
+        /* light overrides for the reused trim-diff viewer (viewDiff renders .rwpre/.dl/.difflegend) */
+        #view-see .rwpre { background: #f0f2ee; color: var(--muted); border: 1px solid var(--line); }
+        #view-see .rwpre .dl.k { color: var(--muted); }
+        #view-see .rwpre .dl.d { color: var(--faint); background: var(--warn-soft); text-decoration-color: rgba(154,91,18,.5); }
+        #view-see .difflegend { background: #f0f2ee; }
+        #view-see .difflegend .k { color: var(--accent-ink); }
+        #view-see .difflegend .d { color: var(--warn); }
+      </style>
+      <div class="see-wrap">
+        <div class="see-top">
+          <div class="see-eyebrow0">See where your context goes</div>
+          <h1 class="see-title">Your context pays two taxes.</h1>
+          <p class="see-lede">Output is what your agent reads back from every tool. Input is the tool menu it carries on every request, whether it calls those tools or not. Here is both, itemized from your own sessions, biggest first.</p>
         </div>
+        <div id="see-band"></div>
+        <div id="see-out"></div>
+        <div id="see-in"></div>
+        <div class="see-foot">All local. Nothing leaves this machine. Any prune is one command back.</div>
       </div>
+    </section>
 
-      <div class="footer">
-        <span>All local. Nothing leaves this machine.</span>
-        <span class="link" onclick="go('bill')">Context bill</span>
-        <span class="link" onclick="go('settings')">Settings</span>
-        <span class="link" onclick="go('activity')">Activity</span>
+    <!-- ══ SAVE: tool report + surfaces + compaction merged, clean light (pass 3) ══ -->
+    <section class="view" id="view-save">
+      <style>
+        #view-save { --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+          --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+          --accent-soft:rgba(15,122,84,.08); --warn:#9a5b12; --warn-soft:rgba(154,91,18,.1);
+          --crit:#a52218; --crit-soft:rgba(165,34,24,.08);
+          --fserif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+          --fsans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+          --fmono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; }
+        .sv-wrap { max-width: 820px; margin: 0 auto; }
+        .sv-top { padding: 40px 0 6px; }
+        .sv-eyebrow0 { font-family: var(--fmono); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); }
+        .sv-title { font-family: var(--fserif); font-weight: 500; font-size: clamp(30px,4.6vw,42px); line-height: 1.1; letter-spacing: -.015em; margin-top: 14px; max-width: 15ch; text-wrap: balance; color: var(--ink); }
+        .sv-lede { font-family: var(--fsans); font-size: 16.5px; color: var(--muted); margin-top: 15px; max-width: 60ch; line-height: 1.6; }
+        .sv-ladder { margin-top: 32px; border: 1px solid var(--line); border-radius: 16px; background: var(--raised); padding: 24px 26px 22px; box-shadow: 0 1px 2px rgba(20,30,24,.03); }
+        .sv-rungs { display: grid; grid-template-columns: repeat(4,1fr); gap: 0; }
+        .sv-rung { position: relative; padding: 0 6px; }
+        .sv-rung .sv-track { height: 2px; background: var(--line); border-radius: 2px; overflow: hidden; }
+        .sv-rung .sv-track i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px; }
+        .sv-rung.on .sv-track i { width: 100%; } .sv-rung.part .sv-track i { width: 55%; background: var(--warn); }
+        .sv-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--paper); border: 2px solid var(--faint); position: absolute; top: -4.5px; left: 6px; }
+        .sv-rung.on .sv-dot { border-color: var(--accent); background: var(--accent); }
+        .sv-rung.part .sv-dot { border-color: var(--warn); background: var(--warn); }
+        .sv-rname { font-family: var(--fmono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-top: 15px; }
+        .sv-rcount { font-family: var(--fmono); font-size: 24px; font-weight: 700; color: var(--ink); margin-top: 4px; letter-spacing: -.02em; }
+        .sv-rung.on .sv-rcount { color: var(--accent); } .sv-rung.part .sv-rcount { color: var(--warn); }
+        .sv-rdesc { font-family: var(--fsans); font-size: 12px; color: var(--faint); margin-top: 4px; line-height: 1.4; max-width: 18ch; }
+        .sv-harm { font-family: var(--fsans); font-size: 13.5px; color: var(--muted); margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line-soft); line-height: 1.55; }
+        .sv-harm b.ok { color: var(--accent-ink); font-family: var(--fmono); }
+        .sv-harm b.bad { color: var(--crit); font-family: var(--fmono); }
+        .sv-sec { margin-top: 44px; }
+        .sv-sec-eyebrow { font-family: var(--fmono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); display: inline-flex; align-items: center; gap: 8px; }
+        .sv-sec-eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--accent); }
+        .sv-sec-h { font-family: var(--fserif); font-weight: 500; font-size: clamp(20px,2.6vw,25px); margin-top: 10px; letter-spacing: -.01em; color: var(--ink); }
+        .sv-note { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 7px; max-width: 62ch; line-height: 1.5; }
+        .sv-card { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); margin-top: 12px; overflow: hidden; }
+        .sv-card.earned { border-left: 3px solid var(--accent); }
+        .sv-card.trial { border-left: 3px solid var(--warn); }
+        .sv-card.off { border-left: 3px solid var(--crit); }
+        .sv-card.proving, .sv-card.watch { border-left: 3px solid var(--line); }
+        .sv-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 0; }
+        .sv-name { font-family: var(--fmono); font-size: 14px; font-weight: 700; color: var(--ink); flex: 1; word-break: break-all; }
+        .sv-pill { font-family: var(--fmono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+        .sv-pill.earned { color: var(--accent-ink); background: var(--accent-soft); }
+        .sv-pill.trial { color: var(--warn); background: var(--warn-soft); }
+        .sv-pill.off { color: var(--crit); background: var(--crit-soft); }
+        .sv-pill.proving, .sv-pill.watch { color: var(--muted); background: var(--line-soft); }
+        .sv-story { font-family: var(--fsans); font-size: 14px; color: var(--muted); line-height: 1.6; padding: 12px 20px 0; max-width: 72ch; }
+        .sv-story b { color: var(--ink); font-weight: 600; }
+        .sv-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 14px 20px 0; }
+        .sv-chip { font-family: var(--fmono); font-size: 11px; color: var(--muted); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; }
+        .sv-chip b { color: var(--ink); }
+        .sv-chip.good { color: var(--accent-ink); border-color: rgba(15,122,84,.24); }
+        .sv-chip.bad { color: var(--crit); border-color: rgba(165,34,24,.24); }
+        .sv-foot2 { display: flex; gap: 10px; align-items: center; padding: 16px 20px; flex-wrap: wrap; }
+        .sv-ev { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+        .sv-ev:hover { color: var(--ink); border-color: var(--faint); }
+        .sv-act { font-family: var(--fsans); font-size: 12.5px; font-weight: 600; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid rgba(15,122,84,.24); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+        .sv-act:hover { background: rgba(15,122,84,.13); }
+        .sv-evidence { display: none; padding: 0 20px 18px; }
+        .sv-card.open .sv-evidence { display: block; }
+        .sv-arms { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+        .sv-arm { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--paper); }
+        .sv-arm-h { font-family: var(--fmono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+        .sv-arm-n { font-family: var(--fmono); font-size: 13px; font-weight: 700; color: var(--ink); margin-top: 8px; }
+        .sv-mini { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); margin-top: 8px; }
+        .sv-mini .n { font-family: var(--fmono); font-size: 12.5px; font-weight: 700; color: var(--ink); min-width: 120px; word-break: break-all; }
+        .sv-mini .s { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); flex: 1; line-height: 1.45; }
+        .sv-mini .p { font-family: var(--fmono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); background: var(--line-soft); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+        .sv-agents { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+        .sv-agent { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 18px 20px; }
+        .sv-agent-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .sv-agent-name { font-family: var(--fserif); font-size: 17px; font-weight: 600; color: var(--ink); }
+        .sv-agent-pill { font-family: var(--fmono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+        .sv-agent-pill.acting { color: #fff; background: var(--accent); }
+        .sv-agent-pill.observing { color: var(--muted); background: var(--line-soft); }
+        .sv-agent-cap { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 12px; line-height: 1.55; }
+        .sv-agent-meta { font-family: var(--fmono); font-size: 11px; color: var(--faint); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+        @media (max-width: 640px) { .sv-agents { grid-template-columns: 1fr; } }
+        .sv-comp { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 20px 22px; margin-top: 14px; }
+        .sv-comp.good { border-color: rgba(15,122,84,.24); background: linear-gradient(180deg, rgba(15,122,84,.03), var(--raised)); }
+        .sv-comp-h { font-family: var(--fserif); font-size: 19px; font-weight: 600; color: var(--ink); }
+        .sv-comp.good .sv-comp-h { color: var(--accent-ink); }
+        .sv-comp-cap { font-family: var(--fsans); font-size: 13.5px; color: var(--muted); margin-top: 8px; line-height: 1.6; max-width: 64ch; }
+        .sv-empty { font-family: var(--fsans); font-size: 15px; color: var(--muted); margin-top: 20px; line-height: 1.6; max-width: 60ch; }
+        .sv-footer { border-top: 1px solid var(--line); margin-top: 56px; padding: 30px 0 80px; font-family: var(--fsans); font-size: 12.5px; color: var(--faint); }
+        /* light overrides for reused narrative helpers (longStory/deltaLine emit .good/.bad/.ev-callout) */
+        #view-save .good { color: var(--accent-ink); font-weight: 600; }
+        #view-save .bad { color: var(--crit); font-weight: 600; }
+        #view-save .ev-callout { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 12px; line-height: 1.5; }
+      </style>
+      <div class="sv-wrap">
+        <div class="sv-top">
+          <div class="sv-eyebrow0">Save only what is safe</div>
+          <h1 class="sv-title">The proof, tool by tool.</h1>
+          <p class="sv-lede">ctx trims a tool only after your own sessions show it was safe. This is the ladder every tool climbs, the evidence behind each verdict, and where ctx can act on your behalf.</p>
+        </div>
+        <div id="save-ladder"></div>
+        <div id="save-tools"></div>
+        <div id="save-agents"></div>
+        <div id="save-comp"></div>
+        <div class="sv-footer">All local. Nothing leaves this machine. Every verdict comes from your own sessions.</div>
       </div>
     </section>
 
@@ -647,12 +1001,89 @@
     </section>
 
     <!-- ══ SETTINGS ══ -->
+    <!-- ══ SETTINGS: clean light, Activity folded in as a sub-tab (pass 4) ══ -->
     <section class="view" id="view-settings">
-      <div style="padding-top:40px">
-        <div class="page-title">Settings</div>
-        <p class="page-sub">Everything saves to <code>~/.ctx/config.toml</code> on this machine. No telemetry, no account.</p>
+      <style>
+        #view-settings { --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+          --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+          --accent-soft:rgba(15,122,84,.08); --warn:#9a5b12; --crit:#a52218; --crit-soft:rgba(165,34,24,.08);
+          --fserif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+          --fsans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+          --fmono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; }
+        .st-wrap { max-width: 760px; margin: 0 auto; }
+        .st-head { padding: 40px 0 8px; }
+        .st-eyebrow { font-family: var(--fmono); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); }
+        .st-title { font-family: var(--fserif); font-weight: 500; font-size: clamp(30px,4.6vw,42px); line-height: 1.1; letter-spacing: -.015em; margin-top: 12px; color: var(--ink); }
+        .st-lede { font-family: var(--fsans); font-size: 16px; color: var(--muted); margin-top: 12px; max-width: 60ch; line-height: 1.6; }
+        .st-lede code, .st-card-sub code { font-family: var(--fmono); font-size: 13px; color: var(--ink); background: var(--line-soft); padding: 2px 6px; border-radius: 5px; }
+        .st-subtabs { display: flex; gap: 4px; margin-top: 28px; border-bottom: 1px solid var(--line); }
+        .st-subtab { font-family: var(--fmono); font-size: 12.5px; letter-spacing: .03em; color: var(--muted); background: none; border: none; padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+        .st-subtab.on { color: var(--accent-ink); border-bottom-color: var(--accent); }
+        .st-subtab:hover { color: var(--ink); }
+        .st-panel { display: none; } .st-panel.on { display: block; }
+        .st-card { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 22px 24px; margin-top: 16px; box-shadow: 0 1px 2px rgba(20,30,24,.03); }
+        .st-card-h { font-family: var(--fserif); font-size: 18px; font-weight: 600; color: var(--ink); }
+        .st-card-sub { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 5px; line-height: 1.5; max-width: 66ch; }
+        .st-card-body { margin-top: 16px; }
+        .st-statusline { display: flex; align-items: flex-start; gap: 11px; font-family: var(--fsans); font-size: 13.5px; color: var(--muted); margin-bottom: 16px; line-height: 1.5; }
+        .st-statusline .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
+        .st-statusline .dot.on { background: var(--accent); } .st-statusline .dot.off { background: var(--faint); }
+        .st-statusline b { color: var(--ink); } .st-statusline b.on { color: var(--accent-ink); }
+        .st-cta { font-family: var(--fsans); font-size: 13.5px; font-weight: 600; padding: 10px 18px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+        .st-cta:hover { background: var(--accent-ink); }
+        .st-cta.ghost { background: var(--raised); color: var(--muted); border-color: var(--line); }
+        .st-cta.ghost:hover { color: var(--ink); border-color: var(--faint); }
+        .st-cta.danger { background: var(--raised); color: var(--crit); border-color: var(--crit-soft); }
+        .st-cta.danger:hover { background: var(--crit-soft); }
+        .st-toggle { display: flex; align-items: flex-start; gap: 14px; padding: 14px 0; border-top: 1px solid var(--line-soft); }
+        .st-toggle:first-child { border-top: none; padding-top: 2px; }
+        .st-toggle-main { flex: 1; }
+        .st-toggle-t { font-family: var(--fsans); font-size: 13.5px; font-weight: 600; color: var(--ink); }
+        .st-toggle-d { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+        .st-switch { position: relative; width: 42px; height: 24px; flex-shrink: 0; cursor: pointer; }
+        .st-switch input { opacity: 0; width: 0; height: 0; }
+        .st-switch-ui { position: absolute; inset: 0; background: #dfe3dd; border: 1px solid var(--line); border-radius: 999px; transition: .18s; }
+        .st-switch-ui::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 2px; background: #fff; border-radius: 50%; transition: .18s; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+        .st-switch input:checked + .st-switch-ui { background: var(--accent); border-color: var(--accent); }
+        .st-switch input:checked + .st-switch-ui::before { transform: translateX(18px); }
+        .st-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+        .st-saved { font-family: var(--fmono); font-size: 11px; color: var(--accent-ink); opacity: 0; transition: opacity .2s; }
+        .st-saved.show { opacity: 1; }
+        .st-field label { font-family: var(--fsans); font-size: 12.5px; font-weight: 600; color: var(--ink); display: block; margin-bottom: 7px; }
+        .st-input { font-family: var(--fmono); background: var(--paper); border: 1px solid var(--line); color: var(--ink); font-size: 14px; padding: 10px 13px; border-radius: 10px; width: 220px; max-width: 100%; }
+        .st-input:focus { outline: none; border-color: var(--accent); }
+        .st-meta { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px 24px; }
+        .st-mk { font-family: var(--fmono); font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+        .st-mv { font-family: var(--fmono); font-size: 15px; color: var(--ink); font-weight: 700; margin-top: 4px; }
+        @media (max-width: 560px) { .st-meta { grid-template-columns: 1fr 1fr; } }
+        .st-act { display: grid; grid-template-columns: 60px 66px 1fr auto; gap: 14px; align-items: center; padding: 13px 0; border-top: 1px solid var(--line-soft); }
+        .st-act:first-child { border-top: none; }
+        .st-act-time { font-family: var(--fmono); font-size: 11px; color: var(--faint); }
+        .st-act-name { font-family: var(--fmono); font-size: 12px; font-weight: 700; color: var(--ink); }
+        .st-act-what { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+        .st-act-what .keep { color: var(--accent-ink); font-weight: 600; }
+        .st-act-what .drop { color: var(--muted); font-weight: 600; }
+        .st-act-sub { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 2px; word-break: break-all; }
+        .st-act-tag { font-family: var(--fmono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+        .st-act-tag.trimmed { color: var(--accent-ink); background: var(--accent-soft); }
+        .st-act-tag.watched, .st-act-tag.watching, .st-act-tag.protected { color: var(--muted); background: var(--line-soft); }
+        .st-empty { font-family: var(--fsans); font-size: 14px; color: var(--muted); line-height: 1.6; }
+        .st-footer { border-top: 1px solid var(--line); margin-top: 44px; padding: 30px 0 80px; font-family: var(--fsans); font-size: 12.5px; color: var(--faint); }
+      </style>
+      <div class="st-wrap">
+        <div class="st-head">
+          <div class="st-eyebrow">Yours, and only yours</div>
+          <h1 class="st-title">Settings</h1>
+          <p class="st-lede">Everything saves to <code>~/.ctx/config.toml</code> on this machine. No account, no telemetry.</p>
+        </div>
+        <div class="st-subtabs">
+          <button class="st-subtab on" id="st-tab-settings" onclick="settingsTab('settings')">Settings</button>
+          <button class="st-subtab" id="st-tab-activity" onclick="settingsTab('activity')">Activity</button>
+        </div>
+        <div class="st-panel on" id="st-panel-settings"></div>
+        <div class="st-panel" id="st-panel-activity"></div>
+        <div class="st-footer">All local. Nothing leaves this machine.</div>
       </div>
-      <div id="settings-body" style="margin-top:24px"></div>
     </section>
   </main>
 
@@ -671,23 +1102,30 @@
   async function post(u, body) { return fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); }
 
   // ── router ──
-  function go(view) {
-    const v = ["home", "bill", "toolbill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(view) ? view : "home";
-    location.hash = v;
+  // Merges: bill + toolbill -> See (pass 2); loop + compaction + surfaces -> Save (pass 3);
+  // activity -> Settings sub-tab (pass 4). Old hashes alias to the merged view for deep links.
+  const VIEWS = ["home", "see", "save", "settings"];
+  let wantActivityTab = false;
+  function normView(v) {
+    if (v === "bill" || v === "toolbill") return "see";
+    if (v === "loop" || v === "compaction" || v === "surfaces") return "save";
+    if (v === "activity") return "settings";
+    return VIEWS.includes(v) ? v : "home";
   }
+  function go(view) { location.hash = normView(view); }
   function render() {
-    const v = (location.hash || "#home").slice(1);
-    const view = ["home", "bill", "toolbill", "tools", "loop", "compaction", "surfaces", "activity", "settings"].includes(v) ? v : "home";
+    const raw = (location.hash || "#home").slice(1);
+    if (raw === "activity") wantActivityTab = true;
+    const view = normView(raw);
     document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === "view-" + view));
     document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view));
+    // Every customer surface is clean-light now.
+    document.body.classList.toggle("paper", view === "home" || view === "see" || view === "save" || view === "settings");
+    if (view !== "home") homeAnimated = false;
     window.scrollTo(0, 0);
     if (view === "home") loadHome();
-    if (view === "bill") loadBill();
-    if (view === "toolbill") loadToolBill();
-    if (view === "loop") loadLoop();
-    if (view === "compaction") loadCompaction();
-    if (view === "surfaces") loadSurfaces();
-    if (view === "activity") loadActivity();
+    if (view === "see") loadSee();
+    if (view === "save") loadSave();
     if (view === "settings") loadSettings();
   }
   window.addEventListener("hashchange", render);
@@ -902,64 +1340,110 @@
   async function loadHome() {
     let ctx, proof, bill, tbill;
     try { [ctx, proof, bill, tbill] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({}))]); setHealth(true); }
-    catch (e) { setHealth(false); $("home-status").textContent = "Could not reach ctx. Is the dashboard running?"; return; }
+    catch (e) { setHealth(false); const h = $("h2-hero"); if (h) h.innerHTML = `<div class="h2-warm">Could not reach ctx.</div><p class="h2-subline">Is the dashboard running? Start it and this page fills in.</p>`; return; }
 
     const stats = ctx.stats || {};
     const on = (ctx.preset || "off") !== "off";
-    const earned = (ctx.tools || []).filter((t) => t.earned);
-
-    // group every tool by where it sits on the ladder
     const rows = mergeTools(ctx, proof);
     const g = { earned: [], trial: [], proving: [], off: [], watch: [] };
     rows.forEach((r) => g[r.stage].push(r.tool));
     const total = stats.total || 0;
 
-    // plain status sentence: exactly what is happening, in order
-    if (!total) {
-      $("home-status").innerHTML = "ctx just started and has not seen any tool output yet, so it is not changing anything. Run a few agent turns and the picture fills in below.";
-    } else {
-      const parts = [`ctx has watched <b>${num(total)}</b> tool results and scored <b>${num(stats.joined)}</b> of them by what you did next.`];
-      if (g.earned.length) parts.push(`It has proven <b>${g.earned.length}</b> safe to trim (${g.earned.map((x) => esc(prettyTool(x))).join(", ")}) and is trimming ${g.earned.length > 1 ? "those" : "that one"} now. The tool still ran in full.`);
-      else parts.push(`Nothing has earned trimming yet, so your context is still untouched.`);
-      if (g.trial.length) parts.push(`<b>${g.trial.length}</b> ${g.trial.length > 1 ? "are" : "is"} on live trial (${g.trial.map((x) => esc(prettyTool(x))).join(", ")}).`);
-      if (g.proving.length) parts.push(`<b>${g.proving.length}</b> ${g.proving.length > 1 ? "are" : "is"} close to a verdict (${g.proving.map((x) => esc(prettyTool(x))).join(", ")}). Output stays whole until the proof locks.`);
-      $("home-status").innerHTML = parts.join(" ");
-    }
-
-    // control
-    $("home-control").innerHTML = on
-      ? `<div class="autoline"><span class="dot"></span><span>Autopilot is on. ctx turns on each tool by itself, the moment it proves safe on your work, and never before. You can pause it any time in <b class="link" onclick="go('settings')">Settings</b>.</span></div>`
-      : `<div class="optin"><button class="cta" onclick="setPreset('full')">Turn on autopilot</button><span class="optin-sub">One yes, then it is hands-off. ctx will only ever trim a tool after your own work proves it is safe, and the tool always runs in full.</span></div>`;
-
-    $("home-taxes").innerHTML = bothTaxes(bill, tbill);
-    $("home-wnad").innerHTML = wnadScoreboard(ctx.wnad || [], ctx.insight_actions || {});
-
-    // savings, up top beside the summary
-    const safe = proof.safe_chars_saved || 0, trial = proof.trial_chars_saved || 0;
-    // honest harm figure: corrections and re-reads on the trimmed results ctx could check against
-    // what you did next. Spans earned and testing trims, so it is the real "on trimmed calls" rate.
-    const tn = proof.trimmed_n_total || 0, tc = proof.trimmed_corrections_total || 0, tr = proof.trimmed_rereads_total || 0;
-    const harmLine = tn > 0
-      ? `On the ${num(tn)} trimmed results ctx could check, the agent corrected ${tc} and re-read ${tr}. That is ${pct((tc + tr) / tn)} of trimmed calls.`
-      : "";
-    // Reclaimed so far: the one all-time number, both taxes. Output trims (chars to tokens) plus
-    // input prunes (already tokens). This equals the sum of the two tax cards below, so the page
-    // tells one story instead of three different saved figures.
+    // The one all-time number, both taxes: output trims (chars to tokens) plus input prunes (already
+    // tokens). Same figure repeated in beat 1 and beat 3, never two disagreeing numbers.
     const outReclaimed = tok((bill && bill.total_reclaimed_chars) || 0);
     const inReclaimed = (tbill && tbill.total_reclaimed_tokens) || 0;
     const reclaimed = outReclaimed + inReclaimed;
-    const snap = $("home-savings").parentElement;
+
+    // BEAT 1: See. Lead with the number when there is one, an honest watching state when there is not.
+    const hero = $("h2-hero");
     if (reclaimed > 0) {
-      snap.classList.remove("solo");
-      $("home-savings").style.display = "";
-      $("home-savings").className = "savings";
-      $("home-savings").innerHTML = `<div class="sv-label">Reclaimed so far</div><div class="sv-val">~${fmtK(reclaimed)}<span class="sv-unit">tokens</span></div><div class="sv-sub"><b>${fmtK(outReclaimed)}</b> trimmed from tool output plus <b>${fmtK(inReclaimed)}</b> of tool-menu tax pruned, kept out of your window and counting. It compounds every later turn.</div>`;
+      const sub = g.earned.length
+        ? `<b>Autopilot is trimming ${g.earned.length} tool${g.earned.length > 1 ? "s" : ""}</b> it proved safe on your own work. The tools still run in full, and nothing here needs a decision from you.`
+        : `Reclaimed from tool output trimmed and tool menu pruned. ctx keeps going only where your own work proves it safe.`;
+      hero.innerHTML =
+        `<div class="h2-figure"><div class="h2-num" id="h2-count" data-to="${reclaimed}">0</div>`
+        + `<div class="h2-side"><div class="h2-unit">tokens</div><div class="h2-cap">reclaimed so far</div></div></div>`
+        + `<p class="h2-subline">${sub}</p>`
+        + `<a class="h2-cta" onclick="scrollToBeat('h2-save')">See how it decides &darr;</a>`;
+    } else if (total > 0) {
+      const line = on
+        ? `Autopilot is on. The moment a trim proves safe on your own work, ctx starts reclaiming room and a number appears here.`
+        : `Turn on autopilot in <b class="h2-link" onclick="go('settings')" style="cursor:pointer;color:var(--accent-ink)">Settings</b> and ctx starts reclaiming room the moment a trim proves safe on your work.`;
+      hero.innerHTML =
+        `<div class="h2-warm">Watching ${num(total)} tool results, reclaiming nothing yet.</div>`
+        + `<p class="h2-subline">${line}</p>`
+        + `<a class="h2-cta" onclick="scrollToBeat('h2-save')">See how it decides &darr;</a>`;
     } else {
-      snap.classList.add("solo");
-      $("home-savings").style.display = "none";
-      $("home-savings").innerHTML = "";
+      hero.innerHTML =
+        `<div class="h2-warm">ctx just started and has not seen any tool output yet.</div>`
+        + `<p class="h2-subline">Run a few agent turns. ctx watches what your tools return, then reclaims the room it can prove is safe. Your number appears right here.</p>`
+        + `<a class="h2-cta" onclick="scrollToBeat('h2-save')">See how it will decide &darr;</a>`;
     }
-    void harmLine; void trial; void safe;
+
+    // BEAT 2: Save. The earn-it ladder, live counts.
+    const ladder = $("h2-ladder");
+    if (total > 0) {
+      const rung = (name, count, cls, desc) =>
+        `<div class="h2-rung ${count > 0 ? cls : ""}"><div class="h2-track"><i></i></div><span class="h2-dot"></span>`
+        + `<div class="h2-rname">${name}</div><div class="h2-rcount">${num(count)}</div><div class="h2-rdesc">${desc}</div></div>`;
+      const kept = g.off.length
+        ? `<div class="h2-kept"><b>${g.off.length}</b> kept whole after testing, where trimming looked worse than leaving it. That is the gate refusing, exactly as it should.</div>`
+        : "";
+      ladder.innerHTML =
+        `<div class="h2-rungs">`
+        + rung("Watching", g.watch.length, "on", "measured, not touched yet")
+        + rung("Trial", g.trial.length, "part", "trimmed on a control slice")
+        + rung("Proving", g.proving.length, "part", "gathering enough evidence")
+        + rung("Earned", g.earned.length, "on", "safe on your work, trimming")
+        + `</div>` + kept
+        + `<div class="h2-revert"><span class="k">reversible</span><p>A trimmed detail already ran in full and is one command back. <b>ctx never removes a capability</b>, it only shows less of a result until your work says it can.</p></div>`;
+    } else {
+      ladder.innerHTML = `<div class="h2-empty">No tools on the ladder yet. As you work, each tool starts at Watching and only moves toward Earned once your own sessions show that trimming it was safe.</div>`;
+    }
+
+    // BEAT 3: Trust. The same one number, restated.
+    const restate = $("h2-restate");
+    restate.innerHTML = reclaimed > 0
+      ? `All told, ctx has reclaimed <b>${fmtK(reclaimed)} tokens</b> of context on your work so far, output trimmed and tool menu pruned, counted once and the same everywhere you see it.`
+      : `Nothing reclaimed yet, and ctx will not pretend otherwise. The number moves here only after a trim proves safe on your own runs.`;
+
+    initHomeMotion();
+  }
+
+  // ── Home motion: scroll reveals, count-up, ladder draw, left rail. All respect reduced motion. ──
+  let homeIO = null, homeLadderIO = null, homeRailIO = null, homeAnimated = false;
+  function prefersReduced() { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+  function scrollToBeat(id) { const el = $(id); if (el) el.scrollIntoView({ behavior: prefersReduced() ? "auto" : "smooth", block: "start" }); }
+  function animateCount(el, to) {
+    const dur = 1400, t0 = performance.now();
+    (function step(t) { const p = Math.min(1, (t - t0) / dur); const e = 1 - Math.pow(1 - p, 3); el.textContent = fmtK(Math.round(to * e)); if (p < 1) requestAnimationFrame(step); })(t0);
+  }
+  // Animate only when entering Home. loadHome also runs on the 20s refresh; on those it should paint
+  // the final state instantly so the number does not re-count and the beats do not flash.
+  function initHomeMotion() {
+    const animate = !homeAnimated && !prefersReduced();
+    if (homeIO) homeIO.disconnect();
+    const reveals = document.querySelectorAll("#view-home .h2-reveal");
+    if (!animate) { reveals.forEach((el) => el.classList.add("in")); }
+    else {
+      homeIO = new IntersectionObserver((es) => { es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("in"); homeIO.unobserve(e.target); } }); }, { threshold: 0.15 });
+      reveals.forEach((el) => { el.classList.remove("in"); homeIO.observe(el); });
+    }
+    const c = $("h2-count");
+    if (c) { const to = parseInt(c.dataset.to, 10) || 0; if (animate) animateCount(c, to); else c.textContent = fmtK(to); }
+    if (homeLadderIO) homeLadderIO.disconnect();
+    const ladder = $("h2-ladder");
+    if (ladder) {
+      if (!animate) ladder.classList.add("drawn");
+      else { ladder.classList.remove("drawn"); homeLadderIO = new IntersectionObserver((es) => { es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("drawn"); homeLadderIO.unobserve(e.target); } }); }, { threshold: 0.35 }); homeLadderIO.observe(ladder); }
+    }
+    if (homeRailIO) homeRailIO.disconnect();
+    const beats = ["h2-see", "h2-save", "h2-trust"].map((id) => $(id));
+    const segs = [...document.querySelectorAll("#view-home .h2-seg")];
+    homeRailIO = new IntersectionObserver((es) => { es.forEach((e) => { if (!e.isIntersecting) return; const i = beats.indexOf(e.target); segs.forEach((s, si) => { s.classList.toggle("on", si <= i); const n = s.querySelector(".h2-node"); if (n) n.classList.toggle("on", si <= i); }); }); }, { threshold: 0.5 });
+    beats.forEach((b) => b && homeRailIO.observe(b));
+    homeAnimated = true;
   }
 
   // Tidy a raw tool name for a chip: "mcp__claude_ai_Linear__save_issue" -> "Linear: save issue".
@@ -1139,7 +1623,7 @@
     </div>`;
   }
 
-  async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadLoop(); }
+  async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadSave(); }
 
   // Aggregate "suspected trim cost" across tools (CTX-54). Replaces the always-zero gate-corrections
   // count. A suspect is an applied trim the agent behaved as if it needed back (worked around, re-read,
@@ -1294,6 +1778,95 @@
     } catch (e) { box.textContent = "(failed to load)"; }
   }
 
+  // ════ SEE: output + input tax, one clean-light ledger (pass 2) ════
+  function seeTaxCard(name, kind, desc, big, unit, splits) {
+    const s = splits.map(([n, l, g]) => `<div><div class="see-n${g ? " g" : ""}">${n}</div><div class="see-l">${l}</div></div>`).join("");
+    return `<div class="see-tax"><div class="see-tax-top"><span class="see-tax-name">${name}</span><span class="see-tax-kind">${kind}</span></div><div class="see-tax-desc">${desc}</div><div class="see-tbig">${big} <span class="see-u">${unit}</span></div><div class="see-split">${s}</div></div>`;
+  }
+  // A stored tool name may be short ("list_issues") or the full mcp path; show a clean method label.
+  function prettyMethod(name) {
+    let s = String(name || "");
+    if (s.startsWith("mcp__")) { const p = s.split("__"); s = p[2] || p[p.length - 1] || ""; }
+    return s.replace(/_/g, " ");
+  }
+  // Shorten a long source label (file path or command) for a ledger row. Shared by See and the bill.
+  function shortSource(s) {
+    s = String(s || "").trim();
+    if (!s || s === "(unlabeled)") return "(unlabeled)";
+    if (s.length <= 46) return s;
+    if (s.indexOf("/") >= 0) { const p = s.split("/").filter(Boolean); return ".../" + p.slice(-2).join("/"); }
+    return s.slice(0, 44) + "...";
+  }
+  async function loadSee() {
+    let bill, tbill;
+    try { [bill, tbill] = await Promise.all([getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({}))]); setHealth(true); }
+    catch (e) { setHealth(false); $("see-band").innerHTML = '<div class="see-note" style="margin-top:22px">Could not reach ctx. Is the dashboard running?</div>'; $("see-out").innerHTML = ""; $("see-in").innerHTML = ""; return; }
+
+    // Two-tax band: output is cumulative (variable), input is per request (fixed). Each card keeps
+    // one unit so a per-request number never sits next to a lifetime total (they are labelled).
+    const outSink = tok(bill.total_sink_chars || 0), outReclaimable = tok(bill.total_reclaimable_chars || 0), outReclaimed = tok(bill.total_reclaimed_chars || 0);
+    const carried = tbill.total_carried_tokens || 0, dead = tbill.total_dead_tokens || 0;
+    const prunedPerReq = (tbill.servers || []).filter((s) => s.pruned).reduce((a, s) => a + (s.carried_tokens || 0), 0);
+    $("see-band").innerHTML =
+      '<div class="see-band-h">Two taxes, one context window</div><div class="see-taxes">' +
+      seeTaxCard("Output tax", "variable &middot; per result", "what your agent reads back from every tool", fmtK(outSink), "tokens read back",
+        [[fmtK(outReclaimable), "reclaimable", false], [fmtK(outReclaimed), "reclaimed so far", true]]) +
+      seeTaxCard("Input tax", "fixed &middot; per request", "the tool menu it carries whether it calls those tools or not", fmtK(carried), "tokens / request",
+        [[fmtK(dead), "dead weight / request", false], [fmtK(prunedPerReq), "already pruned / request", true]]) +
+      '</div>';
+
+    // Output section: itemized tool output, biggest first, expandable to sources and trim diffs.
+    const tools = (bill.tools || []).filter((t) => (t.sink_chars || 0) > 0);
+    const outHead = '<div class="see-sec-eyebrow">Output tax</div><h2 class="see-sec-h">What your agent reads back.</h2>';
+    if (!tools.length) {
+      $("see-out").innerHTML = `<section class="see-sec">${outHead}<div class="see-note">Nothing to itemize yet. Run a few agent turns and your output bill fills in here.</div></section>`;
+    } else {
+      // Cap the long tail: show the top few sinks, summarize the rest so the page stays scannable.
+      const TOPN = 8;
+      const shown = tools.slice(0, TOPN), rest = tools.slice(TOPN);
+      const rows = shown.map((t) => {
+        const rp = t.sink_chars > 0 ? Math.max(0, Math.round((t.reclaimable_chars / t.sink_chars) * 100)) : 0;
+        const usedW = Math.max(0, 100 - rp);
+        const srcs = (t.sources || []).filter((s) => (s.sink_chars || 0) > 0);
+        const srcMax = srcs.length ? srcs[0].sink_chars : 1;
+        const srcHtml = srcs.length ? '<div class="see-dh">Top sources</div>' + srcs.map((s) => `<div class="see-src"><span class="see-sn" title="${esc(s.label)}">${esc(shortSource(s.label))}</span><span class="see-sbar"><span style="width:${Math.max(4, Math.round((s.sink_chars / srcMax) * 100))}%"></span></span><span class="see-st">${fmtK(tok(s.sink_chars))} tok</span></div>`).join("") : "";
+        const rewinds = t.rewinds || [];
+        const rwHtml = rewinds.length ? '<div class="see-dh">Recent trims, see what ctx cut</div>' + rewinds.map((rw) => `<div class="see-src"><span class="see-sn" title="${esc(rw.source)}">${esc(shortSource(rw.source))}</span><span class="see-st">${fmtK(tok(rw.chars))} tok</span><button class="see-diffbtn" onclick="viewDiff(event,'${rw.id}')">diff</button></div><div class="rwpre" id="rw-${rw.id}"></div>`).join("") : "";
+        const detail = (srcHtml || '<div class="see-note" style="margin-top:14px">No per-source detail recorded.</div>') + rwHtml;
+        return `<div class="see-row"><div class="see-rhead" onclick="this.parentNode.classList.toggle('open')"><div class="see-rname">${esc(prettyTool(t.tool))}</div><div class="see-barwrap"><div class="see-bar"><span class="see-used" style="width:${usedW}%"></span><span class="see-recl" style="width:${rp}%"></span></div><div class="see-barlbl"><span>${num(t.decisions)} calls</span><span class="see-hl">${rp}% trimmable</span></div></div><div class="see-rcta"><div class="see-meta"><div class="see-rv">${fmtK(tok(t.sink_chars))}</div><div class="see-rl">tokens</div></div><span class="see-caret">&#9656;</span></div></div><div class="see-detail">${detail}</div></div>`;
+      }).join("");
+      const restTok = tok(rest.reduce((a, t) => a + (t.sink_chars || 0), 0));
+      const more = rest.length ? `<div class="see-note" style="margin-top:10px">Plus ${rest.length} smaller tool${rest.length === 1 ? "" : "s"}, ${fmtK(restTok)} tokens combined. The room is in the ones above.</div>` : "";
+      $("see-out").innerHTML = `<section class="see-sec">${outHead}<p class="see-note">Biggest first. The green share is what ctx could safely reclaim, measured on your own runs.</p><div class="see-rows">${rows}</div>${more}</section>`;
+    }
+
+    // Input section: per-server menu tax, ranked by dead weight, expandable to the tools you use.
+    const servers = (tbill.servers || []).filter((s) => (s.catalog_tools || 0) > 0);
+    const days = tbill.lookback_days || 30;
+    const inHead = '<div class="see-sec-eyebrow">Input tax</div><h2 class="see-sec-h">What it carries on every request.</h2>';
+    if (!servers.length) {
+      $("see-in").innerHTML = `<section class="see-sec">${inHead}<div class="see-note">No MCP servers seen yet. Connect one and invoke a tool, and your input bill fills in here.</div></section>`;
+    } else {
+      const harm = tbill.total_misses > 0
+        ? `Harm read: <b class="bad">${num(tbill.total_misses)} tool-miss${tbill.total_misses === 1 ? "" : "es"}</b> in ${days} days. A prune must not raise this.`
+        : `Harm read: <b class="ok">0 tool-misses</b> in ${days} days. Nothing hidden has been reached for, so a prune has nothing to walk back.`;
+      const rows = servers.map((s) => {
+        const deadPct = s.catalog_tools > 0 ? Math.round((s.dead_tools / s.catalog_tools) * 100) : 0;
+        const usedW = Math.max(0, 100 - deadPct);
+        const used = s.used_tool_names || [];
+        const chips = used.length ? used.map((n) => `<span class="see-tool">${esc(prettyMethod(n))}</span>`).join("") : '<span class="see-deadnote" style="margin:0">none recorded in this window</span>';
+        const deadNote = s.dead_tools > 0 ? `<div class="see-deadnote"><b>${num(s.dead_tools)}</b> more carried but never called in ${days} days. ctx counts these from the catalog size; it does not store each dead tool's name or the vendor's description, so it will not list what it cannot verify. A prune removes the whole server menu, reversibly.</div>` : "";
+        const btn = s.pruned
+          ? `<button class="see-prune restore" onclick="pruneServer(event,'${esc(s.server)}',true)">Restore</button>`
+          : `<button class="see-prune" onclick="pruneServer(event,'${esc(s.server)}',false)">Prune ${num(s.dead_tools)} dead</button>`;
+        const tag = s.pruned ? '<span class="see-pruned-tag">pruned</span>' : "";
+        const barLbl = s.pruned ? `<span class="see-hl">pruned, ${fmtK(s.carried_tokens)} reclaimed / request</span>` : `<span class="see-hl">${deadPct}% dead weight</span>`;
+        return `<div class="see-row${s.pruned ? " pruned" : ""}"><div class="see-rhead" onclick="this.parentNode.classList.toggle('open')"><div class="see-rname">${esc(s.server)}<span class="see-rsub">${num(s.invoked_tools)} of ${num(s.catalog_tools)} tools used</span></div><div class="see-barwrap"><div class="see-bar"><span class="see-used" style="width:${usedW}%"></span><span class="see-recl" style="width:${deadPct}%"></span></div><div class="see-barlbl"><span>${fmtK(s.carried_tokens)} tok / request</span>${barLbl}</div></div><div class="see-rcta">${tag}${btn}<span class="see-caret">&#9656;</span></div></div><div class="see-detail"><div class="see-dh">Tools you use (${num(used.length)})</div><div class="see-tools">${chips}</div>${deadNote}</div></div>`;
+      }).join("");
+      $("see-in").innerHTML = `<section class="see-sec">${inHead}<p class="see-note">Ranked by dead weight: tools carried but never called. The green share is prunable, reversibly.</p><div class="see-harm">${harm}</div><div class="see-rows">${rows}</div></section>`;
+    }
+  }
+
   async function loadBill() {
     let b;
     try { b = await getJSON("/api/context/bill"); setHealth(true); }
@@ -1379,7 +1952,7 @@
     try { ev.currentTarget.disabled = true; } catch (e) {}
     try { await post("/api/context/prune-server", { server: server, unprune: !!unprune }); }
     catch (e) {}
-    loadToolBill();
+    loadSee();
   }
   async function loadToolBill() {
     let b;
@@ -1485,6 +2058,96 @@
   }
 
   // ════ TOOL REPORT (narrative-first; was Loop health, CTX-35) ════
+  // ════ SAVE: the proof surface, clean light (pass 3). Reuses the narrative helpers (longStory,
+  // deltaLine, shortMsg) so the verdicts read exactly as the old Tool report, just restyled. ════
+  function saveCard(r, autopilot, minB, minT) {
+    const p = r.p || {}, stage = r.stage;
+    const PILL = { earned: "Earned", trial: "On trial", off: "Kept whole", proving: "Collecting proof", watch: "Watching" };
+    const story = longStory(r, autopilot, minB);
+    const runs = (p.baseline_n || 0) + (p.trimmed_n || 0);
+    const chips = [];
+    if (runs) chips.push(`<span class="sv-chip"><b>${num(runs)}</b> runs</span>`);
+    const deltaTip = "Change versus leaving the output whole. At or below zero means trimming did not cost you an extra look-back or fix. A large negative just means the trimmed runs went back even less often.";
+    if (p.reread_delta) chips.push(`<span class="sv-chip ${p.reread_delta.diff <= 0 ? "good" : "bad"}" title="${deltaTip}">${retouchNoun(r.tool)} ${signedPts(p.reread_delta)}</span>`);
+    if (p.correction_delta && p.correction_delta.diff != null) chips.push(`<span class="sv-chip ${p.correction_delta.diff <= 0 ? "good" : "bad"}" title="${deltaTip}">fixes ${signedPts(p.correction_delta)}</span>`);
+    const hasEv = (p.baseline_n || 0) > 0 || (p.trimmed_n || 0) > 0;
+    const arms = hasEv ? `<div class="sv-arms"><div class="sv-arm"><div class="sv-arm-h">Trimmed</div><div class="sv-arm-n">${num(p.trimmed_n || 0)} runs</div></div><div class="sv-arm"><div class="sv-arm-h">Left whole</div><div class="sv-arm-n">${num(p.baseline_n || 0)} runs</div></div></div>` : "";
+    const evidence = hasEv ? arms + deltaLine(r) : "";
+    const evBtn = evidence ? `<button class="sv-ev" onclick="this.closest('.sv-card').classList.toggle('open')">Show the evidence</button>` : "";
+    let act = "";
+    if (stage === "watch") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
+    else if (stage === "trial") act = `<button class="sv-ev" onclick="trial('${esc(r.tool)}',false)">Stop the trial</button>`;
+    else if (stage === "proving" && p.verdict !== "unclear") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
+    else if (stage === "off") act = `<button class="sv-ev" onclick="trial('${esc(r.tool)}',true)">Run the test again</button>`;
+    const foot = (evBtn || act) ? `<div class="sv-foot2">${evBtn}${act}</div>` : "";
+    return `<div class="sv-card ${stage}"><div class="sv-head"><span class="sv-name">${esc(prettyTool(r.tool))}</span><span class="sv-pill ${stage}">${PILL[stage] || stage}</span></div><div class="sv-story">${story}</div>${chips.length ? `<div class="sv-chips">${chips.join("")}</div>` : ""}${foot}<div class="sv-evidence">${evidence}</div></div>`;
+  }
+  async function loadSave() {
+    let ctx, proof;
+    try { [ctx, proof] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] }))]); setHealth(true); }
+    catch (e) { setHealth(false); $("save-ladder").innerHTML = '<div class="sv-empty">Could not reach ctx. Is the dashboard running?</div>'; $("save-tools").innerHTML = ""; $("save-agents").innerHTML = ""; $("save-comp").innerHTML = ""; return; }
+
+    const rows = mergeTools(ctx, proof);
+    const g = { earned: [], trial: [], proving: [], off: [], watch: [] };
+    rows.forEach((r) => g[r.stage].push(r));
+    const autopilot = (ctx.preset || "off") !== "off";
+    const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
+
+    // Ladder summary + the harm read: the one bar every tool clears.
+    const rung = (name, count, cls, desc) => `<div class="sv-rung ${count > 0 ? cls : ""}"><div class="sv-track"><i></i></div><span class="sv-dot"></span><div class="sv-rname">${name}</div><div class="sv-rcount">${num(count)}</div><div class="sv-rdesc">${desc}</div></div>`;
+    const tn = proof.trimmed_n_total || 0, tc = proof.trimmed_corrections_total || 0;
+    const harm = tn > 0
+      ? `Harm read: <b class="ok">${num(tn)} trimmed results</b> checked against what you did next. <b class="${tc > 0 ? "bad" : "ok"}">${num(tc)} correction${tc === 1 ? "" : "s"}.</b> On every earned tool, your re-reads stayed at or below the rate when the output was left whole. That is the whole bar a tool has to clear.`
+      : `Nothing has been trimmed yet, so there is no harm to read. As tools earn trim, this fills with the corrections and re-reads ctx checked against your own next moves.`;
+    const keptLine = g.off.length ? ` <b class="bad">${num(g.off.length)} kept whole</b> after testing, where trimming looked worse than leaving it.` : "";
+    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", g.watch.length, "on", "measured, not touched")}${rung("Trial", g.trial.length, "part", "trimmed on a control slice")}${rung("Proving", g.proving.length, "part", "gathering evidence")}${rung("Earned", g.earned.length, "on", "safe, trimming now")}</div><div class="sv-harm">${harm}${keptLine}</div></div>`;
+
+    // Tool cards, grouped like the old report: spotlight, proving, then a quiet watch list.
+    let body = "";
+    if (!rows.length) {
+      body = `<div class="sv-empty">No tool has enough trim-eligible runs yet. As you work, each tool gets a verdict here.</div>`;
+    } else {
+      const spotlight = [...g.earned, ...g.trial, ...g.off];
+      if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Earned it</div><h2 class="sv-sec-h">Trimming now, because your work proved it safe.</h2><p class="sv-note">These run in full. ctx only shortens what the agent reads back, and a trimmed detail is one command away. In each chip, a value at or below zero means trimming did not raise that signal versus leaving the output whole, so below zero is the safe side.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT)).join("")}</section>`;
+      if (g.proving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${g.proving.map((r) => saveCard(r, autopilot, minB, minT)).join("")}</section>`;
+      const watchShown = g.watch.filter((r) => (r.c && r.c.decisions >= 10) || (r.p && (r.p.baseline_n || r.p.trimmed_n))).slice(0, 12);
+      if (watchShown.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Watching quietly</div><h2 class="sv-sec-h">Measured, nothing changed.</h2>${watchShown.map((r) => `<div class="sv-mini"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${shortMsg(r, autopilot, minB)}</span><span class="p">watching</span></div>`).join("")}</section>`;
+      const watchMore = g.watch.length - watchShown.length;
+      if (watchMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(watchMore)} more tools with lighter usage are not shown.</p>`;
+    }
+    $("save-tools").innerHTML = body;
+
+    // Where ctx acts: one honest line per agent it has seen.
+    const SURF_ACT = { "claude-code": "acting", "cursor": "observing", "codex": "observing" };
+    const SURF_CAP = {
+      "claude-code": "ctx trims MCP results and long tool output here, live, once a tool has earned it.",
+      "cursor": "ctx reads Cursor's own transcripts, so your Cursor work sits here too. Live inside Cursor it trims earned MCP results; built-in Read and Grep stay observe-only.",
+    };
+    const seen = (ctx.surfaces || []).filter((s) => s.seen);
+    if (seen.length) {
+      const cards = seen.map((s) => {
+        const name = SURFACE_NAME[s.surface] || s.surface;
+        const act = SURF_ACT[s.surface] || "observing";
+        const ago = s.last_seen ? timeAgo(s.last_seen) : "n/a";
+        return `<div class="sv-agent"><div class="sv-agent-top"><span class="sv-agent-name">${esc(name)}</span><span class="sv-agent-pill ${act}">${act}</span></div><div class="sv-agent-cap">${SURF_CAP[s.surface] || ""}</div><div class="sv-agent-meta">last seen ${ago}</div></div>`;
+      }).join("");
+      $("save-agents").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Where ctx acts</div><h2 class="sv-sec-h">One honest layer under every agent.</h2><p class="sv-note">No agent vendor measures the others. This is the only place they sit together, on your own work.</p><div class="sv-agents">${cards}</div></section>`;
+    } else { $("save-agents").innerHTML = ""; }
+
+    // Context pressure: the health read plus the one lever. No by-agent grid, no correlation footnote.
+    const comp = (ctx.compaction || []).find((s) => s.surface === "claude-code");
+    let compCard;
+    if (comp && comp.confidence === "observed" && (comp.compaction_events || 0) > 0) {
+      const n = comp.compaction_events || 0, sess = comp.sessions_with_compaction || 0;
+      compCard = `<div class="sv-comp"><div class="sv-comp-h">Compacted ${num(n)} time${n === 1 ? "" : "s"} across ${num(sess)} session${sess === 1 ? "" : "s"}.</div><div class="sv-comp-cap">Each one means the agent ran out of room and summarized older detail away for the rest of that session. The lever that reduces it: split the session once the task shifts, so a fresh window starts empty. The <span onclick="go('see')" style="color:var(--accent-ink);cursor:pointer">See</span> page shows what is filling the window.</div></div>`;
+    } else if (comp && comp.confidence === "observed") {
+      compCard = `<div class="sv-comp good"><div class="sv-comp-h">Your sessions stay under the limit.</div><div class="sv-comp-cap">Across the Claude Code sessions ctx has seen, your agent has not had to compact once. No mid-session detail was summarized away. If a session ever does compact, it shows up here with the one lever that reduces it: split the session once the task shifts.</div></div>`;
+    } else {
+      compCard = `<div class="sv-comp"><div class="sv-comp-h">Nothing to read yet.</div><div class="sv-comp-cap">ctx has not indexed Claude Code sessions on this machine yet. Once you run a few, this shows how often your agent hits its context limit.</div></div>`;
+    }
+    $("save-comp").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Context pressure</div><h2 class="sv-sec-h">How close your sessions run to the limit.</h2>${compCard}</section>`;
+  }
+
   async function loadLoop() {
     let ctx, proof, mp;
     try {
@@ -1724,69 +2387,85 @@
 
   // ════ SETTINGS ════
   let _settings = null;
+  // Client-side sub-tab toggle. Panels and buttons are static, so this survives the 20s refresh.
+  function settingsTab(name) {
+    ["settings", "activity"].forEach((n) => {
+      const t = $("st-tab-" + n), p = $("st-panel-" + n);
+      if (t) t.classList.toggle("on", n === name);
+      if (p) p.classList.toggle("on", n === name);
+    });
+  }
   async function loadSettings() {
-    let ctx, s, profs;
-    try { [ctx, s, profs] = await Promise.all([getJSON("/api/context"), getJSON("/api/settings"), getJSON("/api/profiles").catch(() => [])]); setHealth(true); }
-    catch (e) { setHealth(false); $("settings-body").innerHTML = `<div class="empty">Could not reach ctx.</div>`; return; }
+    let ctx, s;
+    try { [ctx, s] = await Promise.all([getJSON("/api/context"), getJSON("/api/settings")]); setHealth(true); }
+    catch (e) { setHealth(false); $("st-panel-settings").innerHTML = `<div class="st-empty" style="margin-top:16px">Could not reach ctx. Is the dashboard running?</div>`; return; }
     _settings = s;
     const on = (ctx.preset || "off") !== "off";
-    const tgl = (id, on, t, d) => `<div class="toggle-row"><div class="toggle-main"><div class="toggle-t">${t}</div><div class="toggle-d">${d}</div></div><label class="switch"><input type="checkbox" id="${id}" ${on ? "checked" : ""} onchange="saveToggle('${id}')"><span class="switch-ui"></span></label></div>`;
-
-    const profRows = (profs || []).map((p) => `<div class="prof"><div class="prof-main"><div class="prof-name">${esc(p.display || p.slug)}</div><div class="prof-meta">${num(p.tool_count)} tools, ${num(p.server_count)} servers${p.tokens_per_turn ? ", ~" + fmtK(p.tokens_per_turn) + " tokens/turn" : ""}</div></div>${p.active ? '<span class="prof-active">active</span>' : `<button class="mini-btn" onclick="switchProfile('${esc(p.slug)}')">Use this</button>`}</div>`).join("") || `<div class="toggle-d">No profiles yet.</div>`;
-
+    const tgl = (id, checked, t, d) => `<div class="st-toggle"><div class="st-toggle-main"><div class="st-toggle-t">${t}</div><div class="st-toggle-d">${d}</div></div><label class="st-switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""} onchange="saveToggle('${id}')"><span class="st-switch-ui"></span></label></div>`;
     const rc = s.row_counts || {};
-    $("settings-body").innerHTML = `
-      <div class="card">
-        <div class="card-h">Autopilot</div>
-        <div class="card-sub">When autopilot is on, ctx trims a tool the moment it proves safe on your own work, and never before. Pausing keeps ctx watching and proving, but stops it changing any output.</div>
-        <div class="card-body">
-          <div class="autoline" style="margin-bottom:16px"><span class="dot" style="background:${on ? "var(--primary)" : "var(--t4)"}"></span><span>${on ? 'Autopilot is <b style="color:var(--primary-lt)">on</b>. ctx trims each tool that has earned it, and the tool still runs in full.' : "Autopilot is <b>off</b>. ctx is only watching and proving. It will not change any output until you turn it on."}</span></div>
-          ${on ? `<button class="cta danger" onclick="setPresetFrom('off')">Pause autopilot</button>` : `<button class="cta" onclick="setPresetFrom('full')">Turn on autopilot</button>`}
+
+    // Settings panel. Profiles card removed in pass 4: tool-menu management is now per-server on See.
+    $("st-panel-settings").innerHTML = `
+      <div class="st-card">
+        <div class="st-card-h">Autopilot</div>
+        <div class="st-card-sub">When autopilot is on, ctx trims a tool the moment it proves safe on your own work, and never before. Pausing keeps ctx watching and proving, but stops it changing any output.</div>
+        <div class="st-card-body">
+          <div class="st-statusline"><span class="dot ${on ? "on" : "off"}"></span><span>${on ? 'Autopilot is <b class="on">on</b>. ctx trims each tool that has earned it, and the tool still runs in full.' : "Autopilot is <b>off</b>. ctx is only watching and proving. It will not change any output until you turn it on."}</span></div>
+          ${on ? `<button class="st-cta danger" onclick="setPresetFrom('off')">Pause autopilot</button>` : `<button class="st-cta" onclick="setPresetFrom('full')">Turn on autopilot</button>`}
         </div>
       </div>
-
-      <div class="card">
-        <div class="card-h">Privacy and data</div>
-        <div class="card-sub">Control what ctx keeps locally. Nothing leaves this machine unless you export it.</div>
-        <div class="card-body">
+      <div class="st-card">
+        <div class="st-card-h">Privacy and data</div>
+        <div class="st-card-sub">Control what ctx keeps locally. Nothing leaves this machine unless you export it.</div>
+        <div class="st-card-body">
           ${tgl("set-store-prompt", !!s.store_prompt_text, "Store prompt text", "Keeps the start of each message in SQLite for Activity and similarity. Turn off for metrics only.")}
           ${tgl("set-embed", !!s.embeddings_enabled, "Session embeddings", "Builds local vector fingerprints of sessions for auto-profile and adaptive prefix.")}
           ${tgl("set-compress", s.compress_enabled !== false, "Output compression pipeline", "The master switch for trimming. With it off, ctx never trims even when a tool has earned it.")}
-          <div class="row-actions">
-            <button class="cta ghost" onclick="exportDb()">Export ctx.db</button>
-            <button class="cta ghost" onclick="purgePrompts()">Purge prompt text</button>
-            <button class="cta danger" onclick="deleteData()">Delete all indexed data</button>
-            <span class="saved" id="saved-privacy">saved</span>
-          </div>
+          <div class="st-actions"><button class="st-cta ghost" onclick="exportDb()">Export ctx.db</button><button class="st-cta ghost" onclick="purgePrompts()">Purge prompt text</button><button class="st-cta danger" onclick="deleteData()">Delete all indexed data</button><span class="st-saved" id="saved-privacy">saved</span></div>
         </div>
       </div>
-
-      <div class="card">
-        <div class="card-h">Spend cap</div>
-        <div class="card-sub">Optional monthly budget for the spend guard. Leave blank for no cap.</div>
-        <div class="card-body">
-          <div class="field"><label for="set-budget">Monthly budget (USD)</label><input class="input" type="number" min="0" step="10" id="set-budget" value="${s.monthly_budget_usd != null ? s.monthly_budget_usd : ""}"></div>
-          <div class="row-actions"><button class="cta ghost" onclick="saveBudget()">Save budget</button><span class="saved" id="saved-budget">saved</span></div>
+      <div class="st-card">
+        <div class="st-card-h">Spend cap</div>
+        <div class="st-card-sub">Optional monthly budget for the spend guard. Leave blank for no cap.</div>
+        <div class="st-card-body">
+          <div class="st-field"><label for="set-budget">Monthly budget (USD)</label><input class="st-input" type="number" min="0" step="10" id="set-budget" value="${s.monthly_budget_usd != null ? s.monthly_budget_usd : ""}" placeholder="no cap"></div>
+          <div class="st-actions"><button class="st-cta ghost" onclick="saveBudget()">Save budget</button><span class="st-saved" id="saved-budget">saved</span></div>
         </div>
       </div>
-
-      <div class="card">
-        <div class="card-h">Profiles</div>
-        <div class="card-sub">Which MCP tool filter is active. ctx strips tool schemas you rarely invoke before the model sees them.</div>
-        <div class="card-body">${profRows}</div>
-      </div>
-
-      <div class="card">
-        <div class="card-h">Your data</div>
-        <div class="card-sub">Local storage only. No telemetry.</div>
-        <div class="card-body"><div class="meta-grid">
-          <div><div class="mk">Database size</div><div class="mv">${fmtBytes(s.db_size_bytes)}</div></div>
-          <div><div class="mk">Sessions</div><div class="mv">${num(rc.sessions)}</div></div>
-          <div><div class="mk">Tool invocations</div><div class="mv">${num(rc.tool_invocations)}</div></div>
-          <div><div class="mk">Tracking since</div><div class="mv" style="font-size:13px">${esc(s.ctx_active_since || "n/a")}</div></div>
-          <div><div class="mk">Last ingest</div><div class="mv" style="font-size:13px">${esc(s.last_ingest_at || "n/a")}</div></div>
+      <div class="st-card">
+        <div class="st-card-h">Your data</div>
+        <div class="st-card-sub">Local storage only. No telemetry. Tool-menu pruning now lives on the <span onclick="go('see')" style="color:var(--accent-ink);cursor:pointer">See</span> page, per server.</div>
+        <div class="st-card-body"><div class="st-meta">
+          <div><div class="st-mk">Database size</div><div class="st-mv">${fmtBytes(s.db_size_bytes)}</div></div>
+          <div><div class="st-mk">Sessions</div><div class="st-mv">${num(rc.sessions)}</div></div>
+          <div><div class="st-mk">Tool invocations</div><div class="st-mv">${num(rc.tool_invocations)}</div></div>
+          <div><div class="st-mk">Tracking since</div><div class="st-mv" style="font-size:13px">${s.ctx_active_since ? esc(String(s.ctx_active_since).slice(0, 10)) : "n/a"}</div></div>
+          <div><div class="st-mk">Last ingest</div><div class="st-mv" style="font-size:13px">${s.last_ingest_at ? esc(timeAgo(s.last_ingest_at)) : "n/a"}</div></div>
         </div></div>
       </div>`;
+
+    // Activity panel: the running record, folded in from the old Activity tab.
+    const feed = ctx.feed || [];
+    if (!feed.length) {
+      $("st-panel-activity").innerHTML = `<div class="st-card"><div class="st-card-h">Recent activity</div><div class="st-card-sub">The running record behind every verdict.</div><div class="st-card-body"><div class="st-empty">No tool results recorded yet. Run a few agent turns and they show up here.</div></div></div>`;
+    } else {
+      const rows = feed.slice(0, 40).map((r) => {
+        const meaningfulKind = r.kind && r.kind !== "generic";
+        const rawLabel = (r.kind && r.kind.startsWith("git")) ? "git" : (meaningfulKind ? r.kind : (r.tool_name || "tool"));
+        const label = rawLabel.toString().slice(0, 10).toLowerCase();
+        const drop = r.lines_drop || 0, total = r.lines_total || 0;
+        let what, tag;
+        if (r.protected && drop > 0) { what = `Kept <span class="keep">all ${total} lines</span>, set nothing aside. Looks like a file you might edit.`; tag = "protected"; }
+        else if (drop <= 0) { what = `Looked at this and kept <span class="keep">all ${total} lines</span>. Nothing worth trimming.`; tag = "watched"; }
+        else if (r.applied) { what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. The tool still ran in full.`; tag = "trimmed"; }
+        else { what = `Would set aside <span class="drop">${drop} lines</span>, keep <span class="keep">${r.lines_keep || 0}</span>. Still only watching this tool.`; tag = "watching"; }
+        const sub = r.command_or_path ? `<div class="st-act-sub">${esc(String(r.command_or_path).slice(0, 70))}</div>` : "";
+        return `<div class="st-act"><span class="st-act-time">${esc(timeAgo(r.ts))}</span><span class="st-act-name">${esc(label)}</span><span><div class="st-act-what">${what}</div>${sub}</span><span class="st-act-tag ${tag}">${tag}</span></div>`;
+      }).join("");
+      $("st-panel-activity").innerHTML = `<div class="st-card"><div class="st-card-h">Recent activity</div><div class="st-card-sub">The running record behind every verdict. Watched means nothing changed. Trimmed means a tool that earned it; the tool still ran in full, ctx only shortened what the agent read back.</div><div class="st-card-body">${rows}</div></div>`;
+    }
+
+    if (wantActivityTab) { settingsTab("activity"); wantActivityTab = false; }
   }
 
   function fmtBytes(b) { b = b || 0; if (b > 1e9) return (b / 1e9).toFixed(1) + " GB"; if (b > 1e6) return (b / 1e6).toFixed(1) + " MB"; if (b > 1000) return (b / 1000).toFixed(0) + " KB"; return b + " B"; }
