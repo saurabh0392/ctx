@@ -1145,6 +1145,7 @@
   // activity -> Settings sub-tab (pass 4). Old hashes alias to the merged view for deep links.
   const VIEWS = ["home", "see", "save", "settings"];
   let wantActivityTab = false;
+  let lastRenderedView = null;
   function normView(v) {
     if (v === "bill" || v === "toolbill") return "see";
     if (v === "loop" || v === "compaction" || v === "surfaces") return "save";
@@ -1161,7 +1162,9 @@
     // Every customer surface is clean-light now.
     document.body.classList.toggle("paper", view === "home" || view === "see" || view === "save" || view === "settings");
     if (view !== "home") homeAnimated = false;
-    window.scrollTo(0, 0);
+    // Only jump to top on an actual view change (navigation), never on the 20s refresh or a focus
+    // event, which would otherwise yank the user's scroll position back up.
+    if (view !== lastRenderedView) { window.scrollTo(0, 0); lastRenderedView = view; }
     if (view === "home") loadHome();
     if (view === "see") loadSee();
     if (view === "save") loadSave();
