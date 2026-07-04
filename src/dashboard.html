@@ -1221,7 +1221,7 @@
       const cls = p.reread_delta.verdict === "harmful" ? " bad" : p.reread_delta.verdict === "safe" ? " good" : " warn";
       chips.push(`<span class="report-chip${cls}">${retouchNoun(r.tool)} ${signedPts(p.reread_delta)}</span>`);
     }
-    if (p && p.applied_chars_saved) chips.push(`<span class="report-chip good">${fmtK(p.applied_chars_saved)} chars saved</span>`);
+    if (p && p.applied_chars_saved) chips.push(`<span class="report-chip good">${fmtK(tok(p.applied_chars_saved))} tokens saved</span>`);
     return chips.join("");
   }
 
