@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctx Settings surface, redesign prototype</title>
+<style>
+  :root {
+    --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+    --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+    --accent-soft:rgba(15,122,84,.08); --warn:#9a5b12; --crit:#a52218; --crit-soft:rgba(165,34,24,.08);
+    --fserif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+    --fsans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --fmono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  /* Committed clean light, same as Home / See / Save. */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: var(--fsans); line-height: 1.6; -webkit-font-smoothing: antialiased; min-height: 100vh; }
+  ::selection { background: var(--accent-soft); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 28px; }
+
+  header.bar { position: sticky; top: 0; z-index: 20; backdrop-filter: saturate(1.4) blur(10px); background: color-mix(in srgb, var(--paper) 82%, transparent); border-bottom: 1px solid var(--line-soft); }
+  .bar-in { max-width: 760px; margin: 0 auto; padding: 15px 28px; display: flex; align-items: center; justify-content: space-between; }
+  .mark { font-family: var(--fmono); font-size: 15px; font-weight: 700; letter-spacing: -.02em; }
+  .mark b { color: var(--accent); }
+  .nav { display: flex; gap: 4px; }
+  .nav a { font-family: var(--fmono); font-size: 12px; color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 8px; }
+  .nav a.on { color: var(--accent-ink); background: var(--accent-soft); }
+  .nav a:hover { color: var(--ink); }
+
+  .head { padding: 52px 0 8px; }
+  .eyebrow { font-family: var(--fmono); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); }
+  h1.title { font-family: var(--fserif); font-weight: 500; font-size: clamp(30px,4.6vw,42px); line-height: 1.1; letter-spacing: -.015em; margin-top: 14px; }
+  p.lede { font-family: var(--fsans); font-size: 16px; color: var(--muted); margin-top: 14px; max-width: 60ch; line-height: 1.6; }
+  p.lede code { font-family: var(--fmono); font-size: 13.5px; color: var(--ink); background: var(--line-soft); padding: 2px 6px; border-radius: 5px; }
+
+  /* subtabs */
+  .subtabs { display: flex; gap: 4px; margin-top: 30px; border-bottom: 1px solid var(--line); }
+  .subtab { font-family: var(--fmono); font-size: 12.5px; letter-spacing: .03em; color: var(--muted); background: none; border: none; padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .subtab.on { color: var(--accent-ink); border-bottom-color: var(--accent); }
+  .subtab:hover { color: var(--ink); }
+  .panel { display: none; } .panel.on { display: block; }
+
+  .card { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 22px 24px; margin-top: 16px; box-shadow: 0 1px 2px rgba(20,30,24,.03); }
+  .card-h { font-family: var(--fserif); font-size: 18px; font-weight: 600; color: var(--ink); }
+  .card-sub { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 5px; line-height: 1.5; max-width: 66ch; }
+  .card-body { margin-top: 16px; }
+  .statusline { display: flex; align-items: flex-start; gap: 11px; font-size: 13.5px; color: var(--muted); margin-bottom: 16px; line-height: 1.5; }
+  .statusline .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
+  .statusline .dot.on { background: var(--accent); } .statusline .dot.off { background: var(--faint); }
+  .statusline b { color: var(--ink); }
+  .statusline b.on { color: var(--accent-ink); }
+
+  .cta { font-family: var(--fsans); font-size: 13.5px; font-weight: 600; padding: 10px 18px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  .cta:hover { background: var(--accent-ink); }
+  .cta.ghost { background: var(--raised); color: var(--muted); border-color: var(--line); }
+  .cta.ghost:hover { color: var(--ink); border-color: var(--faint); }
+  .cta.danger { background: var(--raised); color: var(--crit); border-color: var(--crit-soft); }
+  .cta.danger:hover { background: var(--crit-soft); }
+
+  .toggle-row { display: flex; align-items: flex-start; gap: 14px; padding: 14px 0; border-top: 1px solid var(--line-soft); }
+  .toggle-row:first-child { border-top: none; padding-top: 2px; }
+  .toggle-main { flex: 1; }
+  .toggle-t { font-family: var(--fsans); font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .toggle-d { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+  .switch { position: relative; width: 42px; height: 24px; flex-shrink: 0; cursor: pointer; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch-ui { position: absolute; inset: 0; background: #dfe3dd; border: 1px solid var(--line); border-radius: 999px; transition: .18s; }
+  .switch-ui::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 2px; background: #fff; border-radius: 50%; transition: .18s; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+  .switch input:checked + .switch-ui { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .switch-ui::before { transform: translateX(18px); }
+  .row-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+  .field label { font-family: var(--fsans); font-size: 12.5px; font-weight: 600; color: var(--ink); display: block; margin-bottom: 7px; }
+  .input { font-family: var(--fmono); background: var(--paper); border: 1px solid var(--line); color: var(--ink); font-size: 14px; padding: 10px 13px; border-radius: 10px; width: 220px; max-width: 100%; }
+  .input:focus { outline: none; border-color: var(--accent); }
+
+  .prof { display: flex; align-items: center; gap: 14px; padding: 13px 0; border-top: 1px solid var(--line-soft); }
+  .prof:first-child { border-top: none; }
+  .prof-main { flex: 1; }
+  .prof-name { font-family: var(--fmono); font-size: 13.5px; font-weight: 700; color: var(--ink); }
+  .prof-meta { font-family: var(--fsans); font-size: 12px; color: var(--faint); margin-top: 2px; }
+  .prof-active { font-family: var(--fmono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-ink); background: var(--accent-soft); padding: 4px 10px; border-radius: 999px; }
+  .mini-btn { font-family: var(--fsans); font-size: 12.5px; font-weight: 600; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid rgba(15,122,84,.24); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  .meta-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px 24px; }
+  .mk { font-family: var(--fmono); font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+  .mv { font-family: var(--fmono); font-size: 15px; color: var(--ink); font-weight: 700; margin-top: 4px; }
+  @media (max-width: 560px) { .meta-grid { grid-template-columns: 1fr 1fr; } }
+
+  /* activity feed */
+  .act { display: grid; grid-template-columns: 62px 66px 1fr auto; gap: 14px; align-items: center; padding: 13px 0; border-top: 1px solid var(--line-soft); }
+  .act:first-child { border-top: none; }
+  .act-time { font-family: var(--fmono); font-size: 11px; color: var(--faint); }
+  .act-name { font-family: var(--fmono); font-size: 12px; font-weight: 700; color: var(--ink); }
+  .act-what { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+  .act-what .keep { color: var(--accent-ink); font-weight: 600; }
+  .act-what .drop { color: var(--muted); font-weight: 600; }
+  .act-sub { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+  .act-tag { font-family: var(--fmono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .act-tag.trimmed { color: var(--accent-ink); background: var(--accent-soft); }
+  .act-tag.watched, .act-tag.watching, .act-tag.protected { color: var(--muted); background: var(--line-soft); }
+  .act-more { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); margin-top: 14px; }
+
+  footer { border-top: 1px solid var(--line); margin-top: 56px; padding: 30px 0 80px; font-family: var(--fsans); font-size: 12.5px; color: var(--faint); }
+  .proto-tag { position: fixed; bottom: 14px; right: 14px; font-family: var(--fmono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); background: var(--raised); border: 1px solid var(--line); padding: 6px 10px; border-radius: 8px; }
+</style>
+</head>
+<body>
+  <header class="bar">
+    <div class="bar-in">
+      <div class="mark">ctx<b>.</b></div>
+      <nav class="nav"><a href="#">Home</a><a href="#">See</a><a href="#">Save</a><a href="#" class="on">Settings</a></nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="head">
+      <div class="eyebrow">Yours, and only yours</div>
+      <h1 class="title">Settings</h1>
+      <p class="lede">Everything saves to <code>~/.ctx/config.toml</code> on this machine. No account, no telemetry.</p>
+    </div>
+
+    <div class="subtabs">
+      <button class="subtab on" onclick="tab(event,'p-settings')">Settings</button>
+      <button class="subtab" onclick="tab(event,'p-activity')">Activity</button>
+    </div>
+
+    <div class="panel on" id="p-settings">
+      <div class="card">
+        <div class="card-h">Autopilot</div>
+        <div class="card-sub">When autopilot is on, ctx trims a tool the moment it proves safe on your own work, and never before. Pausing keeps ctx watching and proving, but stops it changing any output.</div>
+        <div class="card-body">
+          <div class="statusline"><span class="dot on"></span><span>Autopilot is <b class="on">on</b>. ctx trims each tool that has earned it, and the tool still runs in full.</span></div>
+          <button class="cta danger">Pause autopilot</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">Privacy and data</div>
+        <div class="card-sub">Control what ctx keeps locally. Nothing leaves this machine unless you export it.</div>
+        <div class="card-body">
+          <div class="toggle-row"><div class="toggle-main"><div class="toggle-t">Store prompt text</div><div class="toggle-d">Keeps the start of each message in SQLite for Activity and similarity. Turn off for metrics only.</div></div><label class="switch"><input type="checkbox" checked><span class="switch-ui"></span></label></div>
+          <div class="toggle-row"><div class="toggle-main"><div class="toggle-t">Session embeddings</div><div class="toggle-d">Builds local vector fingerprints of sessions for auto-profile and adaptive prefix.</div></div><label class="switch"><input type="checkbox" checked><span class="switch-ui"></span></label></div>
+          <div class="toggle-row"><div class="toggle-main"><div class="toggle-t">Output compression pipeline</div><div class="toggle-d">The master switch for trimming. With it off, ctx never trims even when a tool has earned it.</div></div><label class="switch"><input type="checkbox" checked><span class="switch-ui"></span></label></div>
+          <div class="row-actions"><button class="cta ghost">Export ctx.db</button><button class="cta ghost">Purge prompt text</button><button class="cta danger">Delete all indexed data</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">Spend cap</div>
+        <div class="card-sub">Optional monthly budget for the spend guard. Leave blank for no cap.</div>
+        <div class="card-body">
+          <div class="field"><label>Monthly budget (USD)</label><input class="input" type="number" placeholder="no cap"></div>
+          <div class="row-actions"><button class="cta ghost">Save budget</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">Profiles</div>
+        <div class="card-sub">Which MCP tool filter is active. ctx strips tool schemas you rarely invoke before the model sees them.</div>
+        <div class="card-body">
+          <div class="prof"><div class="prof-main"><div class="prof-name">personal</div><div class="prof-meta">23 tools, 4 servers, ~14K tokens/turn</div></div><span class="prof-active">active</span></div>
+          <div class="prof"><div class="prof-main"><div class="prof-name">all</div><div class="prof-meta">129 tools, 4 servers, ~77K tokens/turn</div></div><button class="mini-btn">Use this</button></div>
+          <div class="prof"><div class="prof-main"><div class="prof-name">planning</div><div class="prof-meta">58 tools, 3 servers, ~35K tokens/turn</div></div><button class="mini-btn">Use this</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">Your data</div>
+        <div class="card-sub">Local storage only. No telemetry.</div>
+        <div class="card-body"><div class="meta-grid">
+          <div><div class="mk">Database size</div><div class="mv">48.2 MB</div></div>
+          <div><div class="mk">Sessions</div><div class="mv">312</div></div>
+          <div><div class="mk">Tool invocations</div><div class="mv">6,240</div></div>
+          <div><div class="mk">Tracking since</div><div class="mv" style="font-size:13px">2026-06-02</div></div>
+          <div><div class="mk">Last ingest</div><div class="mv" style="font-size:13px">2m ago</div></div>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="panel" id="p-activity">
+      <div class="card">
+        <div class="card-h">Recent activity</div>
+        <div class="card-sub">The running record behind every verdict. Watched means nothing changed. Trimmed means a tool that earned it; the tool still ran in full, ctx only shortened what the agent read back.</div>
+        <div class="card-body">
+          <div class="act"><span class="act-time">1m ago</span><span class="act-name">read</span><span><div class="act-what">Trimmed <span class="drop">210 lines</span>, kept <span class="keep">24</span>. The tool still ran in full.</div><div class="act-sub">src/db.rs</div></span><span class="act-tag trimmed">trimmed</span></div>
+          <div class="act"><span class="act-time">2m ago</span><span class="act-name">bash</span><span><div class="act-what">Trimmed <span class="drop">88 lines</span>, kept <span class="keep">12</span>. The tool still ran in full.</div><div class="act-sub">cargo build --release</div></span><span class="act-tag trimmed">trimmed</span></div>
+          <div class="act"><span class="act-time">4m ago</span><span class="act-name">edit</span><span><div class="act-what">Kept <span class="keep">all 64 lines</span>, set nothing aside. Looks like a file you might edit.</div><div class="act-sub">src/dashboard.html</div></span><span class="act-tag protected">protected</span></div>
+          <div class="act"><span class="act-time">6m ago</span><span class="act-name">grep</span><span><div class="act-what">Looked at this and kept <span class="keep">all 12 lines</span>. Nothing worth trimming.</div></span><span class="act-tag watched">watched</span></div>
+          <div class="act"><span class="act-time">9m ago</span><span class="act-name">mcp</span><span><div class="act-what">Would set aside <span class="drop">40 lines</span>, keep <span class="keep">6</span>. Still only watching this tool.</div><div class="act-sub">Linear: list_issues</div></span><span class="act-tag watching">watching</span></div>
+          <div class="act-more">Showing the last 5. The full record lives in your local database.</div>
+        </div>
+      </div>
+    </div>
+
+    <footer>All local. Nothing leaves this machine.</footer>
+  </main>
+
+  <div class="proto-tag">Prototype, illustrative data</div>
+
+<script>
+  function tab(ev, id) {
+    document.querySelectorAll('.subtab').forEach(b => b.classList.remove('on'));
+    ev.currentTarget.classList.add('on');
+    document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === id));
+  }
+</script>
+</body>
+</html>
