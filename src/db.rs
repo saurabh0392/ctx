@@ -1064,12 +1064,15 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
     let cutoff = (chrono::Utc::now() - chrono::Duration::days(lookback_days as i64)).to_rfc3339();
 
     let mut stmt = match conn.prepare(
+        // ctx's own server is excluded: it is the recovery surface (ctx_expand and friends), not a
+        // menu tax to prune, so it never appears on the bill or offers a Prune button (CTX-64).
         "SELECT server_prefix,
                 COUNT(DISTINCT tool_name),
                 COUNT(*),
                 MAX(ts)
          FROM tool_invocations
          WHERE ts >= ?1 AND server_prefix IS NOT NULL AND server_prefix != ''
+           AND server_prefix NOT LIKE 'mcp__ctx__%'
          GROUP BY server_prefix
          ORDER BY COUNT(*) DESC",
     ) {

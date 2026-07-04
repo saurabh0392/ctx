@@ -74,11 +74,12 @@ pub fn expand_session_server(server: &str) -> Result<()> {
     expand_session_target(server)
 }
 
-/// Normalize a server reference (display name, id, or prefix) to the canonical
-/// `mcp__claude_ai_<Id>__` prefix used in deny rules and `pruned_servers`.
+/// Normalize a server reference to its canonical `mcp__..__` prefix for deny rules and
+/// `pruned_servers`. Any already-`mcp__` prefix is kept as-is (claude.ai connectors AND local
+/// servers like `mcp__ctx__`); only a bare display name or id gets the `mcp__claude_ai_` prefix.
 fn canonical_server_prefix(server: &str) -> String {
     let s = server.trim();
-    if s.starts_with("mcp__claude_ai_") {
+    if s.starts_with("mcp__") {
         let base = s.trim_end_matches('*').trim_end_matches('_');
         return format!("{base}__");
     }
@@ -91,6 +92,11 @@ fn canonical_server_prefix(server: &str) -> String {
 /// insight-action. Returns true when the server was newly pruned (state changed).
 pub fn prune_server(server: &str) -> Result<bool> {
     let prefix = canonical_server_prefix(server);
+    // ctx's own server carries the recovery tools (ctx_expand, ctx_status, ctx_waste). Pruning it
+    // would hide the very tools that make trimming reversible, so it is never a prune target.
+    if prefix.eq_ignore_ascii_case("mcp__ctx__") {
+        bail!("the ctx server is not prunable: it holds ctx_expand and the other recovery tools");
+    }
     let mut cfg = Config::load();
     if cfg
         .pruned_servers
@@ -217,4 +223,30 @@ pub fn hook_sync_profile(
         }
     }
     Ok(expansions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_server_prefix;
+
+    #[test]
+    fn canonical_prefix_keeps_local_servers_and_prefixes() {
+        // Local server (ctx): must not get a second mcp__claude_ai_ prefix.
+        assert_eq!(canonical_server_prefix("mcp__ctx__"), "mcp__ctx__");
+        // A claude.ai prefix passes through, wildcard and stray underscores normalized.
+        assert_eq!(
+            canonical_server_prefix("mcp__claude_ai_Canva__"),
+            "mcp__claude_ai_Canva__"
+        );
+        assert_eq!(
+            canonical_server_prefix("mcp__claude_ai_Canva__*"),
+            "mcp__claude_ai_Canva__"
+        );
+        // A bare display name becomes a claude.ai prefix.
+        assert_eq!(canonical_server_prefix("Canva"), "mcp__claude_ai_Canva__");
+        assert_eq!(
+            canonical_server_prefix("Data Shippo"),
+            "mcp__claude_ai_Data_Shippo__"
+        );
+    }
 }
