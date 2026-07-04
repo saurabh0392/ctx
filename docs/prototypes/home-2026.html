@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctx home, redesign prototype</title>
+<style>
+  :root {
+    --paper: #f6f7f4;
+    --raised: #ffffff;
+    --ink: #161a18;
+    --muted: #565e59;
+    --faint: #8a918c;
+    --line: #e3e7e1;
+    --line-soft: #ecefe9;
+    --accent: #0f7a54;
+    --accent-ink: #0b5c40;
+    --accent-soft: rgba(15,122,84,.08);
+    --warn: #9a5b12;
+    --crit: #a52218;
+    --font-serif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --measure: 62ch;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0f1311; --raised: #151a17; --ink: #eef2ee; --muted: #a4ada7;
+      --faint: #6d766f; --line: #232a25; --line-soft: #1b211d;
+      --accent: #35c88f; --accent-ink: #6fe0b3; --accent-soft: rgba(53,200,143,.12);
+      --warn: #d9a441; --crit: #e08379;
+    }
+  }
+  :root[data-theme="light"] {
+    --paper: #f6f7f4; --raised: #ffffff; --ink: #161a18; --muted: #565e59;
+    --faint: #8a918c; --line: #e3e7e1; --line-soft: #ecefe9;
+    --accent: #0f7a54; --accent-ink: #0b5c40; --accent-soft: rgba(15,122,84,.08);
+    --warn: #9a5b12; --crit: #a52218;
+  }
+  :root[data-theme="dark"] {
+    --paper: #0f1311; --raised: #151a17; --ink: #eef2ee; --muted: #a4ada7;
+    --faint: #6d766f; --line: #232a25; --line-soft: #1b211d;
+    --accent: #35c88f; --accent-ink: #6fe0b3; --accent-soft: rgba(53,200,143,.12);
+    --warn: #d9a441; --crit: #e08379;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    min-height: 100vh;
+  }
+  ::selection { background: var(--accent-soft); }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 28px; }
+
+  /* header */
+  header.bar {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: saturate(1.4) blur(10px);
+    background: color-mix(in srgb, var(--paper) 82%, transparent);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .bar-in { max-width: 760px; margin: 0 auto; padding: 15px 28px;
+    display: flex; align-items: center; justify-content: space-between; }
+  .mark { font-family: var(--font-mono); font-size: 15px; font-weight: 700;
+    letter-spacing: -.02em; color: var(--ink); }
+  .mark b { color: var(--accent); font-weight: 700; }
+  .status { display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--muted); }
+  .pip { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent-soft); }
+  .breathe { animation: breathe 2.6s ease-in-out infinite; }
+  @keyframes breathe {
+    0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
+    60% { box-shadow: 0 0 0 6px transparent; }
+  }
+
+  /* left sequence rail */
+  .rail { position: fixed; left: max(24px, calc(50vw - 460px)); top: 50%;
+    transform: translateY(-50%); z-index: 10;
+    display: flex; flex-direction: column; align-items: center; gap: 0; }
+  .rail .seg { display: flex; flex-direction: column; align-items: center; }
+  .rail .node { width: 9px; height: 9px; border-radius: 50%;
+    border: 1.5px solid var(--faint); background: var(--paper); transition: .35s; }
+  .rail .node.on { border-color: var(--accent); background: var(--accent); }
+  .rail .line { width: 1.5px; height: 46px; background: var(--line); transition: .35s; }
+  .rail .seg.on .line { background: var(--accent); }
+  .rail .lbl { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint); margin-top: 7px; transition: .35s;
+    writing-mode: vertical-rl; }
+  .rail .node-wrap { position: relative; display: flex; align-items: center; gap: 10px; }
+  .rail .tag { position: absolute; left: 20px; font-family: var(--font-mono);
+    font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); white-space: nowrap; transition: .35s; }
+  .rail .seg.on .tag { color: var(--accent-ink); }
+  @media (max-width: 1080px) { .rail { display: none; } }
+
+  /* beats */
+  .beat { padding: 96px 0; border-top: 1px solid transparent; }
+  .beat.first { padding-top: 72px; }
+  .eyebrow { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent-ink); display: inline-flex;
+    align-items: center; gap: 9px; }
+  .eyebrow .ix { color: var(--faint); }
+
+  h1.lede { font-family: var(--font-serif); font-weight: 500; font-size: clamp(30px, 5.2vw, 46px);
+    line-height: 1.1; letter-spacing: -.015em; margin-top: 22px; max-width: 18ch;
+    text-wrap: balance; }
+  h2.head { font-family: var(--font-serif); font-weight: 500; font-size: clamp(26px, 4vw, 36px);
+    line-height: 1.14; letter-spacing: -.012em; margin-top: 20px; max-width: 20ch;
+    text-wrap: balance; }
+  p.body { font-size: 17px; color: var(--muted); margin-top: 20px; max-width: var(--measure); }
+  p.body b { color: var(--ink); font-weight: 600; }
+
+  /* hero figure */
+  .figure { margin-top: 48px; display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+  .fig-num { font-family: var(--font-mono); font-weight: 700; font-size: clamp(64px, 13vw, 128px);
+    line-height: .82; letter-spacing: -.04em; color: var(--accent);
+    font-variant-numeric: tabular-nums; }
+  .fig-side { padding-bottom: 10px; }
+  .fig-unit { font-family: var(--font-mono); font-size: 15px; color: var(--muted);
+    letter-spacing: .02em; }
+  .fig-cap { font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--faint); margin-top: 6px; }
+  .subline { font-size: 16px; color: var(--muted); margin-top: 26px; max-width: var(--measure); }
+  .subline b { color: var(--ink); font-weight: 600; }
+
+  .cta { display: inline-flex; align-items: center; gap: 9px; margin-top: 30px;
+    font-family: var(--font-sans); font-size: 14.5px; font-weight: 600;
+    color: var(--accent-ink); background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+    padding: 11px 18px; border-radius: 11px; cursor: pointer; text-decoration: none;
+    transition: background .18s, transform .18s; }
+  .cta:hover { background: color-mix(in srgb, var(--accent) 14%, var(--paper)); }
+  .cta:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .cta .arw { transition: transform .2s; }
+  .cta:hover .arw { transform: translateY(2px); }
+
+  /* the ladder */
+  .ladder { margin-top: 46px; max-width: 900px; }
+  .rungs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0;
+    position: relative; }
+  .rung { position: relative; padding: 0 6px; }
+  .rung .track { height: 2px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .rung .track i { display: block; height: 100%; width: 0; background: var(--accent);
+    transition: width .7s cubic-bezier(.22,.61,.36,1); border-radius: 2px; }
+  .rung.done .track i { width: 100%; }
+  .rung.part .track i { width: 55%; background: var(--warn); }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--paper);
+    border: 2px solid var(--faint); position: absolute; top: -4.5px; left: 6px; transition: .5s; }
+  .rung.done .dot { border-color: var(--accent); background: var(--accent); }
+  .rung.part .dot { border-color: var(--warn); background: var(--warn); }
+  .rung .rname { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted); margin-top: 16px; }
+  .rung .rcount { font-family: var(--font-mono); font-size: 24px; font-weight: 700;
+    color: var(--ink); font-variant-numeric: tabular-nums; margin-top: 4px; letter-spacing: -.02em; }
+  .rung.done .rcount { color: var(--accent); }
+  .rung .rdesc { font-size: 12.5px; color: var(--faint); margin-top: 5px; line-height: 1.45;
+    max-width: 20ch; }
+  .revert { margin-top: 34px; padding: 16px 18px; border: 1px solid var(--line);
+    border-radius: 12px; background: var(--raised); display: flex; gap: 13px; align-items: flex-start;
+    max-width: var(--measure); }
+  .revert .k { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--accent-ink); flex-shrink: 0; padding-top: 2px; }
+  .revert p { font-size: 14px; color: var(--muted); line-height: 1.55; }
+  .revert p b { color: var(--ink); font-weight: 600; }
+
+  /* trust facts + net-ahead */
+  .facts { margin-top: 40px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+    background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .fact { background: var(--raised); padding: 20px 20px; }
+  .fact .ft { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint); }
+  .fact .fv { font-size: 15px; color: var(--ink); margin-top: 9px; line-height: 1.45; font-weight: 500; }
+  @media (max-width: 640px) { .facts { grid-template-columns: 1fr; } }
+
+  .restate { margin-top: 40px; font-size: 15px; color: var(--muted); max-width: var(--measure);
+    line-height: 1.6; }
+  .restate b { font-family: var(--font-mono); color: var(--accent-ink); font-weight: 700; }
+
+  /* footer nav */
+  footer { border-top: 1px solid var(--line); margin-top: 40px; padding: 40px 0 80px; }
+  .foot-nav { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+  .foot-nav a { font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em;
+    color: var(--muted); text-decoration: none; }
+  .foot-nav a:hover { color: var(--accent-ink); }
+  .foot-note { font-size: 12.5px; color: var(--faint); margin-top: 20px; }
+  .proto-tag { position: fixed; bottom: 14px; right: 14px; z-index: 30;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); background: var(--raised); border: 1px solid var(--line);
+    padding: 6px 10px; border-radius: 8px; }
+
+  /* reveal animation */
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s cubic-bezier(.22,.61,.36,1); }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .breathe { animation: none; }
+    .rung .track i, .dot, .rail .node, .rail .line { transition: none; }
+  }
+</style>
+</head>
+<body>
+  <header class="bar">
+    <div class="bar-in">
+      <div class="mark">ctx<b>.</b></div>
+      <div class="status"><span class="pip breathe"></span><span>watching</span></div>
+    </div>
+  </header>
+
+  <nav class="rail" aria-hidden="true">
+    <div class="seg" data-seg="0">
+      <div class="node-wrap"><span class="node"></span><span class="tag">See</span></div>
+      <span class="line"></span>
+    </div>
+    <div class="seg" data-seg="1">
+      <div class="node-wrap"><span class="node"></span><span class="tag">Save</span></div>
+      <span class="line"></span>
+    </div>
+    <div class="seg" data-seg="2">
+      <div class="node-wrap"><span class="node"></span><span class="tag">Trust</span></div>
+    </div>
+  </nav>
+
+  <main>
+    <!-- BEAT 1: SEE -->
+    <section class="beat first" id="see">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="eyebrow"><span class="ix">01</span> See where your context goes</div>
+          <h1 class="lede">ctx makes your agent leaner without losing the thread.</h1>
+        </div>
+        <div class="reveal">
+          <div class="figure">
+            <div class="fig-num" id="hero" data-to="1240000">0</div>
+            <div class="fig-side">
+              <div class="fig-unit">tokens</div>
+              <div class="fig-cap">reclaimed so far</div>
+            </div>
+          </div>
+          <p class="subline"><b>Autopilot is trimming 3 tools</b> it proved safe on your own work. The tools still run in full, and nothing here needs a decision from you.</p>
+          <a class="cta" href="#save">See how it decides <span class="arw">&darr;</span></a>
+        </div>
+      </div>
+    </section>
+
+    <!-- BEAT 2: SAVE -->
+    <section class="beat" id="save">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="eyebrow"><span class="ix">02</span> Save only what is safe</div>
+          <h2 class="head">It only cuts what your own sessions prove is safe.</h2>
+          <p class="body">ctx watches a tool, tries trimming it on a slice of your real work, and keeps trimming only once that slice shows the agent did not have to <b>re-read or re-edit</b> to recover. Every tool climbs the same ladder. Nothing skips a rung.</p>
+        </div>
+        <div class="reveal ladder" id="ladder">
+          <div class="rungs">
+            <div class="rung done" data-rung="0">
+              <div class="track"><i></i></div><span class="dot"></span>
+              <div class="rname">Watching</div>
+              <div class="rcount">12</div>
+              <div class="rdesc">measured, not touched yet</div>
+            </div>
+            <div class="rung done" data-rung="1">
+              <div class="track"><i></i></div><span class="dot"></span>
+              <div class="rname">Trial</div>
+              <div class="rcount">4</div>
+              <div class="rdesc">trimmed on a control slice</div>
+            </div>
+            <div class="rung part" data-rung="2">
+              <div class="track"><i></i></div><span class="dot"></span>
+              <div class="rname">Proving</div>
+              <div class="rcount">2</div>
+              <div class="rdesc">gathering enough evidence</div>
+            </div>
+            <div class="rung done" data-rung="3">
+              <div class="track"><i></i></div><span class="dot"></span>
+              <div class="rname">Earned</div>
+              <div class="rcount">3</div>
+              <div class="rdesc">safe on your work, trimming</div>
+            </div>
+          </div>
+          <div class="revert">
+            <span class="k">reversible</span>
+            <p>A trimmed detail already ran in full and is one command back. <b>ctx never removes a capability</b>, it only presents less of a result until your work says it can.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BEAT 3: TRUST -->
+    <section class="beat" id="trust">
+      <div class="wrap">
+        <div class="reveal">
+          <div class="eyebrow"><span class="ix">03</span> Trust that it stays yours</div>
+          <h2 class="head">Local, reversible, and on nobody's side.</h2>
+        </div>
+        <div class="reveal">
+          <div class="facts">
+            <div class="fact"><div class="ft">Where it lives</div><div class="fv">SQLite on this machine. No account, no telemetry.</div></div>
+            <div class="fact"><div class="ft">Who it watches</div><div class="fv">Claude Code and Cursor alike. It takes no side.</div></div>
+            <div class="fact"><div class="ft">What it removes</div><div class="fv">Nothing you can't get back. Every trim is one command from whole.</div></div>
+          </div>
+          <p class="restate">All told, ctx has reclaimed <b>1.24M tokens</b> of context on your work so far, output trimmed and tool menu pruned, counted once and the same everywhere you see it.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="foot-nav reveal">
+        <a href="#">Context bill</a>
+        <a href="#">Tool tax</a>
+        <a href="#">Tool report</a>
+        <a href="#">Compaction</a>
+        <a href="#">Surfaces</a>
+        <a href="#">Activity</a>
+        <a href="#">Settings</a>
+      </div>
+      <div class="foot-note">All local. Nothing leaves this machine.</div>
+    </div>
+  </footer>
+
+  <div class="proto-tag">Prototype, illustrative data</div>
+
+<script>
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // count-up on the hero figure, once
+  (function () {
+    const el = document.getElementById('hero');
+    const to = parseInt(el.dataset.to, 10);
+    const fmt = n => n >= 1e6 ? (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M'
+                  : n >= 1e3 ? Math.round(n / 1e3) + 'K' : String(n);
+    if (reduce) { el.textContent = fmt(to); return; }
+    const dur = 1400, t0 = performance.now();
+    function step(t) {
+      const p = Math.min(1, (t - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = fmt(Math.round(to * eased));
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  })();
+
+  // scroll reveals
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.18 });
+  document.querySelectorAll('.reveal').forEach(el => {
+    if (reduce) { el.classList.add('in'); } else { io.observe(el); }
+  });
+
+  // ladder draw-in when beat 2 enters
+  const ladderIO = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('drawn'); ladderIO.unobserve(e.target); } });
+  }, { threshold: 0.4 });
+  const ladder = document.getElementById('ladder');
+  if (ladder) ladderIO.observe(ladder);
+
+  // left rail: light the active beat by scroll position
+  const beats = ['see', 'save', 'trust'].map(id => document.getElementById(id));
+  const segs = [...document.querySelectorAll('.rail .seg')];
+  const railIO = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      const i = beats.indexOf(e.target);
+      segs.forEach((s, si) => {
+        s.classList.toggle('on', si <= i);
+        s.querySelector('.node').classList.toggle('on', si <= i);
+      });
+    });
+  }, { threshold: 0.5 });
+  beats.forEach(b => b && railIO.observe(b));
+</script>
+</body>
+</html>
