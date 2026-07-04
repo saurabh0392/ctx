@@ -587,6 +587,11 @@ pub struct ToolMenuBillServer {
     /// confirm the prune is safe. Lets the UI teach what "proving it's safe" actually means.
     pub hidden_sessions: i64,
     pub hidden_needed: i64,
+    /// Names of the tools actually invoked in the window, most-used first: the "kept" side of the
+    /// per-server expand. The dead tools are deliberately not listed. ctx only knows the catalog
+    /// *count*, never the full menu or the vendor descriptions, so the UI shows dead weight as a
+    /// number and says so, rather than inventing names. CTX-64 pass 2.
+    pub used_tool_names: Vec<String>,
 }
 
 /// The input-side Context Bill: the fixed per-request tool-menu tax, itemized per server and ranked
@@ -1111,6 +1116,20 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
             let carried_tokens = catalog_tools * tpt;
             let dead_tokens = dead_tools * tpt;
 
+            // The real names of the tools you do call, most-used first. This is the honest "kept"
+            // list for the expand; there is no matching dead-tool list because the catalog is only a
+            // count on this machine, never the full menu.
+            let mut used_tool_names: Vec<String> = Vec::new();
+            if let Ok(mut ts) = conn.prepare(
+                "SELECT tool_name, COUNT(*) c FROM tool_invocations
+                 WHERE server_prefix = ?1 AND ts >= ?2 AND tool_name IS NOT NULL AND tool_name != ''
+                 GROUP BY tool_name ORDER BY c DESC",
+            ) {
+                if let Ok(rws) = ts.query_map(params![prefix, cutoff], |r| r.get::<_, String>(0)) {
+                    used_tool_names = rws.flatten().collect();
+                }
+            }
+
             bill.total_catalog_tools += catalog_tools;
             bill.total_carried_tokens += carried_tokens;
             bill.total_invoked_tools += invoked_tools;
@@ -1132,6 +1151,7 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
                 prune_stage: String::new(),
                 hidden_sessions: 0,
                 hidden_needed: 0,
+                used_tool_names,
             });
         }
     }
