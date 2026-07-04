@@ -485,9 +485,51 @@
     .nav a { padding: 8px 9px; font-size: 13px; }
     .brand-sub { display: none; }
   }
+
+  /* ── theme toggle button ── */
+  .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+    margin-left: 6px; padding: 0; border: none; background: none; cursor: pointer; border-radius: 8px; color: var(--t3); }
+  .theme-toggle:hover { background: var(--surface); color: var(--t1); }
+  .theme-toggle svg { width: 16px; height: 16px; display: block; }
+  body.paper .theme-toggle { color: #565e59; }
+  body.paper .theme-toggle:hover { background: #eef1ec; color: #161a18; }
+
+  /* ── dark mode: opt-in via html[data-theme=dark]; the init script defaults it to the OS preference.
+     Overrides the four clean-light surfaces' scoped tokens, the shared paper chrome, and the handful
+     of literal-hex spots (bar tracks, the switch, the diff viewer). ── */
+  html[data-theme="dark"] #view-home,
+  html[data-theme="dark"] #view-see,
+  html[data-theme="dark"] #view-save,
+  html[data-theme="dark"] #view-settings {
+    --paper:#0f1311; --raised:#161c18; --ink:#edf1ed; --muted:#a7b0aa; --faint:#717b74;
+    --line:#262e28; --line-soft:#1b221d; --accent:#35c88f; --accent-ink:#79e3ba;
+    --accent-soft:rgba(53,200,143,.13); --warn:#d9a441; --warn-soft:rgba(217,164,65,.14);
+    --crit:#e08379; --crit-soft:rgba(224,131,121,.13);
+  }
+  html[data-theme="dark"] body.paper { background: #0f1311; }
+  html[data-theme="dark"] body.paper .topbar { background: rgba(15,19,17,.82); border-bottom-color: #1b221d; }
+  html[data-theme="dark"] body.paper .brand-mark { color: #edf1ed; }
+  html[data-theme="dark"] body.paper .brand-mark span { color: #35c88f; }
+  html[data-theme="dark"] body.paper .nav a { color: #a7b0aa; }
+  html[data-theme="dark"] body.paper .nav a:hover { color: #edf1ed; background: #1b221d; }
+  html[data-theme="dark"] body.paper .nav a.on { color: #79e3ba; background: rgba(53,200,143,.14); }
+  html[data-theme="dark"] body.paper .health { color: #717b74; }
+  html[data-theme="dark"] body.paper .health .pip { background: #4a544d; }
+  html[data-theme="dark"] body.paper .health.up .pip { background: #35c88f; }
+  html[data-theme="dark"] body.paper .theme-toggle { color: #a7b0aa; }
+  html[data-theme="dark"] body.paper .theme-toggle:hover { color: #edf1ed; background: #1b221d; }
+  html[data-theme="dark"] .see-bar, html[data-theme="dark"] .see-sbar { background: #2a322c; }
+  html[data-theme="dark"] .see-used { background: #3c463f; }
+  html[data-theme="dark"] .see-row:hover { border-color: #37423b; }
+  html[data-theme="dark"] .see-diff,
+  html[data-theme="dark"] #view-see .rwpre,
+  html[data-theme="dark"] #view-see .difflegend { background: #0d120f; }
+  html[data-theme="dark"] .st-switch-ui { background: #2a322c; }
+  html[data-theme="dark"] .st-switch-ui::before { background: #c8d0ca; }
 </style>
 </head>
 <body>
+  <script>(function(){try{var t=localStorage.getItem('ctx-theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t;}catch(e){}})();</script>
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
@@ -499,6 +541,7 @@
         <a data-view="save" onclick="go('save')">Save</a>
         <a data-view="settings" onclick="go('settings')">Settings</a>
         <span class="health" id="health"><span class="pip"></span><span id="health-txt">connecting</span></span>
+        <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle light and dark"></button>
       </nav>
     </div>
   </header>
@@ -679,12 +722,8 @@
 
         <footer class="h2-foot h2-reveal">
           <div class="h2-foot-nav">
-            <a onclick="go('bill')">Context bill</a>
-            <a onclick="go('toolbill')">Tool tax</a>
-            <a onclick="go('loop')">Tool report</a>
-            <a onclick="go('compaction')">Compaction</a>
-            <a onclick="go('surfaces')">Surfaces</a>
-            <a onclick="go('activity')">Activity</a>
+            <a onclick="go('see')">See where your context goes</a>
+            <a onclick="go('save')">The proof, tool by tool</a>
             <a onclick="go('settings')">Settings</a>
           </div>
           <div class="h2-foot-note">All local. Nothing leaves this machine.</div>
@@ -2486,6 +2525,23 @@
   function exportDb() { window.location = "/api/settings/export"; }
   async function purgePrompts() { if (!confirm("Remove stored prompt text from the local database?")) return; await post("/api/settings/purge-prompts", {}); flashSaved("saved-privacy"); }
   async function deleteData() { if (!confirm("Delete all indexed ctx data on this machine? Claude Code logs are not touched.")) return; await post("/api/settings/delete-data", {}); loadSettings(); }
+
+  // ── theme toggle (light default follows OS; choice persists in localStorage) ──
+  const THEME_ICON = {
+    moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+    sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  };
+  function updateThemeIcon() {
+    const btn = $("themeBtn"); if (!btn) return;
+    btn.innerHTML = document.documentElement.dataset.theme === "dark" ? THEME_ICON.sun : THEME_ICON.moon;
+  }
+  function toggleTheme() {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("ctx-theme", next); } catch (e) {}
+    updateThemeIcon();
+  }
+  updateThemeIcon();
 
   // ── boot + live refresh ──
   render();
