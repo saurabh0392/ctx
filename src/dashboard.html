@@ -1920,8 +1920,21 @@
         const srcs = (t.sources || []).filter((s) => (s.sink_chars || 0) > 0);
         const srcMax = srcs.length ? srcs[0].sink_chars : 1;
         const srcHtml = srcs.length ? '<div class="see-dh">Top sources</div>' + srcs.map((s) => `<div class="see-src"><span class="see-sn" title="${esc(s.label)}">${esc(shortSource(s.label))}</span><span class="see-sbar"><span style="width:${Math.max(4, Math.round((s.sink_chars / srcMax) * 100))}%"></span></span><span class="see-st">${fmtK(tok(s.sink_chars))} tok</span></div>`).join("") : "";
-        const rewinds = t.rewinds || [];
-        const rwHtml = rewinds.length ? '<div class="see-dh">Recent trims, see what ctx cut</div>' + rewinds.map((rw) => `<div class="see-src"><span class="see-sn" title="${esc(rw.source)}">${esc(shortSource(rw.source))}</span><span class="see-st">${fmtK(tok(rw.chars))} tok</span><button class="see-diffbtn" onclick="viewDiff(event,'${rw.id}')">diff</button></div><div class="rwpre" id="rw-${rw.id}"></div>`).join("") : "";
+        // Recent trims come from the decision log, so every measured tool shows history, not just the
+        // ones ctx actually cut live and kept a copy of. A diff button appears only when a stored copy
+        // exists (rewind_id), which means ctx really cut this output live. Without one, the row is a
+        // measured would-trim ctx did not apply (e.g. Edit, which is not in compress_tools), so it
+        // says "measured, not cut" plainly instead of implying a recoverable cut.
+        const trims = t.trims || [];
+        const anyCut = trims.some((tr) => tr.restorable);
+        const trimHead = anyCut ? "Recent trims, see what ctx cut" : "Recent trims measured, not cut live";
+        const rwHtml = trims.length ? `<div class="see-dh">${trimHead}</div>` + trims.map((tr) => {
+          const action = tr.restorable
+            ? `<button class="see-diffbtn" onclick="viewDiff(event,'${tr.rewind_id}')">diff</button>`
+            : '<span style="font-family:var(--fsans);font-size:11px;color:var(--faint);white-space:nowrap">measured, not cut</span>';
+          const box = tr.restorable ? `<div class="rwpre" id="rw-${tr.rewind_id}"></div>` : "";
+          return `<div class="see-src"><span class="see-sn" title="${esc(tr.source)}">${esc(shortSource(tr.source))}</span><span class="see-st">${num(tr.lines)} line${tr.lines === 1 ? "" : "s"}</span>${action}</div>${box}`;
+        }).join("") : "";
         const detail = (srcHtml || '<div class="see-note" style="margin-top:14px">No per-source detail recorded.</div>') + rwHtml;
         return `<div class="see-row"><div class="see-rhead" onclick="this.parentNode.classList.toggle('open')"><div class="see-rname">${esc(prettyTool(t.tool))}</div><div class="see-barwrap"><div class="see-bar"><span class="see-used" style="width:${usedW}%"></span><span class="see-recl" style="width:${rp}%"></span></div><div class="see-barlbl"><span>${num(t.decisions)} calls</span><span class="see-hl">${rp}% trimmable</span></div></div><div class="see-rcta"><div class="see-meta"><div class="see-rv">${fmtK(tok(t.sink_chars))}</div><div class="see-rl">tokens</div></div><span class="see-caret">&#9656;</span></div></div><div class="see-detail">${detail}</div></div>`;
       }).join("");

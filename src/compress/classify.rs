@@ -195,8 +195,10 @@ pub fn classify_tool(
 ) -> CompressKind {
     let name = tool_name.trim();
     // Edit/Write confirmations get their own strategy so the shadow measurement reflects real
-    // savings on long-line echoes (CTX-60). Apply stays blocked for these by name in the controller,
-    // so classifying them here never trims what the agent sees, it only measures.
+    // savings on long-line echoes (CTX-60). This classification feeds `compute_shadow_decision`
+    // (measurement) only: on the apply path, edit tools are absent from `compress_tools`, so
+    // `compress_tool_output`'s `tool_allowed` gate returns None and the agent still sees the full
+    // echo. So classifying an edit here never trims what the agent reads, it only measures.
     if crate::outcome_signals::is_edit_tool(name) {
         return CompressKind::Edit;
     }

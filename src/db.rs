@@ -514,6 +514,27 @@ pub struct ContextBillRewind {
     pub expanded: bool,
 }
 
+/// One recent trim decision, read from the decision log (`compress_decisions`) rather than the
+/// verbatim store. This is a would-trim: `lines`/`tokens` are the shadow measurement, so a tool that
+/// is measured but not cut live (e.g. Edit, which is not in `compress_tools`) still shows a history.
+/// When `rewind_id` is present, ctx actually cut this output live and kept the original, so the UI
+/// offers a diff; when absent, ctx did not cut it live (measured only), so the UI shows it plainly
+/// without implying a recoverable cut.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ContextBillTrim {
+    /// Command or file path this trim applied to.
+    pub source: String,
+    /// Lines this trim dropped (`lines_drop`), the primary metric the UI shows.
+    pub lines: i64,
+    /// Context removed, in characters (`chars_in - would_chars_out`); the UI converts to tokens with
+    /// its tok() helper, same as the rewinds path.
+    pub tokens: i64,
+    pub ts: String,
+    /// Set only when a restorable copy exists in `rewind_store`; drives the diff button.
+    pub rewind_id: Option<String>,
+    pub restorable: bool,
+}
+
 /// One tool's line on the context bill.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct ContextBillTool {
@@ -529,6 +550,9 @@ pub struct ContextBillTool {
     pub sources: Vec<ContextBillSource>,
     /// Recent verbatim trims of this tool the user can re-expand (CTX-57 drill-down).
     pub rewinds: Vec<ContextBillRewind>,
+    /// Recent applied trims from the decision log, covering every trimmed tool, not only the ones
+    /// with a restorable copy in `rewinds`.
+    pub trims: Vec<ContextBillTrim>,
 }
 
 /// One day of context volume for the leaner-or-heavier trend (CTX-57).
@@ -679,6 +703,7 @@ pub fn repo_bill(conn: &Connection, repo_key: &str) -> ContextBill {
                 reclaimed_chars: r.get(4)?,
                 sources: Vec::new(),
                 rewinds: Vec::new(),
+                trims: Vec::new(),
             })
         }) {
             for t in rows.flatten() {
@@ -947,6 +972,7 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
             reclaimed_chars: r.get(4)?,
             sources: Vec::new(),
             rewinds: Vec::new(),
+            trims: Vec::new(),
         })
     });
     if let Ok(rows) = rows {
@@ -1017,6 +1043,40 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
                         bill.tools[i].rewinds.push(row.1);
                     }
                 }
+            }
+        }
+    }
+
+    // Per-tool recent trims from the decision log (CTX-57 follow-up): every trimmed tool gets a
+    // history, not only the ones ctx kept a restorable copy of in rewind_store. One indexed lookup
+    // per tool (idx_compress_decisions_tool), each capped at 6 rows, so it stays cheap. Where a
+    // restorable copy exists the rewind_id links to it for the diff; otherwise the record shows
+    // plainly, since the original still lives in the edited file.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(NULLIF(command_or_path, ''), '(unlabeled)'),
+                lines_drop,
+                (chars_in - would_chars_out),
+                ts,
+                rewind_id
+         FROM compress_decisions
+         WHERE tool_name = ?1 AND applied = 1 AND lines_drop > 0
+         ORDER BY ts DESC LIMIT 6",
+    ) {
+        for i in 0..bill.tools.len() {
+            let tool = bill.tools[i].tool.clone();
+            let rows = stmt.query_map(params![tool], |r| {
+                let rewind_id: Option<String> = r.get(4)?;
+                Ok(ContextBillTrim {
+                    source: r.get(0)?,
+                    lines: r.get(1)?,
+                    tokens: r.get(2)?,
+                    ts: r.get(3)?,
+                    restorable: rewind_id.is_some(),
+                    rewind_id,
+                })
+            });
+            if let Ok(rows) = rows {
+                bill.tools[i].trims = rows.flatten().collect();
             }
         }
     }

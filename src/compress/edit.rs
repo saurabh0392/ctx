@@ -4,10 +4,15 @@
 //! sink lives. This strategy collapses those long lines while keeping the structure and the change
 //! location.
 //!
-//! Shadow-only. The controller blocks every edit tool from the apply path by name
-//! (`outcome_signals::is_edit_tool`), so this only ever measures what a trim would save. It never
-//! alters what the agent sees, which is the safety rule for write confirmations: the agent must
-//! never misread what it just wrote.
+//! Shadow-only in practice. Edit tools are not in the default `compress_tools`, so the apply path's
+//! `tool_allowed` gate (in `compress_tool_output`) returns None for them and this strategy only ever
+//! runs inside `compute_shadow_decision` to measure what a trim would save. It never alters what the
+//! agent sees, which is the safety rule for write confirmations: the agent must never misread what
+//! it just wrote. Note the controller (`agent::decide`) no longer blocks edit tools by name (CTX-62):
+//! an edit's decision can read `apply = true`, but the compress-tools gate still keeps the live cut
+//! from happening. If an operator adds an edit tool to `compress_tools`, this strategy would run live
+//! and hook_io would store a full rewind for it automatically, so the dashboard diff would work with
+//! no further change.
 
 use super::generic::{collapse_blank_runs, collapse_long_lines, dedupe_lines, truncate_to_budget};
 use super::types::{CompressContext, CompressOptions, CompressResult};

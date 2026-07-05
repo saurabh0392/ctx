@@ -11,9 +11,13 @@ pub enum CompressKind {
     Grep,
     Read,
     Mcp,
-    /// A file edit/write confirmation (Edit, Write, MultiEdit, ...). Shadow-only: the apply path
-    /// blocks edit tools by name (`is_edit_tool`), so this strategy only ever measures what a trim
-    /// would save, it never changes what the agent sees (CTX-60).
+    /// A file edit/write confirmation (Edit, Write, MultiEdit, ...). Shadow-only in practice: edit
+    /// tools are not in the default `compress_tools`, so `compress_tool_output`'s `tool_allowed` gate
+    /// returns None on the apply path and this strategy only ever runs inside
+    /// `compute_shadow_decision` to measure what a trim would save. It never changes what the agent
+    /// sees, so the agent never misreads what it just wrote (CTX-60). The controller (`agent::decide`)
+    /// no longer special-cases edit tools (CTX-62): an edit decision can read `apply = true`, but the
+    /// compress-tools membership, not the tool name, is what keeps the live cut from happening.
     Edit,
 }
 

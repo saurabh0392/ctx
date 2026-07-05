@@ -283,6 +283,7 @@ mod tests {
                     sink_chars: 112_732,
                 }],
                 rewinds: Vec::new(),
+                trims: Vec::new(),
             }],
             total_sink_chars: 112_732,
             total_reclaimable_chars: 110_000,
