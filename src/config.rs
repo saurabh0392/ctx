@@ -672,6 +672,19 @@ pub struct Config {
     pub compress_redact_secrets: bool,
     #[serde(default = "default_true")]
     pub compress_preserve_errors: bool,
+    /// SPIKE (exploratory, off by default): let the earn-it gate govern every tool instead of the
+    /// static `compress_tools` allow-list. When true, `tool_allowed` treats any tool as eligible
+    /// except those in the deny-set. The preset / burn-in / causal-activation gate in `agent::decide`
+    /// still decides whether an eligible tool actually trims, so this only widens the pool of tools
+    /// that can *earn* a trim; it does not force any trim. Defaults on: earn-it governs every tool
+    /// except the deny-set (recovery tools and mutations). Set false to fall back to the allow-list.
+    #[serde(default = "default_true")]
+    pub compress_trim_all: bool,
+    /// Tools that are never trimmed, in either mode. ctx's own server (`mcp__ctx__*`) is always
+    /// denied in code because it holds the recovery tools (ctx_expand); this list is the
+    /// configurable extension and its default spells out that recovery surface as a safety net.
+    #[serde(default = "default_compress_deny_tools")]
+    pub compress_deny_tools: Vec<String>,
 }
 
 /// Thresholds for automatic profile generation from MCP usage history.
@@ -790,6 +803,17 @@ fn default_compress_target_chars() -> usize {
 
 fn default_compress_tools() -> Vec<String> {
     vec!["Bash".into(), "Read".into(), "Grep".into(), "Glob".into()]
+}
+
+/// The never-trim set: ctx's own recovery tools. The `mcp__ctx__` prefix rule in `tool_allowed`
+/// already covers the whole server, so this is a redundant safety net that keeps the guarantee for
+/// ctx_expand and friends readable in config and intact even if the prefix rule ever changes.
+fn default_compress_deny_tools() -> Vec<String> {
+    vec![
+        "mcp__ctx__ctx_expand".into(),
+        "mcp__ctx__ctx_status".into(),
+        "mcp__ctx__ctx_waste".into(),
+    ]
 }
 
 fn default_true() -> bool {

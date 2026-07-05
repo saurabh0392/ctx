@@ -197,8 +197,98 @@ fn apply_sgr(
     result
 }
 
+/// True for a tool on ctx's own MCP server (`mcp__ctx__*`), which carries the recovery tools
+/// (ctx_expand, ctx_status, ctx_waste). Trimming that server's output would hide the surface that
+/// makes every other trim reversible, so it is never trimmed. Mirrors the un-prunable rule in
+/// filter_control.rs (`prune_server` refuses `mcp__ctx__`).
+fn is_ctx_server_tool(name: &str) -> bool {
+    name.trim()
+        .get(..10)
+        .is_some_and(|p| p.eq_ignore_ascii_case("mcp__ctx__"))
+}
+
+/// Whether a tool's output is a mutation/one-shot the agent consumes once and acts on, rather than
+/// a read-back it can re-read. This matters because the earn-it harm signal in `agent::decide` judges
+/// output tools by re-read and edit tools by re-edit: a bad trim of a mutation result is never
+/// re-read, so the gate can't see the harm and would wrongly pass it. Under the spike we hold these
+/// out of trimming entirely.
+///
+/// Built-in one-shot/state tools (todowrite, task, taskoutput) are named directly. For MCP tools we
+/// classify by the method verb: the segment after the last `__`, first recognized token split on `_`
+/// or `-`. Vendor-prefixed methods (Notion's `notion-fetch`, `notion-update-page`) put a non-verb
+/// segment first, so we scan left to right for the first token we recognize rather than blindly
+/// taking token 0. An unrecognized verb defaults to MUTATION (held): without a known read verb we
+/// can't assume a re-read would surface a bad trim, so we fail safe toward not trimming. The tradeoff
+/// is that a genuinely read-shaped tool with an unusual verb stays ineligible until its verb is added.
+fn is_mutation_tool(name: &str) -> bool {
+    // Read verbs: output the agent can (and does) re-read, so a bad trim shows up as a re-read.
+    const READ_VERBS: &[&str] = &[
+        "get", "list", "fetch", "search", "read", "query", "download", "export", "whoami",
+        "describe", "view", "resolve",
+    ];
+    // Mutation verbs: a write/action whose result is consumed once. No re-read, so no harm signal.
+    const MUTATION_VERBS: &[&str] = &[
+        "save", "create", "update", "delete", "remove", "add", "set", "patch", "upload", "post",
+        "send", "merge", "close", "archive", "move", "duplicate", "write", "prepare", "cancel",
+        "assign", "comment",
+    ];
+
+    let n = name.trim();
+    if matches!(
+        n.to_ascii_lowercase().as_str(),
+        "todowrite" | "task" | "taskoutput"
+    ) {
+        return true;
+    }
+    if !classify::is_mcp_tool(n) {
+        return false;
+    }
+    let method = n.rsplit("__").next().unwrap_or(n).to_ascii_lowercase();
+    for tok in method.split(|c| c == '_' || c == '-') {
+        if READ_VERBS.contains(&tok) {
+            return false;
+        }
+        if MUTATION_VERBS.contains(&tok) {
+            return true;
+        }
+    }
+    // Unrecognized verb: hold it.
+    true
+}
+
+/// A tool that must never be trimmed: ctx's own recovery server (always, both modes), any name the
+/// user listed in `compress_deny_tools` (always), or, only under the `compress_trim_all` spike, a
+/// mutation/one-shot tool the harm signal can't watch. The mutation deny is gated on `trim_all` so
+/// allow-list mode keeps exactly today's behavior.
+fn is_trim_denied(name: &str, cfg: &Config) -> bool {
+    let n = name.trim();
+    if is_ctx_server_tool(n) {
+        return true;
+    }
+    if cfg
+        .compress_deny_tools
+        .iter()
+        .any(|d| d.trim().eq_ignore_ascii_case(n))
+    {
+        return true;
+    }
+    cfg.compress_trim_all && is_mutation_tool(n)
+}
+
 fn tool_allowed(tool_name: &str, cfg: &Config) -> bool {
     let name = tool_name.trim();
+    // Deny-set first, in both modes. This also closes a latent gap: before the deny-set, the MCP
+    // branch below returned true unconditionally, so ctx's own recovery output (ctx_expand) was
+    // itself trim-eligible. Denying it here fixes that regardless of the trim_all flag.
+    if is_trim_denied(name, cfg) {
+        return false;
+    }
+    // SPIKE: earn-it governs every tool. Any non-denied tool is eligible; the preset / burn-in /
+    // activation gate in agent::decide still decides whether an eligible tool actually trims, so
+    // newly-eligible tools only trim after a clean baseline and back off on harm.
+    if cfg.compress_trim_all {
+        return true;
+    }
     if classify::is_mcp_tool(name) {
         return true;
     }
@@ -249,6 +339,97 @@ mod tests {
         assert!(tool_allowed("shell", &cfg));
         assert!(tool_allowed("Bash", &cfg));
         assert!(!tool_allowed("Write", &cfg));
+    }
+
+    #[test]
+    fn trim_all_makes_read_shaped_tools_eligible() {
+        // SPIKE: with the flag on, the earn-it gate governs everything. tool_allowed becomes a
+        // deny-set check: read/edit tools the allow-list stranded (Write, Edit, MultiEdit) are now
+        // eligible, while ctx's recovery server, configured deny tools, and mutation/one-shot tools
+        // (TodoWrite, Task, TaskOutput) are held. Eligibility is not application: agent::decide's
+        // preset/burn-in gate still decides whether an eligible tool actually trims.
+        let cfg = Config {
+            compress_trim_all: true,
+            ..test_cfg()
+        };
+        for t in ["Write", "Edit", "MultiEdit", "Bash", "Read"] {
+            assert!(tool_allowed(t, &cfg), "{t} should be eligible under trim_all");
+        }
+        assert!(!tool_allowed("mcp__ctx__ctx_expand", &cfg));
+        assert!(!tool_allowed("mcp__ctx__ctx_status", &cfg), "whole ctx server is denied by prefix");
+        // Mutation / one-shot tools are held even without an explicit deny entry.
+        for t in ["TodoWrite", "Task", "TaskOutput"] {
+            assert!(!tool_allowed(t, &cfg), "{t} is a mutation/one-shot: held under trim_all");
+        }
+    }
+
+    #[test]
+    fn is_mutation_tool_classifies_by_consumption() {
+        // Built-in one-shot/state tools.
+        for t in ["TodoWrite", "todowrite", "Task", "TaskOutput"] {
+            assert!(is_mutation_tool(t), "{t} is a built-in mutation/one-shot");
+        }
+        // MCP writes across servers, classified by method verb.
+        for t in [
+            "mcp__claude_ai_Linear__save_issue",
+            "mcp__claude_ai_Notion__notion-create-pages",
+            "mcp__claude_ai_Notion__notion-update-page",
+            "mcp__claude_ai_Linear__delete_attachment",
+        ] {
+            assert!(is_mutation_tool(t), "{t} is an MCP mutation");
+        }
+        // MCP reads: trimmable.
+        for t in [
+            "mcp__claude_ai_Linear__list_issues",
+            "mcp__claude_ai_Linear__get_issue",
+            "mcp__claude_ai_Notion__notion-fetch",
+            "mcp__claude_ai_Notion__notion-search",
+        ] {
+            assert!(!is_mutation_tool(t), "{t} is an MCP read");
+        }
+        // Non-MCP, non-built-in: not a mutation (falls through to the allow-list logic).
+        assert!(!is_mutation_tool("Read"));
+        assert!(!is_mutation_tool("Bash"));
+    }
+
+    #[test]
+    fn trim_all_gate_splits_mcp_reads_from_writes() {
+        let cfg = Config { compress_trim_all: true, ..test_cfg() };
+        // Read-shaped MCP and built-in tools are eligible.
+        assert!(tool_allowed("mcp__claude_ai_Notion__notion-fetch", &cfg));
+        assert!(tool_allowed("mcp__claude_ai_Linear__list_issues", &cfg));
+        assert!(tool_allowed("Edit", &cfg));
+        assert!(tool_allowed("Write", &cfg));
+        // Mutation MCP writes, ctx server, and built-in one-shots are held.
+        assert!(!tool_allowed("mcp__claude_ai_Linear__save_issue", &cfg));
+        assert!(!tool_allowed("mcp__ctx__ctx_expand", &cfg));
+        assert!(!tool_allowed("TodoWrite", &cfg));
+        assert!(!tool_allowed("Task", &cfg));
+    }
+
+    #[test]
+    fn deny_set_applies_in_both_modes_for_ctx_server() {
+        // The ctx server is never trimmed regardless of the flag. Off-mode used to return true for
+        // any MCP tool unconditionally; the deny-set now holds ctx's recovery tools back in both
+        // modes, closing that latent gap.
+        let off = test_cfg(); // compress_trim_all defaults false
+        assert!(!tool_allowed("mcp__ctx__ctx_expand", &off));
+        assert!(tool_allowed("mcp__claude_ai_Linear__get_issue", &off), "other MCP still allowed off");
+        let on = Config { compress_trim_all: true, ..test_cfg() };
+        assert!(!tool_allowed("mcp__ctx__ctx_expand", &on));
+    }
+
+    #[test]
+    fn trim_all_off_preserves_allow_list() {
+        // Flag off: exactly today's behavior. Allow-list members trim, others do not, MCP is allowed.
+        let cfg = test_cfg();
+        assert!(!cfg.compress_trim_all);
+        assert!(tool_allowed("Bash", &cfg));
+        assert!(tool_allowed("Read", &cfg));
+        assert!(!tool_allowed("Write", &cfg));
+        assert!(!tool_allowed("Edit", &cfg));
+        assert!(!tool_allowed("TaskOutput", &cfg));
+        assert!(tool_allowed("mcp__claude_ai_Notion__notion-fetch", &cfg));
     }
 
     #[test]
