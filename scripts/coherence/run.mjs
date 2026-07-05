@@ -43,7 +43,13 @@ function parseK(str) {
 }
 
 async function main() {
-  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--hide-scrollbars'] });
+  // Local runs use the system Chrome (channel: 'chrome'); CI sets PW_CHANNEL='' to use the chromium
+  // that `npx playwright install chromium` downloaded, since a CI runner has no branded Chrome.
+  const hasChan = process.env.PW_CHANNEL !== undefined;
+  const channel = hasChan ? (process.env.PW_CHANNEL || undefined) : 'chrome';
+  const launchOpts = { headless: true, args: ['--hide-scrollbars'] };
+  if (channel) launchOpts.channel = channel;
+  const browser = await chromium.launch(launchOpts);
   const context = await browser.newContext({ viewport: { width: 1280, height: 1600 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
   // Never let a confirm()/prompt() from a clicked control block the run.

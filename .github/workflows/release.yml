@@ -65,9 +65,63 @@ jobs:
           path: ${{ env.ARCHIVE }}
           if-no-files-found: error
 
+  # Behavioral coherence gate: the dashboard must pass every invariant against a seeded fixture before
+  # a release can publish. This is the deterministic gate (exact pass/fail).
+  coherence:
+    name: Behavioral coherence
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build binary + fixture seeder
+        run: |
+          cargo build --release
+          cargo build --release --example seed_coherence_fixture
+      - name: Install coherence deps + chromium
+        working-directory: scripts/coherence
+        run: |
+          npm i --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Seed the CI fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/ctx-fixture"
+          CTX_HOME="$RUNNER_TEMP/ctx-fixture" ./target/release/examples/seed_coherence_fixture
+      - name: Run coherence suite
+        env:
+          CTX_FIXTURE: ${{ runner.temp }}/ctx-fixture
+          PW_CHANNEL: ""
+        run: bash scripts/coherence/coherence.sh
+
+  # Fitcheck gate: a headless persona review of the dashboard. Model judgement, so it blocks the clear
+  # failure (Rework) by default; set FITCHECK_MIN_VERDICT=Ship to require a Ship. Needs the API key
+  # secret, and fails loudly if absent so a release never publishes with the gate silently skipped.
+  fitcheck:
+    name: Fitcheck (design gate)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Claude Code CLI
+        run: npm i -g @anthropic-ai/claude-code
+      - name: Fitcheck gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "release fitcheck gate needs the ANTHROPIC_API_KEY secret."
+            echo "Set it in repo settings, or bypass one release with SKIP_FITCHECK=1 in this job env."
+            exit 1
+          fi
+          bash scripts/coherence/fitcheck-ci.sh
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, coherence, fitcheck]
     runs-on: ubuntu-latest
 
     steps:

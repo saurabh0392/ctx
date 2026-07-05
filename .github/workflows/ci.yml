@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # lets a branch run the full pipeline on demand, before opening a PR
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests + build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Format check (advisory)
+        run: cargo fmt --check
+        continue-on-error: true
+      - name: Unit tests
+        run: cargo test
+      - name: Build release
+        run: cargo build --release
+
+  coherence:
+    name: Behavioral coherence
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build binary + fixture seeder
+        run: |
+          cargo build --release
+          cargo build --release --example seed_coherence_fixture
+      - name: Install coherence deps + chromium
+        working-directory: scripts/coherence
+        run: |
+          npm i --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Seed the CI fixture (no ~/.ctx in CI)
+        run: |
+          mkdir -p "$RUNNER_TEMP/ctx-fixture"
+          CTX_HOME="$RUNNER_TEMP/ctx-fixture" ./target/release/examples/seed_coherence_fixture
+      - name: Run coherence suite
+        env:
+          CTX_FIXTURE: ${{ runner.temp }}/ctx-fixture
+          PW_CHANNEL: ""            # empty: use the chromium playwright installed, not branded Chrome
+        run: bash scripts/coherence/coherence.sh
+
+  fitcheck:
+    name: Fitcheck (design gate, advisory in CI)
+    runs-on: ubuntu-22.04
+    # Advisory here so a fork PR (no secret) or a model flake never blocks a merge; release.yml gates
+    # on it hard. See scripts/coherence/fitcheck-ci.sh.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Claude Code CLI
+        run: npm i -g @anthropic-ai/claude-code
+      - name: Fitcheck
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "No ANTHROPIC_API_KEY available (fork PR or unset). Skipping fitcheck."
+            exit 0
+          fi
+          bash scripts/coherence/fitcheck-ci.sh

@@ -10,7 +10,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="$REPO/target/release/ctx"
 PORT="${COHERENCE_PORT:-8799}"
-REAL_HOME="${CTX_HOME:-$HOME/.ctx}"
+# CTX_FIXTURE points at a seeded throwaway home for CI (no real ~/.ctx there); otherwise clone the
+# developer's own state so the checks run on realistic data.
+REAL_HOME="${CTX_FIXTURE:-${CTX_HOME:-$HOME/.ctx}}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ctx-coherence.XXXXXX")"
 LIVE="$WORK/home"
 PRISTINE_CONFIG="$WORK/config.pristine.toml"
