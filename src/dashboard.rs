@@ -255,6 +255,12 @@ struct ContextToolView {
     active: bool,
     earned: bool,
     need: i64,
+    /// Whether this tool is eligible to ever trim (`!is_trim_denied`). Burn-in still decides when an
+    /// eligible tool actually trims; this only says the deny-list doesn't hold it out. Lets the Save
+    /// page split "watching, earning a trim" from tools that are measured but never trimmed.
+    trim_eligible: bool,
+    /// When held (`!trim_eligible`), a short human reason. `None` when eligible.
+    held_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -451,6 +457,7 @@ async fn api_context() -> Json<ContextView> {
                         .find(|o| o.tool_name == p.tool_name)
                         .map(|o| causal_clears_bar(o, &th))
                         .unwrap_or(false);
+                    let held = crate::compress::held_reason(&p.tool_name, &cfg);
                     ContextToolView {
                         tool: p.tool_name,
                         decisions: p.decisions,
@@ -461,6 +468,8 @@ async fn api_context() -> Json<ContextView> {
                         active: p.active,
                         earned,
                         need: th.min_baseline,
+                        trim_eligible: held.is_none(),
+                        held_reason: held,
                     }
                 })
                 .collect();

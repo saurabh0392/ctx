@@ -260,7 +260,7 @@ fn is_mutation_tool(name: &str) -> bool {
 /// user listed in `compress_deny_tools` (always), or, only under the `compress_trim_all` spike, a
 /// mutation/one-shot tool the harm signal can't watch. The mutation deny is gated on `trim_all` so
 /// allow-list mode keeps exactly today's behavior.
-fn is_trim_denied(name: &str, cfg: &Config) -> bool {
+pub fn is_trim_denied(name: &str, cfg: &Config) -> bool {
     let n = name.trim();
     if is_ctx_server_tool(n) {
         return true;
@@ -273,6 +273,24 @@ fn is_trim_denied(name: &str, cfg: &Config) -> bool {
         return true;
     }
     cfg.compress_trim_all && is_mutation_tool(n)
+}
+
+/// Why a tool is held out of trimming, for the dashboard. `None` means the tool is trim-eligible
+/// (burn-in still decides when it actually trims). Mirrors `is_trim_denied`: ctx's own recovery
+/// server reads as a recovery tool, everything else that is held reads as a mutation the harm gate
+/// can't watch (a user-listed deny falls here too, which is close enough for the surface).
+pub fn held_reason(name: &str, cfg: &Config) -> Option<String> {
+    if !is_trim_denied(name, cfg) {
+        return None;
+    }
+    if is_ctx_server_tool(name.trim()) {
+        Some("Recovery tool, never trimmed.".to_string())
+    } else {
+        Some(
+            "Measured only. The agent acts on it once and never re-reads it, so a bad trim would be invisible to the gate."
+                .to_string(),
+        )
+    }
 }
 
 fn tool_allowed(tool_name: &str, cfg: &Config) -> bool {
@@ -405,6 +423,30 @@ mod tests {
         assert!(!tool_allowed("mcp__ctx__ctx_expand", &cfg));
         assert!(!tool_allowed("TodoWrite", &cfg));
         assert!(!tool_allowed("Task", &cfg));
+    }
+
+    #[test]
+    fn held_reason_matches_eligibility() {
+        let cfg = Config { compress_trim_all: true, ..test_cfg() };
+        // ctx recovery server: held, recovery reason.
+        assert_eq!(
+            held_reason("mcp__ctx__ctx_expand", &cfg).as_deref(),
+            Some("Recovery tool, never trimmed.")
+        );
+        // Mutation / one-shot: held, measured-only reason.
+        for t in ["mcp__claude_ai_Linear__save_issue", "TaskOutput"] {
+            let r = held_reason(t, &cfg);
+            assert!(r.is_some(), "{t} should be held");
+            assert!(r.unwrap().starts_with("Measured only."), "{t} gets the measured-only reason");
+        }
+        // Read-shaped tools are eligible: no reason.
+        for t in [
+            "mcp__claude_ai_Notion__notion-fetch",
+            "mcp__claude_ai_Linear__get_issue",
+        ] {
+            assert!(held_reason(t, &cfg).is_none(), "{t} is trim-eligible");
+            assert!(!is_trim_denied(t, &cfg), "{t} is not denied");
+        }
     }
 
     #[test]

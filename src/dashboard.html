@@ -924,6 +924,10 @@
         .sv-mini .n { font-family: var(--fmono); font-size: 12.5px; font-weight: 700; color: var(--ink); min-width: 120px; word-break: break-all; }
         .sv-mini .s { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); flex: 1; line-height: 1.45; }
         .sv-mini .p { font-family: var(--fmono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); background: var(--line-soft); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+        .sv-mini .p.on { color: var(--accent-ink); background: var(--accent-soft); }
+        .sv-mini.held { background: var(--line-soft); border-style: dashed; }
+        .sv-mini.held .n { color: var(--muted); }
+        .sv-mini.held .s { font-style: italic; }
         .sv-agents { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
         .sv-agent { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 18px 20px; }
         .sv-agent-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -2252,12 +2256,34 @@
       const spotlight = [...g.earned, ...g.trial, ...g.off];
       if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Earned it</div><h2 class="sv-sec-h">Trimming now, because your work proved it safe.</h2><p class="sv-note">These run in full. ctx only shortens what the agent reads back, and a trimmed detail is one command away. In each chip, a value at or below zero means trimming did not raise that signal versus leaving the output whole, so below zero is the safe side.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
       if (g.proving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${g.proving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
-      const watchShown = g.watch.filter((r) => (r.c && r.c.decisions >= 10) || (r.p && (r.p.baseline_n || r.p.trimmed_n))).slice(0, 12);
+      // Split the watch list by trim-eligibility (from /api/context .tools). Held tools (ctx's own
+      // recovery server, one-shot mutations) are measured but the deny-list keeps them out of
+      // trimming, so lumping them with genuinely-eligible reads used to read as misleading: it even
+      // listed ctx_expand, the recovery tool, as a trim candidate.
+      const heldReason = (r) => (r.c && r.c.held_reason) || null;
+      const trialSet = new Set(proof.trial_tools || []);
+      const eligibleWatch = g.watch.filter((r) => !heldReason(r));
+      const heldWatch = g.watch.filter((r) => heldReason(r));
+
+      // Eligible: genuinely earning a trim. Same watch copy as before, now with a trial button.
+      const watchShown = eligibleWatch.filter((r) => (r.c && r.c.decisions >= 10) || (r.p && (r.p.baseline_n || r.p.trimmed_n))).slice(0, 12);
       // The "why traces for some tools and not others" answer: no trim means no before/after to show.
-      const watchNote = `No before/after traces here yet, and that is expected: ctx has not trimmed these tools' output. Short results, like Write and the MCP calls, have nothing worth setting aside, so no evidence accrues. A tool earns a trace once it produces output long enough to trim.`;
-      if (watchShown.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Watching quietly</div><h2 class="sv-sec-h">Measured, nothing changed.</h2><p class="sv-note">${watchNote}</p>${watchShown.map((r) => `<div class="sv-mini"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${shortMsg(r, autopilot, minB)}</span><span class="p">watching</span></div>`).join("")}</section>`;
-      const watchMore = g.watch.length - watchShown.length;
-      if (watchMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(watchMore)} more tools with lighter usage are not shown.</p>`;
+      const watchNote = `No before/after traces here yet, and that is expected: ctx has not trimmed these tools' output yet. A tool earns a trace once it produces output long enough to trim. Put one on trial to start collecting the trimmed half now.`;
+      const trialCell = (r) => trialSet.has(r.tool)
+        ? `<span class="p on">On trial</span>`
+        : `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
+      if (watchShown.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Watching, earning a trim</div><h2 class="sv-sec-h">Measured now, trimming once the runs add up.</h2><p class="sv-note">${watchNote}</p>${watchShown.map((r) => `<div class="sv-mini"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${shortMsg(r, autopilot, minB)}</span>${trialCell(r)}</div>`).join("")}</section>`;
+      const watchMore = eligibleWatch.length - watchShown.length;
+      if (watchMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(watchMore)} more eligible tools with lighter usage are not shown.</p>`;
+
+      // Held: measured for cost, never trimmed. No trial button, reason shown per row.
+      const heldShown = heldWatch.filter((r) => r.c && r.c.decisions >= 1).slice(0, 16);
+      if (heldShown.length) {
+        const heldNote = `These are held out of trimming on purpose. ctx's own recovery tools stay whole so a trim is always reversible, and one-shot mutations the agent acts on once, never re-reading, give the harm gate nothing to check. They are watched for cost, not for trimming, so there is no trial here.`;
+        body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Held, measured but never trimmed</div><h2 class="sv-sec-h">Watched for cost, kept whole on purpose.</h2><p class="sv-note">${heldNote}</p>${heldShown.map((r) => `<div class="sv-mini held"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${esc(r.c.held_reason)}</span><span class="p">held</span></div>`).join("")}</section>`;
+        const heldMore = heldWatch.length - heldShown.length;
+        if (heldMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(heldMore)} more held tools with lighter usage are not shown.</p>`;
+      }
     }
     $("save-tools").innerHTML = body;
 
