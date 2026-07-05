@@ -868,6 +868,8 @@
         .sv-harm { font-family: var(--fsans); font-size: 13.5px; color: var(--muted); margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line-soft); line-height: 1.55; }
         .sv-harm b.ok { color: var(--accent-ink); font-family: var(--fmono); }
         .sv-harm b.bad { color: var(--crit); font-family: var(--fmono); }
+        .sv-parked { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 18px; line-height: 1.5; }
+        .sv-parked b { color: var(--ink); font-family: var(--fmono); }
         .sv-sec { margin-top: 44px; }
         .sv-sec-eyebrow { font-family: var(--fmono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); display: inline-flex; align-items: center; gap: 8px; }
         .sv-sec-eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--accent); }
@@ -1419,6 +1421,11 @@
     const g = { earned: [], trial: [], proving: [], off: [], watch: [] };
     rows.forEach((r) => g[r.stage].push(r.tool));
     const total = stats.total || 0;
+    // Split the watch stage by the deny-set (held_reason from /api/context .tools). The Watching rung
+    // counts only tools that can earn a trim; held tools (ctx's own server, one-shot mutations) are
+    // parked off the ladder, watched for cost only, so they never get promised a trim they can't get.
+    const heldWatch = rows.filter((r) => r.stage === "watch" && r.c && r.c.held_reason);
+    const eligibleWatchN = g.watch.length - heldWatch.length;
 
     // The one all-time number, both taxes: output trims (chars to tokens) plus input prunes (already
     // tokens). Same figure repeated in beat 1 and beat 3, never two disagreeing numbers.
@@ -1461,13 +1468,16 @@
       const kept = g.off.length
         ? `<div class="h2-kept"><b>${g.off.length}</b> kept whole after testing, where trimming looked worse than leaving it. That is the gate refusing, exactly as it should.</div>`
         : "";
+      const heldH = heldWatch.length
+        ? `<div class="h2-kept"><b>${num(heldWatch.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
+        : "";
       ladder.innerHTML =
         `<div class="h2-rungs">`
-        + rung("Watching", g.watch.length, "on", "measured, not touched yet")
+        + rung("Watching", eligibleWatchN, "on", "measured, not touched")
         + rung("Trial", g.trial.length, "part", "trimmed on a control slice")
         + rung("Proving", g.proving.length, "part", "gathering enough evidence")
         + rung("Earned", g.earned.length, "on", "safe on your work, trimming")
-        + `</div>` + kept
+        + `</div>` + heldH + kept
         + `<div class="h2-revert"><span class="k">reversible</span><p>A trimmed detail already ran in full and is one command back. <b>ctx never removes a capability</b>, it only shows less of a result until your work says it can.</p></div>`;
     } else {
       ladder.innerHTML = `<div class="h2-empty">No tools on the ladder yet. As you work, each tool starts at Watching and only moves toward Earned once your own sessions show that trimming it was safe.</div>`;
@@ -1476,7 +1486,7 @@
     // BEAT 3: Trust. The same one number, restated.
     const restate = $("h2-restate");
     restate.innerHTML = reclaimed > 0
-      ? `All told, ctx has reclaimed <b>${fmtK(reclaimed)} tokens</b> of context on your work so far, output trimmed and tool menu pruned, counted once and the same everywhere you see it.`
+      ? `All told, ctx has reclaimed <b>${fmtK(reclaimed)} tokens</b> of context on your work so far, output trimmed and tool menu pruned, counted once. See itemizes those two parts, output reclaimed plus input reclaimed, and they add up to exactly this.`
       : `Nothing reclaimed yet, and ctx will not pretend otherwise. The number moves here only after a trim proves safe on your own runs.`;
 
     initHomeMotion();
@@ -1896,17 +1906,21 @@
     try { [bill, tbill] = await Promise.all([getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({}))]); setHealth(true); }
     catch (e) { setHealth(false); $("see-band").innerHTML = '<div class="see-note" style="margin-top:22px">Could not reach ctx. Is the dashboard running?</div>'; $("see-out").innerHTML = ""; $("see-in").innerHTML = ""; return; }
 
-    // Two-tax band: output is cumulative (variable), input is per request (fixed). Each card keeps
-    // one unit so a per-request number never sits next to a lifetime total (they are labelled).
+    // Two-tax band. Home's headline "reclaimed so far" is a blend of two lifetime components, so each
+    // card labels its own component ("output reclaimed", "input reclaimed") instead of repeating
+    // Home's total under the same words. Output is all lifetime; Input is otherwise per-request, but
+    // its one lifetime figure (input reclaimed, total) is labelled "total" so it cannot be read as
+    // another / request number. The two components add up to Home's number, in plain sight here.
     const outSink = tok(bill.total_sink_chars || 0), outReclaimable = tok(bill.total_reclaimable_chars || 0), outReclaimed = tok(bill.total_reclaimed_chars || 0);
     const carried = tbill.total_carried_tokens || 0, dead = tbill.total_dead_tokens || 0;
     const prunedPerReq = (tbill.servers || []).filter((s) => s.pruned).reduce((a, s) => a + (s.carried_tokens || 0), 0);
+    const inReclaimed = tbill.total_reclaimed_tokens || 0;
     $("see-band").innerHTML =
       '<div class="see-band-h">Two taxes, one context window</div><div class="see-taxes">' +
       seeTaxCard("Output tax", "variable &middot; per result", "what your agent reads back from every tool", fmtK(outSink), "tokens read back",
-        [[fmtK(outReclaimable), "reclaimable", false], [fmtK(outReclaimed), "reclaimed so far", true]]) +
+        [[fmtK(outReclaimable), "reclaimable", false], [fmtK(outReclaimed), "output reclaimed", true]]) +
       seeTaxCard("Input tax", "fixed &middot; per request", "the tool menu it carries whether it calls those tools or not", fmtK(carried), "tokens / request",
-        [[fmtK(dead), "dead weight / request", false], [fmtK(prunedPerReq), "already pruned / request", true]]) +
+        [[fmtK(dead), "dead weight / request", false], [fmtK(prunedPerReq), "pruned / request", true], [fmtK(inReclaimed), "input reclaimed, total", true]]) +
       '</div>';
 
     // Output section: itemized tool output, biggest first, expandable to sources and trim diffs.
@@ -2009,7 +2023,7 @@
       '<div class="bill-tot">' +
       '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_sink_chars)) + '</div><div class="bt-l">tokens of tool output' + since + '</div></div>' +
       '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_reclaimable_chars)) + '</div><div class="bt-l">reclaimable, on the table</div></div>' +
-      '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_reclaimed_chars)) + '</div><div class="bt-l">reclaimed so far</div></div>' +
+      '<div class="bt"><div class="bt-n">' + fmtK(tok(b.total_reclaimed_chars)) + '</div><div class="bt-l">output reclaimed</div></div>' +
       '</div>' + trendHtml;
     const shortSource = (s) => {
       s = String(s || "").trim();
@@ -2201,8 +2215,15 @@
     // per tool: proof it can recover, not a cost. Sourced from ctx.attribution[tool].reexpanded.
     if (attr && (attr.reexpanded || 0) > 0) chips.push(`<span class="sv-chip good" title="Times the agent pulled this tool's trimmed output back verbatim with ctx_expand. The original is always one call away.">${num(attr.reexpanded)} pulled back</span>`);
     const hasEv = (p.baseline_n || 0) > 0 || (p.trimmed_n || 0) > 0;
-    const arms = hasEv ? `<div class="sv-arms"><div class="sv-arm"><div class="sv-arm-h">Trimmed</div><div class="sv-arm-n">${num(p.trimmed_n || 0)} runs</div></div><div class="sv-arm"><div class="sv-arm-h">Left whole</div><div class="sv-arm-n">${num(p.baseline_n || 0)} runs</div></div></div>` : "";
-    const evidence = (hasEv ? arms + deltaLine(r) : "") + svExpArms(e, minT);
+    const exp = svExpArms(e, minT);
+    // The base arms are the rough tally: ctx chose when to trim, so the split is confounded. Label it
+    // as such (mirrors See's evidenceBlock), and when no randomized clean test sits beside it (explore
+    // rate is 0 for this tool) say plainly that it is observational, so it is not read as proof.
+    const roughNote = exp ? "" : `<div class="sv-exp-note">No randomized sample yet, so this is observational: ctx picked when to trim, which can flatter trimming. Read it as a lean, not proof.</div>`;
+    const arms = hasEv
+      ? `<div class="sv-exp"><div class="sv-exp-h">The rough tally so far</div><div class="sv-arms"><div class="sv-arm"><div class="sv-arm-h">Trimmed</div><div class="sv-arm-n">${num(p.trimmed_n || 0)} runs</div></div><div class="sv-arm"><div class="sv-arm-h">Left whole</div><div class="sv-arm-n">${num(p.baseline_n || 0)} runs</div></div></div>${roughNote}</div>`
+      : "";
+    const evidence = (hasEv ? arms + deltaLine(r) : "") + exp;
     const evBtn = evidence ? `<button class="sv-ev" onclick="this.closest('.sv-card').classList.toggle('open')">Show the evidence</button>` : "";
     let act = "";
     if (stage === "watch") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
@@ -2226,6 +2247,14 @@
     const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
     const attrBy = {}; (ctx.attribution || []).forEach((t) => (attrBy[t.tool] = t));
 
+    // Split the watch stage by trim-eligibility (deny-set held_reason from /api/context .tools). The
+    // Watching rung counts only tools genuinely earning a trim; held tools (ctx's own recovery server,
+    // one-shot mutations) never climb, so they show as a parked count, not a rung. The tool-card
+    // sections below reuse these same two lists.
+    const heldReason = (r) => (r.c && r.c.held_reason) || null;
+    const eligibleWatch = g.watch.filter((r) => !heldReason(r));
+    const heldWatch = g.watch.filter((r) => heldReason(r));
+
     // Ladder summary + the harm read: the one bar every tool clears.
     const rung = (name, count, cls, desc) => `<div class="sv-rung ${count > 0 ? cls : ""}"><div class="sv-track"><i></i></div><span class="sv-dot"></span><div class="sv-rname">${name}</div><div class="sv-rcount">${num(count)}</div><div class="sv-rdesc">${desc}</div></div>`;
     const tn = proof.trimmed_n_total || 0, tc = proof.trimmed_corrections_total || 0;
@@ -2246,7 +2275,10 @@
     const reexpLine = reexp.length ? `<div class="sv-recover-by">${reexp.map((t) => `<span class="sv-recover-chip">${esc(prettyTool(t.tool))} <b>${num(t.reexpanded)}</b> pulled back</span>`).join("")}</div>` : "";
     const recoverModule = `<div class="sv-recover ${rec > 0 ? "on" : ""}"><span class="sv-recover-mark">${rec > 0 ? "&#10003;" : "&#9675;"}</span><div class="sv-recover-body">${recBody}${reexpLine}</div></div>`;
 
-    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", g.watch.length, "on", "measured, not touched")}${rung("Trial", g.trial.length, "part", "trimmed on a control slice")}${rung("Proving", g.proving.length, "part", "gathering evidence")}${rung("Earned", g.earned.length, "on", "safe, trimming now")}</div><div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
+    const heldParked = heldWatch.length
+      ? `<div class="sv-parked"><b>${num(heldWatch.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
+      : "";
+    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Trial", g.trial.length, "part", "trimmed on a control slice")}${rung("Proving", g.proving.length, "part", "gathering evidence")}${rung("Earned", g.earned.length, "on", "safe, trimming now")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
 
     // Tool cards, grouped like the old report: spotlight, proving, then a quiet watch list.
     let body = "";
@@ -2256,14 +2288,10 @@
       const spotlight = [...g.earned, ...g.trial, ...g.off];
       if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Earned it</div><h2 class="sv-sec-h">Trimming now, because your work proved it safe.</h2><p class="sv-note">These run in full. ctx only shortens what the agent reads back, and a trimmed detail is one command away. In each chip, a value at or below zero means trimming did not raise that signal versus leaving the output whole, so below zero is the safe side.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
       if (g.proving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${g.proving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
-      // Split the watch list by trim-eligibility (from /api/context .tools). Held tools (ctx's own
-      // recovery server, one-shot mutations) are measured but the deny-list keeps them out of
-      // trimming, so lumping them with genuinely-eligible reads used to read as misleading: it even
-      // listed ctx_expand, the recovery tool, as a trim candidate.
-      const heldReason = (r) => (r.c && r.c.held_reason) || null;
+      // The watch list is already split into eligibleWatch / heldWatch above (deny-set held_reason),
+      // where the ladder's Watching rung and parked held count are computed. Reuse them here so the
+      // tool cards and the rung counts can never drift apart.
       const trialSet = new Set(proof.trial_tools || []);
-      const eligibleWatch = g.watch.filter((r) => !heldReason(r));
-      const heldWatch = g.watch.filter((r) => heldReason(r));
 
       // Eligible: genuinely earning a trim. Same watch copy as before, now with a trial button.
       const watchShown = eligibleWatch.filter((r) => (r.c && r.c.decisions >= 10) || (r.p && (r.p.baseline_n || r.p.trimmed_n))).slice(0, 12);
