@@ -802,6 +802,14 @@
         .see-tool { font-family: var(--fmono); font-size: 11.5px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 7px; padding: 4px 9px; }
         .see-deadnote { font-family: var(--fsans); font-size: 12.5px; color: var(--faint); margin-top: 12px; line-height: 1.55; max-width: 62ch; }
         .see-deadnote b { color: var(--muted); font-family: var(--fmono); }
+        .see-reach { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.5; display: flex; gap: 9px; align-items: baseline; max-width: 66ch; }
+        .see-reach.top { margin: 0 18px 15px; }
+        .see-reach b { font-family: var(--fmono); color: var(--ink); }
+        .see-reach.ok b { color: var(--accent-ink); }
+        .see-reach.bad b { color: var(--warn); }
+        .see-reach-k { font-family: var(--fmono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); background: var(--line-soft); padding: 3px 7px; border-radius: 6px; flex-shrink: 0; }
+        .see-reach.ok .see-reach-k { color: var(--accent-ink); background: var(--accent-soft); }
+        .see-reach.bad .see-reach-k { color: var(--warn); background: var(--warn-soft); }
         .see-prune { font-family: var(--fsans); font-size: 12.5px; font-weight: 600; padding: 7px 13px; border-radius: 9px; border: 1px solid rgba(15,122,84,.28); background: var(--accent-soft); color: var(--accent-ink); cursor: pointer; white-space: nowrap; }
         .see-prune:hover { background: rgba(15,122,84,.13); }
         .see-prune.restore { border-color: var(--line); background: var(--raised); color: var(--muted); }
@@ -895,6 +903,23 @@
         .sv-arm { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--paper); }
         .sv-arm-h { font-family: var(--fmono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
         .sv-arm-n { font-family: var(--fmono); font-size: 13px; font-weight: 700; color: var(--ink); margin-top: 8px; }
+        .sv-arm-n span { font-weight: 400; color: var(--faint); }
+        .sv-arm-s { font-family: var(--fsans); font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
+        .sv-exp { margin-top: 16px; }
+        .sv-exp-h { font-family: var(--fmono); font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); margin: 0 0 10px; }
+        .sv-exp-note { font-family: var(--fsans); font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; max-width: 62ch; }
+        .sv-exp-note b { font-family: var(--fmono); color: var(--ink); }
+        .sv-exp-note b.good { color: var(--accent-ink); }
+        .sv-exp-note b.bad { color: var(--crit); }
+        .sv-recover { display: flex; gap: 12px; align-items: baseline; margin-top: 14px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
+        .sv-recover.on { border-color: rgba(15,122,84,.24); background: linear-gradient(180deg, rgba(15,122,84,.03), var(--raised)); }
+        .sv-recover-mark { font-family: var(--fmono); font-size: 13px; font-weight: 800; color: var(--faint); flex-shrink: 0; }
+        .sv-recover.on .sv-recover-mark { color: var(--accent-ink); }
+        .sv-recover-body { font-family: var(--fsans); font-size: 13px; color: var(--muted); line-height: 1.55; }
+        .sv-recover-body b { color: var(--ink); font-weight: 600; }
+        .sv-recover-by { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+        .sv-recover-chip { font-family: var(--fmono); font-size: 11px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 8px; padding: 4px 9px; }
+        .sv-recover-chip b { color: var(--accent-ink); }
         .sv-mini { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); margin-top: 8px; }
         .sv-mini .n { font-family: var(--fmono); font-size: 12.5px; font-weight: 700; color: var(--ink); min-width: 120px; word-break: break-all; }
         .sv-mini .s { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); flex: 1; line-height: 1.45; }
@@ -1839,6 +1864,29 @@
     if (s.indexOf("/") >= 0) { const p = s.split("/").filter(Boolean); return ".../" + p.slice(-2).join("/"); }
     return s.slice(0, 44) + "...";
   }
+  // Prune reach (CTX-67), per server: did a session reach for a tool while ctx had this server's menu
+  // hidden. Same harm read as the aggregate line above, one server at a time, so a pruned row says
+  // whether the prune is holding or costing. Copy mirrors the tool-menu bill so the two agree. Amber,
+  // never red: a reach is a signal to undo a prune, not a failure.
+  function seeReach(s, top) {
+    const stage = s.prune_stage || "active";
+    const hs = s.hidden_sessions || 0, hn = s.hidden_needed || 10, m = s.misses || 0;
+    const T = top ? " top" : "";
+    let cls = "", body;
+    if (m > 0 || stage === "blocked") {
+      cls = "bad";
+      body = `Reached <b>${num(m)}x</b> while hidden. Hiding it is costing round trips; ctx suggests undoing this prune.`;
+    } else if (stage === "earned") {
+      cls = "ok";
+      body = `Hidden across <b>${num(hs)}</b> session${hs === 1 ? "" : "s"} since you pruned it and never reached for.`;
+    } else if (stage === "candidate" || stage === "proving") {
+      cls = "ok";
+      body = `Proving safe: <b>${num(hs)}/${num(hn)}</b> clean sessions, <b>${num(m)}</b> reach${m === 1 ? "" : "es"} so far.`;
+    } else {
+      body = `Not hidden, so nothing to reach for. Prune it and ctx watches whether a session reaches back.`;
+    }
+    return `<div class="see-reach ${cls}${T}"><span class="see-reach-k">Reach</span><span>${body}</span></div>`;
+  }
   async function loadSee() {
     let bill, tbill;
     try { [bill, tbill] = await Promise.all([getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({}))]); setHealth(true); }
@@ -1903,7 +1951,12 @@
           : `<button class="see-prune" onclick="pruneServer(event,'${esc(s.server)}',false)">Prune ${num(s.dead_tools)} dead</button>`;
         const tag = s.pruned ? '<span class="see-pruned-tag">pruned</span>' : "";
         const barLbl = s.pruned ? `<span class="see-hl">pruned, ${fmtK(s.carried_tokens)} reclaimed / request</span>` : `<span class="see-hl">${deadPct}% dead weight</span>`;
-        return `<div class="see-row${s.pruned ? " pruned" : ""}"><div class="see-rhead" onclick="this.parentNode.classList.toggle('open')"><div class="see-rname">${esc(s.server)}<span class="see-rsub">${num(s.invoked_tools)} of ${num(s.catalog_tools)} tools used</span></div><div class="see-barwrap"><div class="see-bar"><span class="see-used" style="width:${usedW}%"></span><span class="see-recl" style="width:${deadPct}%"></span></div><div class="see-barlbl"><span>${fmtK(s.carried_tokens)} tok / request</span>${barLbl}</div></div><div class="see-rcta">${tag}${btn}<span class="see-caret">&#9656;</span></div></div><div class="see-detail"><div class="see-dh">Tools you use (${num(used.length)})</div><div class="see-tools">${chips}</div>${deadNote}</div></div>`;
+        // Reach line rides on every server. Pruned servers (or any that has been reached for) show it
+        // always-visible under the bar, since "is the prune holding" is the whole question for them;
+        // active servers keep it in the expanded detail so collapsed rows stay quiet.
+        const reachTop = (s.pruned || (s.misses || 0) > 0) ? seeReach(s, true) : "";
+        const reachIn = reachTop ? "" : seeReach(s, false);
+        return `<div class="see-row${s.pruned ? " pruned" : ""}"><div class="see-rhead" onclick="this.parentNode.classList.toggle('open')"><div class="see-rname">${esc(s.server)}<span class="see-rsub">${num(s.invoked_tools)} of ${num(s.catalog_tools)} tools used</span></div><div class="see-barwrap"><div class="see-bar"><span class="see-used" style="width:${usedW}%"></span><span class="see-recl" style="width:${deadPct}%"></span></div><div class="see-barlbl"><span>${fmtK(s.carried_tokens)} tok / request</span>${barLbl}</div></div><div class="see-rcta">${tag}${btn}<span class="see-caret">&#9656;</span></div></div>${reachTop}<div class="see-detail"><div class="see-dh">Tools you use (${num(used.length)})</div><div class="see-tools">${chips}</div>${deadNote}${reachIn}</div></div>`;
       }).join("");
       $("see-in").innerHTML = `<section class="see-sec">${inHead}<p class="see-note">Ranked by dead weight: tools carried but never called. The green share is prunable, reversibly.</p><div class="see-harm">${harm}</div><div class="see-rows">${rows}</div></section>`;
     }
@@ -2102,7 +2155,22 @@
   // ════ TOOL REPORT (narrative-first; was Loop health, CTX-35) ════
   // ════ SAVE: the proof surface, clean light (pass 3). Reuses the narrative helpers (longStory,
   // deltaLine, shortMsg) so the verdicts read exactly as the old Tool report, just restyled. ════
-  function saveCard(r, autopilot, minB, minT) {
+  // The randomized clean test (explore arms, /api/context/model-progress). ctx trims a random half of
+  // a tool's runs and leaves the other half alone, so the two arms are comparable in a way the rough
+  // tally above is not. Save-native styling; same read as the orphaned armsBlock, restyled to match.
+  function svExpArms(e, minArm) {
+    if (!e || (e.control_collected + e.treatment_collected) <= 0) return "";
+    const arm = (label, n, coll, rr) => `<div class="sv-arm"><div class="sv-arm-h">${label}</div><div class="sv-arm-n">${num(n)} scored <span>/ ${num(coll)} trimmed</span></div><div class="sv-arm-s">${n > 0 ? `re-read ${pct(rr)}` : "no scored runs yet"}</div></div>`;
+    let note;
+    if (e.reread_delta != null) {
+      const worse = e.reread_delta > 0;
+      note = `On this random sample, trimming led to <b class="${worse ? "bad" : "good"}">${worse ? "more" : "no more"} re-reads</b> (${signedPts(e.reread_delta)}) than the runs ctx left whole. Trust this over the rough tally above.`;
+    } else {
+      note = `Still collecting: ctx needs about <b>${minArm || 20}</b> scored runs on each side before it will even lean.`;
+    }
+    return `<div class="sv-exp"><div class="sv-exp-h">The clean test, a random sample</div><div class="sv-arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_reread)}${arm("Left alone", e.control_n, e.control_collected, e.control_reread)}</div><div class="sv-exp-note">${note}</div></div>`;
+  }
+  function saveCard(r, autopilot, minB, minT, e, attr) {
     const p = r.p || {}, stage = r.stage;
     const PILL = { earned: "Earned", trial: "On trial", off: "Kept whole", proving: "Collecting proof", watch: "Watching" };
     const story = longStory(r, autopilot, minB);
@@ -2112,9 +2180,12 @@
     const deltaTip = "Change versus leaving the output whole. At or below zero means trimming did not cost you an extra look-back or fix. A large negative just means the trimmed runs went back even less often.";
     if (p.reread_delta) chips.push(`<span class="sv-chip ${p.reread_delta.diff <= 0 ? "good" : "bad"}" title="${deltaTip}">${retouchNoun(r.tool)} ${signedPts(p.reread_delta)}</span>`);
     if (p.correction_delta && p.correction_delta.diff != null) chips.push(`<span class="sv-chip ${p.correction_delta.diff <= 0 ? "good" : "bad"}" title="${deltaTip}">fixes ${signedPts(p.correction_delta)}</span>`);
+    // How often the agent pulled this tool's trimmed output back with ctx_expand. The safety net,
+    // per tool: proof it can recover, not a cost. Sourced from ctx.attribution[tool].reexpanded.
+    if (attr && (attr.reexpanded || 0) > 0) chips.push(`<span class="sv-chip good" title="Times the agent pulled this tool's trimmed output back verbatim with ctx_expand. The original is always one call away.">${num(attr.reexpanded)} pulled back</span>`);
     const hasEv = (p.baseline_n || 0) > 0 || (p.trimmed_n || 0) > 0;
     const arms = hasEv ? `<div class="sv-arms"><div class="sv-arm"><div class="sv-arm-h">Trimmed</div><div class="sv-arm-n">${num(p.trimmed_n || 0)} runs</div></div><div class="sv-arm"><div class="sv-arm-h">Left whole</div><div class="sv-arm-n">${num(p.baseline_n || 0)} runs</div></div></div>` : "";
-    const evidence = hasEv ? arms + deltaLine(r) : "";
+    const evidence = (hasEv ? arms + deltaLine(r) : "") + svExpArms(e, minT);
     const evBtn = evidence ? `<button class="sv-ev" onclick="this.closest('.sv-card').classList.toggle('open')">Show the evidence</button>` : "";
     let act = "";
     if (stage === "watch") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
@@ -2125,8 +2196,8 @@
     return `<div class="sv-card ${stage}"><div class="sv-head"><span class="sv-name">${esc(prettyTool(r.tool))}</span><span class="sv-pill ${stage}">${PILL[stage] || stage}</span></div><div class="sv-story">${story}</div>${chips.length ? `<div class="sv-chips">${chips.join("")}</div>` : ""}${foot}<div class="sv-evidence">${evidence}</div></div>`;
   }
   async function loadSave() {
-    let ctx, proof;
-    try { [ctx, proof] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] }))]); setHealth(true); }
+    let ctx, proof, mp;
+    try { [ctx, proof, mp] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/model-progress").catch(() => null)]); setHealth(true); }
     catch (e) { setHealth(false); $("save-ladder").innerHTML = '<div class="sv-empty">Could not reach ctx. Is the dashboard running?</div>'; $("save-tools").innerHTML = ""; $("save-agents").innerHTML = ""; $("save-comp").innerHTML = ""; return; }
 
     const rows = mergeTools(ctx, proof);
@@ -2134,6 +2205,9 @@
     rows.forEach((r) => g[r.stage].push(r));
     const autopilot = (ctx.preset || "off") !== "off";
     const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
+    // Explore arms (the clean test) and per-tool recovery signal, keyed by tool for the cards below.
+    const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
+    const attrBy = {}; (ctx.attribution || []).forEach((t) => (attrBy[t.tool] = t));
 
     // Ladder summary + the harm read: the one bar every tool clears.
     const rung = (name, count, cls, desc) => `<div class="sv-rung ${count > 0 ? cls : ""}"><div class="sv-track"><i></i></div><span class="sv-dot"></span><div class="sv-rname">${name}</div><div class="sv-rcount">${num(count)}</div><div class="sv-rdesc">${desc}</div></div>`;
@@ -2142,7 +2216,20 @@
       ? `Harm read: <b class="ok">${num(tn)} trimmed results</b> checked against what you did next. <b class="${tc > 0 ? "bad" : "ok"}">${num(tc)} correction${tc === 1 ? "" : "s"}.</b> On every earned tool, your re-reads stayed at or below the rate when the output was left whole. That is the whole bar a tool has to clear.`
       : `Nothing has been trimmed yet, so there is no harm to read. As tools earn trim, this fills with the corrections and re-reads ctx checked against your own next moves.`;
     const keptLine = g.off.length ? ` <b class="bad">${num(g.off.length)} kept whole</b> after testing, where trimming looked worse than leaving it.` : "";
-    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", g.watch.length, "on", "measured, not touched")}${rung("Trial", g.trial.length, "part", "trimmed on a control slice")}${rung("Proving", g.proving.length, "part", "gathering evidence")}${rung("Earned", g.earned.length, "on", "safe, trimming now")}</div><div class="sv-harm">${harm}${keptLine}</div></div>`;
+
+    // Recoveries: times the agent hit a trimmed block and pulled the full text back with ctx_expand.
+    // The safety net, made visible: it is why ctx can trim hard. Copy mirrors the orphaned
+    // insightActionsBlock; the aggregate is ctx.insight_actions.recoveries, the per-tool split is
+    // attribution[tool].reexpanded (the two agree). Recovery is proof, not a cost, so it reads green.
+    const rec = (ctx.insight_actions || {}).recoveries || 0;
+    const recBody = rec > 0
+      ? `<b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. That is the safety net working: ctx can trim hard because the original is one call away.`
+      : `<b>No trims recovered yet.</b> When ctx trims something your agent still needs, it calls ctx_expand to get the verbatim original back. You will see that here, and it is the reason trimming stays safe.`;
+    const reexp = (ctx.attribution || []).filter((t) => (t.reexpanded || 0) > 0).sort((a, b) => (b.reexpanded || 0) - (a.reexpanded || 0));
+    const reexpLine = reexp.length ? `<div class="sv-recover-by">${reexp.map((t) => `<span class="sv-recover-chip">${esc(prettyTool(t.tool))} <b>${num(t.reexpanded)}</b> pulled back</span>`).join("")}</div>` : "";
+    const recoverModule = `<div class="sv-recover ${rec > 0 ? "on" : ""}"><span class="sv-recover-mark">${rec > 0 ? "&#10003;" : "&#9675;"}</span><div class="sv-recover-body">${recBody}${reexpLine}</div></div>`;
+
+    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", g.watch.length, "on", "measured, not touched")}${rung("Trial", g.trial.length, "part", "trimmed on a control slice")}${rung("Proving", g.proving.length, "part", "gathering evidence")}${rung("Earned", g.earned.length, "on", "safe, trimming now")}</div><div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
 
     // Tool cards, grouped like the old report: spotlight, proving, then a quiet watch list.
     let body = "";
@@ -2150,10 +2237,12 @@
       body = `<div class="sv-empty">No tool has enough trim-eligible runs yet. As you work, each tool gets a verdict here.</div>`;
     } else {
       const spotlight = [...g.earned, ...g.trial, ...g.off];
-      if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Earned it</div><h2 class="sv-sec-h">Trimming now, because your work proved it safe.</h2><p class="sv-note">These run in full. ctx only shortens what the agent reads back, and a trimmed detail is one command away. In each chip, a value at or below zero means trimming did not raise that signal versus leaving the output whole, so below zero is the safe side.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT)).join("")}</section>`;
-      if (g.proving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${g.proving.map((r) => saveCard(r, autopilot, minB, minT)).join("")}</section>`;
+      if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Earned it</div><h2 class="sv-sec-h">Trimming now, because your work proved it safe.</h2><p class="sv-note">These run in full. ctx only shortens what the agent reads back, and a trimmed detail is one command away. In each chip, a value at or below zero means trimming did not raise that signal versus leaving the output whole, so below zero is the safe side.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
+      if (g.proving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${g.proving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
       const watchShown = g.watch.filter((r) => (r.c && r.c.decisions >= 10) || (r.p && (r.p.baseline_n || r.p.trimmed_n))).slice(0, 12);
-      if (watchShown.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Watching quietly</div><h2 class="sv-sec-h">Measured, nothing changed.</h2>${watchShown.map((r) => `<div class="sv-mini"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${shortMsg(r, autopilot, minB)}</span><span class="p">watching</span></div>`).join("")}</section>`;
+      // The "why traces for some tools and not others" answer: no trim means no before/after to show.
+      const watchNote = `No before/after traces here yet, and that is expected: ctx has not trimmed these tools' output. Short results, like Write and the MCP calls, have nothing worth setting aside, so no evidence accrues. A tool earns a trace once it produces output long enough to trim.`;
+      if (watchShown.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Watching quietly</div><h2 class="sv-sec-h">Measured, nothing changed.</h2><p class="sv-note">${watchNote}</p>${watchShown.map((r) => `<div class="sv-mini"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${shortMsg(r, autopilot, minB)}</span><span class="p">watching</span></div>`).join("")}</section>`;
       const watchMore = g.watch.length - watchShown.length;
       if (watchMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(watchMore)} more tools with lighter usage are not shown.</p>`;
     }
