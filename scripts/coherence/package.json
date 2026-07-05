@@ -1,0 +1,13 @@
+{
+  "name": "ctx-coherence",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Behavioral coherence checks for the ctx dashboard, run against a live isolated instance.",
+  "scripts": {
+    "coherence": "bash coherence.sh"
+  },
+  "dependencies": {
+    "playwright-core": "^1.40.0"
+  }
+}

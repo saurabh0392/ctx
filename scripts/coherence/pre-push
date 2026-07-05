@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# ctx pre-push hook: block a push whose dashboard fails behavioral coherence.
+# Install: scripts/coherence/install-hook.sh (copies this to .git/hooks/pre-push).
+# Bypass: SKIP_COHERENCE=1 git push   OR   git push --no-verify
+set -euo pipefail
+
+[[ "${SKIP_COHERENCE:-}" == "1" ]] && { echo "pre-push: SKIP_COHERENCE=1, skipping coherence checks"; exit 0; }
+
+REPO="$(git rev-parse --show-toplevel)"
+echo "pre-push: running behavioral coherence checks…"
+set +e
+bash "$REPO/scripts/coherence/coherence.sh" --build
+code=$?
+set -e
+
+case "$code" in
+  0) echo "pre-push: coherence OK"; exit 0 ;;
+  2) echo "pre-push: coherence could not run (playwright/binary missing). Allowing push; run 'cd scripts/coherence && npm i' to enable."; exit 0 ;;
+  *) echo "pre-push: coherence FAILED. Fix the invariant(s) above, or bypass with SKIP_COHERENCE=1 / --no-verify."; exit 1 ;;
+esac
