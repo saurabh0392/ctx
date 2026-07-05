@@ -482,6 +482,15 @@ pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
         let Some(t) = tool else {
             anyhow::bail!("name the tool to trial, e.g. `ctx context trial Read --on`");
         };
+        // The deny-set is absolute: a held tool (ctx's own recovery tools, or a mutation whose
+        // harm the re-read/re-edit gate cannot observe) is never trimmed, so a trial would not
+        // trim it and would misreport as "on trial". Refuse rather than set a dead slot.
+        if crate::compress::is_trim_denied(t, &cfg) {
+            let why = crate::compress::held_reason(t, &cfg)
+                .unwrap_or_else(|| "it is on the never-trim deny-set".into());
+            println!("{t} is held, so a trial would not trim it: {why}");
+            return Ok(());
+        }
         if !cfg.compress_tools.iter().any(|x| x == t) {
             println!("Heads up: {t} is not in compress_tools, so the heuristic may rarely want to trim it.");
         }
