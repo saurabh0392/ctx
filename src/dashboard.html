@@ -782,6 +782,8 @@
         .see-recl { background: var(--accent); height: 100%; }
         .see-barlbl { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 6px; display: flex; justify-content: space-between; gap: 10px; }
         .see-hl { color: var(--accent-ink); white-space: nowrap; }
+        .see-row.held .see-recl { background: var(--faint); }
+        .see-row.held .see-hl { color: var(--muted); }
         .see-meta { text-align: right; white-space: nowrap; }
         .see-rv { font-family: var(--fmono); font-size: 15px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
         .see-rl { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 2px; }
@@ -1136,7 +1138,7 @@
         .st-act-sub { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 2px; word-break: break-all; }
         .st-act-tag { font-family: var(--fmono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
         .st-act-tag.trimmed { color: var(--accent-ink); background: var(--accent-soft); }
-        .st-act-tag.watched, .st-act-tag.watching, .st-act-tag.protected { color: var(--muted); background: var(--line-soft); }
+        .st-act-tag.watched, .st-act-tag.watching, .st-act-tag.protected, .st-act-tag.control { color: var(--muted); background: var(--line-soft); }
         .st-empty { font-family: var(--fsans); font-size: 14px; color: var(--muted); line-height: 1.6; }
         .st-footer { border-top: 1px solid var(--line); margin-top: 44px; padding: 30px 0 80px; font-family: var(--fsans); font-size: 12.5px; color: var(--faint); }
       </style>
@@ -1905,8 +1907,8 @@
     return `<div class="see-reach ${cls}${T}"><span class="see-reach-k">Reach</span><span>${body}</span></div>`;
   }
   async function loadSee() {
-    let bill, tbill;
-    try { [bill, tbill] = await Promise.all([getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({}))]); setHealth(true); }
+    let ctx, bill, tbill;
+    try { [ctx, bill, tbill] = await Promise.all([getJSON("/api/context").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({}))]); setHealth(true); }
     catch (e) { setHealth(false); $("see-band").innerHTML = '<div class="see-note" style="margin-top:22px">Could not reach ctx. Is the dashboard running?</div>'; $("see-out").innerHTML = ""; $("see-in").innerHTML = ""; return; }
 
     // Two-tax band. Home's headline "reclaimed so far" is a blend of two lifetime components, so each
@@ -1928,6 +1930,10 @@
 
     // Output section: itemized tool output, biggest first, expandable to sources and trim diffs.
     const tools = (bill.tools || []).filter((t) => (t.sink_chars || 0) > 0);
+    // Held tools (deny-set) still cost output tax, so they belong on See, but they are never trimmed.
+    // Mark them held instead of showing a "% trimmable" as if they were trim candidates, so See agrees
+    // with Save's held section rather than presenting a mutation's output as reclaimable room.
+    const heldSet = new Set((ctx.tools || []).filter((t) => t.held_reason).map((t) => t.tool));
     const outHead = '<div class="see-sec-eyebrow">Output tax</div><h2 class="see-sec-h">What your agent reads back.</h2>';
     if (!tools.length) {
       $("see-out").innerHTML = `<section class="see-sec">${outHead}<div class="see-note">Nothing to itemize yet. Run a few agent turns and your output bill fills in here.</div></section>`;
@@ -1936,6 +1942,7 @@
       const TOPN = 8;
       const shown = tools.slice(0, TOPN), rest = tools.slice(TOPN);
       const rows = shown.map((t) => {
+        const held = heldSet.has(t.tool);
         const rp = t.sink_chars > 0 ? Math.max(0, Math.round((t.reclaimable_chars / t.sink_chars) * 100)) : 0;
         const usedW = Math.max(0, 100 - rp);
         const srcs = (t.sources || []).filter((s) => (s.sink_chars || 0) > 0);
@@ -1957,7 +1964,7 @@
           return `<div class="see-src"><span class="see-sn" title="${esc(tr.source)}">${esc(shortSource(tr.source))}</span><span class="see-st">${num(tr.lines)} line${tr.lines === 1 ? "" : "s"}</span>${action}</div>${box}`;
         }).join("") : "";
         const detail = (srcHtml || '<div class="see-note" style="margin-top:14px">No per-source detail recorded.</div>') + rwHtml;
-        return `<div class="see-row"><div class="see-rhead" onclick="this.parentNode.classList.toggle('open')"><div class="see-rname">${esc(prettyTool(t.tool))}</div><div class="see-barwrap"><div class="see-bar"><span class="see-used" style="width:${usedW}%"></span><span class="see-recl" style="width:${rp}%"></span></div><div class="see-barlbl"><span>${num(t.decisions)} calls</span><span class="see-hl">${rp}% trimmable</span></div></div><div class="see-rcta"><div class="see-meta"><div class="see-rv">${fmtK(tok(t.sink_chars))}</div><div class="see-rl">tokens</div></div><span class="see-caret">&#9656;</span></div></div><div class="see-detail">${detail}</div></div>`;
+        return `<div class="see-row${held ? " held" : ""}"><div class="see-rhead" onclick="this.parentNode.classList.toggle('open')"><div class="see-rname">${esc(prettyTool(t.tool))}</div><div class="see-barwrap"><div class="see-bar"><span class="see-used" style="width:${usedW}%"></span><span class="see-recl" style="width:${rp}%"></span></div><div class="see-barlbl"><span>${num(t.decisions)} calls</span><span class="see-hl">${held ? "held, never trimmed" : `${rp}% trimmable`}</span></div></div><div class="see-rcta"><div class="see-meta"><div class="see-rv">${fmtK(tok(t.sink_chars))}</div><div class="see-rl">tokens</div></div><span class="see-caret">&#9656;</span></div></div><div class="see-detail">${detail}</div></div>`;
       }).join("");
       const restTok = tok(rest.reduce((a, t) => a + (t.sink_chars || 0), 0));
       const more = rest.length ? `<div class="see-note" style="margin-top:10px">Plus ${rest.length} smaller tool${rest.length === 1 ? "" : "s"}, ${fmtK(restTok)} tokens combined. The room is in the ones above.</div>` : "";
@@ -2177,6 +2184,9 @@
       } else if (r.applied) {
         what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. The tool still ran in full.`;
         tag = "trimmed"; tagcss = "background:var(--primary-dim);color:var(--primary-lt)";
+      } else if (r.explore_arm === "control") {
+        what = `Kept <span class="keep">all ${total} lines</span> as a control run, so the clean test stays honest. This tool still trims the rest.`;
+        tag = "control"; tagcss = "background:var(--surface3);color:var(--t3)";
       } else {
         what = `Would set aside <span class="drop">${drop} lines</span>, keep <span class="keep">${r.lines_keep || 0}</span>. Still only watching this tool.`;
         tag = "watching"; tagcss = "background:var(--surface3);color:var(--t3)";
@@ -2670,6 +2680,7 @@
         if (r.protected && drop > 0) { what = `Kept <span class="keep">all ${total} lines</span>, set nothing aside. Looks like a file you might edit.`; tag = "protected"; }
         else if (drop <= 0) { what = `Looked at this and kept <span class="keep">all ${total} lines</span>. Nothing worth trimming.`; tag = "watched"; }
         else if (r.applied) { what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. The tool still ran in full.`; tag = "trimmed"; }
+        else if (r.explore_arm === "control") { what = `Kept <span class="keep">all ${total} lines</span> as a control run, so the clean test stays honest. This tool still trims the rest.`; tag = "control"; }
         else { what = `Would set aside <span class="drop">${drop} lines</span>, keep <span class="keep">${r.lines_keep || 0}</span>. Still only watching this tool.`; tag = "watching"; }
         const sub = r.command_or_path ? `<div class="st-act-sub">${esc(String(r.command_or_path).slice(0, 70))}</div>` : "";
         return `<div class="st-act"><span class="st-act-time">${esc(timeAgo(r.ts))}</span><span class="st-act-name">${esc(label)}</span><span><div class="st-act-what">${what}</div>${sub}</span><span class="st-act-tag ${tag}">${tag}</span></div>`;

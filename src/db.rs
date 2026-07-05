@@ -975,10 +975,16 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
             trims: Vec::new(),
         })
     });
+    // Held tools (deny-set) never trim, so their measured reclaimable is not reclaimable in practice.
+    // Keep the per-tool figure (it is a real measurement of the output) but exclude it from the "on the
+    // table" total, so that headline reflects only what ctx can actually reclaim and See can mark them.
+    let cfg = crate::config::Config::load();
     if let Ok(rows) = rows {
         for t in rows.flatten() {
             bill.total_sink_chars += t.sink_chars;
-            bill.total_reclaimable_chars += t.reclaimable_chars;
+            if !crate::compress::is_trim_denied(&t.tool, &cfg) {
+                bill.total_reclaimable_chars += t.reclaimable_chars;
+            }
             bill.total_reclaimed_chars += t.reclaimed_chars;
             bill.decisions += t.decisions;
             bill.tools.push(t);
@@ -1378,12 +1384,17 @@ pub struct CompressDecisionFeedRow {
     /// True when the Read edit-intent guard deliberately kept this read in full (CTX-8/CTX-11),
     /// so the feed can show a "protected" state instead of conflating it with "watching".
     pub protected: bool,
+    /// The randomized clean-test arm, when this decision was part of it: "control" means the trim was
+    /// deliberately withheld to keep the sample unbiased. Lets the feed tell a control holdout on an
+    /// earned tool apart from a genuine "still only watching" shadow run, which look identical on
+    /// `applied` alone.
+    pub explore_arm: Option<String>,
 }
 
 pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDecisionFeedRow> {
     let mut stmt = match conn.prepare(
         "SELECT ts, tool_name, kind, task_mode, lines_total, lines_keep, lines_drop,
-                chars_in, would_chars_out, command_or_path, applied, features_json
+                chars_in, would_chars_out, command_or_path, applied, features_json, explore_arm
          FROM compress_decisions ORDER BY id DESC LIMIT ?1",
     ) {
         Ok(s) => s,
@@ -1408,6 +1419,7 @@ pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDe
             command_or_path: r.get(9)?,
             applied: r.get::<_, i64>(10)? == 1,
             protected,
+            explore_arm: r.get::<_, Option<String>>(12)?,
         })
     });
     match rows {
