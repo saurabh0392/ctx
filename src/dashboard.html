@@ -1418,14 +1418,15 @@
     const stats = ctx.stats || {};
     const on = (ctx.preset || "off") !== "off";
     const rows = mergeTools(ctx, proof);
-    const g = { earned: [], trial: [], proving: [], off: [], watch: [] };
-    rows.forEach((r) => g[r.stage].push(r.tool));
     const total = stats.total || 0;
-    // Split the watch stage by the deny-set (held_reason from /api/context .tools). The Watching rung
-    // counts only tools that can earn a trim; held tools (ctx's own server, one-shot mutations) are
-    // parked off the ladder, watched for cost only, so they never get promised a trim they can't get.
-    const heldWatch = rows.filter((r) => r.stage === "watch" && r.c && r.c.held_reason);
-    const eligibleWatchN = g.watch.length - heldWatch.length;
+    // The deny-set is absolute: held tools (ctx's own server, one-shot mutations) never trim, so they
+    // never climb the ladder. Count every rung from eligible tools only and park all held tools off
+    // the ladder, so Home matches Save and never promises a held tool a trim it can't get.
+    const isHeld = (r) => !!(r.c && r.c.held_reason);
+    const heldAll = rows.filter(isHeld);
+    const eligN = { earned: 0, trial: 0, proving: 0, watch: 0, off: 0 };
+    rows.forEach((r) => { if (!isHeld(r)) eligN[r.stage]++; });
+    const eligibleWatchN = eligN.watch;
 
     // The one all-time number, both taxes: output trims (chars to tokens) plus input prunes (already
     // tokens). Same figure repeated in beat 1 and beat 3, never two disagreeing numbers.
@@ -1436,8 +1437,8 @@
     // BEAT 1: See. Lead with the number when there is one, an honest watching state when there is not.
     const hero = $("h2-hero");
     if (reclaimed > 0) {
-      const sub = g.earned.length
-        ? `<b>Autopilot is trimming ${g.earned.length} tool${g.earned.length > 1 ? "s" : ""}</b> it proved safe on your own work. The tools still run in full, and nothing here needs a decision from you.`
+      const sub = eligN.earned
+        ? `<b>Autopilot is trimming ${eligN.earned} tool${eligN.earned > 1 ? "s" : ""}</b> it proved safe on your own work. The tools still run in full, and nothing here needs a decision from you.`
         : `Reclaimed from tool output trimmed and tool menu pruned. ctx keeps going only where your own work proves it safe.`;
       hero.innerHTML =
         `<div class="h2-figure"><div class="h2-num" id="h2-count" data-to="${reclaimed}">0</div>`
@@ -1465,18 +1466,18 @@
       const rung = (name, count, cls, desc) =>
         `<div class="h2-rung ${count > 0 ? cls : ""}"><div class="h2-track"><i></i></div><span class="h2-dot"></span>`
         + `<div class="h2-rname">${name}</div><div class="h2-rcount">${num(count)}</div><div class="h2-rdesc">${desc}</div></div>`;
-      const kept = g.off.length
-        ? `<div class="h2-kept"><b>${g.off.length}</b> kept whole after testing, where trimming looked worse than leaving it. That is the gate refusing, exactly as it should.</div>`
+      const kept = eligN.off
+        ? `<div class="h2-kept"><b>${eligN.off}</b> kept whole after testing, where trimming looked worse than leaving it. That is the gate refusing, exactly as it should.</div>`
         : "";
-      const heldH = heldWatch.length
-        ? `<div class="h2-kept"><b>${num(heldWatch.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
+      const heldH = heldAll.length
+        ? `<div class="h2-kept"><b>${num(heldAll.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
         : "";
       ladder.innerHTML =
         `<div class="h2-rungs">`
         + rung("Watching", eligibleWatchN, "on", "measured, not touched")
-        + rung("Trial", g.trial.length, "part", "trimmed on a control slice")
-        + rung("Proving", g.proving.length, "part", "gathering enough evidence")
-        + rung("Earned", g.earned.length, "on", "safe on your work, trimming")
+        + rung("Trial", eligN.trial, "part", "trimmed on a control slice")
+        + rung("Proving", eligN.proving, "part", "gathering enough evidence")
+        + rung("Earned", eligN.earned, "on", "safe on your work, trimming")
         + `</div>` + heldH + kept
         + `<div class="h2-revert"><span class="k">reversible</span><p>A trimmed detail already ran in full and is one command back. <b>ctx never removes a capability</b>, it only shows less of a result until your work says it can.</p></div>`;
     } else {
@@ -1618,6 +1619,8 @@
 
   function toolActions(r) {
     const t = esc(r.tool), p = r.p;
+    // Held tools never trim, so a trial no-ops in the backend. Offer no action button for them.
+    if (r.c && r.c.held_reason) return "";
     if (r.stage === "watch") return `<button class="mini-btn go" onclick="event.stopPropagation();trial('${t}',true)">Put on trial</button>`;
     if (r.stage === "trial") return `<button class="mini-btn" onclick="event.stopPropagation();trial('${t}',false)">Stop the trial</button>`;
     if (r.stage === "proving" && !(p && p.verdict === "unclear")) return `<button class="mini-btn go" onclick="event.stopPropagation();trial('${t}',true)">Put on trial</button>`;
@@ -2225,8 +2228,12 @@
       : "";
     const evidence = (hasEv ? arms + deltaLine(r) : "") + exp;
     const evBtn = evidence ? `<button class="sv-ev" onclick="this.closest('.sv-card').classList.toggle('open')">Show the evidence</button>` : "";
+    // A held tool never trims, so a trial on it no-ops in the backend. Offer no action button (the
+    // held section renders it without one anyway; this just guards against a held tool reaching here).
+    const held = !!(r.c && r.c.held_reason);
     let act = "";
-    if (stage === "watch") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
+    if (held) act = "";
+    else if (stage === "watch") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
     else if (stage === "trial") act = `<button class="sv-ev" onclick="trial('${esc(r.tool)}',false)">Stop the trial</button>`;
     else if (stage === "proving" && p.verdict !== "unclear") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
     else if (stage === "off") act = `<button class="sv-ev" onclick="trial('${esc(r.tool)}',true)">Run the test again</button>`;
@@ -2247,13 +2254,19 @@
     const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
     const attrBy = {}; (ctx.attribution || []).forEach((t) => (attrBy[t.tool] = t));
 
-    // Split the watch stage by trim-eligibility (deny-set held_reason from /api/context .tools). The
-    // Watching rung counts only tools genuinely earning a trim; held tools (ctx's own recovery server,
-    // one-shot mutations) never climb, so they show as a parked count, not a rung. The tool-card
-    // sections below reuse these same two lists.
-    const heldReason = (r) => (r.c && r.c.held_reason) || null;
-    const eligibleWatch = g.watch.filter((r) => !heldReason(r));
-    const heldWatch = g.watch.filter((r) => heldReason(r));
+    // The deny-set is absolute: a held tool (ctx's own recovery server, one-shot mutations) never
+    // trims, so it never climbs the ladder and is never offered a trial. A trial on a held tool
+    // silently no-ops in api_context_trial, so the button must not appear at all. Route every held
+    // tool to the held section regardless of its proof-based stage, and count the rungs from the
+    // eligible tools only. This also fixes "Put on trial does nothing" on tools like TodoWrite that
+    // still carry stale proof from before the deny-set and so landed in Proving with a dead button.
+    const isHeld = (r) => !!(r.c && r.c.held_reason);
+    const heldAll = rows.filter(isHeld);
+    const gEarned = g.earned.filter((r) => !isHeld(r));
+    const gTrial = g.trial.filter((r) => !isHeld(r));
+    const gProving = g.proving.filter((r) => !isHeld(r));
+    const gOff = g.off.filter((r) => !isHeld(r));
+    const eligibleWatch = g.watch.filter((r) => !isHeld(r));
 
     // Ladder summary + the harm read: the one bar every tool clears.
     const rung = (name, count, cls, desc) => `<div class="sv-rung ${count > 0 ? cls : ""}"><div class="sv-track"><i></i></div><span class="sv-dot"></span><div class="sv-rname">${name}</div><div class="sv-rcount">${num(count)}</div><div class="sv-rdesc">${desc}</div></div>`;
@@ -2261,7 +2274,7 @@
     const harm = tn > 0
       ? `Harm read: <b class="ok">${num(tn)} trimmed results</b> checked against what you did next. <b class="${tc > 0 ? "bad" : "ok"}">${num(tc)} correction${tc === 1 ? "" : "s"}.</b> On every earned tool, your re-reads stayed at or below the rate when the output was left whole. That is the whole bar a tool has to clear.`
       : `Nothing has been trimmed yet, so there is no harm to read. As tools earn trim, this fills with the corrections and re-reads ctx checked against your own next moves.`;
-    const keptLine = g.off.length ? ` <b class="bad">${num(g.off.length)} kept whole</b> after testing, where trimming looked worse than leaving it.` : "";
+    const keptLine = gOff.length ? ` <b class="bad">${num(gOff.length)} kept whole</b> after testing, where trimming looked worse than leaving it.` : "";
 
     // Recoveries: times the agent hit a trimmed block and pulled the full text back with ctx_expand.
     // The safety net, made visible: it is why ctx can trim hard. Copy mirrors the orphaned
@@ -2275,22 +2288,21 @@
     const reexpLine = reexp.length ? `<div class="sv-recover-by">${reexp.map((t) => `<span class="sv-recover-chip">${esc(prettyTool(t.tool))} <b>${num(t.reexpanded)}</b> pulled back</span>`).join("")}</div>` : "";
     const recoverModule = `<div class="sv-recover ${rec > 0 ? "on" : ""}"><span class="sv-recover-mark">${rec > 0 ? "&#10003;" : "&#9675;"}</span><div class="sv-recover-body">${recBody}${reexpLine}</div></div>`;
 
-    const heldParked = heldWatch.length
-      ? `<div class="sv-parked"><b>${num(heldWatch.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
+    const heldParked = heldAll.length
+      ? `<div class="sv-parked"><b>${num(heldAll.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
       : "";
-    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Trial", g.trial.length, "part", "trimmed on a control slice")}${rung("Proving", g.proving.length, "part", "gathering evidence")}${rung("Earned", g.earned.length, "on", "safe, trimming now")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
+    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Trial", gTrial.length, "part", "trimmed on a control slice")}${rung("Proving", gProving.length, "part", "gathering evidence")}${rung("Earned", gEarned.length, "on", "safe, trimming now")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
 
     // Tool cards, grouped like the old report: spotlight, proving, then a quiet watch list.
     let body = "";
     if (!rows.length) {
       body = `<div class="sv-empty">No tool has enough trim-eligible runs yet. As you work, each tool gets a verdict here.</div>`;
     } else {
-      const spotlight = [...g.earned, ...g.trial, ...g.off];
+      const spotlight = [...gEarned, ...gTrial, ...gOff];
       if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Earned it</div><h2 class="sv-sec-h">Trimming now, because your work proved it safe.</h2><p class="sv-note">These run in full. ctx only shortens what the agent reads back, and a trimmed detail is one command away. In each chip, a value at or below zero means trimming did not raise that signal versus leaving the output whole, so below zero is the safe side.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
-      if (g.proving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${g.proving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
-      // The watch list is already split into eligibleWatch / heldWatch above (deny-set held_reason),
-      // where the ladder's Watching rung and parked held count are computed. Reuse them here so the
-      // tool cards and the rung counts can never drift apart.
+      if (gProving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${gProving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
+      // eligibleWatch and heldAll are computed above, where the ladder counts its rungs and the parked
+      // held count. Reuse them here so the tool cards and the rung counts can never drift apart.
       const trialSet = new Set(proof.trial_tools || []);
 
       // Eligible: genuinely earning a trim. Same watch copy as before, now with a trial button.
@@ -2304,12 +2316,14 @@
       const watchMore = eligibleWatch.length - watchShown.length;
       if (watchMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(watchMore)} more eligible tools with lighter usage are not shown.</p>`;
 
-      // Held: measured for cost, never trimmed. No trial button, reason shown per row.
-      const heldShown = heldWatch.filter((r) => r.c && r.c.decisions >= 1).slice(0, 16);
+      // Held: measured for cost, never trimmed. No trial button, reason shown per row. heldAll covers
+      // every stage, so a mutation that carries stale proof (e.g. TodoWrite) shows here as held, not
+      // as a Proving card with a dead trial button.
+      const heldShown = heldAll.filter((r) => r.c && r.c.decisions >= 1).slice(0, 16);
       if (heldShown.length) {
         const heldNote = `These are held out of trimming on purpose. ctx's own recovery tools stay whole so a trim is always reversible, and one-shot mutations the agent acts on once, never re-reading, give the harm gate nothing to check. They are watched for cost, not for trimming, so there is no trial here.`;
         body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Held, measured but never trimmed</div><h2 class="sv-sec-h">Watched for cost, kept whole on purpose.</h2><p class="sv-note">${heldNote}</p>${heldShown.map((r) => `<div class="sv-mini held"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${esc(r.c.held_reason)}</span><span class="p">held</span></div>`).join("")}</section>`;
-        const heldMore = heldWatch.length - heldShown.length;
+        const heldMore = heldAll.length - heldShown.length;
         if (heldMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(heldMore)} more held tools with lighter usage are not shown.</p>`;
       }
     }
