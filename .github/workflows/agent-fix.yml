@@ -1,0 +1,60 @@
+name: Agent fix
+
+# A human labels an issue "agent-fix" to hand it to the Claude-driven fix pipeline. Also runnable by
+# hand on any issue via workflow_dispatch (for testing). Never merges; opens a draft PR for review.
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number to fix
+        required: true
+
+concurrency:
+  group: agent-fix        # one run at a time, so cost cannot fan out
+  cancel-in-progress: false
+
+permissions:
+  contents: read          # the agent pushes with a PAT (so PR CI runs), not GITHUB_TOKEN
+  issues: write
+
+jobs:
+  fix:
+    # Only run when the added label is agent-fix, or on manual dispatch.
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent-fix'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AGENT_GH_TOKEN }}   # PR-write PAT; also authenticates git push
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build ctx (for gates + agent context) and register it as an MCP
+        run: |
+          cargo build --release
+          cargo build --release --example seed_coherence_fixture
+          npm i -g @anthropic-ai/claude-code
+          claude mcp add ctx -- "$PWD/target/release/ctx" mcp || echo "ctx mcp registration skipped"
+      - name: Coherence gate deps (chromium + fixture)
+        working-directory: scripts/coherence
+        run: |
+          npm i --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Seed coherence fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/ctx-fixture"
+          CTX_HOME="$RUNNER_TEMP/ctx-fixture" ./target/release/examples/seed_coherence_fixture
+      - name: Run the fix pipeline
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.inputs.issue }}
+          GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CTX_FIXTURE: ${{ runner.temp }}/ctx-fixture
+          PW_CHANNEL: ""
+        run: node scripts/agent/run.mjs
