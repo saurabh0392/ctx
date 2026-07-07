@@ -99,10 +99,10 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     // the kind AND the tool must either have earned activation OR be in automatic burn-in (ADR 0012
     // / CTX-23), the bounded on-ramp that lets a tool with a clean baseline build its "after" arm.
     // Burn-in respects the preset, so it never trims when autopilot is off.
+    let activated = compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label);
     let base_apply = cfg.compress_trialing(&tr.tool_name)
         || (cfg.compress_applies_kind(&kind_label)
-            && (compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label)
-                || compress::activation::tool_in_burn_in(cfg, &tr.tool_name)));
+            && (activated || compress::activation::tool_in_burn_in(cfg, &tr.tool_name)));
 
     let is_read = kind_label == "read";
     let read_path = read_file_path(&tr.tool_input);
@@ -208,7 +208,12 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     let mut apply = trim_eligible;
     let mut explore_arm: Option<&'static str> = None;
     let explore_rate = explore_rate_for(&kind_label, cfg);
-    if trim_eligible && would_drop && explore_rate > 0.0 {
+    // Once a tool has earned activation, stop the control arm: it trims every would-trim run and
+    // reclaims the full amount, paying no exploration tax. The causal verdict is still recomputed
+    // each pass from the now-frozen baseline against the always-fresh trimmed arm, so a tool that
+    // drifts flips back off activation, which re-enables exploration and re-validates it. Reversion
+    // self-heals; earned is not a latch.
+    if trim_eligible && would_drop && explore_rate > 0.0 && !activated {
         if explore_draw < explore_rate {
             explore_arm = Some("control");
             apply = false;
