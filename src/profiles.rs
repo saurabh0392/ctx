@@ -1094,6 +1094,7 @@ pub fn carried_menu_by_server() -> HashMap<String, usize> {
     let cfg = Config::load();
     let mut expansion = cfg.session_expansion.clone();
     expansion.extend(cfg.session_semantic_tools.clone());
+    let observed = observed_tools_with_lookback(cfg.profile_thresholds.lookback_days);
     let mut out = HashMap::new();
     for prefix in collect_observed_prefixes() {
         let pruned = cfg
@@ -1101,10 +1102,21 @@ pub fn carried_menu_by_server() -> HashMap<String, usize> {
             .iter()
             .any(|p| prefix_covers_expansion_entry(p, &prefix))
             && !prefix_matches_expansion(&prefix, &expansion);
-        if pruned {
+        if !pruned {
+            out.insert(prefix.clone(), catalog_tool_count(&prefix));
             continue;
         }
-        out.insert(prefix.clone(), catalog_tool_count(&prefix));
+        // A pruned server carries only what is not denied: a dead server (whole-server wildcard)
+        // carries nothing, a live server carries its catalog minus the named dead tools removed.
+        let denied = pruned_prefix_deny_rules(&prefix, &observed, &expansion);
+        let carried = if denied.iter().any(|p| p.ends_with('*')) {
+            0
+        } else {
+            catalog_tool_count(&prefix).saturating_sub(denied.len())
+        };
+        if carried > 0 {
+            out.insert(prefix.clone(), carried);
+        }
     }
     out
 }
@@ -1120,25 +1132,114 @@ pub fn prefix_covers_expansion_entry(prefix: &str, entry: &str) -> bool {
     e.eq_ignore_ascii_case(&id) || e.eq_ignore_ascii_case(&id.replace('_', " "))
 }
 
-/// Server-wildcard deny patterns for servers the developer pruned from the tool menu (CTX-64),
-/// skipping any that a session reach has re-added (present in `expansion`) or that are locally
-/// configured MCP servers. This is additive to the profile's own deny rules: a server can be pruned
-/// even when the active profile would otherwise keep it, and a reach still overrides the prune.
+/// True when `tool_name` (with its recorded `server_prefix`) belongs to the server `prefix`.
+fn tool_in_server(tool_name: &str, server_prefix: &str, prefix: &str) -> bool {
+    (!server_prefix.is_empty()
+        && (server_prefix.starts_with(prefix) || prefix.starts_with(server_prefix)))
+        || tool_name.starts_with(prefix)
+}
+
+/// Extra tool names for a server from the per-server catalog cache (dead tools never invoked but
+/// carried in the menu). Empty until the catalog cache lands; that task fills this in so a live
+/// pruned server can shed its dead tools by name.
+fn catalog_cache_names(_prefix: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// Tool names a server is known to expose, from the passed invocation history plus the catalog
+/// cache: the source of truth for "which tools exist", so a pruned server's dead tools (catalog
+/// minus used) can be denied by name while the used ones stay. Until the catalog cache is populated
+/// the only provable names are the invoked ones, so a live server's dead set is empty and it keeps
+/// its whole menu rather than being wildcard-denied.
+fn catalog_names_for(prefix: &str, observed: &[crate::db::ObservedToolRow]) -> Vec<String> {
+    let mut names: Vec<String> = observed
+        .iter()
+        .filter(|r| tool_in_server(&r.tool_name, &r.server_prefix, prefix))
+        .map(|r| r.tool_name.clone())
+        .collect();
+    names.extend(catalog_cache_names(prefix));
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Public view of a server's known catalog (loads history from the DB). External callers only.
+pub fn known_catalog_tools(prefix: &str) -> Vec<String> {
+    let lookback = Config::load().profile_thresholds.lookback_days;
+    let observed = observed_tools_with_lookback(lookback);
+    catalog_names_for(prefix, &observed)
+}
+
+/// Deny rules for one pruned prefix, under the invariant "never disconnect a used tool". A server
+/// with no invocation history is genuinely dead, so a whole-server wildcard is safe and reclaims its
+/// full catalog. A server with live usage is denied tool by tool: only tools known to exist that
+/// were not used and are not reach-expanded. A used tool is never in that set, so it always stays.
+fn pruned_prefix_deny_rules(
+    prefix: &str,
+    observed: &[crate::db::ObservedToolRow],
+    expansion: &[String],
+) -> Vec<String> {
+    let used: std::collections::HashSet<String> = observed
+        .iter()
+        .filter(|r| tool_in_server(&r.tool_name, &r.server_prefix, prefix))
+        .map(|r| r.tool_name.to_lowercase())
+        .collect();
+    if used.is_empty() {
+        return vec![deny_wildcard_for_prefix(prefix)];
+    }
+    catalog_names_for(prefix, observed)
+        .into_iter()
+        .filter(|cat| {
+            !used.contains(&cat.to_lowercase()) && !tool_matches_expansion(cat, expansion)
+        })
+        .collect()
+}
+
+/// Deny patterns for servers the developer pruned from the tool menu (CTX-64), enforcing that a
+/// server with live usage is never fully disconnected: it is denied tool by tool (dead tools only),
+/// while a genuinely dead server gets a whole-server wildcard. Skips any prefix a session reach has
+/// re-added (present in `expansion`) or that is a locally configured MCP server. Additive to the
+/// profile's own deny rules; a reach still overrides the prune.
 pub fn pruned_server_deny_patterns(
     pruned: &[String],
     expansion: &[String],
     local_names: &[String],
 ) -> Vec<String> {
-    let mut patterns: Vec<String> = pruned
-        .iter()
-        .filter(|prefix| {
-            !prefix_matches_expansion(prefix, expansion) && !prefix_is_local_mcp(prefix, local_names)
-        })
-        .map(|prefix| deny_wildcard_for_prefix(prefix))
-        .collect();
+    let lookback = Config::load().profile_thresholds.lookback_days;
+    let observed = observed_tools_with_lookback(lookback);
+    let mut patterns: Vec<String> = Vec::new();
+    for prefix in pruned {
+        if prefix_matches_expansion(prefix, expansion) || prefix_is_local_mcp(prefix, local_names) {
+            continue;
+        }
+        patterns.extend(pruned_prefix_deny_rules(prefix, &observed, expansion));
+    }
     patterns.sort();
     patterns.dedup();
     patterns
+}
+
+/// Input-tax tokens reclaimed by the current prune set: the cost of exactly the tool schemas ctx
+/// removes from the menu. A whole-server wildcard removes the server's full catalog; a tool-level
+/// prune removes only the named dead tools. Keeps the dashboard's savings honest when a live server
+/// is pruned tool by tool (nothing reclaimed until the catalog cache names its dead tools) instead
+/// of overclaiming a whole-catalog cut.
+pub fn pruned_input_tax_tokens(
+    pruned: &[String],
+    expansion: &[String],
+    local_names: &[String],
+) -> usize {
+    pruned_server_deny_patterns(pruned, expansion, local_names)
+        .iter()
+        .map(|pat| {
+            if pat.ends_with('*') {
+                let prefix = pat.trim_end_matches('*');
+                catalog_tool_count(prefix) * TOKENS_PER_TOOL
+            } else {
+                TOKENS_PER_TOOL
+            }
+        })
+        .sum()
 }
 
 fn prefix_is_local_mcp(prefix: &str, local_names: &[String]) -> bool {
@@ -2544,6 +2645,46 @@ pub fn fmt_k(n: usize) -> String {
 mod tests {
     use super::*;
     use crate::test_lock::CTX_ENV_LOCK;
+
+    fn observed(tool: &str, prefix: &str, count: u64) -> crate::db::ObservedToolRow {
+        crate::db::ObservedToolRow {
+            tool_name: tool.to_string(),
+            server_prefix: prefix.to_string(),
+            count,
+        }
+    }
+
+    #[test]
+    fn pruned_live_server_never_denies_a_used_tool() {
+        let prefix = "mcp__claude_ai_Linear__";
+        let rows = vec![
+            observed("mcp__claude_ai_Linear__get_issue", prefix, 40),
+            observed("mcp__claude_ai_Linear__list_issues", prefix, 12),
+        ];
+        let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
+        // No wildcard (that would disconnect the server) and no rule that denies a used tool.
+        assert!(
+            !rules.iter().any(|r| r.ends_with('*')),
+            "live server must not be wildcard-denied: {rules:?}"
+        );
+        for used in ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_issues"] {
+            assert!(
+                !rules.iter().any(|r| r.eq_ignore_ascii_case(used)),
+                "used tool {used} must never be denied: {rules:?}"
+            );
+        }
+        // Pre-catalog-cache there are no provable dead names, so nothing is denied at all.
+        assert!(rules.is_empty(), "expected no denies pre-cache, got {rules:?}");
+    }
+
+    #[test]
+    fn pruned_dead_server_gets_whole_server_wildcard() {
+        let prefix = "mcp__claude_ai_Canva__";
+        // No invocation history for Canva anywhere in the observed set.
+        let rows = vec![observed("mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__", 3)];
+        let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
+        assert_eq!(rules, vec!["mcp__claude_ai_Canva__*".to_string()]);
+    }
 
     fn with_ctx_home<F: FnOnce(&tempfile::TempDir)>(f: F) {
         let _guard = CTX_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

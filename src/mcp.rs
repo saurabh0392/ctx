@@ -233,11 +233,27 @@ fn tool_tools() -> Result<Value, String> {
         .iter()
         .map(|prefix| {
             let restored = crate::profiles::prefix_matches_expansion(prefix, &expansion);
+            // Actual deny rules for this server: a wildcard fully hides it, named rules prune only
+            // dead tools, empty means it stays whole (a live server we never disconnect).
+            let rules = crate::profiles::pruned_server_deny_patterns(
+                std::slice::from_ref(prefix),
+                &expansion,
+                &[],
+            );
+            let status = if restored {
+                "restored_this_session"
+            } else if rules.iter().any(|r| r.ends_with('*')) {
+                "fully_hidden"
+            } else if rules.is_empty() {
+                "kept_in_use"
+            } else {
+                "dead_tools_pruned"
+            };
             json!({
                 "server": crate::profiles::mcp_prefix_to_server_display(prefix),
                 "prefix": prefix,
-                "hidden": !restored,
-                "restored_for_this_session": restored,
+                "status": status,
+                "dead_tools_denied": rules.iter().filter(|r| !r.ends_with('*')).count(),
             })
         })
         .collect();

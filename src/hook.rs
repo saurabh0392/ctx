@@ -373,15 +373,16 @@ pub fn user_prompt_submit() -> Result<()> {
     if cfg.filter_mode == crate::config::FilterMode::Soft && !cfg.pruned_servers.is_empty() {
         let by_server = crate::profiles::carried_menu_by_server();
         if !by_server.is_empty() {
-            // Input tax reclaimed on this request: the fixed per-request cost of every pruned
-            // server's catalog, which the developer no longer pays. Folds into WNAD (CTX-68).
-            let tokens_saved: usize = cfg
-                .pruned_servers
-                .iter()
-                .map(|p| {
-                    crate::profiles::catalog_tool_count(p) * crate::profiles::TOKENS_PER_TOOL
-                })
-                .sum();
+            // Input tax reclaimed on this request: the cost of exactly the tool schemas ctx removes
+            // from the menu. A dead server's full catalog, or just the named dead tools of a live
+            // server that was pruned tool by tool (never its used tools). Folds into WNAD (CTX-68).
+            let mut prune_expansion = cfg.session_expansion.clone();
+            prune_expansion.extend(cfg.session_semantic_tools.clone());
+            let tokens_saved = crate::profiles::pruned_input_tax_tokens(
+                &cfg.pruned_servers,
+                &prune_expansion,
+                &[],
+            );
             let rec = crate::analytics::Record {
                 ts: chrono::Utc::now().to_rfc3339(),
                 profile: trace_profile.clone(),
