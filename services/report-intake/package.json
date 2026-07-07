@@ -1,0 +1,25 @@
+{
+  "name": "ctx-report-intake",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AWS intake for the ctx dashboard Report-an-issue modal: presigned S3 for images, GitHub issue creation with a PAT from SSM.",
+  "scripts": {
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.155.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4",
+    "@types/node": "^20.14.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.155.0",
+    "constructs": "^10.3.0",
+    "esbuild": "^0.23.1",
+    "@aws-sdk/client-ssm": "^3.637.0",
+    "@aws-sdk/client-s3": "^3.637.0",
+    "@aws-sdk/s3-presigned-post": "^3.637.0"
+  }
+}
