@@ -2031,12 +2031,21 @@ pub fn collect_observed_prefixes() -> Vec<String> {
         }
     }
 
-    let mut result: Vec<String> = seen.into_iter().collect();
+    // Drop anything implausibly long: a real server prefix is short. This stops a legacy corrupted
+    // value (from the pre-fix prefix-accumulation bug) from being read back in and re-stored.
+    let mut result: Vec<String> = seen.into_iter().filter(|p| p.len() <= 120).collect();
     result.sort();
     result
 }
 
 fn display_name_to_prefix(display: &str) -> String {
+    // Idempotent: a value that is already an mcp__ prefix passes through unchanged. Without this,
+    // reading kept_servers (which stores prefixes) back through here re-prepended the prefix on every
+    // request, so a single row grew by "mcp__claude_ai_" each cycle until it was hundreds of KB and
+    // the requests table ballooned to gigabytes.
+    if display.starts_with("mcp__") {
+        return display.to_string();
+    }
     format!("mcp__claude_ai_{}__", display.replace(' ', "_"))
 }
 

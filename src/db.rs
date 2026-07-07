@@ -3648,6 +3648,16 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
+    // Self-heal the prefix-accumulation bug (fixed in profiles::display_name_to_prefix): null the
+    // pathologically long server-catalog strings some rows accumulated, so the requests table stops
+    // carrying hundreds of KB per row. Best-effort and cheap; on a clean db it matches nothing. Space
+    // is freed to the freelist and reused; a VACUUM reclaims the file size.
+    let _ = conn.execute(
+        "UPDATE requests SET kept_servers = NULL, tools_sent_by_server = NULL \
+         WHERE LENGTH(kept_servers) > 4000 OR LENGTH(tools_sent_by_server) > 4000",
+        [],
+    );
+
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
