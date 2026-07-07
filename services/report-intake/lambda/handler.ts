@@ -21,8 +21,9 @@ const ssm = new SSMClient({ region: REGION });
 const s3 = new S3Client({ region: REGION });
 let cachedToken: string | undefined;
 
-const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'POST' };
-const json = (code: number, body: unknown) => ({ statusCode: code, headers: { 'content-type': 'application/json', ...CORS }, body: JSON.stringify(body) });
+// CORS is owned entirely by the Function URL config. Adding it here too produces duplicate
+// Access-Control-Allow-Origin headers, which the browser rejects, so the handler stays out of it.
+const json = (code: number, body: unknown) => ({ statusCode: code, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 const cap = (s: unknown, n: number) => String(s ?? '').slice(0, n);
 const oneLine = (s: unknown, n: number) => cap(s, n).replace(/[\r\n]+/g, ' ').trim();
@@ -40,7 +41,6 @@ async function getToken(): Promise<string> {
 }
 
 export const handler = async (event: any) => {
-  if (event.requestContext?.http?.method === 'OPTIONS') return { statusCode: 204, headers: CORS };
   let body: any;
   try { body = JSON.parse(event.body || '{}'); } catch { return json(400, { error: 'bad json' }); }
 

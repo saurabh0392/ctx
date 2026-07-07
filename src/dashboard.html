@@ -2732,7 +2732,9 @@
   // The diagnostic snapshot is built from the same aggregates the dashboard already shows: counts and
   // rates only, never paths, commands, or output. Nothing is sent until Send, and the user reviews the
   // whole body first. POSTs to REPORT_ENDPOINT (the Lambda intake); empty until that is wired.
-  const REPORT_ENDPOINT = "";
+  // Public intake (Lambda Function URL). Not a secret; the GitHub PAT lives server-side in SSM. Keep
+  // this out of any build distributed to alpha users until the endpoint has rate limiting (Phase 2).
+  const REPORT_ENDPOINT = "https://yds5zrqx7pbhf7jcigvsjirepm0twbga.lambda-url.us-east-1.on.aws/";
   let rpKind = "bug", rpIncludeSnap = true, rpBundle = null;
   const rpShots = [];
 
@@ -2773,7 +2775,8 @@
 
   function rpSetKind(el) { [...$("rp-seg").children].forEach((x) => x.classList.remove("on")); el.classList.add("on"); rpKind = el.dataset.v; rpRenderPreview(); }
   function rpToggleSnap() { rpIncludeSnap = !rpIncludeSnap; $("rp-snapToggle").classList.toggle("on", rpIncludeSnap); rpRenderPreview(); }
-  function rpAddImgs(files) { [...files].forEach((f) => { if (!f.type.startsWith("image/")) return; const r = new FileReader(); r.onload = () => { rpShots.push({ name: f.name, dataUrl: r.result }); rpRenderShots(); rpRenderPreview(); }; r.readAsDataURL(f); }); }
+  function rpAddImgs(files) { [...files].forEach((f) => { if (!f.type.startsWith("image/")) return; const r = new FileReader(); r.onload = () => { rpShots.push({ name: f.name, contentType: f.type, dataUrl: r.result }); rpRenderShots(); rpRenderPreview(); }; r.readAsDataURL(f); }); }
+  function rpDataUrlToBlob(dataUrl) { const [meta, b64] = dataUrl.split(","); const mime = (meta.match(/:(.*?);/) || [])[1] || "image/png"; const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i); return new Blob([arr], { type: mime }); }
   function rpRenderShots() { $("rp-shots").innerHTML = rpShots.map((s, i) => `<div class="rp-shot" onclick="rpRemoveShot(${i})"><img src="${s.dataUrl}"/><div class="rp-x">Remove</div></div>`).join(""); }
   function rpRemoveShot(i) { rpShots.splice(i, 1); rpRenderShots(); rpRenderPreview(); }
 
@@ -2788,11 +2791,27 @@
 
   async function rpSend() {
     const btn = $("rp-send"); btn.textContent = "Sending..."; btn.disabled = true;
-    const payload = { kind: rpKind, title: $("rp-title").value, description: $("rp-desc").value, example: $("rp-example").value, bundle: rpIncludeSnap ? rpBundle : null, images: rpShots.length };
-    if (!REPORT_ENDPOINT) { $("rp-sentBox").innerHTML = `<div class="rp-sent">This build has no intake endpoint set yet, so nothing was sent. The preview above is exactly what will post once the endpoint is wired.</div>`; btn.textContent = "Send report"; btn.disabled = false; return; }
+    if (!REPORT_ENDPOINT) { $("rp-sentBox").innerHTML = `<div class="rp-sent">No intake endpoint set in this build, so nothing was sent. The preview above is what will post once it is wired.</div>`; btn.textContent = "Send report"; btn.disabled = false; return; }
+    const post = (body) => fetch(REPORT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     try {
-      const res = await fetch(REPORT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      // 1) images: presign, then upload each straight to S3, collecting the object keys.
+      let imageKeys = [];
+      if (rpShots.length) {
+        const pres = await post({ action: "presign", images: rpShots.map((s) => ({ name: s.name, contentType: s.contentType || "image/png" })) });
+        if (!pres.ok) throw new Error("presign " + pres.status);
+        const { uploads } = await pres.json();
+        for (let i = 0; i < uploads.length; i++) {
+          const u = uploads[i], form = new FormData();
+          Object.entries(u.fields).forEach(([k, v]) => form.append(k, v));
+          form.append("file", rpDataUrlToBlob(rpShots[i].dataUrl));
+          const up = await fetch(u.url, { method: "POST", body: form });
+          if (!up.ok) throw new Error("upload " + up.status);
+          imageKeys.push(u.key);
+        }
+      }
+      // 2) submit the report; the Lambda creates the GitHub issue and links the images.
+      const res = await post({ action: "submit", report: { kind: rpKind, title: $("rp-title").value, description: $("rp-desc").value, example: $("rp-example").value, bundle: rpIncludeSnap ? rpBundle : null }, imageKeys });
+      if (!res.ok) throw new Error("submit " + res.status);
       const out = await res.json().catch(() => ({}));
       $("rp-sentBox").innerHTML = `<div class="rp-sent">&#10003; Sent. Thanks for the report.${out.url ? ` <a href="${esc(out.url)}" target="_blank">Track it</a>.` : ""}</div>`; btn.textContent = "Sent";
     } catch (e) { $("rp-sentBox").innerHTML = `<div class="rp-sent bad">Could not send (${esc(String(e.message || e))}). Try again, or copy the preview and send it manually.</div>`; btn.textContent = "Send report"; btn.disabled = false; }
