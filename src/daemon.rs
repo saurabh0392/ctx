@@ -1,6 +1,10 @@
 //! Background services: launchd (macOS), systemd user units (Linux), or detached `ctx` children (other OS).
 
 use anyhow::{Context, Result};
+// The colored output below lives only in the non-macOS cfg branches, so the import is gated the same
+// way to avoid an unused-import warning on macOS while fixing the Linux build (E0599 on `.yellow()`).
+#[cfg(not(target_os = "macos"))]
+use colored::Colorize;
 use std::path::PathBuf;
 
 pub const DASHBOARD_LABEL: &str = "com.ctx.dashboard";
