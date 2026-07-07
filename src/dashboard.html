@@ -540,6 +540,7 @@
         <a data-view="see" onclick="go('see')">See</a>
         <a data-view="save" onclick="go('save')">Save</a>
         <a data-view="settings" onclick="go('settings')">Settings</a>
+        <span class="nav-report" onclick="openReport()" title="Report an issue to the ctx team">Report</span>
         <span class="health" id="health"><span class="pip"></span><span id="health-txt">connecting</span></span>
         <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle light and dark"></button>
       </nav>
@@ -2727,10 +2728,233 @@
   }
   updateThemeIcon();
 
+  // ── Report an issue: opt-in, redacted feedback that opens a GitHub issue via the intake endpoint.
+  // The diagnostic snapshot is built from the same aggregates the dashboard already shows: counts and
+  // rates only, never paths, commands, or output. Nothing is sent until Send, and the user reviews the
+  // whole body first. POSTs to REPORT_ENDPOINT (the Lambda intake); empty until that is wired.
+  const REPORT_ENDPOINT = "";
+  let rpKind = "bug", rpIncludeSnap = true, rpBundle = null;
+  const rpShots = [];
+
+  async function openReport() { $("report-ov").hidden = false; document.body.style.overflow = "hidden"; await rpLoadBundle(); rpRenderPreview(); }
+  function closeReport() { $("report-ov").hidden = true; document.body.style.overflow = ""; }
+
+  async function rpLoadBundle() {
+    try {
+      const [ctx, proof, bill] = await Promise.all([
+        getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})),
+      ]);
+      const rows = mergeTools(ctx, proof);
+      const billBy = {}; (bill.tools || []).forEach((t) => (billBy[t.tool] = t));
+      const attrBy = {}; (ctx.attribution || []).forEach((t) => (attrBy[t.tool] = t));
+      const tools = rows.map((r) => ({
+        tool: r.tool, stage: r.stage, decisions: (r.c && r.c.decisions) || 0,
+        reclaimed: tok((billBy[r.tool] || {}).reclaimed_chars || 0),
+        recoveries: (attrBy[r.tool] || {}).reexpanded || 0,
+        reread: r.p && r.p.reread_delta ? r.p.reread_delta.diff : null,
+      })).sort((a, b) => b.reclaimed - a.reclaimed);
+      rpBundle = { schema: 1, tools };
+    } catch (e) { rpBundle = null; }
+    rpRenderSnap();
+  }
+
+  function rpRenderSnap() {
+    const body = $("rp-snapBody"), sum = $("rp-snapSummary"); if (!body) return;
+    const n = rpBundle && rpBundle.tools ? rpBundle.tools.length : 0;
+    if (sum) sum.textContent = n ? `${n} tools, counts only. No paths, no commands, no output.` : "No runs yet, nothing to attach.";
+    if (!n) { body.innerHTML = `<div class="rp-never">No runs recorded yet, so there is nothing to attach.</div>`; return; }
+    const rows = rpBundle.tools.slice(0, 6).map((t) => `<tr><td>${esc(prettyTool(t.tool))}</td><td>${t.stage}</td><td class="g">${fmtK(t.reclaimed)}</td><td>${num(t.recoveries)}</td><td class="${t.reread != null && t.reread <= 0 ? "g" : ""}">${t.reread == null ? "n/a" : (t.reread <= 0 ? "" : "+") + t.reread.toFixed(1)}</td></tr>`).join("");
+    body.innerHTML = `<table class="rp-t"><thead><tr><th>Tool</th><th>Stage</th><th>Reclaimed</th><th>Recoveries</th><th>Re-read &Delta;</th></tr></thead><tbody>${rows}</tbody></table>`
+      + `<div class="rp-never">Never included: <b>file paths, command text, tool output, prompts, or any content</b>. ctx sends the same numbers you see on the dashboard. <a class="rp-raw-link" onclick="rpShowRaw(event)">View raw JSON</a></div>`
+      + `<pre class="rp-raw" id="rp-raw" style="display:none"></pre>`;
+  }
+  function rpToggleExpand() { const b = $("rp-snapBody"), c = $("rp-snapChev"); const open = b.style.display !== "none"; b.style.display = open ? "none" : ""; if (c) c.style.transform = open ? "" : "rotate(90deg)"; }
+  function rpShowRaw(e) { if (e) { e.preventDefault(); e.stopPropagation(); } const pre = $("rp-raw"); if (!pre) return; if (pre.style.display === "none") { pre.textContent = JSON.stringify(rpBundle, null, 2); pre.style.display = ""; } else pre.style.display = "none"; }
+
+  function rpSetKind(el) { [...$("rp-seg").children].forEach((x) => x.classList.remove("on")); el.classList.add("on"); rpKind = el.dataset.v; rpRenderPreview(); }
+  function rpToggleSnap() { rpIncludeSnap = !rpIncludeSnap; $("rp-snapToggle").classList.toggle("on", rpIncludeSnap); rpRenderPreview(); }
+  function rpAddImgs(files) { [...files].forEach((f) => { if (!f.type.startsWith("image/")) return; const r = new FileReader(); r.onload = () => { rpShots.push({ name: f.name, dataUrl: r.result }); rpRenderShots(); rpRenderPreview(); }; r.readAsDataURL(f); }); }
+  function rpRenderShots() { $("rp-shots").innerHTML = rpShots.map((s, i) => `<div class="rp-shot" onclick="rpRemoveShot(${i})"><img src="${s.dataUrl}"/><div class="rp-x">Remove</div></div>`).join(""); }
+  function rpRemoveShot(i) { rpShots.splice(i, 1); rpRenderShots(); rpRenderPreview(); }
+
+  function rpRenderPreview() {
+    const title = $("rp-title").value || "(no title yet)", desc = $("rp-desc").value || "(describe what happened)", ex = $("rp-example").value;
+    let b = `type: ${rpKind}\ntitle: ${esc(title)}\n\n${esc(desc)}\n`;
+    if (ex.trim()) b += `\nexample:\n\`\`\`\n${esc(ex.trim())}\n\`\`\`\n`;
+    if (rpIncludeSnap && rpBundle && rpBundle.tools.length) b += `\ndiagnostic snapshot (counts only):\n` + rpBundle.tools.slice(0, 6).map((t) => `${prettyTool(t.tool)} ${t.stage} ${fmtK(t.reclaimed)}${t.recoveries ? " rec" + t.recoveries : ""}`).join(" | ") + "\n";
+    if (rpShots.length) b += `\nscreenshots: ${rpShots.length} attached\n`;
+    $("rp-preview").textContent = b;
+  }
+
+  async function rpSend() {
+    const btn = $("rp-send"); btn.textContent = "Sending..."; btn.disabled = true;
+    const payload = { kind: rpKind, title: $("rp-title").value, description: $("rp-desc").value, example: $("rp-example").value, bundle: rpIncludeSnap ? rpBundle : null, images: rpShots.length };
+    if (!REPORT_ENDPOINT) { $("rp-sentBox").innerHTML = `<div class="rp-sent">This build has no intake endpoint set yet, so nothing was sent. The preview above is exactly what will post once the endpoint is wired.</div>`; btn.textContent = "Send report"; btn.disabled = false; return; }
+    try {
+      const res = await fetch(REPORT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const out = await res.json().catch(() => ({}));
+      $("rp-sentBox").innerHTML = `<div class="rp-sent">&#10003; Sent. Thanks for the report.${out.url ? ` <a href="${esc(out.url)}" target="_blank">Track it</a>.` : ""}</div>`; btn.textContent = "Sent";
+    } catch (e) { $("rp-sentBox").innerHTML = `<div class="rp-sent bad">Could not send (${esc(String(e.message || e))}). Try again, or copy the preview and send it manually.</div>`; btn.textContent = "Send report"; btn.disabled = false; }
+  }
+
+  // The modal markup is injected after this script, so wire it once the DOM (including it) exists.
+  function rpWire() {
+    const drop = $("rp-drop"), file = $("rp-file"); if (!drop) return;
+    drop.onclick = () => file.click();
+    file.onchange = (e) => { rpAddImgs(e.target.files); file.value = ""; };
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); rpAddImgs(e.dataTransfer.files); });
+    ["rp-title", "rp-desc", "rp-example"].forEach((id) => $(id).addEventListener("input", rpRenderPreview));
+    $("report-ov").addEventListener("click", (e) => { if (e.target.id === "report-ov") closeReport(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("report-ov").hidden) closeReport(); });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", rpWire); else rpWire();
+
   // ── boot + live refresh ──
   render();
   setInterval(() => { if (!document.hidden) render(); }, 20000);
   window.addEventListener("focus", render);
 </script>
+
+<style>
+  /* Report-an-issue modal. Global overlay, so it carries its own scoped token block (the modern
+     tokens are only defined inside the view containers). Light base, dark override, matching See/Save. */
+  #report-ov {
+    --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+    --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+    --accent-soft:rgba(15,122,84,.08); --crit:#a52218;
+    --fserif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+    --fsans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --fmono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    position:fixed; inset:0; z-index:60; background:rgba(6,9,8,.55); display:flex; align-items:flex-start;
+    justify-content:center; padding:40px 16px; overflow:auto; font-family:var(--fsans);
+  }
+  html[data-theme="dark"] #report-ov {
+    --paper:#0f1311; --raised:#161c18; --ink:#edf1ed; --muted:#a7b0aa; --faint:#717b74;
+    --line:#262e28; --line-soft:#1b221d; --accent:#35c88f; --accent-ink:#79e3ba;
+    --accent-soft:rgba(53,200,143,.13); --crit:#e08379;
+  }
+  #report-ov[hidden] { display:none; }
+  #report-ov .rp-modal { width:100%; max-width:620px; background:var(--raised); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 60px rgba(0,0,0,.35); overflow:hidden; }
+  #report-ov .m-head { padding:22px 24px 16px; border-bottom:1px solid var(--line-soft); position:relative; }
+  #report-ov .m-eyebrow { font-family:var(--fmono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-ink); }
+  #report-ov .m-title { font-family:var(--fserif); font-size:24px; font-weight:600; letter-spacing:-.01em; margin:6px 0 0; color:var(--ink); }
+  #report-ov .m-close { position:absolute; top:18px; right:18px; width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--muted); font-size:16px; cursor:pointer; }
+  #report-ov .m-close:hover { color:var(--ink); border-color:var(--faint); }
+  #report-ov .m-body { padding:18px 24px 4px; max-height:calc(100vh - 220px); overflow:auto; }
+  #report-ov .rp-privacy { display:flex; gap:10px; align-items:flex-start; background:var(--accent-soft); border:1px solid var(--line-soft); border-radius:10px; padding:11px 13px; font-size:12.5px; color:var(--muted); line-height:1.5; }
+  #report-ov .rp-privacy b { color:var(--ink); font-weight:600; }
+  #report-ov .rp-privacy .lock { color:var(--accent-ink); font-size:14px; }
+  #report-ov .rp-field { margin-top:18px; }
+  #report-ov .rp-lbl { font-family:var(--fmono); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); display:block; margin-bottom:8px; }
+  #report-ov .rp-lbl .opt { color:var(--faint); text-transform:none; letter-spacing:0; font-family:var(--fsans); }
+  #report-ov input.rp-t, #report-ov textarea.rp-t { width:100%; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:11px 13px; color:var(--ink); font-family:var(--fsans); font-size:14px; line-height:1.5; resize:vertical; }
+  #report-ov input.rp-t:focus, #report-ov textarea.rp-t:focus { outline:none; border-color:var(--accent); }
+  #report-ov textarea.rp-t { min-height:84px; }
+  #report-ov .rp-seg { display:flex; gap:8px; }
+  #report-ov .rp-seg button { flex:1; padding:10px 8px; border:1px solid var(--line); background:var(--paper); color:var(--muted); border-radius:10px; font-family:var(--fsans); font-size:13px; font-weight:600; cursor:pointer; }
+  #report-ov .rp-seg button.on { border-color:var(--accent); color:var(--accent-ink); background:var(--accent-soft); }
+  #report-ov .rp-hint { font-size:11.5px; color:var(--faint); margin-top:8px; }
+  #report-ov .rp-snap { border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  #report-ov .rp-snap-head { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; background:var(--paper); cursor:pointer; }
+  #report-ov .rp-snap-head .st { font-size:13px; font-weight:600; color:var(--ink); }
+  #report-ov .rp-snap-head .su { font-size:11.5px; color:var(--faint); margin-top:2px; }
+  #report-ov .rp-toggle { width:38px; height:22px; border-radius:999px; background:var(--line); position:relative; cursor:pointer; flex-shrink:0; transition:background .15s; }
+  #report-ov .rp-toggle.on { background:var(--accent); }
+  #report-ov .rp-toggle i { position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition:left .15s; }
+  #report-ov .rp-toggle.on i { left:18px; }
+  #report-ov .rp-snap-body { padding:4px 14px 14px; border-top:1px solid var(--line-soft); }
+  #report-ov table.rp-t { width:100%; border-collapse:collapse; font-family:var(--fmono); font-size:11.5px; margin-top:8px; }
+  #report-ov .rp-t th { text-align:left; color:var(--faint); font-weight:500; padding:6px 8px; border-bottom:1px solid var(--line-soft); text-transform:uppercase; letter-spacing:.04em; font-size:9.5px; }
+  #report-ov .rp-t td { padding:6px 8px; border-bottom:1px solid var(--line-soft); color:var(--ink); }
+  #report-ov .rp-t td.g { color:var(--accent-ink); }
+  #report-ov .rp-never { font-size:11.5px; color:var(--muted); margin-top:10px; line-height:1.5; }
+  #report-ov .rp-never b { color:var(--ink); }
+  #report-ov .rp-snap-ctrls { display:flex; align-items:center; gap:12px; }
+  #report-ov .rp-chev { color:var(--faint); font-size:11px; transition:transform .15s; }
+  #report-ov .rp-raw-link { color:var(--accent-ink); cursor:pointer; white-space:nowrap; }
+  #report-ov .rp-raw { margin-top:10px; background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-family:var(--fmono); font-size:10.5px; color:var(--muted); max-height:220px; overflow:auto; white-space:pre; }
+  #report-ov .rp-drop { border:1px dashed var(--line); border-radius:12px; padding:18px; text-align:center; color:var(--faint); font-size:13px; cursor:pointer; }
+  #report-ov .rp-drop:hover, #report-ov .rp-drop.over { border-color:var(--accent); color:var(--muted); }
+  #report-ov .rp-shots { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  #report-ov .rp-shot { position:relative; width:96px; height:70px; border-radius:8px; overflow:hidden; border:1px solid var(--line); cursor:pointer; }
+  #report-ov .rp-shot img { width:100%; height:100%; object-fit:cover; }
+  #report-ov .rp-shot .rp-x { position:absolute; inset:0; background:rgba(6,9,8,.55); color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center; opacity:0; }
+  #report-ov .rp-shot:hover .rp-x { opacity:1; }
+  #report-ov .rp-prev { border:1px solid var(--line); border-radius:12px; background:var(--paper); padding:14px; font-family:var(--fmono); font-size:11.5px; color:var(--ink); white-space:pre-wrap; line-height:1.6; }
+  #report-ov .rp-foot { display:flex; align-items:center; gap:12px; padding:16px 24px 20px; border-top:1px solid var(--line-soft); }
+  #report-ov .rp-foot .note { font-size:11.5px; color:var(--faint); flex:1; line-height:1.4; }
+  #report-ov .rp-cta { padding:10px 18px; border-radius:10px; font-family:var(--fsans); font-size:14px; font-weight:600; cursor:pointer; border:1px solid transparent; }
+  #report-ov .rp-cta.primary { background:var(--accent); color:#04231a; }
+  #report-ov .rp-cta.ghost { background:transparent; color:var(--muted); border-color:var(--line); }
+  #report-ov .rp-cta.ghost:hover { color:var(--ink); border-color:var(--faint); }
+  #report-ov .rp-sent { background:var(--accent-soft); border:1px solid var(--line-soft); border-radius:10px; padding:11px 13px; font-size:13px; color:var(--ink); margin-top:14px; }
+  #report-ov .rp-sent.bad { background:transparent; border-color:var(--crit); }
+  #report-ov .rp-sent a { color:var(--accent-ink); }
+  .nav-report { font-family:var(--fmono); font-size:11.5px; color:var(--faint); cursor:pointer; padding:6px 10px; border-radius:8px; }
+  .nav-report:hover { color:var(--ink); }
+</style>
+
+<div id="report-ov" hidden>
+  <div class="rp-modal" role="dialog" aria-label="Report an issue">
+    <div class="m-head">
+      <div class="m-eyebrow">ctx feedback</div>
+      <h2 class="m-title">Report an issue</h2>
+      <button class="m-close" aria-label="Close" onclick="closeReport()">&times;</button>
+    </div>
+    <div class="m-body">
+      <div class="rp-privacy"><span class="lock">&#128274;</span>
+        <span>Nothing is sent until you press <b>Send</b>. ctx's attachment is <b>counts only</b>, never your code,
+        file paths, or tool output. Anything you type or attach is sent as-is, so take out anything sensitive first.</span></div>
+
+      <div class="rp-field"><span class="rp-lbl">What kind</span>
+        <div class="rp-seg" id="rp-seg">
+          <button class="on" data-v="bug" onclick="rpSetKind(this)">Something broke</button>
+          <button data-v="coherence" onclick="rpSetKind(this)">A number looks off</button>
+          <button data-v="idea" onclick="rpSetKind(this)">An idea</button>
+        </div></div>
+
+      <div class="rp-field"><span class="rp-lbl">Title</span>
+        <input class="rp-t" id="rp-title" placeholder="Put on trial does nothing on TodoWrite" /></div>
+
+      <div class="rp-field"><span class="rp-lbl">What happened</span>
+        <textarea class="rp-t" id="rp-desc" placeholder="What you did, what you expected, what you saw instead."></textarea></div>
+
+      <div class="rp-field"><span class="rp-lbl">Example <span class="opt">(optional, paste logs or output here)</span></span>
+        <textarea class="rp-t" id="rp-example" placeholder="Paste an example. It is sent exactly as typed."></textarea>
+        <div class="rp-hint">Sent as-is. Take out file paths, secrets, or private code before you paste.</div></div>
+
+      <div class="rp-field"><span class="rp-lbl">What ctx includes</span>
+        <div class="rp-snap">
+          <div class="rp-snap-head" onclick="rpToggleExpand()">
+            <div><div class="st">Diagnostic snapshot</div><div class="su" id="rp-snapSummary">Counts only. No paths, no commands, no output.</div></div>
+            <div class="rp-snap-ctrls">
+              <div class="rp-toggle on" id="rp-snapToggle" onclick="event.stopPropagation();rpToggleSnap()" title="Include or leave out the snapshot"><i></i></div>
+              <span class="rp-chev" id="rp-snapChev">&#9656;</span>
+            </div>
+          </div>
+          <div class="rp-snap-body" id="rp-snapBody" style="display:none"></div>
+        </div></div>
+
+      <div class="rp-field"><span class="rp-lbl">Screenshots <span class="opt">(optional)</span></span>
+        <div class="rp-drop" id="rp-drop">Click to attach, or drop an image here</div>
+        <input type="file" id="rp-file" accept="image/*" multiple hidden />
+        <div class="rp-shots" id="rp-shots"></div>
+        <div class="rp-hint">Crop or black out anything sensitive before you attach. ctx does not read or change your images.</div></div>
+
+      <div class="rp-field"><span class="rp-lbl">Review what gets sent</span>
+        <div class="rp-prev" id="rp-preview"></div></div>
+
+      <div id="rp-sentBox"></div>
+    </div>
+    <div class="rp-foot">
+      <div class="note">Opens a private GitHub issue for the ctx team, not public. No account needed, and you can ask us to delete it any time.</div>
+      <button class="rp-cta ghost" onclick="closeReport()">Cancel</button>
+      <button class="rp-cta primary" id="rp-send" onclick="rpSend()">Send report</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

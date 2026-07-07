@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ctx report an issue (prototype)</title>
+<style>
+  :root {
+    --paper:#0f1311; --raised:#161c18; --ink:#edf1ed; --muted:#a7b0aa; --faint:#717b74;
+    --line:#262e28; --line-soft:#1b221d; --accent:#35c88f; --accent-ink:#79e3ba;
+    --accent-soft:rgba(53,200,143,.13); --warn:#d9a441; --crit:#e08379; --crit-soft:rgba(224,131,121,.13);
+    --fserif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+    --fsans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --fmono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  :root[data-theme="light"] {
+    --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+    --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+    --accent-soft:rgba(15,122,84,.08); --warn:#9a5b12; --crit:#a52218; --crit-soft:rgba(165,34,24,.08);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --paper:#f6f7f4; --raised:#fff; --ink:#161a18; --muted:#565e59; --faint:#8a918c;
+      --line:#e3e7e1; --line-soft:#ecefe9; --accent:#0f7a54; --accent-ink:#0b5c40;
+      --accent-soft:rgba(15,122,84,.08); --warn:#9a5b12; --crit:#a52218; --crit-soft:rgba(165,34,24,.08);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--fsans); min-height:100vh; }
+  .backdrop { position:fixed; inset:0; background:rgba(6,9,8,.55); backdrop-filter:blur(2px); display:flex; align-items:flex-start; justify-content:center; padding:40px 16px; overflow:auto; }
+  .modal { width:100%; max-width:620px; background:var(--raised); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 60px rgba(0,0,0,.35); overflow:hidden; }
+  .m-head { padding:22px 24px 16px; border-bottom:1px solid var(--line-soft); position:relative; }
+  .m-eyebrow { font-family:var(--fmono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-ink); }
+  .m-title { font-family:var(--fserif); font-size:24px; font-weight:600; letter-spacing:-.01em; margin:6px 0 0; }
+  .m-close { position:absolute; top:18px; right:18px; width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--muted); font-size:16px; cursor:pointer; }
+  .m-close:hover { color:var(--ink); border-color:var(--faint); }
+  .m-body { padding:18px 24px 4px; max-height:calc(100vh - 220px); overflow:auto; }
+
+  .privacy { display:flex; gap:10px; align-items:flex-start; background:var(--accent-soft); border:1px solid var(--line-soft); border-radius:10px; padding:11px 13px; font-size:12.5px; color:var(--muted); line-height:1.5; }
+  .privacy b { color:var(--ink); font-weight:600; }
+  .privacy .lock { color:var(--accent-ink); font-size:14px; line-height:1.4; }
+
+  .field { margin-top:18px; }
+  .lbl { font-family:var(--fmono); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); display:block; margin-bottom:8px; }
+  .lbl .opt { color:var(--faint); text-transform:none; letter-spacing:0; font-family:var(--fsans); }
+  input.t, textarea.t {
+    width:100%; background:var(--paper); border:1px solid var(--line); border-radius:10px;
+    padding:11px 13px; color:var(--ink); font-family:var(--fsans); font-size:14px; line-height:1.5; resize:vertical;
+  }
+  input.t:focus, textarea.t:focus { outline:none; border-color:var(--accent); }
+  textarea.t { min-height:84px; }
+
+  .seg { display:flex; gap:8px; }
+  .seg button { flex:1; padding:10px 8px; border:1px solid var(--line); background:var(--paper); color:var(--muted); border-radius:10px; font-family:var(--fsans); font-size:13px; font-weight:600; cursor:pointer; }
+  .seg button.on { border-color:var(--accent); color:var(--accent-ink); background:var(--accent-soft); }
+
+  .hint { font-size:11.5px; color:var(--faint); }
+
+  .snap { border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .snap-head { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; background:var(--paper); cursor:pointer; }
+  .snap-head .st { font-size:13px; font-weight:600; color:var(--ink); }
+  .snap-head .su { font-size:11.5px; color:var(--faint); margin-top:2px; }
+  .toggle { width:38px; height:22px; border-radius:999px; background:var(--line); position:relative; cursor:pointer; flex-shrink:0; transition:background .15s; }
+  .toggle.on { background:var(--accent); }
+  .toggle i { position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition:left .15s; }
+  .toggle.on i { left:18px; }
+  .snap-body { padding:4px 14px 14px; border-top:1px solid var(--line-soft); }
+  table.snap-t { width:100%; border-collapse:collapse; font-family:var(--fmono); font-size:11.5px; margin-top:8px; }
+  .snap-t th { text-align:left; color:var(--faint); font-weight:500; padding:6px 8px; border-bottom:1px solid var(--line-soft); text-transform:uppercase; letter-spacing:.04em; font-size:9.5px; }
+  .snap-t td { padding:6px 8px; border-bottom:1px solid var(--line-soft); color:var(--ink); }
+  .snap-t td.g { color:var(--accent-ink); }
+  .never { font-size:11.5px; color:var(--muted); margin-top:10px; line-height:1.5; }
+  .never b { color:var(--ink); }
+
+  .drop { border:1px dashed var(--line); border-radius:12px; padding:18px; text-align:center; color:var(--faint); font-size:13px; cursor:pointer; }
+  .drop:hover, .drop.over { border-color:var(--accent); color:var(--muted); }
+  .shots { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .shot { position:relative; width:96px; height:70px; border-radius:8px; overflow:hidden; border:1px solid var(--line); cursor:pointer; }
+  .shot img { width:100%; height:100%; object-fit:cover; }
+  .shot .edit { position:absolute; inset:0; background:rgba(6,9,8,.55); color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center; opacity:0; }
+  .shot:hover .edit { opacity:1; }
+
+  .prev { border:1px solid var(--line); border-radius:12px; background:var(--paper); padding:14px; font-family:var(--fmono); font-size:11.5px; color:var(--ink); white-space:pre-wrap; line-height:1.6; }
+  .prev .k { color:var(--faint); }
+
+  .m-foot { display:flex; align-items:center; gap:12px; padding:16px 24px 20px; border-top:1px solid var(--line-soft); }
+  .m-foot .note { font-size:11.5px; color:var(--faint); flex:1; line-height:1.4; }
+  .cta { padding:10px 18px; border-radius:10px; font-family:var(--fsans); font-size:14px; font-weight:600; cursor:pointer; border:1px solid transparent; }
+  .cta.primary { background:var(--accent); color:#04231a; }
+  .cta.primary:hover { filter:brightness(1.05); }
+  .cta.ghost { background:transparent; color:var(--muted); border-color:var(--line); }
+  .cta.ghost:hover { color:var(--ink); border-color:var(--faint); }
+  .sent { background:var(--accent-soft); border:1px solid var(--line-soft); border-radius:10px; padding:11px 13px; font-size:13px; color:var(--ink); margin-top:14px; }
+  .sent a { color:var(--accent-ink); }
+
+  .themebtn { position:fixed; top:14px; right:16px; background:var(--raised); border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; z-index:20; }
+</style>
+</head>
+<body>
+<button class="themebtn" onclick="toggleTheme()">theme</button>
+
+<div class="backdrop">
+  <div class="modal" role="dialog" aria-label="Report an issue">
+    <div class="m-head">
+      <div class="m-eyebrow">ctx feedback</div>
+      <h2 class="m-title">Report an issue</h2>
+      <button class="m-close" aria-label="Close">&times;</button>
+    </div>
+
+    <div class="m-body">
+      <div class="privacy">
+        <span class="lock">&#128274;</span>
+        <span>Nothing is sent until you press <b>Send</b>. ctx attaches <b>counts only</b>, never your code,
+        file paths, or tool output. Redact anything below before it leaves your machine.</span>
+      </div>
+
+      <div class="field">
+        <span class="lbl">What kind</span>
+        <div class="seg" id="seg">
+          <button class="on" data-v="bug">Something broke</button>
+          <button data-v="coherence">A number looks off</button>
+          <button data-v="idea">An idea</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="lbl">Title</span>
+        <input class="t" id="title" placeholder="Put on trial does nothing on TodoWrite" />
+      </div>
+
+      <div class="field">
+        <span class="lbl">What happened</span>
+        <textarea class="t" id="desc" placeholder="What you did, what you expected, what you saw instead."></textarea>
+      </div>
+
+      <div class="field">
+        <span class="lbl">Example <span class="opt">(optional, paste logs or output here)</span></span>
+        <textarea class="t" id="example" placeholder="Paste an example. It is sent exactly as typed."></textarea>
+        <div class="hint" style="margin-top:8px">Sent as-is. Take out file paths, secrets, or private code before you paste.</div>
+      </div>
+
+      <div class="field">
+        <span class="lbl">What ctx includes</span>
+        <div class="snap">
+          <div class="snap-head" onclick="toggleSnap()">
+            <div>
+              <div class="st">Diagnostic snapshot</div>
+              <div class="su">Aggregate counts from your own runs. No paths, no commands, no output.</div>
+            </div>
+            <div class="toggle on" id="snapToggle"><i></i></div>
+          </div>
+          <div class="snap-body" id="snapBody">
+            <table class="snap-t">
+              <thead><tr><th>Tool</th><th>Stage</th><th>Reclaimed</th><th>Recoveries</th><th>Re-read &Delta;</th></tr></thead>
+              <tbody>
+                <tr><td>Edit</td><td>earned</td><td class="g">9.1M</td><td>0</td><td class="g">-3.5</td></tr>
+                <tr><td>Read</td><td>earned</td><td class="g">2.4M</td><td>8</td><td class="g">-1.5</td></tr>
+                <tr><td>Bash</td><td>earned</td><td class="g">120K</td><td>2</td><td class="g">-3.2</td></tr>
+                <tr><td>TodoWrite</td><td>held</td><td>0</td><td>0</td><td>n/a</td></tr>
+              </tbody>
+            </table>
+            <div class="never">Never included: <b>file paths, command text, tool output, prompts, or any content</b>.
+              ctx sends the same numbers you see on the dashboard, plus its version. <a href="#" style="color:var(--accent-ink)" onclick="return false">View raw JSON</a></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="lbl">Screenshots <span class="opt">(optional)</span></span>
+        <div class="drop" id="drop">Click to attach, or drop an image here</div>
+        <input type="file" id="file" accept="image/*" multiple hidden />
+        <div class="shots" id="shots"></div>
+        <div class="hint" style="margin-top:8px">Crop or black out anything sensitive before you attach. ctx does not read or change your images.</div>
+      </div>
+
+      <div class="field">
+        <span class="lbl">Review what gets sent</span>
+        <div class="prev" id="preview"></div>
+      </div>
+
+      <div id="sentBox"></div>
+    </div>
+
+    <div class="m-foot">
+      <div class="note">Opens a GitHub issue for the ctx team. No account needed on your side.</div>
+      <button class="cta ghost">Cancel</button>
+      <button class="cta primary" id="send" onclick="send()">Send report</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  function toggleTheme(){ const r=document.documentElement; const cur=r.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); r.dataset.theme = cur==='dark'?'light':'dark'; }
+
+  // Type selector
+  let kind='bug';
+  document.getElementById('seg').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; [...seg.children].forEach(x=>x.classList.remove('on')); b.classList.add('on'); kind=b.dataset.v; renderPreview(); });
+
+  document.getElementById('example').addEventListener('input',renderPreview);
+  document.getElementById('title').addEventListener('input',renderPreview);
+  document.getElementById('desc').addEventListener('input',renderPreview);
+
+  // Snapshot toggle
+  let includeSnap=true;
+  function toggleSnap(){ includeSnap=!includeSnap; document.getElementById('snapToggle').classList.toggle('on',includeSnap); document.getElementById('snapBody').style.display=includeSnap?'':'none'; renderPreview(); }
+
+  // Screenshots
+  const shots=[]; // {dataUrl}
+  const drop=document.getElementById('drop'), fileEl=document.getElementById('file');
+  drop.onclick=()=>fileEl.click();
+  fileEl.onchange=e=>{ [...e.target.files].forEach(readImg); fileEl.value=''; };
+  drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
+  drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
+  drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');[...e.dataTransfer.files].forEach(readImg);});
+  function readImg(f){ if(!f.type.startsWith('image/'))return; const r=new FileReader(); r.onload=()=>{ shots.push({dataUrl:r.result}); renderShots(); renderPreview(); }; r.readAsDataURL(f); }
+  function renderShots(){ const c=document.getElementById('shots'); c.innerHTML=shots.map((s,i)=>`<div class="shot" onclick="removeShot(${i})"><img src="${s.dataUrl}"/><div class="edit">Remove</div></div>`).join(''); }
+  function removeShot(i){ shots.splice(i,1); renderShots(); renderPreview(); }
+
+  // Preview assembly (fenced, so user content can't break formatting downstream)
+  function renderPreview(){
+    const title=document.getElementById('title').value||'(no title yet)';
+    const desc=document.getElementById('desc').value||'(describe what happened)';
+    const exOut=document.getElementById('example').value;
+    let body='';
+    body+=`<span class="k">type:</span> ${kind}\n`;
+    body+=`<span class="k">title:</span> ${esc(title)}\n\n`;
+    body+=`${esc(desc)}\n`;
+    if(exOut.trim()){ body+=`\n<span class="k">example:</span>\n\`\`\`\n${esc(exOut.trim())}\n\`\`\`\n`; }
+    if(includeSnap){ body+=`\n<span class="k">diagnostic snapshot (counts only):</span>\n`;
+      body+=`Edit earned 9.1M -3.5 | Read earned 2.4M rec8 -1.5 | Bash earned 120K -3.2 | TodoWrite held\n`;
+      body+=`ctx 0.4.0 · trim_all=on\n`; }
+    if(shots.length){ body+=`\n<span class="k">screenshots:</span> ${shots.length} attached (redacted)\n`; }
+    document.getElementById('preview').innerHTML=body;
+  }
+  function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+  // Send (mock)
+  function send(){
+    const s=document.getElementById('send'); s.textContent='Sending...'; s.disabled=true;
+    setTimeout(()=>{ document.getElementById('sentBox').innerHTML=`<div class="sent">&#10003; Sent. The ctx team can see it as issue <b>#128</b>. <a href="#" onclick="return false">Track it here</a>. Thanks for the report.</div>`;
+      s.textContent='Sent'; document.getElementById('sentBox').scrollIntoView({behavior:'smooth'}); },900);
+  }
+  renderPreview();
+</script>
+</body>
+</html>
