@@ -87,6 +87,16 @@ const TOOL_DEFS: &[(&str, &str, &str)] = &[
         "Re-expand a tool output that ctx trimmed. Pass the id from the '[ctx trimmed ... id: X]' marker to get the verbatim original text back.",
         r#"{"type":"object","properties":{"id":{"type":"string","description":"The rewind id shown in the ctx trim marker."}},"required":["id"]}"#,
     ),
+    (
+        "ctx_tools",
+        "Show which MCP servers ctx has pruned from the tool menu (hidden to save tokens) and any restores already queued for the next session. Call this when a tool you expected is missing, to see what you can bring back with ctx_restore.",
+        "{}",
+    ),
+    (
+        "ctx_restore",
+        "Bring a pruned MCP tool or server back. ctx fixes the tool menu at session start, so a pruned tool cannot reappear in the current session: this un-prunes it for your NEXT session and saves a note of what you were blocked on, which is handed to that session so you can finish the task with the tool present. Pass the server or tool name (e.g. 'Linear' or 'mcp__claude_ai_Linear__get_issue') and the tasks you needed it for.",
+        r#"{"type":"object","properties":{"tool":{"type":"string","description":"MCP server or tool to restore: a server name ('Linear'), a server prefix ('mcp__claude_ai_Linear__'), or a full tool name."},"tasks":{"type":"string","description":"What you needed to do with it. Carried to the next session so the work resumes."}},"required":["tool"]}"#,
+    ),
 ];
 
 fn build_tools_list() -> Value {
@@ -116,6 +126,8 @@ fn handle_tool_call(name: &str, args: &Value) -> Result<Value, String> {
         "ctx_profiles" => tool_profiles(),
         "ctx_waste" => tool_waste(),
         "ctx_expand" => tool_expand(args),
+        "ctx_tools" => tool_tools(),
+        "ctx_restore" => tool_restore(args),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -204,6 +216,117 @@ fn tool_expand(args: &Value) -> Result<Value, String> {
             "No stored output for id \"{id}\". It may have aged out of the rewind store."
         )),
     }
+}
+
+fn tool_tools() -> Result<Value, String> {
+    let cfg = crate::config::Config::load();
+
+    // Which pruned servers are hidden right now (not re-added by a session reach).
+    let expansion: Vec<String> = cfg
+        .session_expansion
+        .iter()
+        .cloned()
+        .chain(cfg.session_semantic_tools.iter().cloned())
+        .collect();
+    let pruned: Vec<Value> = cfg
+        .pruned_servers
+        .iter()
+        .map(|prefix| {
+            let restored = crate::profiles::prefix_matches_expansion(prefix, &expansion);
+            json!({
+                "server": crate::profiles::mcp_prefix_to_server_display(prefix),
+                "prefix": prefix,
+                "hidden": !restored,
+                "restored_for_this_session": restored,
+            })
+        })
+        .collect();
+
+    let queued: Vec<Value> = crate::restore_queue::load()
+        .into_iter()
+        .filter(|r| !r.delivered)
+        .map(|r| {
+            json!({
+                "tool": r.display,
+                "tasks": r.tasks,
+                "requested_at": r.requested_at,
+            })
+        })
+        .collect();
+
+    let hint = if pruned.is_empty() {
+        "No MCP servers are pruned. Every observed server is in the menu."
+    } else {
+        "A pruned server's tools are hidden to save tokens. Call ctx_restore with its name to bring it back next session; the menu is fixed for the current session."
+    };
+
+    Ok(json!({
+        "pruned_servers": pruned,
+        "queued_restores": queued,
+        "hint": hint,
+    }))
+}
+
+fn tool_restore(args: &Value) -> Result<Value, String> {
+    let tool = args
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if tool.is_empty() {
+        return Err("Pass the server or tool to restore (e.g. \"Linear\" or a full mcp__ tool name).".to_string());
+    }
+    let tasks = args
+        .get("tasks")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    let target = crate::restore_queue::normalize_target(tool);
+    let display = crate::profiles::mcp_prefix_to_server_display(&target);
+
+    // Un-prune for the next session. Durable via `session_expansion` (survives until cleared), so the
+    // next session boots with the server no longer denied and its catalog back in the menu. Best
+    // effort: if filtering is off or the server was not pruned, the note still carries the task.
+    let expanded = crate::semantic_tools::add_session_expansions([(
+        target.clone(),
+        crate::semantic_tools::ExpansionReason::AccessFriction,
+    )])
+    .map(|v| !v.is_empty())
+    .unwrap_or(false);
+
+    // Tag the requesting session so the note is never handed back to it (its menu is already fixed).
+    // This process has no session_id, so read ctx's most-recent trace as the current session.
+    let requesting_session = crate::db::open_db()
+        .ok()
+        .and_then(|c| crate::db::latest_session_id(&c))
+        .unwrap_or_default();
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = crate::restore_queue::enqueue(&target, &display, tasks, &requesting_session, &now);
+
+    let mut msg = format!(
+        "Queued \"{display}\" to come back in your next session. ctx builds the MCP tool menu once at \
+         session start, so a pruned server can't reappear in this one. Start a new session and its \
+         tools will be there."
+    );
+    if !tasks.is_empty() {
+        msg.push_str(" Your note was saved and will be surfaced to that session so you can finish: ");
+        msg.push_str(tasks);
+    }
+    if !expanded {
+        msg.push_str(
+            "\n\nNote: this server was not currently pruned, so the menu is unchanged. The note is still saved.",
+        );
+    }
+
+    Ok(json!({
+        "restored": target,
+        "display": display,
+        "effective": "next_session",
+        "tasks_saved": !tasks.is_empty(),
+        "message": msg,
+    }))
 }
 
 fn tool_spend(args: &Value) -> Result<Value, String> {

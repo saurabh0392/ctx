@@ -3673,6 +3673,21 @@ pub fn insert_hook_event(conn: &Connection, hook_type: &str, payload_json: &str)
     Ok(())
 }
 
+/// Most recent session id seen in hook traces: ctx's view of the currently-active session. Used by
+/// `ctx_restore`, which runs in the MCP server process and so has no session_id of its own, to tag
+/// which session made a restore request. The next new session then reads a different session_id.
+pub fn latest_session_id(conn: &Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT session_id FROM hook_traces \
+         WHERE session_id IS NOT NULL AND session_id != '' ORDER BY ts DESC LIMIT 1",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 #[derive(serde::Serialize)]
 pub struct HookEventRow {
     pub id: i64,

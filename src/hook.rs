@@ -556,6 +556,26 @@ pub fn user_prompt_submit() -> Result<()> {
 
     let budget_blocked = false;
 
+    // Cross-session restore scratchpad: if an earlier session queued a pruned tool to come back (via
+    // ctx_restore) and this is a different session, its catalog is now in the menu. Hand the saved
+    // note to the agent once so the blocked work resumes, then mark it delivered.
+    let sid = session_id.unwrap_or("");
+    let pending = crate::restore_queue::pending_for_new_session(sid);
+    if !pending.is_empty() {
+        let mut block =
+            String::from("Restored MCP tools from a previous session (available now):\n");
+        for r in &pending {
+            if r.tasks.trim().is_empty() {
+                block.push_str(&format!("- {}\n", r.display));
+            } else {
+                block.push_str(&format!("- {}: {}\n", r.display, r.tasks.trim()));
+            }
+        }
+        extra.push_str(block.trim_end());
+        extra.push_str("\n\n");
+        let _ = crate::restore_queue::mark_delivered_for_new_session(sid);
+    }
+
     let (tools_kept, tools_removed, tokens_saved) = if ab.profile {
         profile_savings(&trace_profile)
     } else {

@@ -37,6 +37,7 @@ pub mod outcome_signals;
 pub mod profiles;
 pub mod quality_guard;
 pub mod report;
+pub mod restore_queue;
 pub mod rule_signals;
 pub mod semantic_tools;
 pub mod setup;

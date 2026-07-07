@@ -1014,7 +1014,7 @@ fn prefix_kept_by_profile(prefix: &str, profile: &Profile) -> bool {
         .any(|k| prefix.starts_with(k.as_str()) || k.starts_with(prefix))
 }
 
-fn prefix_matches_expansion(prefix: &str, expansion: &[String]) -> bool {
+pub fn prefix_matches_expansion(prefix: &str, expansion: &[String]) -> bool {
     let id = mcp_prefix_to_server_id(prefix);
     let display = mcp_prefix_to_server_display(prefix);
     expansion.iter().any(|e| {
