@@ -22,8 +22,8 @@ mod types;
 
 pub use context::{build_task_frame_minimal, SgrMode, TaskFrame};
 pub use hook_io::{
-    extract_compressible_text, extract_tool_output, post_tool_use, tool_response_value,
-    wrap_updated_tool_output,
+    extract_compressible_text, extract_tool_output, post_tool_use, rewind_id_for, tool_response_value,
+    trim_marker, wrap_updated_tool_output,
 };
 pub(crate) use hook_io::record_shadow_decision;
 pub use shadow::{compute_shadow_decision, ShadowDecision};

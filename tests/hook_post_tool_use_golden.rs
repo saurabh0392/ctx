@@ -108,7 +108,11 @@ compress_explore_rate = 0.0
         false,
     )
     .expect("direct compose should compress");
-    let expected = ctx::compress::wrap_updated_tool_output("Bash", &response, &result.text);
+    // The hook appends the reversible-trim marker (CTX-51) before wrapping, so the faithful golden
+    // must do the same. Shared helpers keep the id and marker text in lockstep with the hook.
+    let rewind_id = ctx::compress::rewind_id_for(&stdout);
+    let marked = format!("{}{}", result.text, ctx::compress::trim_marker(&rewind_id));
+    let expected = ctx::compress::wrap_updated_tool_output("Bash", &response, &marked);
 
     assert_eq!(
         uto, &expected,

@@ -12,6 +12,22 @@ use crate::config::Config;
 
 use super::compress_tool_output;
 
+/// Hash-addressed id for a reversible trim: stable for the same raw bytes, so the marker the agent
+/// reads and the stored rewind row share one id. Shared with the golden test so it stays faithful.
+pub fn rewind_id_for(raw: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut h);
+    format!("{:x}", h.finish())
+}
+
+/// The recovery marker appended to a trimmed output, pointing the agent at `ctx_expand`.
+pub fn trim_marker(rewind_id: &str) -> String {
+    format!(
+        "\n\n[ctx trimmed this output to save context. Full original id: {rewind_id}. To read all of it, call the ctx_expand tool with id \"{rewind_id}\", or run: ctx expand {rewind_id}]"
+    )
+}
+
 pub fn post_tool_use() -> Result<()> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
@@ -116,12 +132,7 @@ pub fn post_tool_use() -> Result<()> {
 
     // Reversible trim (CTX-51): store the verbatim original, hash-addressed, so the agent can
     // re-expand it on demand. The id travels in a marker appended to what the agent reads.
-    let rewind_id = {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        raw.hash(&mut h);
-        format!("{:x}", h.finish())
-    };
+    let rewind_id = rewind_id_for(&raw);
     let now = chrono::Utc::now().to_rfc3339();
 
     if let Ok(conn) = crate::db::open_db() {
@@ -159,10 +170,7 @@ pub fn post_tool_use() -> Result<()> {
         "ctx compressed this tool output ({} to {} chars). The tool still ran successfully.{}",
         result.chars_in, result.chars_out, sgr_note
     );
-    let marker = format!(
-        "\n\n[ctx trimmed this output to save context. Full original id: {rewind_id}. To read all of it, call the ctx_expand tool with id \"{rewind_id}\", or run: ctx expand {rewind_id}]"
-    );
-    let marked = format!("{}{}", result.text, marker);
+    let marked = format!("{}{}", result.text, trim_marker(&rewind_id));
     let updated = ClaudeCodeTransport.wrap(tool_name, &response_value, &marked);
     let out = json!({
         "hookSpecificOutput": {
