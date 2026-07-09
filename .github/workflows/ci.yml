@@ -31,7 +31,10 @@ jobs:
         run: cargo fmt --check
         continue-on-error: true
       - name: Unit tests
-        run: cargo test
+        # Single-threaded: the suite mutates process-global env (CTX_HOME/HOME) to isolate the ctx
+        # db per test. Parallel runs let those mutations race (std::env::set_var is unsafe under
+        # threads), which surfaced as a platform-dependent flake. Serial execution is deterministic.
+        run: cargo test -- --test-threads=1
       - name: Build release
         run: cargo build --release
 

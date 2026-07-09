@@ -2768,25 +2768,29 @@ mod tests {
 
     #[test]
     fn pruned_live_server_never_denies_a_used_tool() {
-        let prefix = "mcp__claude_ai_Linear__";
-        let rows = vec![
-            observed("mcp__claude_ai_Linear__get_issue", prefix, 40),
-            observed("mcp__claude_ai_Linear__list_issues", prefix, 12),
-        ];
-        let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
-        // No wildcard (that would disconnect the server) and no rule that denies a used tool.
-        assert!(
-            !rules.iter().any(|r| r.ends_with('*')),
-            "live server must not be wildcard-denied: {rules:?}"
-        );
-        for used in ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_issues"] {
+        // Isolated CTX_HOME: pruned_prefix_deny_rules reads the catalog cache from the db, so this
+        // must run against an empty one, not whatever the ambient CTX_HOME points at.
+        with_ctx_home(|_| {
+            let prefix = "mcp__claude_ai_Linear__";
+            let rows = vec![
+                observed("mcp__claude_ai_Linear__get_issue", prefix, 40),
+                observed("mcp__claude_ai_Linear__list_issues", prefix, 12),
+            ];
+            let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
+            // No wildcard (that would disconnect the server) and no rule that denies a used tool.
             assert!(
-                !rules.iter().any(|r| r.eq_ignore_ascii_case(used)),
-                "used tool {used} must never be denied: {rules:?}"
+                !rules.iter().any(|r| r.ends_with('*')),
+                "live server must not be wildcard-denied: {rules:?}"
             );
-        }
-        // Pre-catalog-cache there are no provable dead names, so nothing is denied at all.
-        assert!(rules.is_empty(), "expected no denies pre-cache, got {rules:?}");
+            for used in ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_issues"] {
+                assert!(
+                    !rules.iter().any(|r| r.eq_ignore_ascii_case(used)),
+                    "used tool {used} must never be denied: {rules:?}"
+                );
+            }
+            // Empty catalog cache means no provable dead names, so nothing is denied at all.
+            assert!(rules.is_empty(), "expected no denies with empty catalog, got {rules:?}");
+        });
     }
 
     #[test]

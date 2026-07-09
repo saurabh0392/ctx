@@ -588,6 +588,20 @@ mod tests {
         std::env::remove_var("CTX_HOME");
     }
 
+    /// Run a test body against an isolated, empty CTX_HOME. `decide_inner` consults `tool_activated`,
+    /// which opens the ctx db, so without this a test reads the developer's real ~/.ctx history (where
+    /// Read/Edit are already earned) and the explore arm is suppressed. Holds CTX_ENV_LOCK so it does
+    /// not race other env-mutating tests.
+    fn with_empty_ctx_home<F: FnOnce()>(f: F) {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        f();
+        std::env::remove_var("CTX_HOME");
+    }
+
     fn read_trial_cfg(guard: bool) -> Config {
         Config {
             compress_enabled: true,
@@ -823,21 +837,25 @@ mod tests {
 
     #[test]
     fn exploration_assigns_control_when_draw_below_rate() {
-        let cfg = explore_read_cfg(0.20);
-        let d = decide_inner(&cfg, &reference_read(), 0.05);
-        assert_eq!(d.explore_arm, Some("control"));
-        assert!(
-            !d.apply,
-            "a control sample withholds the trim to observe the kept outcome"
-        );
+        with_empty_ctx_home(|| {
+            let cfg = explore_read_cfg(0.20);
+            let d = decide_inner(&cfg, &reference_read(), 0.05);
+            assert_eq!(d.explore_arm, Some("control"));
+            assert!(
+                !d.apply,
+                "a control sample withholds the trim to observe the kept outcome"
+            );
+        });
     }
 
     #[test]
     fn exploration_assigns_treatment_when_draw_above_rate() {
-        let cfg = explore_read_cfg(0.20);
-        let d = decide_inner(&cfg, &reference_read(), 0.80);
-        assert_eq!(d.explore_arm, Some("treatment"));
-        assert!(d.apply, "a treatment sample still trims as normal");
+        with_empty_ctx_home(|| {
+            let cfg = explore_read_cfg(0.20);
+            let d = decide_inner(&cfg, &reference_read(), 0.80);
+            assert_eq!(d.explore_arm, Some("treatment"));
+            assert!(d.apply, "a treatment sample still trims as normal");
+        });
     }
 
     #[test]
@@ -870,12 +888,14 @@ mod tests {
             cwd: "/proj".into(),
             recent_intent_text: None,
         };
-        let control = decide_inner(&cfg, &edit, 0.05);
-        assert_eq!(control.explore_arm, Some("control"));
-        assert!(!control.apply, "a control-arm edit is left untrimmed to build the baseline");
-        let treatment = decide_inner(&cfg, &edit, 0.80);
-        assert_eq!(treatment.explore_arm, Some("treatment"));
-        assert!(treatment.apply, "the rest still trim on trial");
+        with_empty_ctx_home(|| {
+            let control = decide_inner(&cfg, &edit, 0.05);
+            assert_eq!(control.explore_arm, Some("control"));
+            assert!(!control.apply, "a control-arm edit is left untrimmed to build the baseline");
+            let treatment = decide_inner(&cfg, &edit, 0.80);
+            assert_eq!(treatment.explore_arm, Some("treatment"));
+            assert!(treatment.apply, "the rest still trim on trial");
+        });
     }
 
     #[test]

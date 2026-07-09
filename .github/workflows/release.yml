@@ -48,7 +48,8 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Run tests
-        run: cargo test
+        # Serial: the suite mutates process-global env (CTX_HOME/HOME) per test; parallel runs race.
+        run: cargo test -- --test-threads=1
 
       - name: Package
         shell: bash
