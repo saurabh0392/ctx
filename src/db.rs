@@ -3441,6 +3441,25 @@ pub fn repair_corpus(conn: &Connection) -> Result<(usize, usize, usize)> {
     Ok((joined as usize, corrections as usize, interrupt_clean as usize))
 }
 
+/// Per-server tool catalog cache. Runs unconditionally so existing databases (already past the
+/// schema-version gate) still get the table. Bounded per server on write (`enforce_catalog_cap`).
+fn migrate_mcp_tool_catalog_table(conn: &Connection) {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS mcp_tool_catalog ( \
+            server_prefix TEXT NOT NULL, \
+            tool_name TEXT NOT NULL, \
+            source TEXT NOT NULL, \
+            first_seen TEXT NOT NULL, \
+            last_seen TEXT NOT NULL, \
+            PRIMARY KEY (server_prefix, tool_name) \
+         ); \
+         CREATE INDEX IF NOT EXISTS idx_catalog_server ON mcp_tool_catalog(server_prefix); \
+         DELETE FROM mcp_tool_catalog WHERE tool_name = server_prefix \
+            OR substr(tool_name, length(tool_name) - 1) = '__' \
+            OR substr(tool_name, length(tool_name)) = '*';",
+    );
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Run column migrations unconditionally (idempotent ALTER TABLE checks)
     migrate_hook_traces_savings_columns(conn);
@@ -3465,6 +3484,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     backfill_rejoin_outcome_labels_v4(conn);
     backfill_rejoin_outcome_labels_v5(conn);
     backfill_rejoin_outcome_labels_v6(conn);
+    migrate_mcp_tool_catalog_table(conn);
 
     let v: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -5073,6 +5093,54 @@ pub fn observed_tools(conn: &Connection, cutoff: &str) -> Result<Vec<ObservedToo
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Cap the number of tools kept per server in the catalog cache, so a chatty history can never grow
+/// it without bound. Soak safety.
+pub const CATALOG_MAX_TOOLS_PER_SERVER: usize = 128;
+
+/// Record that a server exposes a tool (seen as invoked, allow-listed, or reached-for). Idempotent:
+/// refreshes `last_seen` on repeat. Empty keys are ignored.
+pub fn upsert_catalog_tool(
+    conn: &Connection,
+    server_prefix: &str,
+    tool_name: &str,
+    source: &str,
+    ts: &str,
+) -> Result<()> {
+    if server_prefix.is_empty() || tool_name.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO mcp_tool_catalog (server_prefix, tool_name, source, first_seen, last_seen) \
+         VALUES (?1, ?2, ?3, ?4, ?4) \
+         ON CONFLICT(server_prefix, tool_name) DO UPDATE SET last_seen = ?4, source = ?3",
+        rusqlite::params![server_prefix, tool_name, source, ts],
+    )?;
+    Ok(())
+}
+
+/// Tool names cached for a server, newest first (so a cap keeps the freshest).
+pub fn catalog_tools_for_server(conn: &Connection, server_prefix: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT tool_name FROM mcp_tool_catalog WHERE server_prefix = ?1 ORDER BY last_seen DESC, tool_name",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![server_prefix], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Drop all but the most-recently-seen `CATALOG_MAX_TOOLS_PER_SERVER` tools of a server.
+pub fn enforce_catalog_cap(conn: &Connection, server_prefix: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM mcp_tool_catalog WHERE server_prefix = ?1 AND tool_name NOT IN ( \
+            SELECT tool_name FROM mcp_tool_catalog WHERE server_prefix = ?1 \
+            ORDER BY last_seen DESC LIMIT ?2 \
+         )",
+        rusqlite::params![server_prefix, CATALOG_MAX_TOOLS_PER_SERVER as i64],
+    )?;
+    Ok(())
 }
 
 /// Distinct MCP tool names observed since `cutoff`.

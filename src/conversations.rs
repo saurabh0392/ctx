@@ -1233,6 +1233,10 @@ pub fn ingest_claude_jsonl(force_full: bool) -> anyhow::Result<usize> {
 
     let _ = crate::profiles::after_ingest_profile_sync();
 
+    // Strengthen the per-server tool catalog from this ingest's invocations plus the allow-list and
+    // reaches, so a live pruned server can shed seen-but-idle tools by name.
+    crate::profiles::refresh_tool_catalog();
+
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::maybe_reset_stale_install_watermark(&conn);
     }

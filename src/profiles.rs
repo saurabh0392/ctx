@@ -180,10 +180,10 @@ fn tool_count_for_prefix(prefix: &str) -> usize {
 }
 
 /// Full catalog size a server ships (the tool menu carried every request), for the input-tax bill.
-/// This is the carried-side ground truth; the bill floors it at the distinct tools observed so a
+/// This is the carried-side ground truth; the bill floors it at the tools cached for the server so a
 /// server whose catalog grew past `SERVER_COUNTS` is never under-counted.
 pub fn catalog_tool_count(prefix: &str) -> usize {
-    tool_count_for_prefix(prefix)
+    tool_count_for_prefix(prefix).max(catalog_cache_names(prefix).len())
 }
 
 /// Estimated kept / removed / token savings for a profile slug (hook + dashboard estimates).
@@ -1139,11 +1139,123 @@ fn tool_in_server(tool_name: &str, server_prefix: &str, prefix: &str) -> bool {
         || tool_name.starts_with(prefix)
 }
 
-/// Extra tool names for a server from the per-server catalog cache (dead tools never invoked but
-/// carried in the menu). Empty until the catalog cache lands; that task fills this in so a live
-/// pruned server can shed its dead tools by name.
-fn catalog_cache_names(_prefix: &str) -> Vec<String> {
-    Vec::new()
+/// Extra tool names for a server from the per-server catalog cache: tools ctx has seen (invoked,
+/// allow-listed, or reached-for) that are not necessarily in recent use. Lets a live pruned server
+/// shed its seen-but-idle tools by name. Bounded per server on write. Best-effort read.
+fn catalog_cache_names(prefix: &str) -> Vec<String> {
+    let Ok(conn) = crate::db::open_db() else {
+        return Vec::new();
+    };
+    crate::db::catalog_tools_for_server(&conn, prefix)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| is_concrete_tool(t))
+        .collect()
+}
+
+/// A concrete MCP tool name (not a bare server prefix, wildcard, or server-level reach). Guards the
+/// catalog against storing or denying a whole-server pattern by mistake.
+fn is_concrete_tool(name: &str) -> bool {
+    if !name.starts_with("mcp__") || name.ends_with('*') || name.ends_with("__") {
+        return false;
+    }
+    crate::filter::server_prefix_from_tool(name)
+        .map(|prefix| name.len() > prefix.len())
+        .unwrap_or(false)
+}
+
+/// The server prefix a catalog entry belongs to: the recorded prefix when present, else derived
+/// from the tool name. Only mcp tools qualify.
+fn catalog_prefix_for(tool_name: &str, server_prefix: &str) -> Option<String> {
+    if !server_prefix.is_empty() && server_prefix.starts_with("mcp__") {
+        return Some(server_prefix.to_string());
+    }
+    crate::filter::server_prefix_from_tool(tool_name)
+}
+
+/// MCP tools present in the permission allow-list, as (server_prefix, full_tool_name). These are
+/// tools the developer approved at some point, a broader signal than recent invocations. Rule args
+/// like `mcp__x__tool(...)` are stripped to the bare tool name.
+fn allowlisted_mcp_tools() -> Vec<(String, String)> {
+    let path = crate::config::claude_settings_path();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = doc
+        .get("permissions")
+        .and_then(|p| p.get("allow"))
+        .and_then(|a| a.as_array())
+    {
+        for rule in arr.iter().filter_map(|v| v.as_str()) {
+            if !rule.starts_with("mcp__") {
+                continue;
+            }
+            let tool = rule.split('(').next().unwrap_or(rule).trim();
+            if let Some(prefix) = crate::filter::server_prefix_from_tool(tool) {
+                out.push((prefix, tool.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Fold everything ctx has seen about which tools each server exposes into the bounded catalog
+/// cache: invoked tools across all history, the permission allow-list, and tool-level session
+/// reaches. Self-strengthening; call on ingest. Best-effort, never fails the caller.
+pub fn refresh_tool_catalog() {
+    let Ok(conn) = crate::db::open_db() else {
+        return;
+    };
+    if crate::db::ensure_schema(&conn).is_err() {
+        return;
+    }
+    let ts = chrono::Utc::now().to_rfc3339();
+    let mut touched: HashSet<String> = HashSet::new();
+
+    // 1. Invoked tools across a long window (effectively all history).
+    for row in observed_tools_with_lookback(3650) {
+        if !is_concrete_tool(&row.tool_name) {
+            continue;
+        }
+        if let Some(prefix) = catalog_prefix_for(&row.tool_name, &row.server_prefix) {
+            let _ = crate::db::upsert_catalog_tool(&conn, &prefix, &row.tool_name, "invoked", &ts);
+            touched.insert(prefix);
+        }
+    }
+
+    // 2. Allow-listed tools (approved but maybe idle).
+    for (prefix, tool) in allowlisted_mcp_tools() {
+        if !is_concrete_tool(&tool) {
+            continue;
+        }
+        let _ = crate::db::upsert_catalog_tool(&conn, &prefix, &tool, "approved", &ts);
+        touched.insert(prefix);
+    }
+
+    // 3. Tool-level session reaches (a full tool name someone reached for). Server-level reaches
+    // (a bare prefix) name no tool, so they are skipped here.
+    let cfg = Config::load();
+    for entry in cfg
+        .session_expansion
+        .iter()
+        .chain(cfg.session_semantic_tools.iter())
+    {
+        if !is_concrete_tool(entry) {
+            continue;
+        }
+        if let Some(prefix) = crate::filter::server_prefix_from_tool(entry) {
+            let _ = crate::db::upsert_catalog_tool(&conn, &prefix, entry, "reached", &ts);
+            touched.insert(prefix);
+        }
+    }
+
+    for prefix in touched {
+        let _ = crate::db::enforce_catalog_cap(&conn, &prefix);
+    }
 }
 
 /// Tool names a server is known to expose, from the passed invocation history plus the catalog
@@ -2684,6 +2796,58 @@ mod tests {
         let rows = vec![observed("mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__", 3)];
         let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
         assert_eq!(rules, vec!["mcp__claude_ai_Canva__*".to_string()]);
+    }
+
+    #[test]
+    fn live_server_prunes_cached_dead_tool_but_keeps_used() {
+        with_ctx_home(|_| {
+            let conn = crate::db::open_db().unwrap();
+            crate::db::ensure_schema(&conn).unwrap();
+            let prefix = "mcp__claude_ai_Linear__";
+            let used = "mcp__claude_ai_Linear__get_issue";
+            let dead = "mcp__claude_ai_Linear__create_attachment";
+            // Catalog knows both tools; only `used` shows up in recent invocations.
+            crate::db::upsert_catalog_tool(&conn, prefix, used, "invoked", "2026-01-01T00:00:00Z")
+                .unwrap();
+            crate::db::upsert_catalog_tool(&conn, prefix, dead, "approved", "2026-01-01T00:00:00Z")
+                .unwrap();
+            let rows = vec![observed(used, prefix, 5)];
+            let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
+            assert!(rules.contains(&dead.to_string()), "dead tool must be denied: {rules:?}");
+            assert!(!rules.iter().any(|r| r == used), "used tool must stay: {rules:?}");
+            assert!(
+                !rules.iter().any(|r| r.ends_with('*')),
+                "live server must not be wildcard-denied: {rules:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn catalog_cache_stays_bounded_per_server() {
+        with_ctx_home(|_| {
+            let conn = crate::db::open_db().unwrap();
+            crate::db::ensure_schema(&conn).unwrap();
+            let prefix = "mcp__claude_ai_Linear__";
+            let over = crate::db::CATALOG_MAX_TOOLS_PER_SERVER + 50;
+            for i in 0..over {
+                crate::db::upsert_catalog_tool(
+                    &conn,
+                    prefix,
+                    &format!("{prefix}tool_{i}"),
+                    "invoked",
+                    &format!("2026-01-01T{:02}:{:02}:00Z", i / 60, i % 60),
+                )
+                .unwrap();
+            }
+            crate::db::enforce_catalog_cap(&conn, prefix).unwrap();
+            let names = crate::db::catalog_tools_for_server(&conn, prefix).unwrap();
+            assert!(
+                names.len() <= crate::db::CATALOG_MAX_TOOLS_PER_SERVER,
+                "catalog cap not enforced: {} > {}",
+                names.len(),
+                crate::db::CATALOG_MAX_TOOLS_PER_SERVER
+            );
+        });
     }
 
     fn with_ctx_home<F: FnOnce(&tempfile::TempDir)>(f: F) {
