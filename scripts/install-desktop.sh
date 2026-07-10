@@ -3,7 +3,7 @@
 # Run from any terminal: bash <(curl -sL <raw-url>) or ./scripts/install-desktop.sh [--yes|-y]
 set -euo pipefail
 
-REPO_URL="https://github.com/goshippo/ctx.git"
+REPO_URL="https://github.com/saurabh0392/ctx.git"
 REPO_DIR="$HOME/Documents/ctx"
 DASHBOARD_PORT=8789
 GITHUB_MCP_BIN="$HOME/.local/bin/github-mcp-server"
@@ -133,7 +133,7 @@ bold "Step 2/7: Getting ctx source"
 
 if [ -f "$REPO_DIR/Cargo.toml" ]; then
     cd "$REPO_DIR"
-    if git remote get-url origin 2>/dev/null | grep -q "goshippo/ctx"; then
+    if git remote get-url origin 2>/dev/null | grep -q "saurabh0392/ctx"; then
         echo "  Pulling latest from main..."
         git pull origin main
     else

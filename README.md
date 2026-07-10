@@ -2,13 +2,13 @@
 
 ctx is a self-learning context controller for coding agents. It watches your real sessions, learns what each tool's output actually needs to keep for the next decision in *this* repo, and trims the rest, getting sharper the more you use it. Filtering unused MCP tools and tracking per-session cost are mechanisms, not the headline. No cloud, no LLM in the hook.
 
-Install with no Rust required — just `gh` authenticated to the goshippo org.
+Alpha install: one command, no repo access and no Rust. Ask for an alpha token, then:
 
 ```bash
-gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
-bash ~/Documents/ctx/scripts/install.sh
-ctx setup
+curl -fsSL <endpoint>/install.sh | CTX_TOKEN=<your-token> sh
 ```
+
+It downloads a checksum-verified binary, wires ctx into Claude Code, and starts the dashboard at http://127.0.0.1:8789. The live endpoint and token minting are in [`services/ctx-dist`](services/ctx-dist). Maintainers building from source: see [Build from source](#build-from-source) below.
 
 ### How it earns its turn
 
@@ -71,14 +71,14 @@ Quick paths:
 
 - **Claude Code in an IDE (recommended):** Run these in a terminal, then reload the IDE window.
   ```bash
-  gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
+  gh repo clone saurabh0392/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
   bash ~/Documents/ctx/scripts/install.sh
   ctx setup
   ctx use <profile>   # optional — setup picks one when history exists
 ```
 - **Claude Code in a terminal only:** Same install, then reload Claude Code so `~/.claude/settings.json` hooks and soft filter rules apply.
 - **Claude Desktop:** Same install from an OS terminal, run `ctx setup`, then quit Desktop fully and reopen. Native Claude Code filtering is not available on Desktop (see table), but MCP tools and the dashboard work.
-- **Build from source:** `gh repo clone goshippo/ctx ~/Documents/ctx` then `source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)).
+- **Build from source:** `gh repo clone saurabh0392/ctx ~/Documents/ctx` then `source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx` (or follow [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md)).
 
 ### What happens during `ctx setup`
 
@@ -110,24 +110,24 @@ Contributor-level diagrams, module tables, and pipeline detail: [ARCHITECTURE.md
 
 ## Install
 
-**Pre-built binary (no Rust required) — requires `gh` authenticated to the goshippo org:**
+**Pre-built binary (no Rust required) — requires `gh` authenticated to the saurabh0392 account:**
 
 ```bash
-gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
+gh repo clone saurabh0392/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
 bash ~/Documents/ctx/scripts/install.sh
 ctx setup
 ```
 
 `setup` indexes your Claude Code JSONL, generates MCP profiles from usage history when available, and activates the best match. Re-run `ctx profile generate` only after you add or remove MCP connectors.
 
-`install.sh` detects your platform (macOS arm64/x86_64 or Linux x86_64), downloads the matching binary from the [latest release](https://github.com/goshippo/ctx/releases/latest) via `gh release download`, and installs it to `/usr/local/bin`. Set `CTX_INSTALL_DIR` to override the destination.
+`install.sh` detects your platform (macOS arm64/x86_64 or Linux x86_64), downloads the matching binary from the [latest release](https://github.com/saurabh0392/ctx/releases/latest) via `gh release download`, and installs it to `/usr/local/bin`. Set `CTX_INSTALL_DIR` to override the destination.
 
 No `gh` but have a PAT? `GITHUB_TOKEN=<pat> bash scripts/install.sh` works too.
 
 **Build from source (requires Rust):**
 
 ```bash
-gh repo clone goshippo/ctx ~/Documents/ctx
+gh repo clone saurabh0392/ctx ~/Documents/ctx
 source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx
 ctx setup
 ```

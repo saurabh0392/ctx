@@ -9,18 +9,18 @@ Paste this into Claude Code or Cursor chat. Claude will install ctx for you.
 **Prompt:**
 
 ```
-Install ctx, a local cost-optimization tool for Claude Code. It strips unused MCP tool schemas from API requests, tracks spend, and serves a dashboard that updates in real time after every turn. All data stays on this machine. The repo is https://github.com/goshippo/ctx.
+Install ctx, a local cost-optimization tool for Claude Code. It strips unused MCP tool schemas from API requests, tracks spend, and serves a dashboard that updates in real time after every turn. All data stays on this machine. The repo is https://github.com/saurabh0392/ctx.
 
 Steps:
 
-1. Install the ctx binary (no Rust required — needs gh authenticated to goshippo org):
-   Run: gh repo clone goshippo/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
+1. Install the ctx binary (no Rust required — needs gh authenticated to saurabh0392 account):
+   Run: gh repo clone saurabh0392/ctx ~/Documents/ctx 2>/dev/null || git -C ~/Documents/ctx pull
    Then: bash ~/Documents/ctx/scripts/install.sh
    This downloads the pre-built binary for your platform (macOS arm64/x86_64 or Linux x86_64) to /usr/local/bin.
    If gh is not installed or not authenticated, fall back to building from source:
      a. Check that Rust is installed: source "$HOME/.cargo/env" 2>/dev/null; rustc --version
         If missing, tell me to install it from rustup.rs and stop.
-     b. Clone or pull: gh repo clone goshippo/ctx ~/Documents/ctx (or cd ~/Documents/ctx && git pull)
+     b. Clone or pull: gh repo clone saurabh0392/ctx ~/Documents/ctx (or cd ~/Documents/ctx && git pull)
      c. Build: source "$HOME/.cargo/env" && cargo install --locked --path ~/Documents/ctx
 
 2. Run setup: ctx setup --yes
@@ -141,7 +141,7 @@ Claude Desktop's bash tool runs in a cloud sandbox, not on your local machine. I
 **Quickest path (no Rust required):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/goshippo/ctx/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/saurabh0392/ctx/main/scripts/install.sh | sh
 ctx setup --yes
 ctx profile generate
 ```
@@ -155,7 +155,7 @@ Then quit Desktop fully and reopen so it picks up the new MCP config.
 bash ~/Documents/ctx/scripts/install-desktop.sh
 
 # First time — clone then run:
-git clone https://github.com/goshippo/ctx.git ~/Documents/ctx && bash ~/Documents/ctx/scripts/install-desktop.sh
+git clone https://github.com/saurabh0392/ctx.git ~/Documents/ctx && bash ~/Documents/ctx/scripts/install-desktop.sh
 ```
 
 The helper script runs `ctx setup --yes`, verifies the dashboard, runs initial ingest, then interactively offers to install the GitHub MCP server (pre-built binary, no Docker). Pass `--yes` to accept all prompts without asking. Note: the helper script still builds ctx from source using Rust. For the pre-built binary, use the `curl | sh` path above.

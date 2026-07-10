@@ -20,9 +20,9 @@ cd ~/Documents/ctx 2>/dev/null && git remote get-url origin 2>/dev/null || echo 
 
 Then act based on what the commands return:
 
-- **SOURCE_EXISTS + remote contains `goshippo/ctx`**: `cd ~/Documents/ctx && git pull origin main`
+- **SOURCE_EXISTS + remote contains `saurabh0392/ctx`**: `cd ~/Documents/ctx && git pull origin main`
 - **SOURCE_EXISTS + NOT_A_REPO or different remote**: build from what's there, do not touch git
-- **NO_SOURCE**: `git clone https://github.com/goshippo/ctx.git ~/Documents/ctx`
+- **NO_SOURCE**: `git clone https://github.com/saurabh0392/ctx.git ~/Documents/ctx`
 
 ## Build and install
 
