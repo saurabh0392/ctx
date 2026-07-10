@@ -13,8 +13,12 @@ INSTALL_DIR="${CTX_INSTALL_DIR:-$HOME/.local/bin}"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
+# Sentinel assembled from two pieces so the serve-time templating (which replaces the contiguous
+# placeholder) cannot rewrite this guard. If the placeholder in the assignment above was not replaced,
+# CTX_ENDPOINT still equals it and we refuse to run.
+_ph="__CTX_""ENDPOINT__"
 case "${CTX_ENDPOINT}" in
-  __CTX_ENDPOINT__*) die "no endpoint configured. Fetch this script from the ctx distribution URL." ;;
+  "$_ph"*) die "no endpoint configured. Fetch this script from the ctx distribution URL." ;;
 esac
 [ -n "${CTX_TOKEN:-}" ] || die "set CTX_TOKEN to your alpha token, e.g. CTX_TOKEN=xxxx sh"
 
@@ -72,12 +76,27 @@ if [ "$os" = "Darwin" ]; then
 fi
 
 # --- wire into your agent --------------------------------------------------
+# --yes: the installer is piped through sh with no TTY, so setup must not prompt.
 printf 'Setting up ctx...\n'
-"$bin" setup || die "ctx setup failed"
+"$bin" setup --yes || die "ctx setup failed"
 
-# --- PATH hint -------------------------------------------------------------
+# --- PATH ------------------------------------------------------------------
+# The dashboard and hooks call ctx by full path, so they work regardless. This only lets the user type
+# `ctx` directly. Append to the right shell profile, idempotently and with a marker they can remove.
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) : ;;
-  *) printf '\nAdd ctx to your PATH:\n  export PATH="%s:$PATH"\n' "$INSTALL_DIR" ;;
+  *)
+    case "${SHELL:-}" in
+      *zsh)  profile="$HOME/.zshrc" ;;
+      *bash) [ "$os" = "Darwin" ] && profile="$HOME/.bash_profile" || profile="$HOME/.bashrc" ;;
+      *)     profile="$HOME/.profile" ;;
+    esac
+    if [ -f "$profile" ] && grep -q 'added by ctx installer' "$profile" 2>/dev/null; then
+      : # already added
+    else
+      printf '\n# added by ctx installer\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$profile"
+      printf 'Added %s to PATH in %s (open a new shell, or run: export PATH="%s:$PATH")\n' "$INSTALL_DIR" "$profile" "$INSTALL_DIR"
+    fi
+    ;;
 esac
 printf '\nctx is installed. Dashboard: http://127.0.0.1:8789\n'
