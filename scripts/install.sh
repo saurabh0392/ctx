@@ -1,144 +1,83 @@
-#!/usr/bin/env bash
-# ctx installer — downloads the latest pre-built binary for your platform.
+#!/bin/sh
+# ctx installer. No repo access, no gh, no Rust.
 #
-# Primary path (internal/private repo): requires the GitHub CLI (`gh`) authenticated
-# to the goshippo org.
+#   curl -fsSL <endpoint>/install.sh | CTX_TOKEN=<your-alpha-token> sh
 #
-# Usage:
-#   gh repo clone goshippo/ctx /tmp/ctx-src && bash /tmp/ctx-src/scripts/install.sh
-#
-# Or with a token (CI / machines without gh):
-#   GITHUB_TOKEN=<pat> bash scripts/install.sh
-#
-# Or pipe directly if you have gh:
-#   gh api repos/goshippo/ctx/contents/scripts/install.sh --jq '.content' \
-#     | base64 -d | sh
-set -euo pipefail
+# It asks the ctx distribution endpoint for a short-lived download link (gated by your token),
+# verifies the checksum, installs the binary to ~/.local/bin, and runs `ctx setup`.
+set -eu
 
-REPO="goshippo/ctx"
-INSTALL_DIR="${CTX_INSTALL_DIR:-/usr/local/bin}"
+# The endpoint is templated in when this script is served. CTX_ENDPOINT can override it for testing.
+CTX_ENDPOINT="${CTX_ENDPOINT:-__CTX_ENDPOINT__}"
+INSTALL_DIR="${CTX_INSTALL_DIR:-$HOME/.local/bin}"
 
-# --------------------------------------------------------------------------
-# Platform detection
-# --------------------------------------------------------------------------
-OS="$(uname -s)"
-ARCH="$(uname -m)"
+die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
-case "$OS" in
-  Darwin) OS_TAG="apple-darwin" ;;
-  Linux)  OS_TAG="unknown-linux-gnu" ;;
-  *)
-    echo "error: unsupported OS: $OS"
-    echo "       Build from source:  cargo install --git https://github.com/${REPO}"
-    exit 1
-    ;;
+case "${CTX_ENDPOINT}" in
+  __CTX_ENDPOINT__*) die "no endpoint configured. Fetch this script from the ctx distribution URL." ;;
 esac
+[ -n "${CTX_TOKEN:-}" ] || die "set CTX_TOKEN to your alpha token, e.g. CTX_TOKEN=xxxx sh"
 
-case "$ARCH" in
-  x86_64|amd64)    ARCH_TAG="x86_64" ;;
-  arm64|aarch64)   ARCH_TAG="aarch64" ;;
-  *)
-    echo "error: unsupported architecture: $ARCH"
-    echo "       Build from source:  cargo install --git https://github.com/${REPO}"
-    exit 1
-    ;;
+# --- target detection ------------------------------------------------------
+os="$(uname -s)"; arch="$(uname -m)"
+case "$os" in
+  Darwin) os_tag="apple-darwin" ;;
+  Linux)  os_tag="unknown-linux-gnu" ;;
+  *) die "unsupported OS: $os (Windows installer is install.ps1)" ;;
 esac
+case "$arch" in
+  x86_64|amd64)  arch_tag="x86_64" ;;
+  arm64|aarch64) arch_tag="aarch64" ;;
+  *) die "unsupported architecture: $arch" ;;
+esac
+target="${arch_tag}-${os_tag}"
 
-TARGET="${ARCH_TAG}-${OS_TAG}"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# --- ask the endpoint for a signed download link ---------------------------
+printf 'Requesting ctx for %s...\n' "$target"
+resp="$(curl -fsSL -X POST "$CTX_ENDPOINT" \
+  -H 'content-type: application/json' \
+  -d "{\"token\":\"${CTX_TOKEN}\",\"target\":\"${target}\"}")" \
+  || die "the endpoint rejected the request (token invalid, revoked, or no build for $target)"
 
-# --------------------------------------------------------------------------
-# Download — gh CLI first (works for internal repos), curl fallback
-# --------------------------------------------------------------------------
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  echo "Fetching latest ctx release via gh..."
-  LATEST_TAG="$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName')"
-  if [ -z "$LATEST_TAG" ]; then
-    echo "error: no releases found at ${REPO}"
-    exit 1
-  fi
-  echo "Latest: ${LATEST_TAG}"
-  echo "Downloading ctx-${TARGET}.tar.gz..."
-  gh release download "$LATEST_TAG" \
-    --repo "$REPO" \
-    --pattern "ctx-${TARGET}.tar.gz" \
-    --dir "$TMP"
-  tar -xzf "$TMP/ctx-${TARGET}.tar.gz" -C "$TMP"
-else
-  # Curl path — works when GITHUB_TOKEN is set or if the repo ever becomes public.
-  if [ -z "${GITHUB_TOKEN:-}" ]; then
-    echo "error: 'gh' CLI not found or not authenticated, and GITHUB_TOKEN is not set."
-    echo ""
-    echo "Install options:"
-    echo "  1. Authenticate gh:  gh auth login   then re-run this script"
-    echo "  2. Set a token:      GITHUB_TOKEN=<pat> bash scripts/install.sh"
-    echo "  3. Build from source (requires Rust):"
-    echo "     gh repo clone ${REPO} ~/Documents/ctx"
-    echo "     source \"\$HOME/.cargo/env\" && cargo install --locked --path ~/Documents/ctx"
-    exit 1
-  fi
-  echo "Fetching latest ctx release via curl (GITHUB_TOKEN)..."
-  LATEST_TAG="$(
-    curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-      "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' \
-      | head -1 \
-      | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
-  )"
-  if [ -z "$LATEST_TAG" ]; then
-    echo "error: could not determine latest release"
-    exit 1
-  fi
-  echo "Latest: ${LATEST_TAG}"
-  URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/ctx-${TARGET}.tar.gz"
-  echo "Downloading ctx-${TARGET}.tar.gz..."
-  curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-    --progress-bar "$URL" -o "$TMP/ctx.tar.gz"
-  tar -xzf "$TMP/ctx.tar.gz" -C "$TMP"
+field() { printf '%s' "$resp" | sed -n "s/.*\"$1\":\"\\([^\"]*\\)\".*/\\1/p"; }
+url="$(field url)"; sha="$(field sha256)"; version="$(field version)"
+[ -n "$url" ] || die "no download url returned: $resp"
+
+# --- download + verify -----------------------------------------------------
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+printf 'Downloading ctx %s...\n' "${version:-latest}"
+curl -fsSL "$url" -o "$tmp/ctx.tar.gz" || die "download failed"
+
+if [ -n "$sha" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$tmp/ctx.tar.gz" | cut -d' ' -f1)";
+  else got="$(shasum -a 256 "$tmp/ctx.tar.gz" | cut -d' ' -f1)"; fi
+  [ "$got" = "$sha" ] || die "checksum mismatch (expected $sha, got $got). Aborting."
+  printf 'Checksum verified.\n'
 fi
 
-# --------------------------------------------------------------------------
-# Install — prefer ~/.local/bin over sudo when the target dir isn't writable
-# --------------------------------------------------------------------------
-if [ -w "$INSTALL_DIR" ]; then
-  install -m 755 "$TMP/ctx" "$INSTALL_DIR/ctx"
-elif [ "${CTX_INSTALL_DIR:-}" = "" ]; then
-  INSTALL_DIR="$HOME/.local/bin"
-  mkdir -p "$INSTALL_DIR"
-  install -m 755 "$TMP/ctx" "$INSTALL_DIR/ctx"
-  echo "  (installed to $INSTALL_DIR — add it to PATH if not already there)"
-  case ":${PATH}:" in
-    *":$INSTALL_DIR:"*) ;;
-    *) echo "  Add to your shell profile:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
-  esac
-else
-  echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-  sudo install -m 755 "$TMP/ctx" "$INSTALL_DIR/ctx"
+tar -xzf "$tmp/ctx.tar.gz" -C "$tmp" || die "extract failed"
+[ -f "$tmp/ctx" ] || die "archive did not contain a ctx binary"
+
+# --- install ---------------------------------------------------------------
+mkdir -p "$INSTALL_DIR"
+mv "$tmp/ctx" "$INSTALL_DIR/ctx"
+chmod +x "$INSTALL_DIR/ctx"
+bin="$INSTALL_DIR/ctx"
+
+if [ "$os" = "Darwin" ]; then
+  # Trust bridge until the binary is Developer ID signed and notarized: clear the download quarantine
+  # so Gatekeeper does not block it, and ad-hoc sign so launchd does not SIGKILL the dashboard service.
+  xattr -dr com.apple.quarantine "$bin" 2>/dev/null || true
+  codesign --force --sign - "$bin" 2>/dev/null || true
 fi
 
-# --------------------------------------------------------------------------
-# macOS: ad-hoc codesign so launchd does not SIGKILL the binary
-# --------------------------------------------------------------------------
-if [ "$OS" = "Darwin" ]; then
-  codesign -s - --force "$INSTALL_DIR/ctx" 2>/dev/null || true
-fi
+# --- wire into your agent --------------------------------------------------
+printf 'Setting up ctx...\n'
+"$bin" setup || die "ctx setup failed"
 
-# --------------------------------------------------------------------------
-# Verify + next steps
-# --------------------------------------------------------------------------
-if ! command -v ctx >/dev/null 2>&1; then
-  echo ""
-  echo "ctx installed to ${INSTALL_DIR}/ctx"
-  echo "Make sure ${INSTALL_DIR} is on your PATH, then run:  ctx setup"
-else
-  CTX_VER="$(ctx --version 2>/dev/null || echo '?')"
-  echo ""
-  echo "✓ ${CTX_VER} installed to ${INSTALL_DIR}/ctx"
-  echo ""
-  echo "Next steps:"
-  echo "  ctx setup                # writes allowedMcpServers + hooks to ~/.claude/settings.json"
-  echo "  ctx profile generate     # build profiles from your MCP stack"
-  echo "  ctx use <profile>        # activate a profile (writes to settings.json)"
-  echo "  Reload Window in IDE     # Cmd+Shift+P > Reload Window"
-fi
+# --- PATH hint -------------------------------------------------------------
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) : ;;
+  *) printf '\nAdd ctx to your PATH:\n  export PATH="%s:$PATH"\n' "$INSTALL_DIR" ;;
+esac
+printf '\nctx is installed. Dashboard: http://127.0.0.1:8789\n'

@@ -124,8 +124,13 @@ jobs:
     name: Publish GitHub Release
     needs: [build, coherence, fitcheck]
     runs-on: ubuntu-latest
+    env:
+      # Set these three repo secrets to auto-publish to the token-gated ctx-dist bucket. When BUCKET is
+      # empty the S3 step is skipped and only the GitHub Release is produced.
+      BUCKET: ${{ secrets.CTX_DIST_BUCKET }}
 
     steps:
+      - uses: actions/checkout@v4 # for scripts/install.sh
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -136,6 +141,30 @@ jobs:
           cd dist
           sha256sum ctx-*.tar.gz > checksums.txt
           cat checksums.txt
+
+      - name: Publish to ctx-dist (S3, token-gated)
+        if: ${{ env.BUCKET != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CTX_DIST_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CTX_DIST_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          M="$(mktemp)"; printf '{"version":"%s","targets":{}}' "$VERSION" > "$M"
+          for f in dist/ctx-*.tar.gz; do
+            t="$(basename "$f" .tar.gz)"; t="${t#ctx-}"
+            sha="$(sha256sum "$f" | cut -d' ' -f1)"
+            key="bin/ctx-${VERSION}-${t}.tar.gz"
+            aws s3 cp "$f" "s3://$BUCKET/$key"
+            python3 - "$M" "$t" "$key" "$sha" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1])); m["targets"][sys.argv[2]]={"file":sys.argv[3],"sha256":sys.argv[4]}
+          json.dump(m,open(sys.argv[1],"w"),indent=2)
+          PY
+          done
+          aws s3 cp "$M" "s3://$BUCKET/manifest/latest.json" --content-type application/json
+          aws s3 cp scripts/install.sh "s3://$BUCKET/install.sh" --content-type text/x-shellscript
+          echo "published $VERSION to ctx-dist"
 
       - name: Create release
         uses: softprops/action-gh-release@v2

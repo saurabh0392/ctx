@@ -1,0 +1,25 @@
+{
+  "name": "ctx-dist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Token-gated distribution for ctx: private S3 binaries, a Lambda that serves install.sh publicly and returns short-lived presigned download URLs only for allowlisted alpha tokens.",
+  "scripts": {
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.155.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4",
+    "@types/node": "^20.14.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.155.0",
+    "constructs": "^10.3.0",
+    "esbuild": "^0.23.1",
+    "@aws-sdk/client-ssm": "^3.637.0",
+    "@aws-sdk/client-s3": "^3.637.0",
+    "@aws-sdk/s3-request-presigner": "^3.637.0"
+  }
+}
