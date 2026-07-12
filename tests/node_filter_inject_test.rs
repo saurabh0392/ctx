@@ -46,6 +46,14 @@ fn node_require_filter_strips_mcp_tools() {
     .unwrap();
     filter_hook::write_filter_js().unwrap();
     let abs = filter_hook::filter_js_path().canonicalize().unwrap();
+    // Node's `--require` cannot parse the `\\?\` verbatim prefix that canonicalize() adds on Windows
+    // and prefers forward slashes; normalize so the preload resolves (it choked with `lstat 'C:'`).
+    let require_arg = {
+        let s = abs.display().to_string();
+        #[cfg(windows)]
+        let s = s.trim_start_matches(r"\\?\").replace('\\', "/");
+        s
+    };
 
     let (tx_port, rx_port) = mpsc::channel::<u16>();
     let (tx_body, rx_body) = mpsc::channel::<Vec<u8>>();
@@ -145,7 +153,7 @@ req.end(body);
     );
 
     let (tx_node, rx_node) = mpsc::channel::<std::io::Result<std::process::Output>>();
-    let abs_clone = abs.clone();
+    let require_arg_clone = require_arg.clone();
     let tmp_path = tmp.path().to_path_buf();
     let script_clone = script.clone();
     thread::spawn(move || {
@@ -153,7 +161,7 @@ req.end(body);
             .env("CTX_HOME", &tmp_path)
             .env("CTX_FILTER_HOST", "127.0.0.1")
             .env("CTX_FILTER_PORT", port.to_string())
-            .env("NODE_OPTIONS", format!("--require {}", abs_clone.display()))
+            .env("NODE_OPTIONS", format!("--require {require_arg_clone}"))
             .arg("-e")
             .arg(&script_clone)
             .output();
