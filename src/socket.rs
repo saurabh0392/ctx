@@ -1,18 +1,48 @@
-//! Unix domain socket for local read-only ctx state queries.
+//! Local read-only ctx state queries over a small newline-delimited JSON protocol.
+//!
+//! Transport is `cfg`-gated: a Unix domain socket at `ctx_dir()/ctx.sock` on unix, and a
+//! `127.0.0.1` TCP listener on an ephemeral port (published to `ctx_dir()/ctx.sock.port`) on
+//! Windows, where AF_UNIX is not available. The request/response protocol is identical on both.
 
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::config::{ctx_dir, Config};
 
+/// The filesystem artifact the listener owns: the socket file on unix, or the file that publishes
+/// the chosen TCP port on Windows. Used for cleanup and for the dashboard status line.
 pub fn socket_path() -> PathBuf {
-    ctx_dir().join("ctx.sock")
+    #[cfg(windows)]
+    {
+        ctx_dir().join("ctx.sock.port")
+    }
+    #[cfg(not(windows))]
+    {
+        ctx_dir().join("ctx.sock")
+    }
 }
 
 pub async fn run_listener() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        run_unix_listener().await
+    }
+    #[cfg(windows)]
+    {
+        run_tcp_listener().await
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+async fn run_unix_listener() -> anyhow::Result<()> {
+    use tokio::net::UnixListener;
+
     let path = socket_path();
     if path.exists() {
         let _ = std::fs::remove_file(&path);
@@ -40,7 +70,37 @@ pub async fn run_listener() -> anyhow::Result<()> {
     }
 }
 
-async fn handle_connection(mut stream: UnixStream) -> anyhow::Result<()> {
+#[cfg(windows)]
+async fn run_tcp_listener() -> anyhow::Result<()> {
+    use tokio::net::TcpListener;
+
+    // AF_UNIX is unavailable on Windows, so bind an ephemeral loopback port and publish it to a
+    // file under ctx_dir() for local clients to discover. 127.0.0.1 keeps it host-local.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+
+    let port_file = socket_path();
+    if let Some(parent) = port_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&port_file, port.to_string())?;
+
+    eprintln!("ctx event stream listening on 127.0.0.1:{port}");
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        tokio::spawn(async move {
+            let _ = handle_connection(stream).await;
+        });
+    }
+}
+
+/// One request, one response. Generic over the transport stream so the Unix socket and the Windows
+/// TCP path share the same protocol handling.
+async fn handle_connection<S>(mut stream: S) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut reader = BufReader::new(&mut stream);
     let mut line = String::new();
     let n = reader.read_line(&mut line).await?;
