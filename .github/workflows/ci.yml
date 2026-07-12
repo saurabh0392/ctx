@@ -38,6 +38,32 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+  windows:
+    name: Windows build + tests
+    runs-on: windows-latest
+    # Allow-fail while the Windows port lands (feat/windows): this surfaces the real msvc compiler
+    # and test output on every push without blocking the merge. Drop continue-on-error to make it a
+    # hard gate once M1 is green.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Build
+        run: cargo build --verbose
+      - name: Unit tests
+        # Serial for the same reason as the Linux job: the suite mutates process-global env.
+        run: cargo test -- --test-threads=1
+
   coherence:
     name: Behavioral coherence
     runs-on: ubuntu-22.04
