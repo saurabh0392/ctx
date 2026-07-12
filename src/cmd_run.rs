@@ -53,10 +53,21 @@ pub fn exec(command_parts: Vec<String>) -> Result<()> {
 /// failure this returns a 127 outcome carrying the error on stderr, matching shell convention for a
 /// command that could not be executed.
 fn run_command(command: &str) -> RunOutcome {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let output = Command::new(&shell)
-        .arg("-c")
-        .arg(command)
+    // Windows has no /bin/sh; earned commands run through cmd.exe there.
+    #[cfg(windows)]
+    let mut shell_cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut shell_cmd = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut c = Command::new(shell);
+        c.arg("-c").arg(command);
+        c
+    };
+    let output = shell_cmd
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

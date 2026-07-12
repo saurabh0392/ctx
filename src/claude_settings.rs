@@ -8,7 +8,6 @@ use crate::config::FilterMode;
 pub const CTX_USER_PROMPT_SUBCOMMAND: &str = "hook user-prompt-submit";
 pub const CTX_POST_TOOL_SUBCOMMAND: &str = "hook post-tool-use";
 pub const CTX_HOOK_EVENT_PATH: &str = "/api/hook/event";
-pub const CTX_STATUSLINE_SCRIPT_NAME: &str = "ctx-statusline.sh";
 
 fn hook_commands_from_entry(entry: &Value) -> Vec<String> {
     let mut out = Vec::new();
@@ -234,7 +233,9 @@ pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Resu
 }
 
 fn statusline_command_is_ctx_managed(cmd: &str) -> bool {
-    cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline")
+    // Match the script stem so both the POSIX (`ctx-statusline.sh`) and Windows
+    // (`ctx-statusline.ps1`, invoked via `powershell -File`) wirings are recognized on uninstall.
+    cmd.contains("ctx-statusline")
 }
 
 /// Remove ctx-managed `statusLine` entry. Returns true if modified.
@@ -260,9 +261,18 @@ pub fn strip_ctx_statusline(settings: &mut Value) -> bool {
 pub fn merge_ctx_statusline(settings: &mut Value) -> Result<()> {
     strip_ctx_statusline(settings);
     let script = crate::config::statusline_script_path();
+    // On Windows the statusLine command runs through the shell, which cannot execute a .ps1 by path;
+    // route it through powershell. Elsewhere the executable script path is the command.
+    #[cfg(windows)]
+    let command = format!(
+        "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+        script.display()
+    );
+    #[cfg(not(windows))]
+    let command = script.to_string_lossy().into_owned();
     settings["statusLine"] = json!({
         "type": "command",
-        "command": script.to_string_lossy(),
+        "command": command,
         "padding": 0,
         "timeoutMs": 2000
     });
@@ -495,9 +505,7 @@ pub fn ctx_statusline_wired_in_settings() -> bool {
     doc.get("statusLine")
         .and_then(|sl| sl.get("command"))
         .and_then(|c| c.as_str())
-        .map(|cmd| {
-            cmd.contains(CTX_STATUSLINE_SCRIPT_NAME) || cmd.contains(".ctx/bin/ctx-statusline")
-        })
+        .map(|cmd| cmd.contains("ctx-statusline"))
         .unwrap_or(false)
 }
 
@@ -707,10 +715,11 @@ mod tests {
     fn strip_and_merge_statusline_roundtrip() {
         let mut doc = json!({});
         merge_ctx_statusline(&mut doc).unwrap();
+        // Stem, not extension: .sh on unix, .ps1 (via powershell) on Windows.
         assert!(doc["statusLine"]["command"]
             .as_str()
             .unwrap()
-            .contains("ctx-statusline.sh"));
+            .contains("ctx-statusline"));
         assert!(strip_ctx_statusline(&mut doc));
         assert!(doc.get("statusLine").is_none());
     }

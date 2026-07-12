@@ -66,14 +66,25 @@ pub fn statusline_bin_dir() -> PathBuf {
 }
 
 pub fn statusline_script_path() -> PathBuf {
-    statusline_bin_dir().join("ctx-statusline.sh")
+    #[cfg(windows)]
+    {
+        statusline_bin_dir().join("ctx-statusline.ps1")
+    }
+    #[cfg(not(windows))]
+    {
+        statusline_bin_dir().join("ctx-statusline.sh")
+    }
 }
 
-/// Write the ctx-managed Claude Code statusLine script (allowance bridge).
+/// Write the ctx-managed Claude Code statusLine script (allowance bridge). PowerShell on Windows
+/// (no bash), a POSIX shell script elsewhere.
 pub fn install_statusline_script(dashboard_port: u16) -> Result<()> {
     ensure_dir()?;
     let dir = statusline_bin_dir();
     std::fs::create_dir_all(&dir)?;
+    #[cfg(windows)]
+    let script = include_str!("../scripts/ctx-statusline.ps1");
+    #[cfg(not(windows))]
     let script = include_str!("../scripts/ctx-statusline.sh");
     let script = script.replace("__DASHBOARD_PORT__", &dashboard_port.to_string());
     let path = statusline_script_path();
