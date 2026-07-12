@@ -22,6 +22,7 @@ const SUPPORTED = new Set([
   'aarch64-apple-darwin',
   'x86_64-apple-darwin',
   'x86_64-unknown-linux-gnu',
+  'x86_64-pc-windows-msvc',
 ]);
 
 function reply(status: number, body: string, contentType = 'application/json') {
