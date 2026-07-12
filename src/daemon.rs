@@ -1,9 +1,10 @@
 //! Background services: launchd (macOS), systemd user units (Linux), or detached `ctx` children (other OS).
 
 use anyhow::{Context, Result};
-// The colored output below lives only in the non-macOS cfg branches, so the import is gated the same
-// way to avoid an unused-import warning on macOS while fixing the Linux build (E0599 on `.yellow()`).
-#[cfg(not(target_os = "macos"))]
+// The colored `.yellow()` output lives only in the Linux and generic-fallback cfg branches (macOS and
+// Windows have their own service arms that do not use it), so gate the import to match and avoid an
+// unused-import warning on those platforms.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use colored::Colorize;
 use std::path::PathBuf;
 
@@ -27,12 +28,14 @@ fn ctx_binary() -> String {
         .unwrap_or_else(|| "ctx".to_string())
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn home_display() -> String {
     dirs::home_dir()
         .map(|h| h.display().to_string())
         .unwrap_or_default()
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn cargo_bin_display() -> String {
     dirs::home_dir()
         .map(|h| h.join(".cargo").join("bin").display().to_string())
@@ -76,7 +79,9 @@ pub fn install_dashboard(port: u16) -> Result<()> {
     return macos::write_dashboard_plist(port);
     #[cfg(target_os = "linux")]
     return linux::write_dashboard_unit(port);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    return windows::install_dashboard_task(port);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = port;
         Ok(())
@@ -91,7 +96,9 @@ pub fn bootstrap_dashboard(dashboard_port: u16) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     return linux::daemon_reload_and_enable(&["ctx-dashboard.service"]);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    return windows::bootstrap_dashboard_task(dashboard_port);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         try_spawn_dashboard(dashboard_port)?;
         Ok(())
@@ -103,7 +110,9 @@ pub fn install_periodic_ingest() -> Result<()> {
     return macos::write_ingest_plist();
     #[cfg(target_os = "linux")]
     return linux::write_ingest_unit_and_timer();
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    return windows::install_ingest_task();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         println!(
             "  {} On this OS ctx does not install a periodic ingest job. Run `ctx ingest` manually or add a scheduler (every 5 minutes).",
@@ -118,7 +127,9 @@ pub fn bootstrap_ingest() -> Result<()> {
     return macos::load_ingest_plist();
     #[cfg(target_os = "linux")]
     return linux::daemon_reload_and_enable(&["ctx-ingest.timer"]);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    return windows::bootstrap_ingest_task();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         Ok(())
     }
@@ -127,7 +138,9 @@ pub fn bootstrap_ingest() -> Result<()> {
 pub fn install_experiment_tick() -> Result<()> {
     #[cfg(target_os = "macos")]
     return macos::write_experiment_tick_plist();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    return windows::install_experiment_tick_task();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         println!(
             "  {} Daily experiment tick is not auto-installed on this OS.",
@@ -143,7 +156,9 @@ pub fn uninstall_all() -> Result<()> {
     return macos::uninstall_launchd_agents();
     #[cfg(target_os = "linux")]
     return linux::uninstall_systemd_units();
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    return windows::uninstall_scheduled_tasks();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         println!(
             "  {} Stop any `ctx dashboard` terminals you opened for ctx.",
@@ -153,7 +168,7 @@ pub fn uninstall_all() -> Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn try_spawn_dashboard(port: u16) -> Result<()> {
     let bin = ctx_binary();
     let _ = std::process::Command::new(&bin)
@@ -553,6 +568,135 @@ WantedBy=timers.target
         let _ = std::process::Command::new("systemctl")
             .args(["--user", "daemon-reload"])
             .status();
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows Scheduled Tasks
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::*;
+
+    // Per-user Task Scheduler names. Kept flat (not the reverse-DNS launchd labels) since schtasks
+    // /TN is a plain name or a "\Folder\Name" path.
+    const DASHBOARD_TASK: &str = "ctx-dashboard";
+    const INGEST_TASK: &str = "ctx-ingest";
+    const EXPERIMENT_TICK_TASK: &str = "ctx-experiment-tick";
+
+    /// Build the `/TR` value: the exe path in escaped inner quotes (so a path with spaces parses as
+    /// one token) followed by the ctx subcommand. std::process::Command adds the outer quoting.
+    fn task_run(bin: &str, args: &str) -> String {
+        format!("\"{bin}\" {args}")
+    }
+
+    fn schtasks(args: &[&str]) -> Result<std::process::ExitStatus> {
+        std::process::Command::new("schtasks")
+            .args(args)
+            .status()
+            .context("schtasks not found (Windows Task Scheduler CLI)")
+    }
+
+    pub fn install_dashboard_task(port: u16) -> Result<()> {
+        let bin = ctx_binary();
+        // Runs at each logon and stays up; the ctx dashboard is a long-lived server. `/RL LIMITED`
+        // avoids an elevation prompt. Runs in the interactive user session (no stored credentials).
+        let tr = task_run(&bin, &format!("dashboard --port {port} --no-open"));
+        let st = schtasks(&[
+            "/Create",
+            "/F",
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/TN",
+            DASHBOARD_TASK,
+            "/TR",
+            &tr,
+        ])?;
+        if !st.success() {
+            anyhow::bail!("schtasks failed to create the ctx-dashboard task");
+        }
+        println!("  Registered scheduled task {DASHBOARD_TASK}");
+        Ok(())
+    }
+
+    pub fn bootstrap_dashboard_task(_port: u16) -> Result<()> {
+        // Start it now so the dashboard is up without waiting for the next logon.
+        let st = schtasks(&["/Run", "/TN", DASHBOARD_TASK])?;
+        if !st.success() {
+            eprintln!("  Warning: could not start the ctx-dashboard task. Run `ctx dashboard` manually.");
+        }
+        Ok(())
+    }
+
+    pub fn install_ingest_task() -> Result<()> {
+        let bin = ctx_binary();
+        let tr = task_run(&bin, "ingest");
+        let st = schtasks(&[
+            "/Create",
+            "/F",
+            "/SC",
+            "MINUTE",
+            "/MO",
+            "5",
+            "/RL",
+            "LIMITED",
+            "/TN",
+            INGEST_TASK,
+            "/TR",
+            &tr,
+        ])?;
+        if !st.success() {
+            anyhow::bail!("schtasks failed to create the ctx-ingest task");
+        }
+        println!("  Registered scheduled task {INGEST_TASK} (every 5 min)");
+        Ok(())
+    }
+
+    pub fn bootstrap_ingest_task() -> Result<()> {
+        let _ = schtasks(&["/Run", "/TN", INGEST_TASK]);
+        Ok(())
+    }
+
+    pub fn install_experiment_tick_task() -> Result<()> {
+        let bin = ctx_binary();
+        let tr = task_run(&bin, "experiment tick");
+        let st = schtasks(&[
+            "/Create",
+            "/F",
+            "/SC",
+            "DAILY",
+            "/ST",
+            "09:00",
+            "/RL",
+            "LIMITED",
+            "/TN",
+            EXPERIMENT_TICK_TASK,
+            "/TR",
+            &tr,
+        ])?;
+        if !st.success() {
+            eprintln!("  Warning: daily experiment tick task failed to register.");
+        } else {
+            println!("  ✓ Daily experiment tick scheduled for 09:00");
+        }
+        Ok(())
+    }
+
+    pub fn uninstall_scheduled_tasks() -> Result<()> {
+        for (task, name) in [
+            (DASHBOARD_TASK, "dashboard"),
+            (INGEST_TASK, "ingest"),
+            (EXPERIMENT_TICK_TASK, "experiment-tick"),
+        ] {
+            let st = schtasks(&["/Delete", "/TN", task, "/F"]);
+            if matches!(st, Ok(s) if s.success()) {
+                println!("Removed {name} scheduled task");
+            }
+        }
         Ok(())
     }
 }
