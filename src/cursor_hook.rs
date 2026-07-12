@@ -604,15 +604,20 @@ mod tests {
     fn shell_single_quote_escapes_embedded_quotes() {
         assert_eq!(shell_single_quote("git status"), "'git status'");
         assert_eq!(shell_single_quote("echo it's"), "'echo it'\\''s'");
-        // Round-trip: the quoted form is a single sh argument equal to the original.
-        let original = "grep -n \"a'b\" src/";
-        let quoted = shell_single_quote(original);
-        let out = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(format!("printf '%s' {quoted}"))
-            .output()
-            .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), original);
+        // Round-trip through a real POSIX shell: the quoted form is one sh argument equal to the
+        // original. sh-only, so the execution check is unix-gated (the escaping asserts above run
+        // everywhere).
+        #[cfg(unix)]
+        {
+            let original = "grep -n \"a'b\" src/";
+            let quoted = shell_single_quote(original);
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("printf '%s' {quoted}"))
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout), original);
+        }
     }
 
     #[test]

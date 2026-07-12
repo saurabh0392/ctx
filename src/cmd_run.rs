@@ -264,14 +264,31 @@ mod tests {
             outcome.compacted.is_none(),
             "small output must not be compacted"
         );
+        // The shell's exact bytes pass through untouched, including its native line ending.
+        #[cfg(not(windows))]
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stdout), "small\n");
+        #[cfg(windows)]
+        assert_eq!(String::from_utf8_lossy(&outcome.raw_stdout), "small\r\n");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn nonzero_exit_still_passes_through() {
         let outcome = run_command("printf 'partial output'; exit 2");
         assert_eq!(outcome.code, 2);
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stdout), "partial output");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn nonzero_exit_still_passes_through() {
+        // cmd.exe: `&` chains commands and `exit N` sets the process exit code (no printf, no `;`).
+        let outcome = run_command("echo partial output & exit 2");
+        assert_eq!(outcome.code, 2);
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.raw_stdout).trim_end(),
+            "partial output"
+        );
     }
 
     #[test]
