@@ -45,7 +45,7 @@ fn spawn_dashboard_push(dashboard_port: u16, kind: &str) {
 }
 
 pub fn find_claude_session_jsonl(session_id: &str) -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
+    let home = crate::config::home_dir_for_paths()?;
     let projects = home.join(".claude").join("projects");
     let rd = std::fs::read_dir(&projects).ok()?;
     let fname = format!("{session_id}.jsonl");

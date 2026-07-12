@@ -739,7 +739,7 @@ pub fn all_sessions() -> Vec<SessionCost> {
 
 fn all_sessions_from_filesystem() -> Vec<SessionCost> {
     let profile = UserProfile::compute();
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = crate::config::home_dir_for_paths().unwrap_or_default();
     let projects_dir = home.join(".claude").join("projects");
     let mut sessions: Vec<SessionCost> = Vec::new();
 
@@ -1096,7 +1096,7 @@ pub fn ingest_claude_jsonl(force_full: bool) -> anyhow::Result<usize> {
 
     let tx = conn.unchecked_transaction()?;
     let mut count = 0usize;
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = crate::config::home_dir_for_paths().unwrap_or_default();
     let projects_dir = home.join(".claude").join("projects");
 
     if projects_dir.is_dir() {

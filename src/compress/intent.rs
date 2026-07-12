@@ -210,7 +210,7 @@ fn cursor_transcript_path(session_id: &str, cwd: &str) -> Option<std::path::Path
     if encoded.is_empty() {
         return None;
     }
-    let path = dirs::home_dir()?
+    let path = crate::config::home_dir_for_paths()?
         .join(".cursor")
         .join("projects")
         .join(encoded)

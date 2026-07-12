@@ -19,7 +19,7 @@ fn claude_projects_has_jsonl() -> bool {
 }
 
 fn ctx_bin() -> String {
-    dirs::home_dir()
+    crate::config::home_dir_for_paths()
         .map(|h| h.join(".cargo").join("bin").join("ctx"))
         .and_then(|p| p.to_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "ctx".to_string())
@@ -400,7 +400,7 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
 /// actually present (a `~/.cursor` directory exists). We never create that directory for users who
 /// do not run Cursor. Best-effort: a failure here must not abort setup. (ADR 0018 / CTX-27)
 fn register_cursor_hook_if_present() {
-    let present = dirs::home_dir()
+    let present = crate::config::home_dir_for_paths()
         .map(|h| h.join(".cursor").exists())
         .unwrap_or(false);
     if !present {
@@ -491,7 +491,7 @@ fn remove_legacy_proxy_artifacts() {
     }
 
     #[cfg(target_os = "macos")]
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::config::home_dir_for_paths() {
         let plist = home
             .join("Library")
             .join("LaunchAgents")
@@ -559,11 +559,11 @@ fn unwire_mcp_server() {
             }
         }
     }
-    let cursor_mcp = dirs::home_dir()
+    let cursor_mcp = crate::config::home_dir_for_paths()
         .unwrap_or_default()
         .join(".cursor")
         .join("mcp.json");
-    let windsurf_mcp = dirs::home_dir()
+    let windsurf_mcp = crate::config::home_dir_for_paths()
         .unwrap_or_default()
         .join(".codeium")
         .join("windsurf")

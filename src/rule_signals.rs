@@ -44,7 +44,7 @@ pub fn collect_mcp_signals() -> RuleMcpSignals {
 
 fn collect_instruction_texts() -> Vec<String> {
     let mut out = Vec::new();
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = crate::config::home_dir_for_paths().unwrap_or_else(|| PathBuf::from("."));
 
     push_file_text(&mut out, &home.join(".claude").join("CLAUDE.md"));
     collect_rule_dir(&mut out, &home.join(".cursor").join("rules"));

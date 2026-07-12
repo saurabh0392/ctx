@@ -17,6 +17,7 @@ pub struct CtxHarness {
     pub tmp: TempDir,
     prev_home: Option<String>,
     prev_ctx_home: Option<String>,
+    prev_ctx_test_home: Option<String>,
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -26,11 +27,15 @@ impl CtxHarness {
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev_home = std::env::var("HOME").ok();
         let prev_ctx_home = std::env::var("CTX_HOME").ok();
+        let prev_ctx_test_home = std::env::var("CTX_TEST_HOME").ok();
         std::env::set_var("CTX_HOME", tmp.path());
         // Isolate HOME too: several code paths (experiment tick, friction recovery) write
         // ~/.claude/settings.json, which is resolved from HOME, not CTX_HOME. Without this a
         // test run clobbers the live PostToolUse collection hook in the real settings file.
         std::env::set_var("HOME", tmp.path());
+        // dirs::home_dir() ignores HOME on Windows, so also set the cross-platform test-home
+        // override that config::home_dir_for_paths() honors, isolating ~/.claude and ~/.cursor.
+        std::env::set_var("CTX_TEST_HOME", tmp.path());
         let _ = std::fs::create_dir_all(tmp.path());
         let _ = std::fs::create_dir_all(tmp.path().join(".claude"));
         let conn = db::open_db().expect("open_db");
@@ -40,6 +45,7 @@ impl CtxHarness {
             tmp,
             prev_home,
             prev_ctx_home,
+            prev_ctx_test_home,
             _guard,
         }
     }
@@ -125,6 +131,10 @@ impl Drop for CtxHarness {
         match &self.prev_ctx_home {
             Some(p) => std::env::set_var("CTX_HOME", p),
             None => std::env::remove_var("CTX_HOME"),
+        }
+        match &self.prev_ctx_test_home {
+            Some(p) => std::env::set_var("CTX_TEST_HOME", p),
+            None => std::env::remove_var("CTX_TEST_HOME"),
         }
     }
 }

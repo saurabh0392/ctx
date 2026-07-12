@@ -238,7 +238,7 @@ pub fn persistent_experiment_dir() -> PathBuf {
     if let Ok(p) = std::env::var("CTX_EXPERIMENT_BACKUP_DIR") {
         return PathBuf::from(p);
     }
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = crate::config::home_dir_for_paths().unwrap_or_else(|| PathBuf::from("."));
     if cfg!(target_os = "macos") {
         home.join("Library/Application Support/ctx/experiment")
     } else {

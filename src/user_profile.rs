@@ -40,7 +40,7 @@ impl UserProfile {
             }
         }
 
-        let home = dirs::home_dir().unwrap_or_default();
+        let home = crate::config::home_dir_for_paths().unwrap_or_default();
         let projects_dir = home.join(".claude").join("projects");
 
         let mut msg_lens: Vec<usize> = Vec::new();

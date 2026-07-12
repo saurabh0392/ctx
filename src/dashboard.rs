@@ -505,7 +505,7 @@ async fn api_context() -> Json<ContextView> {
                 by_day,
                 tools: lh_tools,
             };
-            let home = dirs::home_dir().unwrap_or_default();
+            let home = crate::config::home_dir_for_paths().unwrap_or_default();
             let surfaces = crate::db::surface_summary_full(&conn, &home);
             let attribution = crate::db::tool_attribution(&conn);
             let wnad = crate::db::weekly_net_ahead(&conn);

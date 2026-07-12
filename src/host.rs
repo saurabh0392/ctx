@@ -58,7 +58,7 @@ pub fn uninstall_reload_hint() -> &'static str {
 /// Primary host for this `ctx setup` run (Claude Code in an IDE vs terminal vs Desktop-only).
 /// Claude Desktop MCP is wired separately whenever the Desktop data dir exists.
 pub fn detect_primary_host() -> Box<dyn HostAdapter> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = crate::config::home_dir_for_paths().unwrap_or_else(|| PathBuf::from("."));
     detect_primary_host_for_home(&home)
 }
 
@@ -102,7 +102,7 @@ impl HostAdapter for IdeHost {
     }
 
     fn mcp_extra_config_paths(&self) -> Vec<PathBuf> {
-        let Some(home) = dirs::home_dir() else {
+        let Some(home) = crate::config::home_dir_for_paths() else {
             return Vec::new();
         };
         match self.kind {
@@ -133,7 +133,7 @@ impl HostAdapter for IdeHost {
 
     fn editor_rules_path(&self) -> Option<PathBuf> {
         match self.kind {
-            IdeKind::Cursor => dirs::home_dir().map(|h| h.join(".cursor/rules/ctx.mdc")),
+            IdeKind::Cursor => crate::config::home_dir_for_paths().map(|h| h.join(".cursor/rules/ctx.mdc")),
             _ => None,
         }
     }

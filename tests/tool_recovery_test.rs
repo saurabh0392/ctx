@@ -16,9 +16,12 @@ fn with_ctx_home<F: FnOnce()>(f: F) {
     // PostToolUse collection hook with this test binary's path.
     std::env::set_var("CTX_HOME", tmp.path());
     std::env::set_var("HOME", tmp.path());
+    // dirs::home_dir() ignores HOME on Windows; CTX_TEST_HOME redirects the ~/.claude helpers there.
+    std::env::set_var("CTX_TEST_HOME", tmp.path());
     std::fs::create_dir_all(tmp.path().join(".claude")).ok();
     f();
     std::env::remove_var("CTX_HOME");
+    std::env::remove_var("CTX_TEST_HOME");
     match prev_home {
         Some(p) => std::env::set_var("HOME", p),
         None => std::env::remove_var("HOME"),

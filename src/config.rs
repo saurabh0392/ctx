@@ -18,6 +18,22 @@ pub fn ensure_dir() -> Result<()> {
     Ok(())
 }
 
+/// The user home used to resolve `~/.claude`, `~/.cursor`, and similar agent-config paths, with a
+/// test-only override. `dirs::home_dir()` reads the Win32 known-folder API and ignores `HOME`, so
+/// integration tests cannot isolate the real home by setting `HOME` on Windows. `CTX_TEST_HOME`
+/// (set by the tests, never in production) redirects these helpers at a temp dir on every
+/// platform. Lib unit tests keep using `CTX_HOME` under `cfg(test)`.
+pub fn home_dir_for_paths() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Ok(p) = std::env::var("CTX_HOME") {
+        return Some(PathBuf::from(p));
+    }
+    if let Ok(p) = std::env::var("CTX_TEST_HOME") {
+        return Some(PathBuf::from(p));
+    }
+    dirs::home_dir()
+}
+
 pub fn analytics_path() -> PathBuf {
     ctx_dir().join("analytics.jsonl")
 }
@@ -213,7 +229,7 @@ pub fn strip_ctx_managed_hooks_from_settings(settings: &mut Value) -> bool {
 
 /// Cursor IDE global storage database (MCP server registry cache lives here).
 pub fn cursor_state_vscdb_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
+    let home = home_dir_for_paths()?;
     #[cfg(target_os = "macos")]
     {
         let p = home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb");
@@ -277,32 +293,19 @@ pub fn remove_user_ctx_from_cursor_known_mcp_ids() -> Result<bool> {
 }
 
 pub fn claude_settings_path() -> PathBuf {
-    // In the lib's own unit tests, never touch the real ~/.claude. Those tests isolate via
-    // CTX_HOME (not HOME), and some exercise settings writers (sync, friction recovery) that
-    // would otherwise clobber the live PostToolUse collection hook. Route the Claude settings
-    // file alongside CTX_HOME for them. Production and integration tests (which isolate HOME)
-    // keep the normal home-based path.
-    if cfg!(test) {
-        if let Ok(p) = std::env::var("CTX_HOME") {
-            return PathBuf::from(p).join(".claude").join("settings.json");
-        }
-    }
-    dirs::home_dir()
+    // Test isolation via home_dir_for_paths(): never touch the real ~/.claude in tests. Some tests
+    // exercise settings writers (sync, friction recovery) that would otherwise clobber the live
+    // PostToolUse collection hook.
+    home_dir_for_paths()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude")
         .join("settings.json")
 }
 
 /// Path to `~/.claude.json`, the user-scope Claude Code config that holds `mcpServers`. Distinct
-/// from `claude_settings_path` (which is `~/.claude/settings.json`, hooks and permissions). Test
-/// isolation mirrors `claude_settings_path`.
+/// from `claude_settings_path` (which is `~/.claude/settings.json`, hooks and permissions).
 pub fn claude_json_path() -> PathBuf {
-    if cfg!(test) {
-        if let Ok(p) = std::env::var("CTX_HOME") {
-            return PathBuf::from(p).join(".claude.json");
-        }
-    }
-    dirs::home_dir()
+    home_dir_for_paths()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude.json")
 }
@@ -313,15 +316,9 @@ pub fn claude_code_cli_present() -> bool {
 }
 
 /// Path to the user-level Cursor hooks file (`~/.cursor/hooks.json`), where ctx registers its
-/// live Cursor postToolUse hook (ADR 0018). Mirrors [`claude_settings_path`]'s test isolation so
-/// unit tests never touch the real Cursor config.
+/// live Cursor postToolUse hook (ADR 0018).
 pub fn cursor_hooks_path() -> PathBuf {
-    if cfg!(test) {
-        if let Ok(p) = std::env::var("CTX_HOME") {
-            return PathBuf::from(p).join(".cursor").join("hooks.json");
-        }
-    }
-    dirs::home_dir()
+    home_dir_for_paths()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".cursor")
         .join("hooks.json")
@@ -329,7 +326,7 @@ pub fn cursor_hooks_path() -> PathBuf {
 
 /// True when Claude Code project JSONL logs exist under `~/.claude/projects/`.
 pub fn claude_projects_has_jsonl() -> bool {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = home_dir_for_paths() else {
         return false;
     };
     let projects_dir = home.join(".claude").join("projects");
@@ -362,7 +359,7 @@ pub fn claude_code_cli_present_for_home(home: &std::path::Path) -> bool {
 
 /// Anthropic Claude Desktop app support directory (contains `claude_desktop_config.json`).
 pub fn claude_desktop_support_dir() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
+    let home = home_dir_for_paths()?;
     claude_desktop_support_dir_for_home(&home)
 }
 

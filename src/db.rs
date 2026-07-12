@@ -3198,7 +3198,7 @@ fn backfill_rejoin_outcome_labels_v3(conn: &Connection) {
         [],
     );
     let _ = join_compress_outcomes(conn);
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::config::home_dir_for_paths() {
         let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
     }
     let _ = refresh_outcome_signals(conn);
@@ -3265,7 +3265,7 @@ fn backfill_rejoin_outcome_labels_v4(conn: &Connection) {
         [],
     );
     let _ = join_compress_outcomes(conn);
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::config::home_dir_for_paths() {
         let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
     }
     let _ = refresh_outcome_signals(conn);
@@ -3299,7 +3299,7 @@ fn backfill_rejoin_outcome_labels_v5(conn: &Connection) {
         [],
     );
     let _ = join_compress_outcomes(conn);
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::config::home_dir_for_paths() {
         let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
     }
     let _ = refresh_outcome_signals(conn);
@@ -3334,7 +3334,7 @@ fn backfill_rejoin_outcome_labels_v6(conn: &Connection) {
         [],
     );
     let _ = join_compress_outcomes(conn);
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::config::home_dir_for_paths() {
         let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
     }
     let _ = refresh_outcome_signals(conn);
@@ -3417,7 +3417,7 @@ pub fn repair_corpus(conn: &Connection) -> Result<(usize, usize, usize)> {
         [],
     );
     let _ = join_compress_outcomes(conn);
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::config::home_dir_for_paths() {
         let _ = crate::surface::ingest::join_transcript_outcomes(conn, &home);
     }
     let _ = refresh_outcome_signals(conn);
