@@ -41,10 +41,8 @@ jobs:
   windows:
     name: Windows build + tests
     runs-on: windows-latest
-    # Allow-fail while the Windows port lands (feat/windows): this surfaces the real msvc compiler
-    # and test output on every push without blocking the merge. Drop continue-on-error to make it a
-    # hard gate once M1 is green.
-    continue-on-error: true
+    # Hard gate: the msvc build and the full serial suite must pass. The suite is green on Windows
+    # as of the first-class port (feat/windows).
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
