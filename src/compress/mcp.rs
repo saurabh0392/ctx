@@ -1,28 +1,6 @@
 use super::generic::{compress_generic, truncate_to_budget};
 use super::types::{CompressContext, CompressOptions, CompressResult};
 
-/// Run the shipping MCP text compressor against a losslessly parsed result for shadow evidence.
-/// The returned candidate is never rendered or sent to an agent in T1.
-pub(crate) fn compress_mcp_result_shadow(
-    result: &crate::tool_result::CanonicalMcpResult,
-    opts: &CompressOptions,
-    ctx: &CompressContext,
-) -> Option<CompressResult> {
-    if opts.preserve_errors {
-        match &result.is_error {
-            crate::tool_result::PreservedField::Value(true)
-            | crate::tool_result::PreservedField::Opaque(_) => return None,
-            crate::tool_result::PreservedField::Absent
-            | crate::tool_result::PreservedField::Value(false) => {}
-        }
-    }
-    let text = result.compressible_text()?;
-    if text.is_empty() {
-        return None;
-    }
-    Some(compress_mcp_output(&text, opts, ctx))
-}
-
 pub fn compress_mcp_output(
     input: &str,
     opts: &CompressOptions,

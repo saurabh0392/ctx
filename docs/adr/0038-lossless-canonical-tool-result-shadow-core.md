@@ -19,7 +19,9 @@ gateway need one result contract before either receives broader apply authority.
 
 Add a canonical exchange/result model and a lossless MCP `CallToolResult` adapter. Understood text,
 image, audio, resource-link, embedded-text-resource, and embedded-blob-resource blocks are typed.
-Each typed block retains its complete source map; unknown or invalid blocks remain opaque values.
+Each typed block retains its typed fields plus every extension field needed to reconstruct the
+complete source map without duplicating large text or binary payloads; unknown or invalid blocks
+remain opaque values.
 The result separately preserves `structuredContent`, `isError`, `_meta`, and every vendor extension,
 including the difference between an absent field and an opaque value CTX does not understand.
 
