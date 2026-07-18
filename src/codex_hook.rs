@@ -24,8 +24,8 @@ impl AgentTransport for CodexTransport {
         CODEX_SURFACE
     }
 
-    fn extract(&self, payload: &Value) -> Option<ToolResult> {
-        extract_tool_result(payload)
+    fn extract(&self, payload: &Value, capture_canonical_mcp: bool) -> Option<ToolResult> {
+        extract_tool_result(payload, capture_canonical_mcp)
     }
 
     // Clean tool-native PostToolUse replacement is unsupported. This implementation intentionally
@@ -103,7 +103,7 @@ pub fn post_tool_use() -> Result<()> {
     if !cfg.compress_enabled {
         return emit(&json!({}));
     }
-    if let Some(tr) = extract_tool_result(&payload) {
+    if let Some(tr) = extract_tool_result(&payload, cfg.compress_shadow_enabled) {
         let fingerprint = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
         if let Some(session_id) = tr.session_id.as_deref() {
             if let Ok(conn) = crate::db::open_db() {
@@ -174,7 +174,7 @@ fn record_compaction(phase: &str) -> Result<()> {
     emit(&json!({}))
 }
 
-pub fn extract_tool_result(payload: &Value) -> Option<ToolResult> {
+pub fn extract_tool_result(payload: &Value, capture_canonical_mcp: bool) -> Option<ToolResult> {
     let native_name = string_field(payload, &["tool_name", "toolName"])?;
     let tool_name = normalize_tool_name(native_name);
     let tool_input = payload
@@ -189,9 +189,12 @@ pub fn extract_tool_result(payload: &Value) -> Option<ToolResult> {
     if raw_output.trim().is_empty() {
         return None;
     }
-    let canonical_mcp = crate::compress::classify::is_mcp_tool(&tool_name)
-        .then(|| crate::tool_result::parse_mcp_result(response).ok())
-        .flatten();
+    let canonical_mcp =
+        if capture_canonical_mcp && crate::compress::classify::is_mcp_tool(&tool_name) {
+            crate::tool_result::parse_mcp_result(response).ok()
+        } else {
+            None
+        };
     Some(ToolResult {
         tool_name,
         tool_input,
@@ -339,7 +342,7 @@ mod tests {
             "tool_response": "On branch main\n",
             "cwd": "/work/repo"
         });
-        let result = extract_tool_result(&payload).expect("tool result");
+        let result = extract_tool_result(&payload, false).expect("tool result");
         assert_eq!(result.tool_name, "Shell");
         assert_eq!(result.session_id.as_deref(), Some("session-1"));
         assert_eq!(result.raw_output, "On branch main\n");

@@ -48,7 +48,7 @@ pub fn post_tool_use() -> Result<()> {
     }
 
     let mut output = json!({});
-    if let Some(tr) = extract_cursor_tool_result(&payload) {
+    if let Some(tr) = extract_cursor_tool_result(&payload, cfg.compress_shadow_enabled) {
         let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
         let decision = crate::agent::decide_for_surface(&cfg, &tr, CURSOR_SURFACE);
 
@@ -423,7 +423,10 @@ fn record_cursor_apply(
 /// `conversation_id` is the stable session id, `workspace_roots[0]` is the cwd, `tool_name` is the
 /// tool type ("Shell", "Read", "Grep", or an MCP tool), and `tool_output` is the result as a
 /// JSON-stringified string.
-pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
+pub fn extract_cursor_tool_result(
+    payload: &Value,
+    capture_canonical_mcp: bool,
+) -> Option<ToolResult> {
     let tool_name = payload
         .get("tool_name")
         .and_then(|v| v.as_str())
@@ -452,7 +455,9 @@ pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let canonical_mcp = cursor_mcp_result(&tool_name, payload.get("tool_output"));
+    let canonical_mcp = capture_canonical_mcp
+        .then(|| cursor_mcp_result(&tool_name, payload.get("tool_output")))
+        .flatten();
     Some(ToolResult {
         tool_name,
         tool_input,
@@ -534,7 +539,7 @@ mod tests {
             "tool_input": {"command": "git status"},
             "tool_output": "{\"exitCode\":0,\"stdout\":\"on branch main\",\"stderr\":\"\"}"
         });
-        let tr = extract_cursor_tool_result(&payload).expect("extract");
+        let tr = extract_cursor_tool_result(&payload, false).expect("extract");
         assert_eq!(tr.tool_name, "Shell");
         assert_eq!(tr.cwd, "/proj");
         assert_eq!(tr.session_id.as_deref(), Some("conv-1"));
@@ -560,7 +565,7 @@ mod tests {
             "cwd": "",
             "tool_output": "{\"output\":\"total 8\\ndrwxr-xr-x  2 me staff\",\"exitCode\":0}"
         });
-        let tr = extract_cursor_tool_result(&payload).expect("extract");
+        let tr = extract_cursor_tool_result(&payload, false).expect("extract");
         assert_eq!(tr.tool_name, "Shell");
         assert_eq!(tr.cwd, "/Users/me/proj");
         assert!(
@@ -583,7 +588,7 @@ mod tests {
             "tool_input": {"path": "a.rs"},
             "tool_output": ""
         });
-        assert!(extract_cursor_tool_result(&payload).is_none());
+        assert!(extract_cursor_tool_result(&payload, false).is_none());
     }
 
     #[test]
@@ -592,7 +597,7 @@ mod tests {
             "conversation_id": "conv-1",
             "tool_output": "something"
         });
-        assert!(extract_cursor_tool_result(&payload).is_none());
+        assert!(extract_cursor_tool_result(&payload, false).is_none());
     }
 
     #[test]
@@ -604,7 +609,7 @@ mod tests {
             "tool_input": {"pattern": "fn main"},
             "tool_output": "src/main.rs:1:fn main() {}"
         });
-        let tr = extract_cursor_tool_result(&payload).expect("extract");
+        let tr = extract_cursor_tool_result(&payload, false).expect("extract");
         assert_eq!(tr.tool_name, "Grep");
         assert!(tr.raw_output.contains("fn main"));
     }

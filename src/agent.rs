@@ -51,7 +51,9 @@ pub struct ControllerDecision {
 /// compressed result back into the shape that agent validates.
 pub trait AgentTransport {
     fn agent_name(&self) -> &'static str;
-    fn extract(&self, payload: &Value) -> Option<ToolResult>;
+    /// Lift the native payload into the shared result model. Canonical MCP parsing is explicitly
+    /// opt-in so normal hook execution pays no typed-contract cost when shadow collection is off.
+    fn extract(&self, payload: &Value, capture_canonical_mcp: bool) -> Option<ToolResult>;
     fn wrap(&self, tool_name: &str, original: &Value, compressed: &str) -> Value;
 }
 
@@ -358,7 +360,7 @@ impl AgentTransport for ClaudeCodeTransport {
         "claude-code"
     }
 
-    fn extract(&self, payload: &Value) -> Option<ToolResult> {
+    fn extract(&self, payload: &Value, capture_canonical_mcp: bool) -> Option<ToolResult> {
         let tool_name = payload
             .get("tool_name")
             .or_else(|| payload.get("toolName"))
@@ -389,9 +391,12 @@ impl AgentTransport for ClaudeCodeTransport {
         // read guard can act on declared edit-intent. Works for both Claude Code and Cursor
         // transcripts (ADR 0011 / CTX-21). Best-effort: None on any failure.
         let recent_intent_text = compress::intent::recent_intent_text_for_payload(payload);
-        let canonical_mcp = crate::compress::classify::is_mcp_tool(&tool_name)
-            .then(|| crate::tool_result::parse_mcp_result(&response).ok())
-            .flatten();
+        let canonical_mcp =
+            if capture_canonical_mcp && crate::compress::classify::is_mcp_tool(&tool_name) {
+                crate::tool_result::parse_mcp_result(&response).ok()
+            } else {
+                None
+            };
         Some(ToolResult {
             tool_name,
             tool_input,
@@ -423,7 +428,7 @@ mod tests {
             "cwd": "/proj",
             "session_id": "s1"
         });
-        let tr = t.extract(&payload).expect("extract");
+        let tr = t.extract(&payload, false).expect("extract");
         assert_eq!(tr.tool_name, "Bash");
         assert_eq!(tr.cwd, "/proj");
         assert!(tr.raw_output.contains("branch"));

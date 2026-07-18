@@ -302,10 +302,10 @@ pub fn compute_shadow_decision_with_mcp(
             };
             let candidate = super::mcp::compress_mcp_result_shadow(result, &opts, &context);
             McpContractShadow {
-                // A successfully parsed canonical result is lossless by contract; corpus and
-                // generated-input tests enforce parse/render identity. Re-rendering every live
-                // result here would duplicate the entire payload just to re-prove that invariant.
-                round_trip_identical: true,
+                // Keep the live evidence honest: this is computed from the parsed value rather
+                // than inferred from the parser contract. The work happens only while shadow
+                // collection is enabled.
+                round_trip_identical: result.render() == *result.raw(),
                 content_blocks: coverage.content_blocks,
                 text_blocks: coverage.text_blocks,
                 unknown_blocks: coverage.unknown_blocks,

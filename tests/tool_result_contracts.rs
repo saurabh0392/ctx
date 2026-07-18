@@ -220,7 +220,7 @@ fn native_platform_adapters_capture_the_same_lossless_result_in_shadow() {
 
     let claude_payload = read_json(&dir.join("claude-code-2.1.153-post-tool-use-mcp.json"));
     let claude = ClaudeCodeTransport
-        .extract(&claude_payload)
+        .extract(&claude_payload, true)
         .expect("Claude MCP result");
     assert_eq!(
         claude.canonical_mcp.expect("Claude canonical MCP").render(),
@@ -228,8 +228,8 @@ fn native_platform_adapters_capture_the_same_lossless_result_in_shadow() {
     );
 
     let cursor_payload = read_json(&dir.join("cursor-3.7.19-post-tool-use-mcp.json"));
-    let cursor =
-        ctx::cursor_hook::extract_cursor_tool_result(&cursor_payload).expect("Cursor MCP result");
+    let cursor = ctx::cursor_hook::extract_cursor_tool_result(&cursor_payload, true)
+        .expect("Cursor MCP result");
     let cursor_wire: Value = serde_json::from_str(cursor_payload["tool_output"].as_str().unwrap())
         .expect("Cursor wire JSON");
     assert_eq!(
@@ -238,7 +238,8 @@ fn native_platform_adapters_capture_the_same_lossless_result_in_shadow() {
     );
 
     let codex_payload = read_json(&dir.join("codex-0.144.5-post-tool-use-mcp.json"));
-    let codex = ctx::codex_hook::extract_tool_result(&codex_payload).expect("Codex MCP result");
+    let codex =
+        ctx::codex_hook::extract_tool_result(&codex_payload, true).expect("Codex MCP result");
     assert_eq!(
         codex.canonical_mcp.expect("Codex canonical MCP").render(),
         codex_payload["tool_response"]
@@ -246,10 +247,31 @@ fn native_platform_adapters_capture_the_same_lossless_result_in_shadow() {
 }
 
 #[test]
+fn native_platform_adapters_skip_canonical_capture_outside_shadow() {
+    let dir = fixture_dir();
+
+    let claude_payload = read_json(&dir.join("claude-code-2.1.153-post-tool-use-mcp.json"));
+    let claude = ClaudeCodeTransport
+        .extract(&claude_payload, false)
+        .expect("Claude MCP result");
+    assert!(claude.canonical_mcp.is_none());
+
+    let cursor_payload = read_json(&dir.join("cursor-3.7.19-post-tool-use-mcp.json"));
+    let cursor = ctx::cursor_hook::extract_cursor_tool_result(&cursor_payload, false)
+        .expect("Cursor MCP result");
+    assert!(cursor.canonical_mcp.is_none());
+
+    let codex_payload = read_json(&dir.join("codex-0.144.5-post-tool-use-mcp.json"));
+    let codex =
+        ctx::codex_hook::extract_tool_result(&codex_payload, false).expect("Codex MCP result");
+    assert!(codex.canonical_mcp.is_none());
+}
+
+#[test]
 fn typed_mcp_compressor_is_observation_only() {
     let payload = read_json(&fixture_dir().join("claude-code-2.1.153-post-tool-use-mcp.json"));
     let tr = ClaudeCodeTransport
-        .extract(&payload)
+        .extract(&payload, true)
         .expect("Claude MCP result");
     let raw_output = tr.raw_output.clone();
     let cfg = ctx::config::Config {
@@ -274,11 +296,47 @@ fn typed_mcp_compressor_is_observation_only() {
 }
 
 #[test]
+fn typed_mcp_evidence_reports_a_broken_round_trip() {
+    let payload = read_json(&fixture_dir().join("claude-code-2.1.153-post-tool-use-mcp.json"));
+    let mut tr = ClaudeCodeTransport
+        .extract(&payload, true)
+        .expect("Claude MCP result");
+    let canonical = tr.canonical_mcp.as_mut().expect("canonical MCP");
+    let text = canonical
+        .content
+        .iter_mut()
+        .find_map(|block| match block {
+            CanonicalContentBlock::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .expect("fixture text block");
+    text.push_str(" mutated");
+
+    let cfg = ctx::config::Config {
+        compress_enabled: true,
+        compress_shadow_enabled: true,
+        compress_preset: ctx::config::CompressPreset::Off,
+        ..Default::default()
+    };
+    let contract = ctx::agent::decide(&cfg, &tr)
+        .shadow
+        .expect("shadow decision")
+        .features
+        .mcp_contract
+        .expect("typed MCP evidence");
+    assert!(!contract.round_trip_identical);
+}
+
+#[test]
 fn typed_mcp_evidence_does_no_work_when_shadow_collection_is_disabled() {
     let payload = read_json(&fixture_dir().join("claude-code-2.1.153-post-tool-use-mcp.json"));
     let tr = ClaudeCodeTransport
-        .extract(&payload)
+        .extract(&payload, false)
         .expect("Claude MCP result");
+    assert!(
+        tr.canonical_mcp.is_none(),
+        "the adapter must not parse or retain canonical MCP when shadow is disabled"
+    );
     let cfg = ctx::config::Config {
         compress_enabled: true,
         compress_shadow_enabled: false,
