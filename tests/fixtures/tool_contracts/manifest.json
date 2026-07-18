@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "id": "mcp-2025-11-25-mixed-result",
+      "path": "mcp-2025-11-25-mixed-result.json",
+      "source": "MCP specification CallToolResult corpus",
+      "sourceUrl": "https://modelcontextprotocol.io/specification/2025-11-25/schema",
+      "platform": "MCP",
+      "platformVersion": "2025-11-25",
+      "os": "protocol-independent",
+      "observedOn": "2026-07-18",
+      "verification": "official-spec-derived plus unknown-extension fields",
+      "resultSelector": "root",
+      "replacementResult": "not-applicable-protocol-contract"
+    },
+    {
+      "id": "claude-code-2.1.153-post-tool-use-mcp",
+      "path": "claude-code-2.1.153-post-tool-use-mcp.json",
+      "source": "sanitized native PostToolUse contract fixture",
+      "platform": "Claude Code",
+      "platformVersion": "2.1.153",
+      "os": "macOS",
+      "observedOn": "2026-07-18",
+      "verification": "installed-version contract replay",
+      "resultSelector": "tool_response",
+      "replacementResult": "tool-native-apply-path-currently-supported"
+    },
+    {
+      "id": "cursor-3.7.19-post-tool-use-mcp",
+      "path": "cursor-3.7.19-post-tool-use-mcp.json",
+      "source": "sanitized live postToolUse contract from ADR 0021",
+      "platform": "Cursor",
+      "platformVersion": "3.7.19",
+      "os": "macOS",
+      "observedOn": "2026-06-14",
+      "verification": "live model-visible MCP replacement",
+      "resultSelector": "tool_output_json",
+      "replacementResult": "mcp-only-tool-native-apply-verified"
+    },
+    {
+      "id": "codex-0.144.5-post-tool-use-mcp",
+      "path": "codex-0.144.5-post-tool-use-mcp.json",
+      "source": "sanitized live PostToolUse contract from ADR 0037",
+      "platform": "Codex",
+      "platformVersion": "0.144.5",
+      "os": "macOS",
+      "observedOn": "2026-07-18",
+      "verification": "live hook receipt and negative replacement probe",
+      "resultSelector": "tool_response",
+      "replacementResult": "observe-only-clean-replacement-unsupported"
+    }
+  ]
+}

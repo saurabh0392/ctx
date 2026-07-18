@@ -30,6 +30,24 @@ pub struct FlagCounts {
     pub empty: usize,
 }
 
+/// Content-free evidence emitted by the typed MCP adapter while it remains shadow-only.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpContractShadow {
+    pub round_trip_identical: bool,
+    pub content_blocks: usize,
+    pub text_blocks: usize,
+    pub unknown_blocks: usize,
+    pub has_structured_content: bool,
+    pub has_metadata: bool,
+    pub is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_strategy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_chars_in: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_chars_out: Option<usize>,
+}
+
 impl FlagCounts {
     fn add(&mut self, f: &LineFlags) {
         self.failure += f.failure as usize;
@@ -54,6 +72,10 @@ pub struct ShadowFeatures {
     /// Dropped lines that carried a failure marker. Should stay ~0 (errors are pinned);
     /// a non-zero value is an early warning the heuristic is throwing away signal.
     pub risky_drops: usize,
+    /// Lossless MCP parse/render and typed-compressor evidence. This is observation only: T1 does
+    /// not use it to authorize an apply or rebuild a native result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_contract: Option<McpContractShadow>,
     /// Intent signal from the agent's narration (ADR 0004 / CTX-11). `Some(..)` when the signal ran
     /// for a Read decision; `None` when it does not apply (non-Read kind or signal disabled). The
     /// three components are recorded separately so coverage (`has_text`) is measurable apart from
@@ -223,6 +245,22 @@ pub fn compute_shadow_decision(
     session_id: Option<&str>,
     cwd: &str,
 ) -> Option<ShadowDecision> {
+    compute_shadow_decision_with_mcp(
+        tool_name, tool_input, raw_output, None, cfg, session_id, cwd,
+    )
+}
+
+/// Shadow computation with an optional lossless MCP result. The existing retention decision stays
+/// byte-for-byte on the old path; the typed candidate is recorded only as content-free evidence.
+pub fn compute_shadow_decision_with_mcp(
+    tool_name: &str,
+    tool_input: &Value,
+    raw_output: &str,
+    canonical_mcp: Option<&crate::tool_result::CanonicalToolResult>,
+    cfg: &Config,
+    session_id: Option<&str>,
+    cwd: &str,
+) -> Option<ShadowDecision> {
     if raw_output.is_empty() {
         return None;
     }
@@ -253,6 +291,31 @@ pub fn compute_shadow_decision(
         max_input_chars: cfg.compress_max_output_chars,
         redact_secrets: cfg.compress_redact_secrets,
         preserve_errors: cfg.compress_preserve_errors,
+    };
+
+    let mcp_contract = if matches!(kind, CompressKind::Mcp) {
+        canonical_mcp.map(|result| {
+            let coverage = result.coverage();
+            let context = super::types::CompressContext {
+                cwd: cwd.to_string(),
+                prompt_keywords: frame.prompt_keywords.clone(),
+            };
+            let candidate = super::mcp::compress_mcp_result_shadow(result, &opts, &context);
+            McpContractShadow {
+                round_trip_identical: result.render() == result.raw().clone(),
+                content_blocks: coverage.content_blocks,
+                text_blocks: coverage.text_blocks,
+                unknown_blocks: coverage.unknown_blocks,
+                has_structured_content: coverage.has_structured_content,
+                has_metadata: coverage.has_metadata,
+                is_error: result.is_error(),
+                candidate_strategy: candidate.as_ref().map(|r| r.strategy.clone()),
+                candidate_chars_in: candidate.as_ref().map(|r| r.chars_in),
+                candidate_chars_out: candidate.as_ref().map(|r| r.chars_out),
+            }
+        })
+    } else {
+        None
     };
 
     let plan = plan_retention(raw_output, &frame, &opts);
@@ -299,6 +362,7 @@ pub fn compute_shadow_decision(
             keep,
             drop,
             risky_drops,
+            mcp_contract,
             intent: None,
             read_protected: None,
             repo_key: None,

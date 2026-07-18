@@ -93,6 +93,7 @@ pub fn post_tool_use() -> Result<()> {
         tool_name,
         tool_input,
         raw_output: raw,
+        canonical_mcp: _,
         session_id,
         cwd,
         recent_intent_text: _,

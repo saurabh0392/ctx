@@ -1,0 +1,9 @@
+{
+  "conversation_id": "cursor-conversation-redacted",
+  "generation_id": "cursor-generation-redacted",
+  "hook_event_name": "postToolUse",
+  "workspace_roots": ["/work/example"],
+  "tool_name": "MCP:get_issue",
+  "tool_input": {"id": "CTX-71"},
+  "tool_output": "{\"content\":[{\"type\":\"text\",\"text\":\"CTX-71: canonical MCP result core\",\"annotations\":{\"priority\":0.9}}],\"isError\":false,\"_meta\":{\"requestId\":\"redacted\"},\"cursorExtension\":{\"preserve\":true}}"
+}

@@ -1,0 +1,23 @@
+{
+  "cwd": "/work/example",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "session_id": "codex-session-redacted",
+  "tool_input": {},
+  "tool_name": "mcp__example__result",
+  "tool_response": {
+    "content": [
+      {
+        "text": "ORIGINAL_MCP_SENTINEL",
+        "type": "text",
+        "_meta": {"cacheKey": "redacted"}
+      }
+    ],
+    "isError": false,
+    "codexExtension": {"preserve": true}
+  },
+  "tool_use_id": "exec-redacted",
+  "transcript_path": "/redacted/session.jsonl",
+  "turn_id": "turn-redacted"
+}

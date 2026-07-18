@@ -21,6 +21,10 @@ pub struct ToolResult {
     pub tool_name: String,
     pub tool_input: Value,
     pub raw_output: String,
+    /// Lossless MCP result parsed in shadow mode. The shipping apply path continues to consume
+    /// `raw_output`; this copy exists only to prove contract coverage and typed candidates before
+    /// adapters are migrated.
+    pub canonical_mcp: Option<crate::tool_result::CanonicalToolResult>,
     pub session_id: Option<String>,
     pub cwd: String,
     /// The agent's most recent readable narration, lifted from the session transcript by the
@@ -85,10 +89,11 @@ fn decide_inner(
     surface: &str,
     explore_draw: f64,
 ) -> ControllerDecision {
-    let mut shadow = compress::compute_shadow_decision(
+    let mut shadow = compress::compute_shadow_decision_with_mcp(
         &tr.tool_name,
         &tr.tool_input,
         &tr.raw_output,
+        tr.canonical_mcp.as_ref(),
         cfg,
         tr.session_id.as_deref(),
         &tr.cwd,
@@ -384,10 +389,14 @@ impl AgentTransport for ClaudeCodeTransport {
         // read guard can act on declared edit-intent. Works for both Claude Code and Cursor
         // transcripts (ADR 0011 / CTX-21). Best-effort: None on any failure.
         let recent_intent_text = compress::intent::recent_intent_text_for_payload(payload);
+        let canonical_mcp = crate::compress::classify::is_mcp_tool(&tool_name)
+            .then(|| crate::tool_result::parse_mcp_result(&response).ok())
+            .flatten();
         Some(ToolResult {
             tool_name,
             tool_input,
             raw_output,
+            canonical_mcp,
             session_id,
             cwd,
             recent_intent_text,
@@ -430,6 +439,7 @@ mod tests {
             tool_name: "Bash".into(),
             tool_input: json!({"command": "git status"}),
             raw_output: "a\n".repeat(500),
+            canonical_mcp: None,
             session_id: None,
             cwd: "/proj".into(),
             recent_intent_text: None,
@@ -453,6 +463,7 @@ mod tests {
             tool_name: "Bash".into(),
             tool_input: json!({"command": "git status"}),
             raw_output: "a\n".repeat(500),
+            canonical_mcp: None,
             session_id: None,
             cwd: "/proj".into(),
             recent_intent_text: None,
@@ -493,6 +504,7 @@ mod tests {
                 tool_name: tool.into(),
                 tool_input: json!({"file_path": "/proj/src/foo.rs"}),
                 raw_output: "changed line\n".repeat(500),
+                canonical_mcp: None,
                 session_id: None,
                 cwd: "/proj".into(),
                 recent_intent_text: None,
@@ -632,6 +644,7 @@ mod tests {
             tool_name: "Read".into(),
             tool_input: json!({ "file_path": file_path }),
             raw_output: "line\n".repeat(500),
+            canonical_mcp: None,
             session_id: None,
             cwd: "/proj".into(),
             recent_intent_text: None,
@@ -899,6 +912,7 @@ mod tests {
                 "new_string": "let a = 2",
             }),
             raw_output: "some edited line of content here\n".repeat(600),
+            canonical_mcp: None,
             session_id: None,
             cwd: "/proj".into(),
             recent_intent_text: None,

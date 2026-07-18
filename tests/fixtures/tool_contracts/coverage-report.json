@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "fixtureCount": 4,
+  "roundTripIdentical": 4,
+  "contentBlocks": 10,
+  "textBlocks": 4,
+  "imageBlocks": 1,
+  "audioBlocks": 1,
+  "resourceLinkBlocks": 1,
+  "embeddedTextResourceBlocks": 1,
+  "embeddedBlobResourceBlocks": 1,
+  "unknownBlocks": 1,
+  "opaqueContractFields": 0,
+  "structuredContentResults": 2,
+  "metadataResults": 3
+}

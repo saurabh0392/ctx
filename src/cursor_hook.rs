@@ -452,16 +452,32 @@ pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let canonical_mcp = cursor_mcp_result(&tool_name, payload.get("tool_output"));
     Some(ToolResult {
         tool_name,
         tool_input,
         raw_output,
+        canonical_mcp,
         session_id,
         cwd,
         // Cursor narration is not in the hook payload; the read guard's intent signal stays a
         // Claude-only capability for now (ADR 0011). Observe-only does not need it.
         recent_intent_text: None,
     })
+}
+
+fn cursor_mcp_result(
+    tool_name: &str,
+    output: Option<&Value>,
+) -> Option<crate::tool_result::CanonicalToolResult> {
+    if !crate::compress::classify::is_mcp_tool(tool_name) {
+        return None;
+    }
+    let value = match output? {
+        Value::String(raw) => serde_json::from_str(raw).ok()?,
+        value => value.clone(),
+    };
+    crate::tool_result::parse_mcp_result(&value).ok()
 }
 
 /// Turn Cursor's JSON-stringified `tool_output` into the text the compressors reason over.

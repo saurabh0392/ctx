@@ -189,10 +189,14 @@ pub fn extract_tool_result(payload: &Value) -> Option<ToolResult> {
     if raw_output.trim().is_empty() {
         return None;
     }
+    let canonical_mcp = crate::compress::classify::is_mcp_tool(&tool_name)
+        .then(|| crate::tool_result::parse_mcp_result(response).ok())
+        .flatten();
     Some(ToolResult {
         tool_name,
         tool_input,
         raw_output,
+        canonical_mcp,
         session_id: string_field(payload, &["session_id", "sessionId"]).map(str::to_string),
         cwd: string_field(payload, &["cwd"]).unwrap_or("").to_string(),
         // Transcript parsing is deliberately not part of the live plugin contract.
