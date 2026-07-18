@@ -92,7 +92,7 @@ pub fn bootstrap_dashboard(dashboard_port: u16) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let _ = dashboard_port;
-        return macos::load_dashboard_plist();
+        macos::load_dashboard_plist()
     }
     #[cfg(target_os = "linux")]
     return linux::daemon_reload_and_enable(&["ctx-dashboard.service"]);
@@ -627,7 +627,9 @@ mod windows {
         // Start it now so the dashboard is up without waiting for the next logon.
         let st = schtasks(&["/Run", "/TN", DASHBOARD_TASK])?;
         if !st.success() {
-            eprintln!("  Warning: could not start the ctx-dashboard task. Run `ctx dashboard` manually.");
+            eprintln!(
+                "  Warning: could not start the ctx-dashboard task. Run `ctx dashboard` manually."
+            );
         }
         Ok(())
     }

@@ -112,6 +112,11 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/context/tool-bill", get(api_context_tool_bill))
         .route("/api/context/prune-server", post(api_context_prune_server))
         .route("/api/context/rewind", post(api_context_rewind))
+        .route("/api/onboarding", get(api_onboarding))
+        .route("/api/product-event", post(api_product_event))
+        .route("/api/beta/snapshot", get(api_beta_snapshot))
+        .route("/api/beta/checkin", post(api_beta_checkin))
+        .route("/api/report-intake", post(api_report_intake))
         .route(
             "/api/context/model-progress",
             get(api_context_model_progress),
@@ -158,7 +163,116 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
 }
 
 async fn serve_html() -> axum::response::Html<&'static str> {
+    crate::beta::record_event("dashboard_opened", "dashboard", None);
     axum::response::Html(HTML)
+}
+
+async fn api_onboarding() -> Json<crate::beta::OnboardingView> {
+    match open_ctx_db() {
+        Some(conn) => Json(crate::beta::onboarding(&conn)),
+        None => Json(crate::beta::OnboardingView {
+            enrolled: crate::beta::load_state().is_some(),
+            stage: "installed".into(),
+            autopilot_enabled: false,
+            bill_ready: false,
+            reclaimed_tokens: 0,
+            checkin_due: false,
+            checkin_target_day: None,
+        }),
+    }
+}
+
+#[derive(Deserialize)]
+struct ProductEventBody {
+    event_name: String,
+    value: Option<String>,
+}
+
+async fn api_product_event(Json(body): Json<ProductEventBody>) -> impl IntoResponse {
+    let Some(conn) = open_ctx_db() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    match crate::db::record_product_event(
+        &conn,
+        body.event_name.trim(),
+        "dashboard",
+        body.value.as_deref(),
+    ) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+async fn api_beta_snapshot() -> impl IntoResponse {
+    let Some(conn) = open_ctx_db() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "database unavailable").into_response();
+    };
+    Json(crate::beta::build_snapshot(&conn)).into_response()
+}
+
+#[derive(Deserialize)]
+struct BetaCheckinBody {
+    action: String,
+    #[serde(default)]
+    learned_something: String,
+    #[serde(default)]
+    changed_behavior: String,
+    #[serde(default)]
+    keep_using: String,
+    #[serde(default)]
+    price_interest_25_per_developer: String,
+}
+
+impl BetaCheckinBody {
+    fn answers(&self) -> crate::beta::CheckinAnswers {
+        crate::beta::CheckinAnswers {
+            learned_something: self.learned_something.chars().take(500).collect(),
+            changed_behavior: self.changed_behavior.chars().take(500).collect(),
+            keep_using: self.keep_using.chars().take(100).collect(),
+            price_interest_25_per_developer: self
+                .price_interest_25_per_developer
+                .chars()
+                .take(100)
+                .collect(),
+        }
+    }
+}
+
+async fn api_beta_checkin(Json(body): Json<BetaCheckinBody>) -> impl IntoResponse {
+    if body.action == "dismiss" {
+        return match crate::beta::dismiss_checkin() {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        };
+    }
+    let Some(conn) = open_ctx_db() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "database unavailable").into_response();
+    };
+    match body.action.as_str() {
+        "preview" => match crate::beta::preview_checkin(&conn, body.answers()) {
+            Ok(envelope) => Json(envelope).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        "send" => {
+            drop(conn);
+            match crate::beta::send_checkin().await {
+                Ok(value) => Json(value).into_response(),
+                Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+            }
+        }
+        _ => (StatusCode::BAD_REQUEST, "unknown check-in action").into_response(),
+    }
+}
+
+async fn api_report_intake(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
+    match crate::beta::proxy_feedback(body).await {
+        Ok(proxy) => {
+            let status =
+                StatusCode::from_u16(proxy.status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            (status, Json(proxy.body)).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    }
 }
 
 /// Claude Code async HTTP hooks (PostToolUse, SessionStart, SessionEnd, Stop).
@@ -290,10 +404,51 @@ struct ContextModelView {
 /// view never re-derives "earned" on its own.
 #[derive(Serialize)]
 struct LoopHealthToolView {
+    surface: String,
     #[serde(flatten)]
     outcome: crate::db::CausalToolOutcome,
     #[serde(flatten)]
     stage: crate::compress::activation::ToolStage,
+}
+
+fn selected_randomized_outcomes(
+    conn: &rusqlite::Connection,
+) -> Vec<(String, crate::db::CausalToolOutcome)> {
+    let mut selected: std::collections::HashMap<String, (String, crate::db::ExploreToolOutcome)> =
+        std::collections::HashMap::new();
+    for surface in ["claude-code", "cursor", "codex"] {
+        for outcome in crate::db::explore_tool_outcomes_for_surface(conn, None, Some(surface)) {
+            let volume = outcome.control_collected + outcome.treatment_collected;
+            let replace = selected
+                .get(&outcome.tool_name)
+                .map(|(_, prior)| volume > prior.control_collected + prior.treatment_collected)
+                .unwrap_or(true);
+            if replace {
+                selected.insert(outcome.tool_name.clone(), (surface.into(), outcome));
+            }
+        }
+    }
+    selected
+        .into_values()
+        .map(|(surface, e)| {
+            let is_edit_tool = crate::outcome_signals::is_edit_tool(&e.tool_name);
+            (
+                surface,
+                crate::db::CausalToolOutcome {
+                    tool_name: e.tool_name,
+                    baseline_n: e.control_n,
+                    baseline_corrections: e.control_corrections,
+                    baseline_rereads: e.control_rereads,
+                    trimmed_n: e.treatment_n,
+                    trimmed_corrections: e.treatment_corrections,
+                    trimmed_rereads: e.treatment_rereads,
+                    trimmed_collected: e.treatment_collected,
+                    baseline_collected: e.control_collected,
+                    is_edit_tool,
+                },
+            )
+        })
+        .collect()
 }
 
 /// Honest accrual picture for the loop-health view (CTX-26 / ADR 0017): how much signal exists,
@@ -350,13 +505,16 @@ struct ContextView {
 async fn api_context_rewind(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
     let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
     match open_ctx_db().and_then(|c| crate::db::get_rewind(&c, id)) {
-        Some(e) => Json(serde_json::json!({
-            "id": e.id,
-            "source": e.command_or_path,
-            "chars": e.chars,
-            "original": e.original,
-            "trimmed": e.trimmed,
-        })),
+        Some(e) => {
+            crate::beta::record_event("rewind_expanded", "dashboard", None);
+            Json(serde_json::json!({
+                "id": e.id,
+                "source": e.command_or_path,
+                "chars": e.chars,
+                "original": e.original,
+                "trimmed": e.trimmed,
+            }))
+        }
         None => Json(serde_json::json!({ "error": "not found" })),
     }
 }
@@ -364,6 +522,7 @@ async fn api_context_rewind(Json(body): Json<serde_json::Value>) -> Json<serde_j
 /// GET /api/context/bill: where your context goes, per tool. The education front door, ranked
 /// output sinks with reclaimable and reclaimed room. Populates from the first session, no labels.
 async fn api_context_bill() -> Json<crate::db::ContextBill> {
+    crate::beta::record_event("context_bill_viewed", "dashboard", None);
     match open_ctx_db() {
         Some(conn) => Json(crate::db::context_bill(&conn)),
         None => Json(crate::db::ContextBill::default()),
@@ -423,7 +582,11 @@ struct PruneServerBody {
 async fn api_context_prune_server(Json(body): Json<PruneServerBody>) -> impl IntoResponse {
     let server = body.server.trim();
     if server.is_empty() {
-        return (StatusCode::BAD_REQUEST, "name a server to prune".to_string()).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "name a server to prune".to_string(),
+        )
+            .into_response();
     }
     let res = if body.unprune {
         crate::filter_control::unprune_server(server)
@@ -431,7 +594,18 @@ async fn api_context_prune_server(Json(body): Json<PruneServerBody>) -> impl Int
         crate::filter_control::prune_server(server)
     };
     match res {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            crate::beta::record_event(
+                if body.unprune {
+                    "server_unpruned"
+                } else {
+                    "server_pruned"
+                },
+                "dashboard",
+                None,
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
@@ -441,99 +615,111 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction, loop_health, surfaces, attribution, wnad, insight_actions) = match open_ctx_db() {
-        Some(conn) => {
-            let stats = crate::db::compress_decision_stats(&conn);
-            let progress = crate::db::compress_tool_progress(&conn);
-            let causal = crate::db::causal_tool_outcomes(&conn, None);
-            let tools = progress
-                .into_iter()
-                .map(|p| {
-                    // Earned means causal: trimming is not measurably worse than leaving the
-                    // tool alone. Fails closed until a trial collects the trimmed arm, so the
-                    // badge never claims "ready" on baseline volume alone.
-                    let earned = causal
-                        .iter()
-                        .find(|o| o.tool_name == p.tool_name)
-                        .map(|o| causal_clears_bar(o, &th))
-                        .unwrap_or(false);
-                    let held = crate::compress::held_reason(&p.tool_name, &cfg);
-                    ContextToolView {
-                        tool: p.tool_name,
-                        decisions: p.decisions,
-                        joined: p.joined,
-                        clean_runs: p.clean_runs,
-                        corrections: p.corrections,
-                        rereads: p.rereads,
-                        active: p.active,
-                        earned,
-                        need: th.min_baseline,
-                        trim_eligible: held.is_none(),
-                        held_reason: held,
-                    }
-                })
-                .collect();
-            let feed = crate::db::compress_decision_feed(&conn, 12);
-            let compaction = crate::db::compaction_followups(&conn);
-            let by_day = crate::db::decisions_by_day(&conn, 14);
-            // Only place tools that have actually started accruing trim-eligible evidence on the
-            // path. A tool with zero baseline and zero trimmed runs has nothing to show yet, and a
-            // wall of identical "0 of 30" rows buries the tools that are really moving. They count
-            // toward the totals above; they just aren't on the path until there is something to
-            // measure.
-            let lh_tools = causal
-                .iter()
-                .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0 || o.trimmed_collected > 0)
-                .map(|o| LoopHealthToolView {
-                    stage: tool_stage(o, &th),
-                    outcome: o.clone(),
-                })
-                .collect();
-            let joined_pct = if stats.total > 0 {
-                Some(stats.joined as f64 / stats.total as f64)
-            } else {
-                None
-            };
-            let loop_health = LoopHealthView {
-                total: stats.total,
-                joined: stats.joined,
-                joined_pct,
-                today: stats.today,
-                autopilot: cfg.compress_auto_trial,
-                min_baseline: th.min_baseline,
-                min_trimmed: th.min_trimmed,
-                by_day,
-                tools: lh_tools,
-            };
-            let home = crate::config::home_dir_for_paths().unwrap_or_default();
-            let surfaces = crate::db::surface_summary_full(&conn, &home);
-            let attribution = crate::db::tool_attribution(&conn);
-            let wnad = crate::db::weekly_net_ahead(&conn);
-            let insight_actions = crate::db::insight_actions(&conn);
-            (stats, tools, feed, compaction, loop_health, surfaces, attribution, wnad, insight_actions)
-        }
-        None => (
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            LoopHealthView {
-                total: 0,
-                joined: 0,
-                joined_pct: None,
-                today: 0,
-                autopilot: cfg.compress_auto_trial,
-                min_baseline: th.min_baseline,
-                min_trimmed: th.min_trimmed,
-                by_day: Vec::new(),
-                tools: Vec::new(),
-            },
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Default::default(),
-        ),
-    };
+    let (stats, tools, feed, compaction, loop_health, surfaces, attribution, wnad, insight_actions) =
+        match open_ctx_db() {
+            Some(conn) => {
+                let stats = crate::db::compress_decision_stats(&conn);
+                let progress = crate::db::compress_tool_progress(&conn);
+                let randomized = selected_randomized_outcomes(&conn);
+                let tools = progress
+                    .into_iter()
+                    .map(|p| {
+                        // Earned means causal: trimming is not measurably worse than leaving the
+                        // tool alone. Fails closed until a trial collects the trimmed arm, so the
+                        // badge never claims "ready" on baseline volume alone.
+                        let earned = randomized
+                            .iter()
+                            .find(|(_, o)| o.tool_name == p.tool_name)
+                            .map(|(_, o)| causal_clears_bar(o, &th))
+                            .unwrap_or(false);
+                        let held = crate::compress::held_reason(&p.tool_name, &cfg);
+                        ContextToolView {
+                            tool: p.tool_name,
+                            decisions: p.decisions,
+                            joined: p.joined,
+                            clean_runs: p.clean_runs,
+                            corrections: p.corrections,
+                            rereads: p.rereads,
+                            active: p.active,
+                            earned,
+                            need: th.min_baseline,
+                            trim_eligible: held.is_none(),
+                            held_reason: held,
+                        }
+                    })
+                    .collect();
+                let feed = crate::db::compress_decision_feed(&conn, 12);
+                let compaction = crate::db::compaction_followups(&conn);
+                let by_day = crate::db::decisions_by_day(&conn, 14);
+                // Only place tools that have actually started accruing trim-eligible evidence on the
+                // path. A tool with zero baseline and zero trimmed runs has nothing to show yet, and a
+                // wall of identical "0 of 30" rows buries the tools that are really moving. They count
+                // toward the totals above; they just aren't on the path until there is something to
+                // measure.
+                let lh_tools = randomized
+                    .iter()
+                    .filter(|(_, o)| o.baseline_n > 0 || o.trimmed_n > 0 || o.trimmed_collected > 0)
+                    .map(|(surface, o)| LoopHealthToolView {
+                        surface: surface.clone(),
+                        stage: tool_stage(o, &th),
+                        outcome: o.clone(),
+                    })
+                    .collect();
+                let joined_pct = if stats.total > 0 {
+                    Some(stats.joined as f64 / stats.total as f64)
+                } else {
+                    None
+                };
+                let loop_health = LoopHealthView {
+                    total: stats.total,
+                    joined: stats.joined,
+                    joined_pct,
+                    today: stats.today,
+                    autopilot: cfg.compress_auto_trial,
+                    min_baseline: th.min_baseline,
+                    min_trimmed: th.min_trimmed,
+                    by_day,
+                    tools: lh_tools,
+                };
+                let home = crate::config::home_dir_for_paths().unwrap_or_default();
+                let surfaces = crate::db::surface_summary_full(&conn, &home);
+                let attribution = crate::db::tool_attribution(&conn);
+                let wnad = crate::db::weekly_net_ahead(&conn);
+                let insight_actions = crate::db::insight_actions(&conn);
+                (
+                    stats,
+                    tools,
+                    feed,
+                    compaction,
+                    loop_health,
+                    surfaces,
+                    attribution,
+                    wnad,
+                    insight_actions,
+                )
+            }
+            None => (
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                LoopHealthView {
+                    total: 0,
+                    joined: 0,
+                    joined_pct: None,
+                    today: 0,
+                    autopilot: cfg.compress_auto_trial,
+                    min_baseline: th.min_baseline,
+                    min_trimmed: th.min_trimmed,
+                    by_day: Vec::new(),
+                    tools: Vec::new(),
+                },
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Default::default(),
+            ),
+        };
 
     let model = crate::learn::load_model().map(|m| {
         let history = read_model_history(40);
@@ -627,6 +813,7 @@ struct ModelProgressView {
 /// One tool's randomized control-vs-treatment outcome, as the Phase 2 view renders it.
 #[derive(serde::Serialize)]
 struct ExploreToolView {
+    surface: String,
     tool: String,
     control_collected: i64,
     treatment_collected: i64,
@@ -642,6 +829,13 @@ struct ExploreToolView {
     reread_delta: Option<f64>,
     /// "collecting" until both arms clear `explore_min_arm`, then "safe" or "costly" as a leaning.
     verdict: String,
+    status: String,
+    reason_code: String,
+    runs_needed: i64,
+    data_source: String,
+    safety_limit: f64,
+    correction_upper: Option<f64>,
+    reread_upper: Option<f64>,
 }
 
 async fn api_context_model_progress() -> Json<ModelProgressView> {
@@ -658,9 +852,14 @@ async fn api_context_model_progress() -> Json<ModelProgressView> {
         Some(conn) => {
             let p = crate::db::model_shadow_progress(&conn);
             let rate = |num: i64, den: i64| (den > 0).then(|| num as f64 / den as f64);
-            let tools = crate::db::explore_tool_outcomes(&conn, None)
+            let tools = ["claude-code", "cursor", "codex"]
                 .into_iter()
-                .map(|e| {
+                .flat_map(|surface| {
+                    crate::db::explore_tool_outcomes_for_surface(&conn, None, Some(surface))
+                        .into_iter()
+                        .map(move |e| (surface, e))
+                })
+                .map(|(surface, e)| {
                     let cc = rate(e.control_corrections, e.control_n);
                     let tc = rate(e.treatment_corrections, e.treatment_n);
                     let cr = rate(e.control_rereads, e.control_n);
@@ -674,13 +873,56 @@ async fn api_context_model_progress() -> Json<ModelProgressView> {
                         (Some(t), Some(c)) if enough => Some(t - c),
                         _ => None,
                     };
-                    let verdict = match (correction_delta, reread_delta) {
-                        (Some(cd), Some(rd)) if cd <= 1e-9 && rd <= 1e-9 => "safe",
-                        (Some(_), Some(_)) => "costly",
-                        _ => "collecting",
+                    let correction_upper = enough.then(|| {
+                        crate::stats::newcombe_diff(
+                            e.treatment_corrections,
+                            e.treatment_n,
+                            e.control_corrections,
+                            e.control_n,
+                        )
+                        .2
+                    });
+                    let reread_upper = enough.then(|| {
+                        crate::stats::newcombe_diff(
+                            e.treatment_rereads,
+                            e.treatment_n,
+                            e.control_rereads,
+                            e.control_n,
+                        )
+                        .2
+                    });
+                    let safety_limit =
+                        crate::compress::activation::CausalThresholds::default().max_harm_delta;
+                    let safe = matches!(
+                        (correction_upper, reread_upper),
+                        (Some(c), Some(r)) if c <= safety_limit && r <= safety_limit
+                    );
+                    let observed_costly = matches!(
+                        (correction_delta, reread_delta),
+                        (Some(c), Some(r)) if c > safety_limit || r > safety_limit
+                    );
+                    let verdict = if !enough || !safe && !observed_costly {
+                        "collecting"
+                    } else if safe {
+                        "safe"
+                    } else {
+                        "costly"
                     }
                     .to_string();
+                    let runs_needed = (explore_min_arm - e.control_n)
+                        .max(0)
+                        .max((explore_min_arm - e.treatment_n).max(0));
+                    let (status, reason_code) = if !enough {
+                        ("waiting_for_data", "randomized_runs_needed")
+                    } else if safe {
+                        ("trimming", "randomized_safety_check_passed")
+                    } else if !observed_costly {
+                        ("waiting_for_data", "randomized_result_uncertain")
+                    } else {
+                        ("kept_whole", "randomized_safety_check_not_passed")
+                    };
                     ExploreToolView {
+                        surface: surface.to_string(),
                         tool: e.tool_name,
                         control_collected: e.control_collected,
                         treatment_collected: e.treatment_collected,
@@ -693,6 +935,13 @@ async fn api_context_model_progress() -> Json<ModelProgressView> {
                         correction_delta,
                         reread_delta,
                         verdict,
+                        status: status.into(),
+                        reason_code: reason_code.into(),
+                        runs_needed,
+                        data_source: "randomized_treatment_control".into(),
+                        safety_limit,
+                        correction_upper,
+                        reread_upper,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -796,6 +1045,7 @@ struct ProofDelta {
 
 #[derive(Serialize)]
 struct ProofToolView {
+    surface: String,
     tool: String,
     trialing: bool,
     baseline_n: i64,
@@ -825,6 +1075,7 @@ struct ProofToolView {
 
 #[derive(Serialize)]
 struct ProofView {
+    data_source: String,
     preset: String,
     trial_tools: Vec<String>,
     min_baseline: i64,
@@ -884,6 +1135,7 @@ fn proof_tool_view(
     o: &crate::db::CausalToolOutcome,
     th: &crate::compress::activation::CausalThresholds,
     trialing: bool,
+    surface: &str,
 ) -> ProofToolView {
     let correction_delta = proof_delta(
         o.trimmed_corrections,
@@ -906,8 +1158,12 @@ fn proof_tool_view(
         "collecting"
     } else if crate::compress::activation::causal_clears_bar(o, th) {
         "safe"
-    } else if correction_delta.as_ref().is_some_and(|d| d.lo > 0.0)
-        || reread_delta.as_ref().is_some_and(|d| d.lo > 0.0)
+    } else if correction_delta
+        .as_ref()
+        .is_some_and(|d| d.diff > th.max_harm_delta)
+        || reread_delta
+            .as_ref()
+            .is_some_and(|d| d.diff > th.max_harm_delta)
     {
         "harmful"
     } else {
@@ -915,6 +1171,7 @@ fn proof_tool_view(
     };
 
     ProofToolView {
+        surface: surface.to_string(),
         tool: o.tool_name.clone(),
         trialing,
         baseline_n: o.baseline_n,
@@ -947,32 +1204,33 @@ async fn api_context_proof() -> Json<ProofView> {
         Some(conn) => {
             // Applied chars saved per tool, then bucketed by verdict so only earned ("safe")
             // trimming is counted as real savings.
-            let savings: std::collections::HashMap<String, i64> =
-                crate::db::compress_savings_by_tool(&conn)
+            let savings: std::collections::HashMap<(String, String), i64> =
+                crate::db::compress_savings_by_surface_tool(&conn)
                     .into_iter()
-                    .map(|s| (s.tool_name, s.chars_saved))
+                    .map(|(surface, tool, saved)| ((surface, tool), saved))
                     .collect();
-            let outcomes: Vec<crate::db::CausalToolOutcome> =
-                crate::db::causal_tool_outcomes(&conn, None)
-                    .into_iter()
-                    .filter(|o| o.baseline_n > 0 || o.trimmed_n > 0 || o.trimmed_collected > 0)
-                    .collect();
-            trimmed_n_total = outcomes.iter().map(|o| o.trimmed_n).sum();
-            trimmed_corrections_total = outcomes.iter().map(|o| o.trimmed_corrections).sum();
-            trimmed_rereads_total = outcomes.iter().map(|o| o.trimmed_rereads).sum();
+            let outcomes = selected_randomized_outcomes(&conn);
+            trimmed_n_total = outcomes.iter().map(|(_, o)| o.trimmed_n).sum();
+            trimmed_corrections_total = outcomes.iter().map(|(_, o)| o.trimmed_corrections).sum();
+            trimmed_rereads_total = outcomes.iter().map(|(_, o)| o.trimmed_rereads).sum();
             let tools: Vec<ProofToolView> = outcomes
                 .into_iter()
-                .map(|o| {
+                .map(|(surface, o)| {
                     let trialing = cfg.compress_trial_tools.iter().any(|t| t == &o.tool_name);
-                    let mut v = proof_tool_view(&o, &th, trialing);
-                    v.applied_chars_saved = savings.get(&v.tool).copied().unwrap_or(0);
+                    let mut v = proof_tool_view(&o, &th, trialing, &surface);
+                    v.applied_chars_saved = savings
+                        .get(&(surface, v.tool.clone()))
+                        .copied()
+                        .unwrap_or(0);
                     v
                 })
                 .collect();
             // Tools that have applied trims but never joined an outcome are absent from the proof
             // list; their savings are unproven, so fold them into the trial bucket.
-            let proof_tools: std::collections::HashSet<&String> =
-                tools.iter().map(|t| &t.tool).collect();
+            let proof_tools: std::collections::HashSet<(String, String)> = tools
+                .iter()
+                .map(|t| (t.surface.clone(), t.tool.clone()))
+                .collect();
             let mut safe = 0i64;
             let mut trial = 0i64;
             for t in &tools {
@@ -982,8 +1240,8 @@ async fn api_context_proof() -> Json<ProofView> {
                     trial += t.applied_chars_saved;
                 }
             }
-            for (name, chars) in &savings {
-                if !proof_tools.contains(name) {
+            for (key, chars) in &savings {
+                if !proof_tools.contains(key) {
                     trial += *chars;
                 }
             }
@@ -992,6 +1250,7 @@ async fn api_context_proof() -> Json<ProofView> {
         None => (Vec::new(), 0, 0),
     };
     Json(ProofView {
+        data_source: "randomized_treatment_control".into(),
         preset: cfg.compress_preset.as_str().to_string(),
         trial_tools: cfg.compress_trial_tools.clone(),
         min_baseline: th.min_baseline,

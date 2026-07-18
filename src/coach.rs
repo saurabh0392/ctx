@@ -1,8 +1,8 @@
-/// Failure-signal detection for in-context coaching.
-///
-/// Reads the `messages` array from an Anthropic request body and returns
-/// a coaching suggestion when a recoverable failure pattern is detected.
-/// No LLM calls -- purely rule-based over conversation structure.
+//! Failure-signal detection for in-context coaching.
+//!
+//! Reads the `messages` array from an Anthropic request body and returns
+//! a coaching suggestion when a recoverable failure pattern is detected.
+//! No LLM calls -- purely rule-based over conversation structure.
 
 const CORRECTION_PHRASES: &[&str] = &[
     "no,",
@@ -58,7 +58,7 @@ pub fn detect(messages: &[serde_json::Value]) -> Option<CoachSignal> {
     let user_texts: Vec<String> = messages
         .iter()
         .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        .map(|m| extract_text(m))
+        .map(extract_text)
         .collect();
 
     detect_correction_cascade(&user_texts).or_else(|| detect_reask(&user_texts))
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn correction_cascade_fires_at_two() {
-        let messages = vec![
+        let messages = [
             user("Can you refactor the auth module?"),
             assistant("Here's the refactored version..."),
             user("No that's wrong, I meant the handler not the middleware"),
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn correction_cascade_does_not_fire_on_one() {
-        let messages = vec![
+        let messages = [
             user("Refactor the auth module"),
             assistant("Here you go"),
             user("No that's wrong — I meant the handler"),

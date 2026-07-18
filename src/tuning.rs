@@ -230,50 +230,40 @@ fn apply_recommendations_inner(results: &mut AbResultsFile, auto: bool) -> Resul
                 "profile" => {
                     // keep profile filtering on; only disable optional gates
                 }
-                "inject" => {
-                    if cfg.inject_enabled {
-                        cfg.inject_enabled = false;
-                        log.push(format!(
-                            "Disabled system prefix injection ({})",
-                            if auto { "auto" } else { "manual" }
-                        ));
-                    }
+                "inject" if cfg.inject_enabled => {
+                    cfg.inject_enabled = false;
+                    log.push(format!(
+                        "Disabled system prefix injection ({})",
+                        if auto { "auto" } else { "manual" }
+                    ));
                 }
-                "adaptive" => {
-                    if cfg.adaptive_prefix_enabled {
-                        cfg.adaptive_prefix_enabled = false;
-                        log.push(format!(
-                            "Disabled adaptive prefix ({})",
-                            if auto { "auto" } else { "manual" }
-                        ));
-                    }
+                "adaptive" if cfg.adaptive_prefix_enabled => {
+                    cfg.adaptive_prefix_enabled = false;
+                    log.push(format!(
+                        "Disabled adaptive prefix ({})",
+                        if auto { "auto" } else { "manual" }
+                    ));
                 }
-                "coaching" => {
-                    if cfg.coaching_enabled {
-                        cfg.coaching_enabled = false;
-                        log.push(format!(
-                            "Disabled coaching ({})",
-                            if auto { "auto" } else { "manual" }
-                        ));
-                    }
+                "coaching" if cfg.coaching_enabled => {
+                    cfg.coaching_enabled = false;
+                    log.push(format!(
+                        "Disabled coaching ({})",
+                        if auto { "auto" } else { "manual" }
+                    ));
                 }
-                "compress" => {
-                    if cfg.compress_enabled {
-                        cfg.compress_enabled = false;
-                        log.push(format!(
-                            "Disabled output compression ({})",
-                            if auto { "auto" } else { "manual" }
-                        ));
-                    }
+                "compress" if cfg.compress_enabled => {
+                    cfg.compress_enabled = false;
+                    log.push(format!(
+                        "Disabled output compression ({})",
+                        if auto { "auto" } else { "manual" }
+                    ));
                 }
-                "compress_sgr" => {
-                    if cfg.compress_sgr_enabled {
-                        cfg.compress_sgr_enabled = false;
-                        log.push(format!(
-                            "Disabled session-grounded retention ({})",
-                            if auto { "auto" } else { "manual" }
-                        ));
-                    }
+                "compress_sgr" if cfg.compress_sgr_enabled => {
+                    cfg.compress_sgr_enabled = false;
+                    log.push(format!(
+                        "Disabled session-grounded retention ({})",
+                        if auto { "auto" } else { "manual" }
+                    ));
                 }
                 _ => {}
             },

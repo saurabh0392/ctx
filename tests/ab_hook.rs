@@ -9,7 +9,7 @@ use std::io::Write;
 use std::process::Command;
 
 fn run_hook(h: &CtxHarness, stdin_json: &str) -> Value {
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("integration tests need the ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     let mut child = Command::new(bin)
         .args(["hook", "user-prompt-submit"])
         .current_dir(h.tmp.path())
@@ -142,7 +142,7 @@ coaching_pct = 100
     assert!(
         !deny_after.iter().any(|v| {
             v.as_str()
-                .map(|s| ctx::profiles::is_ctx_managed_deny_pattern(s))
+                .map(ctx::profiles::is_ctx_managed_deny_pattern)
                 .unwrap_or(false)
         }),
         "control hook should strip ctx-managed deny rules"

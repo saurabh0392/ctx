@@ -200,10 +200,11 @@ fn extract_paths_from_text(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for token in text.split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')') {
         let t = token.trim_matches('"').trim_matches('\'');
-        if t.contains('/') || t.ends_with(".rs") || t.ends_with(".ts") || t.ends_with(".js") {
-            if t.len() >= 3 && !out.iter().any(|x| x == t) {
-                out.push(t.to_string());
-            }
+        if (t.contains('/') || t.ends_with(".rs") || t.ends_with(".ts") || t.ends_with(".js"))
+            && t.len() >= 3
+            && !out.iter().any(|x| x == t)
+        {
+            out.push(t.to_string());
         }
     }
     out
@@ -223,10 +224,8 @@ fn extract_symbols_from_text(text: &str) -> Vec<String> {
             && token.len() > 2;
         let is_snake = token.contains('_') && token.len() > 3;
         let is_pathish = token.contains("::");
-        if is_pascal || is_snake || is_pathish {
-            if !out.iter().any(|x| x == token) {
-                out.push(token.to_string());
-            }
+        if (is_pascal || is_snake || is_pathish) && !out.iter().any(|x| x == token) {
+            out.push(token.to_string());
         }
         if out.len() >= 16 {
             break;

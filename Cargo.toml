@@ -1,6 +1,6 @@
 [package]
 name = "ctx"
-version = "0.4.0"
+version = "0.5.3"
 edition = "2021"
 description = "Context truth and safety layer for Claude Code (hook-first, no proxy)"
 
@@ -27,6 +27,7 @@ anyhow = "1"
 open = "5"
 futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
 ndarray = "0.17"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-rustls"], optional = true }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"], optional = true }

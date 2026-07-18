@@ -180,9 +180,7 @@ fn is_config(p: &str) -> bool {
     ) || name.ends_with(".toml")
         || name.ends_with(".yaml")
         || name.ends_with(".yml")
-        || (name.ends_with(".json")
-            && !name.contains(".min.")
-            && !name.ends_with(".map"))
+        || (name.ends_with(".json") && !name.contains(".min.") && !name.ends_with(".map"))
 }
 
 fn file_name(p: &str) -> Option<&str> {
@@ -199,11 +197,11 @@ mod tests {
             path_role_of("/proj/node_modules/react/index.js"),
             Some("vendored")
         );
+        assert_eq!(path_role_of("web/.next/server/chunk.js"), Some("generated"));
         assert_eq!(
-            path_role_of("web/.next/server/chunk.js"),
+            path_role_of("/proj/target/debug/build.rs"),
             Some("generated")
         );
-        assert_eq!(path_role_of("/proj/target/debug/build.rs"), Some("generated"));
     }
 
     #[test]

@@ -50,7 +50,7 @@ pub fn post_tool_use() -> Result<()> {
     let mut output = json!({});
     if let Some(tr) = extract_cursor_tool_result(&payload) {
         let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
-        let decision = crate::agent::decide(&cfg, &tr);
+        let decision = crate::agent::decide_for_surface(&cfg, &tr, CURSOR_SURFACE);
 
         // On Cursor, ctx can replace output only for MCP tools (`updated_mcp_tool_output`); built-in
         // Read/Shell/Grep stay observe-only because Cursor will not let a hook rewrite them (ADR
@@ -127,6 +127,21 @@ pub fn pre_compact() -> Result<()> {
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
         let _ = crate::db::insert_cursor_compaction(&conn, &event);
+        let key = format!(
+            "cursor-compact-{}-{}-{}",
+            event.session_id.as_deref().unwrap_or("unknown"),
+            event.trigger.as_deref().unwrap_or("unknown"),
+            event.ts
+        );
+        let _ = crate::db::insert_native_compaction(
+            &conn,
+            &key,
+            CURSOR_SURFACE,
+            "pre",
+            event.session_id.as_deref(),
+            None,
+            event.trigger.as_deref(),
+        );
     }
 
     print!("{{}}");
@@ -151,7 +166,9 @@ pub fn parse_cursor_compaction(payload: &Value) -> crate::db::CursorCompaction {
             .get("trigger")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        context_usage_percent: payload.get("context_usage_percent").and_then(|v| v.as_f64()),
+        context_usage_percent: payload
+            .get("context_usage_percent")
+            .and_then(|v| v.as_f64()),
         context_tokens: payload.get("context_tokens").and_then(|v| v.as_i64()),
         context_window_size: payload.get("context_window_size").and_then(|v| v.as_i64()),
         message_count: payload.get("message_count").and_then(|v| v.as_i64()),
@@ -211,7 +228,19 @@ fn decide_pre_tool_use(cfg: &Config, payload: &Value) -> Option<Value> {
 /// allowlist (so capturing its output can never break an editor/pager/REPL), and Shell has earned
 /// trimming for this command's kind (trial, activation, or burn-in). The wrapper still re-checks the
 /// gate against the real output, so this is the cheap front gate, not the final say.
-fn decide_shell_rewrite(cfg: &Config, command: &str) -> Option<String> {
+pub(crate) fn decide_shell_rewrite(cfg: &Config, command: &str) -> Option<String> {
+    decide_shell_rewrite_for_surface(cfg, command, CURSOR_SURFACE, None)
+}
+
+/// Shared conservative shell rewrite used by Cursor and Codex. The surface and session travel
+/// into the wrapper as explicit provenance, so the post-execution gate cannot accidentally borrow
+/// another transport's evidence.
+pub(crate) fn decide_shell_rewrite_for_surface(
+    cfg: &Config,
+    command: &str,
+    surface: &str,
+    session_id: Option<&str>,
+) -> Option<String> {
     let trimmed = command.trim();
     if trimmed.is_empty() || is_ctx_run_wrapped(trimmed) {
         return None;
@@ -224,13 +253,26 @@ fn decide_shell_rewrite(cfg: &Config, command: &str) -> Option<String> {
     let kind_label = crate::compress::shadow::kind_str(kind);
     let eligible = cfg.compress_trialing("Shell")
         || (cfg.compress_applies_kind(kind_label)
-            && (crate::compress::activation::tool_activated(cfg, "Shell", kind_label)
-                || crate::compress::activation::tool_in_burn_in(cfg, "Shell")));
+            && (crate::compress::activation::tool_activated_on_surface(
+                cfg, "Shell", kind_label, surface,
+            ) || crate::compress::activation::tool_in_burn_in_on_surface(
+                cfg, "Shell", surface,
+            )));
     if !eligible {
         return None;
     }
 
-    Some(format!("{} run {}", ctx_exe(), shell_single_quote(trimmed)))
+    let session = session_id
+        .filter(|s| !s.is_empty())
+        .map(|s| format!(" --session {}", shell_single_quote(s)))
+        .unwrap_or_default();
+    Some(format!(
+        "{} run --surface {}{} -- {}",
+        ctx_exe(),
+        shell_single_quote(surface),
+        session,
+        shell_single_quote(trimmed)
+    ))
 }
 
 /// Resolve the ctx executable path for the rewrite, falling back to bare `ctx` on PATH.
@@ -244,7 +286,7 @@ fn ctx_exe() -> String {
 
 /// True when a command already runs through the ctx wrapper, so we never double-wrap (and so the
 /// postToolUse hook can recognize and skip it).
-fn is_ctx_run_wrapped(command: &str) -> bool {
+pub(crate) fn is_ctx_run_wrapped(command: &str) -> bool {
     let c = command.trim_start();
     // Match either bare `ctx run ` or `/abs/path/to/ctx run `.
     if let Some(first) = c.split_whitespace().next() {
@@ -264,7 +306,7 @@ fn is_ctx_run_wrapped(command: &str) -> bool {
 /// capture and worth compacting. Default-deny: anything not recognized is left untouched, so editors,
 /// pagers, REPLs, and prompts (vim, less, git commit, npm init, ssh) are never wrapped. This is a
 /// safety boundary, not a compression heuristic; the gate decides whether compaction actually fires.
-fn is_safe_to_wrap(command: &str) -> bool {
+pub(crate) fn is_safe_to_wrap(command: &str) -> bool {
     let mut tokens = command.split_whitespace();
     let Some(first) = tokens.next() else {
         return false;
@@ -278,8 +320,16 @@ fn is_safe_to_wrap(command: &str) -> bool {
         "git" => matches!(
             tokens.next(),
             Some(
-                "status" | "diff" | "log" | "show" | "branch" | "ls-files" | "blame" | "shortlog"
-                    | "describe" | "diff-tree"
+                "status"
+                    | "diff"
+                    | "log"
+                    | "show"
+                    | "branch"
+                    | "ls-files"
+                    | "blame"
+                    | "shortlog"
+                    | "describe"
+                    | "diff-tree"
             )
         ),
         // Read-only inspection tools that commonly produce large, noisy output.
@@ -290,7 +340,7 @@ fn is_safe_to_wrap(command: &str) -> bool {
 
 /// POSIX single-quote a command so it survives as one argument to `ctx run` (which re-runs it via
 /// `sh -c`). Embedded single quotes are closed, escaped, and reopened: `it's` -> `'it'\''s'`.
-fn shell_single_quote(s: &str) -> String {
+pub(crate) fn shell_single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
@@ -548,7 +598,9 @@ mod tests {
         // Cursor names MCP tools `MCP:<tool>`; Claude uses `mcp__server__tool`. Both must read as MCP
         // so only MCP results get an apply path. Built-ins must not.
         assert!(crate::compress::classify::is_mcp_tool("MCP:get_issue"));
-        assert!(crate::compress::classify::is_mcp_tool("mcp__linear__get_issue"));
+        assert!(crate::compress::classify::is_mcp_tool(
+            "mcp__linear__get_issue"
+        ));
         assert!(!crate::compress::classify::is_mcp_tool("Shell"));
         assert!(!crate::compress::classify::is_mcp_tool("Read"));
     }

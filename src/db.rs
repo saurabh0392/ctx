@@ -5,9 +5,152 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-// Bumped to 8 for the tool_misses table (CTX-66 / M-D); the CREATE TABLE batch is version-gated, so
-// a new table only lands on existing installs when this rises.
-const SCHEMA_VERSION: i32 = 8;
+// Bumped to 10 for surface/transform-isolated action evidence and live plugin event storage. The
+// CREATE TABLE batch is version-gated, so a new table only lands on existing installs when this rises.
+pub(crate) const SCHEMA_VERSION: i32 = 10;
+
+/// Product events are local-only evidence for the beta scorecard. This allowlist is deliberately
+/// closed: callers cannot turn the table into a generic analytics sink containing prompts, paths,
+/// commands, tool output, repo names, or arbitrary JSON.
+pub const PRODUCT_EVENT_NAMES: &[&str] = &[
+    "setup_completed",
+    "dashboard_opened",
+    "context_bill_viewed",
+    "autopilot_paused",
+    "autopilot_resumed",
+    "rewind_expanded",
+    "server_pruned",
+    "server_unpruned",
+    "context_report_exported",
+    "beta_checkin_previewed",
+    "beta_checkin_sent",
+];
+
+fn migrate_product_events_table(conn: &Connection) {
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS product_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            event_name TEXT NOT NULL,
+            source TEXT NOT NULL,
+            value TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_events_ts ON product_events(ts);
+        CREATE INDEX IF NOT EXISTS idx_product_events_name_ts ON product_events(event_name, ts);
+        "#,
+    );
+}
+
+/// Record one allowlisted local product event. Passive view events are deduplicated per UTC day so
+/// a dashboard refresh loop cannot inflate engagement. `value` is limited to a short one-line enum.
+pub fn record_product_event(
+    conn: &Connection,
+    event_name: &str,
+    source: &str,
+    value: Option<&str>,
+) -> Result<bool> {
+    migrate_product_events_table(conn);
+    if !PRODUCT_EVENT_NAMES.contains(&event_name) {
+        anyhow::bail!("unknown product event: {event_name}");
+    }
+    let passive = matches!(event_name, "dashboard_opened" | "context_bill_viewed");
+    if passive {
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM product_events WHERE event_name=?1 AND date(ts)=date('now'))",
+            params![event_name],
+            |r| r.get(0),
+        )?;
+        if exists == 1 {
+            return Ok(false);
+        }
+    }
+    let safe_source: String = source
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .take(32)
+        .collect();
+    let safe_value = value.map(|v| {
+        v.chars()
+            .filter(|c| !matches!(c, '\r' | '\n' | '\0'))
+            .take(64)
+            .collect::<String>()
+    });
+    conn.execute(
+        "INSERT INTO product_events (ts,event_name,source,value) VALUES (?1,?2,?3,?4)",
+        params![
+            chrono::Utc::now().to_rfc3339(),
+            event_name,
+            if safe_source.is_empty() {
+                "unknown"
+            } else {
+                &safe_source
+            },
+            safe_value
+        ],
+    )?;
+    Ok(true)
+}
+
+pub fn product_event_counts(conn: &Connection) -> std::collections::BTreeMap<String, i64> {
+    migrate_product_events_table(conn);
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT event_name, COUNT(*) FROM product_events GROUP BY event_name ORDER BY event_name",
+    ) else {
+        return out;
+    };
+    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        out.extend(rows.flatten());
+    }
+    out
+}
+
+#[cfg(test)]
+mod product_event_tests {
+    use super::*;
+
+    #[test]
+    fn allowlist_rejects_arbitrary_analytics() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(
+            record_product_event(&conn, "prompt_captured", "dashboard", Some("secret")).is_err()
+        );
+        assert!(product_event_counts(&conn).is_empty());
+    }
+
+    #[test]
+    fn passive_views_are_deduplicated_per_day() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(record_product_event(&conn, "dashboard_opened", "dashboard", None).unwrap());
+        assert!(!record_product_event(&conn, "dashboard_opened", "dashboard", None).unwrap());
+        assert_eq!(
+            product_event_counts(&conn).get("dashboard_opened"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn event_metadata_is_bounded_and_single_line() {
+        let conn = Connection::open_in_memory().unwrap();
+        record_product_event(
+            &conn,
+            "autopilot_paused",
+            "dash board/unsafe",
+            Some("reason\nwith\rcontrol"),
+        )
+        .unwrap();
+        let (source, value): (String, String) = conn
+            .query_row(
+                "SELECT source, value FROM product_events LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "dashboardunsafe");
+        assert_eq!(value, "reasonwithcontrol");
+    }
+}
 
 pub fn open_db() -> Result<Connection> {
     let path = crate::config::db_path();
@@ -18,9 +161,28 @@ pub fn open_db() -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
+         PRAGMA busy_timeout=150;
          PRAGMA synchronous=NORMAL;",
     )?;
     Ok(conn)
+}
+
+/// Read the on-disk schema version without creating or migrating the database. Diagnostics use this
+/// instead of `open_db`, whose contract is intentionally to prepare a writable application store.
+pub fn inspect_schema_version() -> Result<i32> {
+    use rusqlite::OpenFlags;
+
+    let path = crate::config::db_path();
+    if !path.is_file() {
+        anyhow::bail!("{} does not exist", path.display());
+    }
+    let conn = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("open {} read-only", path.display()))?;
+    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        .with_context(|| format!("inspect schema in {}", path.display()))
 }
 
 pub fn db_exists() -> bool {
@@ -305,7 +467,8 @@ fn migrate_compress_decisions_table(conn: &Connection) {
             outcome_correction INTEGER,
             outcome_reread INTEGER,
             outcome_joined INTEGER NOT NULL DEFAULT 0,
-            surface TEXT
+            surface TEXT,
+            transform_version TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_compress_decisions_ts ON compress_decisions(ts);
         CREATE INDEX IF NOT EXISTS idx_compress_decisions_session ON compress_decisions(session_id);
@@ -317,9 +480,23 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     // stamps which agent surface produced a decision so training can exclude the
     // lower-confidence (transcript-derived) labels until their precision is proven.
     let _ = conn.execute("ALTER TABLE compress_decisions ADD COLUMN surface TEXT", []);
+    // Action evidence is scoped to the exact transform that produced it. A material transform
+    // change bumps `compress::TRANSFORM_VERSION`; legacy rows map to the first version so existing
+    // installations migrate without losing their historical evidence.
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN transform_version TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_compress_decisions_gate ON compress_decisions(surface, tool_name, transform_version)",
+        [],
+    );
     // CTX-51 L2: link a trim to its rewind entry and record when the agent recovered it via
     // ctx_expand, so the gate can treat a recovery as a benign outcome, not a harmful re-read.
-    let _ = conn.execute("ALTER TABLE compress_decisions ADD COLUMN rewind_id TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN rewind_id TEXT",
+        [],
+    );
     let _ = conn.execute(
         "ALTER TABLE compress_decisions ADD COLUMN outcome_recovered INTEGER",
         [],
@@ -394,6 +571,146 @@ fn migrate_cursor_compactions_table(conn: &Connection) {
     );
 }
 
+/// Privacy-bounded live hook ledger shared by plugin surfaces. It stores identifiers, timings, and
+/// outcome flags only—never prompts, commands, paths, or tool output. `event_key` makes retries and
+/// unified-exec polling idempotent before they reach the decision corpus.
+fn migrate_surface_hook_tables(conn: &Connection) {
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS surface_hook_events (
+            event_key TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            surface TEXT NOT NULL,
+            event_name TEXT NOT NULL,
+            session_id TEXT,
+            turn_id TEXT,
+            tool_use_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_surface_hook_events_surface_ts
+            ON surface_hook_events(surface, ts);
+
+        CREATE TABLE IF NOT EXISTS native_compactions (
+            event_key TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            surface TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            session_id TEXT,
+            turn_id TEXT,
+            trigger TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_native_compactions_surface_ts
+            ON native_compactions(surface, ts);
+        "#,
+    );
+}
+
+/// Claim a live hook delivery. `false` means the exact event was already handled.
+pub fn claim_surface_hook_event(
+    conn: &Connection,
+    event_key: &str,
+    surface: &str,
+    event_name: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    tool_use_id: Option<&str>,
+) -> Result<bool> {
+    migrate_surface_hook_tables(conn);
+    let changed = conn.execute(
+        "INSERT OR IGNORE INTO surface_hook_events
+         (event_key,ts,surface,event_name,session_id,turn_id,tool_use_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            event_key,
+            chrono::Utc::now().to_rfc3339(),
+            surface,
+            event_name,
+            session_id,
+            turn_id,
+            tool_use_id,
+        ],
+    )?;
+    Ok(changed == 1)
+}
+
+pub fn insert_native_compaction(
+    conn: &Connection,
+    event_key: &str,
+    surface: &str,
+    phase: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    trigger: Option<&str>,
+) -> Result<bool> {
+    migrate_surface_hook_tables(conn);
+    let changed = conn.execute(
+        "INSERT OR IGNORE INTO native_compactions
+         (event_key,ts,surface,phase,session_id,turn_id,trigger)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            event_key,
+            chrono::Utc::now().to_rfc3339(),
+            surface,
+            phase,
+            session_id,
+            turn_id,
+            trigger,
+        ],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Close the preceding live turn when the next user prompt arrives. Hook payload content is never
+/// persisted; only the correction bit produced by the shared lexical guard lands in the corpus.
+pub fn close_surface_outcomes_for_prompt(
+    conn: &Connection,
+    surface: &str,
+    session_id: &str,
+    correction: bool,
+) -> Result<usize> {
+    let changed = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_joined=1,
+             outcome_correction=?3,
+             outcome_reread=COALESCE(outcome_reread,0)
+         WHERE COALESCE(surface,'claude-code')=?1
+           AND session_id=?2
+           AND COALESCE(outcome_joined,0)=0",
+        params![surface, session_id, if correction { 1i64 } else { 0i64 }],
+    )?;
+    Ok(changed)
+}
+
+/// Mark an earlier same-input decision as re-touched. The next prompt closes its outcome window.
+pub fn mark_surface_retouch(
+    conn: &Connection,
+    surface: &str,
+    session_id: &str,
+    command_or_path: &str,
+) -> Result<usize> {
+    let changed = conn.execute(
+        "UPDATE compress_decisions
+         SET outcome_reread=1
+         WHERE COALESCE(surface,'claude-code')=?1
+           AND session_id=?2
+           AND command_or_path=?3
+           AND COALESCE(outcome_joined,0)=0",
+        params![surface, session_id, command_or_path],
+    )?;
+    Ok(changed)
+}
+
+pub fn latest_surface_hook_event(conn: &Connection, surface: &str) -> Option<(String, String)> {
+    migrate_surface_hook_tables(conn);
+    conn.query_row(
+        "SELECT event_name,ts FROM surface_hook_events WHERE surface=?1 ORDER BY ts DESC LIMIT 1",
+        params![surface],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// A Cursor compaction event from the `preCompact` hook, ready to persist.
 #[derive(Debug, Clone, Default)]
 pub struct CursorCompaction {
@@ -461,8 +778,8 @@ pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> 
         r#"INSERT INTO compress_decisions
             (ts, session_id, tool_name, server_prefix, kind, task_mode,
              lines_total, lines_keep, lines_drop, chars_in, would_chars_out,
-             features_json, command_or_path, applied, explore_arm, surface)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
+             features_json, command_or_path, applied, explore_arm, surface, transform_version)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"#,
         params![
             d.ts,
             d.session_id,
@@ -480,6 +797,7 @@ pub fn insert_compress_decision(conn: &Connection, d: &CompressDecision<'_>) -> 
             if d.applied { 1 } else { 0 },
             d.explore_arm,
             d.surface,
+            crate::compress::TRANSFORM_VERSION,
         ],
     )?;
     Ok(())
@@ -1223,7 +1541,7 @@ pub fn tool_menu_bill(conn: &Connection, lookback_days: u32) -> ToolMenuBill {
     }
 
     bill.servers
-        .sort_by(|a, b| b.dead_tokens.cmp(&a.dead_tokens));
+        .sort_by_key(|row| std::cmp::Reverse(row.dead_tokens));
     if let Some(top) = bill.servers.first() {
         bill.biggest_dead_server = Some(top.server.clone());
         bill.biggest_dead_tokens = top.dead_tokens;
@@ -1333,8 +1651,8 @@ pub struct CompressToolProgress {
 }
 
 pub fn compress_tool_progress(conn: &Connection) -> Vec<CompressToolProgress> {
-    let mut stmt = match conn.prepare(
-        &format!("SELECT tool_name,
+    let mut stmt = match conn.prepare(&format!(
+        "SELECT tool_name,
                 COUNT(*),
                 COALESCE(SUM(outcome_joined), 0),
                 COALESCE(SUM(CASE WHEN outcome_joined = 1 AND COALESCE(outcome_correction,0) = 0
@@ -1345,8 +1663,8 @@ pub fn compress_tool_progress(conn: &Connection) -> Vec<CompressToolProgress> {
          FROM compress_decisions
          WHERE 1=1{EXCLUDE_EDIT_TOOLS}
          GROUP BY tool_name
-         ORDER BY COUNT(*) DESC"),
-    ) {
+         ORDER BY COUNT(*) DESC"
+    )) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -1656,7 +1974,9 @@ pub fn refresh_outcome_signals(conn: &Connection) -> Result<usize> {
             Err(_) => continue,
         };
         let flag_rows = flags_stmt
-            .query_map(params![sid_like, ts, window_days], |r| r.get::<_, String>(0))
+            .query_map(params![sid_like, ts, window_days], |r| {
+                r.get::<_, String>(0)
+            })
             .ok();
         let mut signals: Vec<&str> = Vec::new();
         if let Some(it) = flag_rows {
@@ -1744,8 +2064,10 @@ fn compression_workaround_from_db(
               )
          )"
     );
-    conn.query_row(&sql, params![session_id, decision_ts, window_days], |r| r.get(0))
-        .map_err(Into::into)
+    conn.query_row(&sql, params![session_id, decision_ts, window_days], |r| {
+        r.get(0)
+    })
+    .map_err(Into::into)
 }
 
 /// The `outcome_reread` value subquery: nearest-preceding same fingerprint within the window.
@@ -1935,7 +2257,11 @@ pub struct SignalAuditRow {
 /// Joined decisions whose observation-only signal set is non-empty, newest first. When
 /// `signal` is given, only rows where that signal fired are returned (substring match on the
 /// stored JSON array). `cap` bounds how many rows are read. Read-only; never touches the gate.
-pub fn signal_audit_rows(conn: &Connection, signal: Option<&str>, cap: usize) -> Vec<SignalAuditRow> {
+pub fn signal_audit_rows(
+    conn: &Connection,
+    signal: Option<&str>,
+    cap: usize,
+) -> Vec<SignalAuditRow> {
     let like = signal.map(|s| format!("%\"{s}\"%"));
     let sql = format!(
         "SELECT ts, tool_name, command_or_path, surface, kind, outcome_signals,
@@ -2004,6 +2330,17 @@ pub struct SurfaceSummary {
     /// How ctx knows this surface: "hook" (live decisions), "transcript" (parsed sessions only),
     /// "hook+transcript" (both), or "" when unseen. Drives honest per-agent copy in the UI.
     pub observed_via: String,
+    /// Integration and capability fields are explicit so the browser never has to infer that an
+    /// observed agent is fully trimmable.
+    pub integration: String,
+    pub status: String,
+    pub can_observe: bool,
+    pub can_trim_shell: bool,
+    pub can_trim_builtin: bool,
+    pub can_trim_mcp: bool,
+    pub can_observe_compaction: bool,
+    pub compaction_seen: bool,
+    pub limitations: Vec<String>,
 }
 
 /// Per-surface activity for the cross-surface view (CTX-34). Always returns Claude Code and
@@ -2045,7 +2382,20 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
                 sessions_seen: 0,
                 tool_calls_seen: 0,
                 transcript_corrections: 0,
-                observed_via: if decisions > 0 { "hook".into() } else { String::new() },
+                observed_via: if decisions > 0 {
+                    "hook".into()
+                } else {
+                    String::new()
+                },
+                integration: String::new(),
+                status: String::new(),
+                can_observe: false,
+                can_trim_shell: false,
+                can_trim_builtin: false,
+                can_trim_mcp: false,
+                can_observe_compaction: false,
+                compaction_seen: false,
+                limitations: Vec::new(),
             })
         });
         if let Ok(it) = rows {
@@ -2054,16 +2404,70 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
             }
         }
     }
-    ["claude-code", "cursor"]
+    ["claude-code", "cursor", "codex"]
         .iter()
         .map(|id| {
-            by_surface.remove(*id).unwrap_or_else(|| SurfaceSummary {
+            let mut summary = by_surface.remove(*id).unwrap_or_else(|| SurfaceSummary {
                 surface: id.to_string(),
                 seen: false,
                 ..Default::default()
-            })
+            });
+            apply_surface_capabilities(&mut summary);
+            summary
         })
         .collect()
+}
+
+fn apply_surface_capabilities(summary: &mut SurfaceSummary) {
+    summary.can_observe = true;
+    summary.can_observe_compaction = true;
+    match summary.surface.as_str() {
+        "claude-code" => {
+            summary.integration = "hooks".into();
+            summary.can_trim_shell = true;
+            summary.can_trim_builtin = true;
+            summary.can_trim_mcp = true;
+            summary.status = if summary.seen && summary.acted > 0 {
+                "active"
+            } else if summary.seen {
+                "observing"
+            } else {
+                "not_seen"
+            }
+            .into();
+        }
+        "cursor" => {
+            summary.integration = "hooks".into();
+            summary.can_trim_shell = true;
+            summary.can_trim_mcp = true;
+            summary.status = if summary.seen {
+                "partially_active"
+            } else {
+                "not_seen"
+            }
+            .into();
+            summary
+                .limitations
+                .push("Built-in Read and search results are observed only".into());
+        }
+        "codex" => {
+            summary.integration = "plugin".into();
+            summary.can_trim_shell = true;
+            summary.status = if summary.seen {
+                "partially_active"
+            } else {
+                "not_seen"
+            }
+            .into();
+            summary
+                .limitations
+                .push("Built-in Read and search results are observed only".into());
+            summary
+                .limitations
+                .push("Clean PostToolUse replacement is not enabled for MCP output".into());
+        }
+        _ => {}
+    }
 }
 
 /// Per-surface activity enriched with the transcript corpus under `home` (CTX-53). The hook-based
@@ -2095,6 +2499,42 @@ pub fn surface_summary_full(conn: &Connection, home: &std::path::Path) -> Vec<Su
                 entry.last_seen = stats.last_activity;
             }
         }
+    }
+    // A plugin heartbeat proves Codex hooks actually ran; installation alone does not. Keep this
+    // independent from decisions because a new or disabled compressor can still be observing.
+    if let Some(codex) = base.iter_mut().find(|s| s.surface == "codex") {
+        if let Some((_event, ts)) = latest_surface_hook_event(conn, "codex") {
+            codex.seen = true;
+            codex.observed_via = "plugin-hook".into();
+            if codex
+                .last_seen
+                .as_ref()
+                .map(|old| old < &ts)
+                .unwrap_or(true)
+            {
+                codex.last_seen = Some(ts);
+            }
+        }
+        codex.compaction_seen = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_compactions WHERE surface='codex')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            == 1;
+        apply_surface_capabilities(codex);
+    }
+    if let Some(cursor) = base.iter_mut().find(|s| s.surface == "cursor") {
+        cursor.compaction_seen = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_compactions WHERE surface='cursor')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            == 1;
+        apply_surface_capabilities(cursor);
     }
     base
 }
@@ -2349,6 +2789,17 @@ pub fn causal_tool_outcomes(
     conn: &Connection,
     tool_filter: Option<&str>,
 ) -> Vec<CausalToolOutcome> {
+    causal_tool_outcomes_for_surface(conn, tool_filter, None)
+}
+
+/// The causal outcome used by an action gate. Unlike the aggregate history view, this can be
+/// scoped to an agent surface and always scopes to the current transform version. Legacy rows with
+/// no surface/version are Claude Code + retention-v1, preserving their original meaning.
+pub fn causal_tool_outcomes_for_surface(
+    conn: &Connection,
+    tool_filter: Option<&str>,
+    surface_filter: Option<&str>,
+) -> Vec<CausalToolOutcome> {
     // The re-touch signal that means harm for this tool: a re-edit of the same file for edit tools,
     // a re-read for everything else. One expression so the gate stays uniform across tool families.
     let retouch = format!(
@@ -2378,11 +2829,19 @@ pub fn causal_tool_outcomes(
             COALESCE(SUM(CASE WHEN applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN applied=0 AND lines_drop>0 AND explore_arm='control' THEN 1 ELSE 0 END),0)
          FROM compress_decisions
-         WHERE 1=1{EXCLUDE_SELF_DEV}"
+         WHERE COALESCE(transform_version, 'retention-v1') = ?1{EXCLUDE_SELF_DEV}"
     );
-    let sql = match tool_filter {
-        Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
-        None => format!(
+    let sql = match (tool_filter, surface_filter) {
+        (Some(_), Some(_)) => format!(
+            "{base} AND tool_name = ?2 AND COALESCE(surface, 'claude-code') = ?3 GROUP BY tool_name"
+        ),
+        (Some(_), None) => format!("{base} AND tool_name = ?2 GROUP BY tool_name"),
+        (None, Some(_)) => format!(
+            "{base} AND COALESCE(surface, 'claude-code') = ?2 GROUP BY tool_name ORDER BY (
+                SUM(CASE WHEN lines_drop>0 THEN 1 ELSE 0 END)
+             ) DESC"
+        ),
+        (None, None) => format!(
             "{base} GROUP BY tool_name ORDER BY (
                 SUM(CASE WHEN lines_drop>0 THEN 1 ELSE 0 END)
              ) DESC"
@@ -2407,9 +2866,15 @@ pub fn causal_tool_outcomes(
             baseline_collected: r.get(8)?,
         })
     };
-    let rows = match tool_filter {
-        Some(t) => stmt.query_map(params![t], map),
-        None => stmt.query_map([], map),
+    let rows = match (tool_filter, surface_filter) {
+        (Some(t), Some(surface)) => {
+            stmt.query_map(params![crate::compress::TRANSFORM_VERSION, t, surface], map)
+        }
+        (Some(t), None) => stmt.query_map(params![crate::compress::TRANSFORM_VERSION, t], map),
+        (None, Some(surface)) => {
+            stmt.query_map(params![crate::compress::TRANSFORM_VERSION, surface], map)
+        }
+        (None, None) => stmt.query_map(params![crate::compress::TRANSFORM_VERSION], map),
     };
     match rows {
         Ok(it) => it.filter_map(|x| x.ok()).collect(),
@@ -2509,12 +2974,14 @@ const WNAD_MIN_SCORED_TRIMS: i64 = 10;
 pub fn weekly_net_ahead(conn: &Connection) -> Vec<WeekNetAhead> {
     // Input tax reclaimed per week: the fixed per-request prune savings the hook recorded on every
     // managed request (CTX-68), summed by week and keyed the same way as the output query below.
-    let mut input_by_week: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut input_by_week: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
     if let Ok(mut stmt) = conn.prepare(
         "SELECT strftime('%Y-W%W', ts) AS wk, COALESCE(SUM(tokens_saved), 0)
          FROM requests WHERE tokens_saved > 0 GROUP BY wk",
     ) {
-        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        {
             for (wk, toks) in rows.flatten() {
                 input_by_week.insert(wk, toks);
             }
@@ -2626,22 +3093,41 @@ pub fn explore_tool_outcomes(
     conn: &Connection,
     tool_filter: Option<&str>,
 ) -> Vec<ExploreToolOutcome> {
+    explore_tool_outcomes_for_surface(conn, tool_filter, None)
+}
+
+pub fn explore_tool_outcomes_for_surface(
+    conn: &Connection,
+    tool_filter: Option<&str>,
+    surface_filter: Option<&str>,
+) -> Vec<ExploreToolOutcome> {
+    let retouch = format!(
+        "(CASE WHEN {edit} THEN COALESCE(outcome_edit_follow,0) ELSE COALESCE(outcome_reread,0) END)",
+        edit = crate::outcome_signals::edit_tool_sql_in_list("tool_name")
+    );
     let base = format!(
         "SELECT tool_name,
             COALESCE(SUM(CASE WHEN explore_arm='control' THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN explore_arm='control' AND outcome_joined=1 AND {retouch}=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='treatment' THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1 THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 AND COALESCE(outcome_reread,0)=1 THEN 1 ELSE 0 END),0)
+            COALESCE(SUM(CASE WHEN explore_arm='treatment' AND outcome_joined=1 AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
-         WHERE explore_arm IS NOT NULL{EXCLUDE_SELF_DEV}"
+         WHERE explore_arm IS NOT NULL
+           AND COALESCE(transform_version, 'retention-v1')=?1{EXCLUDE_SELF_DEV}"
     );
-    let sql = match tool_filter {
-        Some(_) => format!("{base} AND tool_name = ?1 GROUP BY tool_name"),
-        None => format!("{base} GROUP BY tool_name ORDER BY COUNT(*) DESC"),
+    let sql = match (tool_filter, surface_filter) {
+        (Some(_), Some(_)) => format!(
+            "{base} AND tool_name=?2 AND COALESCE(surface,'claude-code')=?3 GROUP BY tool_name"
+        ),
+        (Some(_), None) => format!("{base} AND tool_name=?2 GROUP BY tool_name"),
+        (None, Some(_)) => format!(
+            "{base} AND COALESCE(surface,'claude-code')=?2 GROUP BY tool_name ORDER BY COUNT(*) DESC"
+        ),
+        (None, None) => format!("{base} GROUP BY tool_name ORDER BY COUNT(*) DESC"),
     };
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -2660,9 +3146,15 @@ pub fn explore_tool_outcomes(
             treatment_rereads: r.get(8)?,
         })
     };
-    let rows = match tool_filter {
-        Some(t) => stmt.query_map(params![t], map),
-        None => stmt.query_map([], map),
+    let rows = match (tool_filter, surface_filter) {
+        (Some(t), Some(surface)) => {
+            stmt.query_map(params![crate::compress::TRANSFORM_VERSION, t, surface], map)
+        }
+        (Some(t), None) => stmt.query_map(params![crate::compress::TRANSFORM_VERSION, t], map),
+        (None, Some(surface)) => {
+            stmt.query_map(params![crate::compress::TRANSFORM_VERSION, surface], map)
+        }
+        (None, None) => stmt.query_map(params![crate::compress::TRANSFORM_VERSION], map),
     };
     match rows {
         Ok(it) => it.filter_map(|x| x.ok()).collect(),
@@ -2730,15 +3222,56 @@ pub struct CompactionFollowups {
 /// `COMPACTION_FOLLOWUP_WINDOW_TURNS`. Read-only. Claude Code is computed from the persisted
 /// `turns` table (compaction = a `pre_compact` flagged turn, the exchange right before a
 /// `compactMetadata` system row). Cursor is computed from `cursor_compactions`, captured live
-/// from the `preCompact` hook, at lower confidence (no correction follow-up yet). Codex is still
-/// `unknown` until it exposes a compaction signal. Never reports a causal claim (ADR 0016 / 0023).
+/// from the `preCompact` hook, at lower confidence (no correction follow-up yet). Codex uses the
+/// plugin's native pre/post compaction ledger at the same honest lower confidence.
 pub fn compaction_followups(conn: &Connection) -> Vec<CompactionFollowups> {
     let window = COMPACTION_FOLLOWUP_WINDOW_TURNS;
     vec![
         claude_compaction_followups(conn, window),
         cursor_compaction_followups(conn, window),
-        unknown_surface("codex", window),
+        native_compaction_followups(conn, "codex", window),
     ]
+}
+
+fn native_compaction_followups(
+    conn: &Connection,
+    surface: &str,
+    window: i64,
+) -> CompactionFollowups {
+    let events = conn
+        .query_row(
+            "SELECT COUNT(*) FROM native_compactions WHERE surface=?1 AND phase='pre'",
+            params![surface],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let sessions = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM native_compactions
+             WHERE surface=?1 AND phase='pre' AND session_id IS NOT NULL",
+            params![surface],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let seen = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM surface_hook_events WHERE surface=?1)",
+            params![surface],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        == 1;
+    if events == 0 && !seen {
+        return unknown_surface(surface, window);
+    }
+    CompactionFollowups {
+        surface: surface.into(),
+        confidence: "observed_low".into(),
+        compaction_events: Some(events),
+        followed_by_correction: None,
+        sessions_with_compaction: Some(sessions),
+        window_turns: window,
+    }
 }
 
 /// Cursor arm of [`compaction_followups`] (CTX-31 increment 1, ADR 0023). Cursor compactions are
@@ -2810,7 +3343,11 @@ fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
          ORDER BY session_id, turn_index",
     ) {
         Ok(mut stmt) => match stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         }) {
             Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
             Err(_) => return unknown_surface("claude-code", window),
@@ -2845,9 +3382,7 @@ fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
             if flags.contains("pre_compact") {
                 events += 1;
                 sessions_with.insert(sid);
-                let hit = corrections
-                    .iter()
-                    .any(|&c| c > *idx && c <= *idx + window);
+                let hit = corrections.iter().any(|&c| c > *idx && c <= *idx + window);
                 if hit {
                     followed += 1;
                 }
@@ -2918,6 +3453,25 @@ pub struct CompressSummaryRow {
     pub strategy: String,
     pub count: i64,
     pub chars_saved: i64,
+}
+
+/// Applied output savings keyed by the action identity used by the safety gate.
+pub fn compress_savings_by_surface_tool(conn: &Connection) -> Vec<(String, String, i64)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(surface,'claude-code'), tool_name,
+                COALESCE(SUM(chars_in-would_chars_out),0)
+         FROM compress_decisions
+         WHERE applied=1 AND lines_drop>0
+           AND COALESCE(transform_version,'retention-v1')=?1
+         GROUP BY 1,2",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map(params![crate::compress::TRANSFORM_VERSION], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    });
+    rows.map(|it| it.filter_map(|row| row.ok()).collect())
+        .unwrap_or_default()
 }
 
 pub fn compress_summary_today(
@@ -3003,9 +3557,11 @@ fn backfill_self_dev_tag(conn: &Connection) {
         [],
     );
     let already_done = conn
-        .query_row("SELECT 1 FROM meta WHERE k='self_dev_backfill_v1'", [], |_| {
-            Ok(())
-        })
+        .query_row(
+            "SELECT 1 FROM meta WHERE k='self_dev_backfill_v1'",
+            [],
+            |_| Ok(()),
+        )
         .is_ok();
     if already_done {
         return;
@@ -3438,7 +3994,11 @@ pub fn repair_corpus(conn: &Connection) -> Result<(usize, usize, usize)> {
         [],
         |r| r.get(0),
     )?;
-    Ok((joined as usize, corrections as usize, interrupt_clean as usize))
+    Ok((
+        joined as usize,
+        corrections as usize,
+        interrupt_clean as usize,
+    ))
 }
 
 /// Per-server tool catalog cache. Runs unconditionally so existing databases (already past the
@@ -3475,6 +4035,8 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     migrate_compress_events_table(conn);
     migrate_compress_decisions_table(conn);
     migrate_cursor_compactions_table(conn);
+    migrate_surface_hook_tables(conn);
+    migrate_product_events_table(conn);
     backfill_self_dev_tag(conn);
     backfill_edit_follow_label(conn);
     recompute_edit_follow_content_anchor(conn);
@@ -5201,10 +5763,7 @@ pub fn zero_usage_servers(conn: &Connection, lookback_days: u32) -> Result<Vec<S
     let mut unused: Vec<String> = kept
         .into_iter()
         .filter(|name| {
-            let prefix = format!(
-                "mcp__claude_ai_{}__",
-                name.replace(' ', "_").replace('-', "_")
-            );
+            let prefix = format!("mcp__claude_ai_{}__", name.replace([' ', '-'], "_"));
             !invoked
                 .iter()
                 .any(|p| p.starts_with(&prefix) || prefix.starts_with(p.as_str()))
@@ -5399,7 +5958,11 @@ mod compress_decision_tests {
 
         // Precision audit: the self-dev row is gone.
         let audit = signal_audit_rows(&conn, None, 100);
-        assert_eq!(audit.len(), 1, "self-dev row must be excluded from the audit");
+        assert_eq!(
+            audit.len(),
+            1,
+            "self-dev row must be excluded from the audit"
+        );
         assert_eq!(audit[0].command_or_path.as_deref(), Some("user.rs"));
 
         // Causal gate corpus: only the user row is counted as a baseline decision.
@@ -5539,7 +6102,15 @@ mod compress_decision_tests {
         let sid = conn.last_insert_rowid();
         let now = chrono::Utc::now().to_rfc3339();
         for _ in 0..2 {
-            insert_tool_invocation(&conn, sid, None, "mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__", &now).unwrap();
+            insert_tool_invocation(
+                &conn,
+                sid,
+                None,
+                "mcp__claude_ai_Linear__get_issue",
+                "mcp__claude_ai_Linear__",
+                &now,
+            )
+            .unwrap();
         }
         conn.execute(
             "INSERT INTO sessions (external_key, project, started_at) VALUES ('s2', 'p', '2026-05-31')",
@@ -5547,10 +6118,34 @@ mod compress_decision_tests {
         )
         .unwrap();
         let sid2 = conn.last_insert_rowid();
-        insert_tool_invocation(&conn, sid2, None, "mcp__claude_ai_Notion__notion-fetch", "mcp__claude_ai_Notion__", &now).unwrap();
+        insert_tool_invocation(
+            &conn,
+            sid2,
+            None,
+            "mcp__claude_ai_Notion__notion-fetch",
+            "mcp__claude_ai_Notion__",
+            &now,
+        )
+        .unwrap();
 
-        insert_tool_miss(&conn, Some("s1"), "mcp__claude_ai_Canva__export-design", "mcp__claude_ai_Canva__", "prune", &now).unwrap();
-        insert_tool_miss(&conn, Some("s1"), "mcp__claude_ai_Canva__get-design", "mcp__claude_ai_Canva__", "prune", &now).unwrap();
+        insert_tool_miss(
+            &conn,
+            Some("s1"),
+            "mcp__claude_ai_Canva__export-design",
+            "mcp__claude_ai_Canva__",
+            "prune",
+            &now,
+        )
+        .unwrap();
+        insert_tool_miss(
+            &conn,
+            Some("s1"),
+            "mcp__claude_ai_Canva__get-design",
+            "mcp__claude_ai_Canva__",
+            "prune",
+            &now,
+        )
+        .unwrap();
 
         let stats = tool_miss_stats(&conn, 30);
         assert_eq!(stats.total_misses, 2);
@@ -5722,7 +6317,12 @@ mod compress_decision_tests {
         )
         .unwrap();
 
-        let mut d = decision("2026-05-31T10:01:00+00:00", "sess-steer", "Bash", "figma metadata");
+        let mut d = decision(
+            "2026-05-31T10:01:00+00:00",
+            "sess-steer",
+            "Bash",
+            "figma metadata",
+        );
         d.applied = true;
         d.lines_drop = 166;
         insert_compress_decision(&conn, &d).unwrap();
@@ -5819,7 +6419,10 @@ mod compress_decision_tests {
         };
 
         let (a_edit, a_reread) = label("a.rs");
-        assert_eq!(a_edit, 1, "a.rs read was followed by an edit of the same file");
+        assert_eq!(
+            a_edit, 1,
+            "a.rs read was followed by an edit of the same file"
+        );
         assert_eq!(a_reread, 1, "an edit is also a later same-path touch");
 
         let (b_edit, b_reread) = label("b.rs");
@@ -5871,11 +6474,31 @@ mod compress_decision_tests {
         };
 
         // big.rs: first edit writes one region, the follow-up seeks a different line -> not a re-edit.
-        edit_at("2026-05-31T10:01:00+00:00", "big.rs", "let alpha = compute_one()", "let alpha = old_one()");
-        edit_at("2026-05-31T10:03:00+00:00", "big.rs", "return other_helper(z)", "call other_helper()");
+        edit_at(
+            "2026-05-31T10:01:00+00:00",
+            "big.rs",
+            "let alpha = compute_one()",
+            "let alpha = old_one()",
+        );
+        edit_at(
+            "2026-05-31T10:03:00+00:00",
+            "big.rs",
+            "return other_helper(z)",
+            "call other_helper()",
+        );
         // small.rs: the follow-up seeks the exact text the first edit wrote -> a real same-region redo.
-        edit_at("2026-05-31T10:01:00+00:00", "small.rs", "let beta = compute_two()", "let beta = old_two()");
-        edit_at("2026-05-31T10:03:00+00:00", "small.rs", "let beta = fixed_two()", "let beta = compute_two()");
+        edit_at(
+            "2026-05-31T10:01:00+00:00",
+            "small.rs",
+            "let beta = compute_two()",
+            "let beta = old_two()",
+        );
+        edit_at(
+            "2026-05-31T10:03:00+00:00",
+            "small.rs",
+            "let beta = fixed_two()",
+            "let beta = compute_two()",
+        );
 
         join_compress_outcomes(&conn).unwrap();
 
@@ -5917,7 +6540,11 @@ mod compress_decision_tests {
         )
         .unwrap();
         let sid: i64 = conn
-            .query_row("SELECT id FROM sessions WHERE external_key='proj-sess-view'", [], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM sessions WHERE external_key='proj-sess-view'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         conn.execute(
             "INSERT INTO turns (session_id, turn_index, role, flags, ts) VALUES (?1, 1, 'assistant', '', '2026-05-31T10:30:00+00:00')",
@@ -6025,7 +6652,10 @@ mod compress_decision_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(reread, 0, "routine TodoWrite follow-ups must not count as re-reads");
+        assert_eq!(
+            reread, 0,
+            "routine TodoWrite follow-ups must not count as re-reads"
+        );
     }
 
     #[test]
@@ -6057,12 +6687,14 @@ mod compress_decision_tests {
         )
         .unwrap();
 
-        let payload = json!({"merge": true, "todos": [{"id": "a", "content": "x", "status": "pending"}]});
+        let payload =
+            json!({"merge": true, "todos": [{"id": "a", "content": "x", "status": "pending"}]});
         let fp = crate::surface::fingerprint_tool_input("TodoWrite", &payload);
         let mut first = decision("2026-05-31T10:01:00+00:00", "sess-todo2", "TodoWrite", &fp);
         first.kind = "generic";
         insert_compress_decision(&conn, &first).unwrap();
-        let other = json!({"merge": true, "todos": [{"id": "b", "content": "y", "status": "pending"}]});
+        let other =
+            json!({"merge": true, "todos": [{"id": "b", "content": "y", "status": "pending"}]});
         let fp2 = crate::surface::fingerprint_tool_input("TodoWrite", &other);
         let mut second = decision("2026-05-31T10:05:00+00:00", "sess-todo2", "TodoWrite", &fp2);
         second.kind = "generic";
@@ -6099,7 +6731,10 @@ mod compress_decision_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(reread_same, 1, "identical todo payload should count as a re-read");
+        assert_eq!(
+            reread_same, 1,
+            "identical todo payload should count as a re-read"
+        );
     }
 
     #[test]
@@ -6262,6 +6897,55 @@ mod compress_decision_tests {
         assert_eq!(read.control_corrections, 0, "control had no corrections");
     }
 
+    #[test]
+    fn randomized_action_evidence_is_isolated_by_surface() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        for i in 0..160 {
+            let mut row = decision(
+                "2026-07-18T10:00:00+00:00",
+                "claude-session",
+                "Shell",
+                "git status",
+            );
+            row.applied = i >= 80;
+            row.explore_arm = Some(if i >= 80 { "treatment" } else { "control" });
+            // NULL is the legacy/Claude Code surface by contract.
+            insert_compress_decision(&conn, &row).unwrap();
+        }
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_joined=1, outcome_correction=0, outcome_reread=0",
+            [],
+        )
+        .unwrap();
+
+        let claude = explore_tool_outcomes_for_surface(&conn, Some("Shell"), Some("claude-code"));
+        assert_eq!(claude[0].control_n, 80);
+        assert_eq!(claude[0].treatment_n, 80);
+        assert!(explore_tool_outcomes_for_surface(&conn, Some("Shell"), Some("codex")).is_empty());
+
+        let cfg = crate::config::Config {
+            compress_enabled: true,
+            compress_preset: crate::config::CompressPreset::Full,
+            ..Default::default()
+        };
+        assert!(crate::compress::activation::tool_activated_on_surface(
+            &cfg,
+            "Shell",
+            "generic",
+            "claude-code"
+        ));
+        assert!(!crate::compress::activation::tool_activated_on_surface(
+            &cfg, "Shell", "generic", "codex"
+        ));
+    }
+
     fn seed_session(conn: &Connection, key: &str) -> i64 {
         conn.execute(
             "INSERT INTO sessions (external_key, project, started_at) VALUES (?1, 'p', '2026-05-31T10:00:00+00:00')",
@@ -6336,7 +7020,11 @@ mod compress_decision_tests {
         let out = compaction_followups(&conn);
         let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
         assert_eq!(claude.confidence, "observed");
-        assert_eq!(claude.compaction_events, Some(2), "two compaction events seen");
+        assert_eq!(
+            claude.compaction_events,
+            Some(2),
+            "two compaction events seen"
+        );
         assert_eq!(
             claude.followed_by_correction,
             Some(1),
@@ -6466,7 +7154,7 @@ mod compress_decision_tests {
         insert_compress_decision(&conn, &cursor).unwrap();
 
         let out = surface_summary(&conn);
-        assert_eq!(out.len(), 2, "always reports both known surfaces");
+        assert_eq!(out.len(), 3, "always reports every known surface");
         let cc = out.iter().find(|s| s.surface == "claude-code").unwrap();
         assert!(cc.seen);
         assert_eq!(cc.decisions, 1);
@@ -6489,9 +7177,9 @@ mod compress_decision_tests {
         std::env::set_var("CTX_HOME", tmp.path());
         let conn = open_db().unwrap();
         ensure_schema(&conn).unwrap();
-        // Empty DB: both surfaces present, both unseen, zero counts, no last_seen.
+        // Empty DB: all surfaces present, unseen, with zero counts and no last_seen.
         let out = surface_summary(&conn);
-        assert_eq!(out.len(), 2);
+        assert_eq!(out.len(), 3);
         for s in &out {
             assert!(!s.seen, "{} should be unseen on an empty db", s.surface);
             assert_eq!(s.decisions, 0);
@@ -6591,7 +7279,16 @@ mod compress_decision_tests {
             },
         )
         .unwrap();
-        insert_rewind(&conn, "rw1", "2026-06-14T00:00:00+00:00", Some("s1"), "Read", "/big.rs", "full original", "trimmed");
+        insert_rewind(
+            &conn,
+            "rw1",
+            "2026-06-14T00:00:00+00:00",
+            Some("s1"),
+            "Read",
+            "/big.rs",
+            "full original",
+            "trimmed",
+        );
         link_decision_rewind(&conn, Some("s1"), "Read", "rw1");
         mark_rewind_expanded(&conn, "rw1");
 
@@ -6638,14 +7335,18 @@ mod compress_decision_tests {
             },
         )
         .unwrap();
-        conn.execute("UPDATE compress_decisions SET outcome_joined=1", []).unwrap();
+        conn.execute("UPDATE compress_decisions SET outcome_joined=1", [])
+            .unwrap();
 
         let wk = weekly_net_ahead(&conn);
         let w = wk.first().expect("one week");
         assert!(w.reclaimed_tokens > 50_000, "reclaimed well over the bar");
         assert!(w.reclaim_ok);
         assert!(w.harm_unconfirmed, "1 scored trim cannot confirm safety");
-        assert!(!w.net_ahead, "fail-closed: no net-ahead without confirmed safety");
+        assert!(
+            !w.net_ahead,
+            "fail-closed: no net-ahead without confirmed safety"
+        );
     }
 
     #[test]
@@ -6806,11 +7507,8 @@ mod compress_attach_tests {
         )
         .unwrap();
 
-        conn.execute(
-            "DELETE FROM meta WHERE k='path_role_backfill_v2'",
-            [],
-        )
-        .unwrap();
+        conn.execute("DELETE FROM meta WHERE k='path_role_backfill_v2'", [])
+            .unwrap();
         ensure_schema(&conn).unwrap();
 
         let role: Option<String> = conn

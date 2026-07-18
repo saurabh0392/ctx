@@ -129,7 +129,7 @@ fn similar_history_hint(messages: &[Value]) -> Option<String> {
     let Ok(conn) = crate::db::open_db() else {
         return None;
     };
-    let _ = crate::db::ensure_schema(&conn).ok()?;
+    crate::db::ensure_schema(&conn).ok()?;
     let emb = crate::embedder::embed_text(&crate::embedder::compose_embed_text(
         &text.chars().take(1500).collect::<String>(),
         "",

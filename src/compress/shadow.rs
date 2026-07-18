@@ -173,7 +173,11 @@ pub fn kind_str(k: CompressKind) -> &'static str {
 /// way the old `cat -n` parse did. `None` when nothing distinctive enough exists, in which case the
 /// re-edit does not fire for that edit.
 pub(crate) fn edit_content_anchor(s: &str) -> Option<String> {
-    let best = s.lines().map(str::trim).max_by_key(|l| l.len()).unwrap_or("");
+    let best = s
+        .lines()
+        .map(str::trim)
+        .max_by_key(|l| l.len())
+        .unwrap_or("");
     let norm = best.split_whitespace().collect::<Vec<_>>().join(" ");
     if norm.chars().count() < 8 {
         return None;
@@ -305,12 +309,22 @@ pub fn compute_shadow_decision(
             model_proposed: None,
             self_dev: None,
             edit_wrote: if matches!(kind, CompressKind::Edit) {
-                edit_content_anchor(tool_input.get("new_string").and_then(|v| v.as_str()).unwrap_or(""))
+                edit_content_anchor(
+                    tool_input
+                        .get("new_string")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                )
             } else {
                 None
             },
             edit_sought: if matches!(kind, CompressKind::Edit) {
-                edit_content_anchor(tool_input.get("old_string").and_then(|v| v.as_str()).unwrap_or(""))
+                edit_content_anchor(
+                    tool_input
+                        .get("old_string")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                )
             } else {
                 None
             },
@@ -344,9 +358,15 @@ mod tests {
             Some([500, 549])
         );
         // Whole-file read (no offset/limit) -> None, so it overlaps any later read.
-        assert_eq!(read_line_range(&serde_json::json!({"file_path": "/a.rs"})), None);
+        assert_eq!(
+            read_line_range(&serde_json::json!({"file_path": "/a.rs"})),
+            None
+        );
         // offset with no limit reads to end of file.
-        assert_eq!(read_line_range(&serde_json::json!({"offset": 10})), Some([10, u32::MAX]));
+        assert_eq!(
+            read_line_range(&serde_json::json!({"offset": 10})),
+            Some([10, u32::MAX])
+        );
     }
 
     #[test]
@@ -376,8 +396,14 @@ mod tests {
             "/tmp",
         )
         .expect("decision");
-        assert_eq!(d.features.edit_wrote.as_deref(), Some("let total = new_value + 2"));
-        assert_eq!(d.features.edit_sought.as_deref(), Some("let total = old_value + 1"));
+        assert_eq!(
+            d.features.edit_wrote.as_deref(),
+            Some("let total = new_value + 2")
+        );
+        assert_eq!(
+            d.features.edit_sought.as_deref(),
+            Some("let total = old_value + 1")
+        );
     }
 
     #[test]
@@ -443,7 +469,10 @@ mod tests {
         );
         d.features.self_dev = Some(true);
         let js = d.features_json();
-        assert!(js.contains("\"self_dev\":true"), "serialized features: {js}");
+        assert!(
+            js.contains("\"self_dev\":true"),
+            "serialized features: {js}"
+        );
         assert!(crate::db::EXCLUDE_SELF_DEV.contains("\"self_dev\":true"));
     }
 }

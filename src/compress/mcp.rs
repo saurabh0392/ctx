@@ -46,6 +46,9 @@ pub fn compress_mcp_output(
 }
 
 fn trim_json_value(v: &serde_json::Value, depth: usize, max_array: usize) -> serde_json::Value {
+    if depth >= 8 && (v.is_array() || v.is_object()) {
+        return serde_json::Value::String("… nested content omitted".into());
+    }
     match v {
         serde_json::Value::Object(map) => {
             let mut out = serde_json::Map::new();

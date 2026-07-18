@@ -72,7 +72,7 @@ filter_mode = "soft"
 #[test]
 #[serial]
 fn hook_subprocess_soft_mode_no_allowed_mcp_servers() {
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("integration tests need the ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     let h = CtxHarness::new();
     h.write_config(
         r#"
@@ -93,7 +93,7 @@ adaptive_prefix_enabled = false
 
     ctx::profiles::apply_profile("data", true, true).unwrap();
 
-    let stdin_json = serde_json::json!({
+    let _stdin_json = serde_json::json!({
         "cwd": "/tmp",
         "prompt": "fix figma export",
         "model": "claude-sonnet-4-20250514"

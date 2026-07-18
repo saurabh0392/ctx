@@ -24,7 +24,7 @@ pub fn truncate_to_char_budget(s: &str, max: usize) -> String {
 pub fn rebuild_max_chars_for_db(conn: &Connection) -> usize {
     let cfg = crate::config::Config::load();
     if let Some(m) = cfg.adaptive_prefix_max_chars {
-        return m.min(8000).max(100);
+        return m.clamp(100, 8000);
     }
     let hint: Option<String> = conn
         .query_row(
@@ -37,7 +37,7 @@ pub fn rebuild_max_chars_for_db(conn: &Connection) -> usize {
         .ok();
     let h = hint.as_deref().unwrap_or("");
     if h.contains("haiku") {
-        1280_usize.min(2000)
+        1280_usize
     } else {
         2000
     }
@@ -47,11 +47,11 @@ pub fn rebuild_max_chars_for_db(conn: &Connection) -> usize {
 pub fn max_chars_for_hook_input(model_hint: Option<&str>) -> usize {
     let cfg = crate::config::Config::load();
     if let Some(m) = cfg.adaptive_prefix_max_chars {
-        return m.min(8000).max(100);
+        return m.clamp(100, 8000);
     }
     let h = model_hint.unwrap_or("").to_lowercase();
     if h.contains("haiku") {
-        1280_usize.min(2000)
+        1280_usize
     } else {
         2000
     }
@@ -70,8 +70,8 @@ fn section_budgets(max_chars: usize) -> [usize; 5] {
         base * w[3],
         base * w[4],
     ];
-    for i in 0..rem.min(5) {
-        out[i] += 1;
+    for item in out.iter_mut().take(rem.min(5)) {
+        *item += 1;
     }
     out
 }
@@ -195,7 +195,6 @@ fn query_coding_style(conn: &Connection, budget: usize) -> String {
         .flatten()
         .filter_map(|x| x.ok())
     {
-        let row = row;
         for k in LANG_KEYS {
             if row.contains(k) {
                 *counts.entry(*k).or_insert(0) += 1;
@@ -203,7 +202,7 @@ fn query_coding_style(conn: &Connection, budget: usize) -> String {
         }
     }
     let mut v: Vec<_> = counts.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|row| std::cmp::Reverse(row.1));
     let top: Vec<_> = v.into_iter().take(6).map(|(k, _)| k).collect();
     if top.is_empty() {
         return String::new();
@@ -263,7 +262,7 @@ fn query_task_distribution(conn: &Connection, budget: usize) -> String {
         return String::new();
     }
     let mut v: Vec<_> = buckets.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|row| std::cmp::Reverse(row.1));
     let parts: Vec<String> = v
         .iter()
         .take(4)
@@ -290,7 +289,7 @@ fn session_norms_line(budget: usize) -> String {
 
 /// Build markdown adaptive prefix, respecting `max_chars` total.
 pub fn generate_adaptive_prefix(conn: &Connection, max_chars: usize) -> String {
-    let max_chars = max_chars.min(2000).max(200);
+    let max_chars = max_chars.clamp(200, 2000);
     let b = section_budgets(max_chars);
     let s0 = query_correction_snippets(conn, b[0]);
     let s1 = query_tool_patterns(conn, b[1]);

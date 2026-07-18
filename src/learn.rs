@@ -302,6 +302,7 @@ pub fn score_parts(
 ///   * it beat its kind-only twin on holdout AUC by the required margin (`file_aware_wins`),
 ///   * the read's repo has cleared its own per-repo label gate,
 ///   * the predicted P(needed whole) is below the conservative act threshold.
+///
 /// This only ever *proposes*: the caller still requires the normal preset, burn-in, and causal
 /// activation gate before anything is trimmed, so a positive here can never apply a trim by itself.
 pub fn model_proposes_safe_trim(
@@ -314,7 +315,14 @@ pub fn model_proposes_safe_trim(
     let Some(model) = load_model() else {
         return false;
     };
-    model_proposes_with(&model, kind, lines_total, lines_drop, features_json, repo_key)
+    model_proposes_with(
+        &model,
+        kind,
+        lines_total,
+        lines_drop,
+        features_json,
+        repo_key,
+    )
 }
 
 /// Pure proposal logic against an explicit model, so the gating can be tested without disk or env.
@@ -924,7 +932,11 @@ mod tests {
         let before_kind = v[..role_lo].to_vec();
         mask_role_block(&mut v);
         assert!(v[role_lo..].iter().all(|x| *x == 0.0), "role block zeroed");
-        assert_eq!(&v[..role_lo], &before_kind[..], "kind/shape block untouched");
+        assert_eq!(
+            &v[..role_lo],
+            &before_kind[..],
+            "kind/shape block untouched"
+        );
     }
 
     #[test]
@@ -994,7 +1006,14 @@ mod tests {
             positives: 40,
             ready: true,
         }];
-        assert!(!model_proposes_with(&untrained, "read", 20, 5, fj, Some("/a")));
+        assert!(!model_proposes_with(
+            &untrained,
+            "read",
+            20,
+            5,
+            fj,
+            Some("/a")
+        ));
     }
 
     #[test]

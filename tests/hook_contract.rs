@@ -11,7 +11,7 @@ use std::process::Command;
 #[test]
 #[serial]
 fn hook_user_prompt_submit_includes_adaptive_in_additional_context() {
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("integration tests need the ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     let h = CtxHarness::new();
     h.write_config(
         r#"

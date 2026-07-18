@@ -574,6 +574,20 @@
           --measure: 60ch;
         }
         .h2-wrap { max-width: 720px; margin: 0 auto; }
+        .beta-onboard { display:none; margin-top:30px; border:1px solid var(--line); border-radius:14px;
+          background:var(--raised); padding:18px 20px; box-shadow:0 1px 2px rgba(20,30,24,.03); }
+        .beta-onboard.on { display:block; }
+        .beta-ob-top { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; }
+        .beta-ob-k { font-family:var(--fmono); font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--accent-ink); }
+        .beta-ob-h { font-family:var(--fserif); font-size:20px; font-weight:600; color:var(--ink); margin-top:5px; }
+        .beta-ob-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+        .beta-ob-btn { border:1px solid var(--line); background:var(--paper); color:var(--muted); border-radius:9px; padding:8px 11px; font:600 12px var(--fsans); cursor:pointer; }
+        .beta-ob-btn.primary { color:var(--accent-ink); border-color:rgba(15,122,84,.24); background:var(--accent-soft); }
+        .beta-ob-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:16px; }
+        .beta-ob-step { border-top:2px solid var(--line); padding-top:9px; font:12px/1.45 var(--fsans); color:var(--faint); }
+        .beta-ob-step.done { border-color:var(--accent); color:var(--muted); }
+        .beta-ob-step b { display:block; color:var(--ink); font-weight:600; }
+        @media (max-width:640px) { .beta-ob-top { display:block; } .beta-ob-actions { justify-content:flex-start; margin-top:12px; } }
         .h2-rail { position: fixed; left: max(20px, calc(50vw - 470px)); top: 50%;
           transform: translateY(-50%); z-index: 10; display: flex; flex-direction: column; }
         .h2-seg { display: flex; flex-direction: column; align-items: center; }
@@ -689,19 +703,20 @@
       </nav>
 
       <div class="h2-wrap">
+        <div class="beta-onboard" id="h2-onboarding"></div>
         <section class="h2-beat h2-first" id="h2-see">
           <div class="h2-reveal">
             <div class="h2-eyebrow"><span class="ix">01</span> See where your context goes</div>
-            <h1 class="h2-lede">ctx makes your agent leaner without losing the thread.</h1>
+            <h1 class="h2-lede">See where context goes. Reclaim noise with the original one step away.</h1>
           </div>
           <div class="h2-reveal" id="h2-hero"></div>
         </section>
 
         <section class="h2-beat" id="h2-save">
           <div class="h2-reveal">
-            <div class="h2-eyebrow"><span class="ix">02</span> Save only what is safe</div>
-            <h2 class="h2-head">It only cuts what your own sessions prove is safe.</h2>
-            <p class="h2-body">ctx watches a tool, tries trimming it on a slice of your real work, and keeps trimming only once that slice shows you did not have to <b>re-read or re-edit</b> to recover. Every tool climbs the same ladder. Nothing skips a rung.</p>
+            <div class="h2-eyebrow"><span class="ix">02</span> Act only after the safety check passes</div>
+            <h2 class="h2-head">It only shortens output after comparable runs pass the safety check.</h2>
+            <p class="h2-body">ctx watches a tool, tries trimming it on a slice of your real work, and keeps trimming only when observed <b>re-read and re-edit</b> outcomes are not measurably worse than leaving it whole. That is behavioral evidence, not causal proof.</p>
           </div>
           <div class="h2-reveal h2-ladder" id="h2-ladder"></div>
         </section>
@@ -713,7 +728,7 @@
           </div>
           <div class="h2-reveal">
             <div class="h2-facts">
-              <div class="h2-fact"><div class="ft">Where it lives</div><div class="fv">SQLite on this machine. No account, no telemetry.</div></div>
+              <div class="h2-fact"><div class="ft">Where it lives</div><div class="fv">SQLite on this machine. No account or background telemetry.</div></div>
               <div class="h2-fact"><div class="ft">Who it watches</div><div class="fv">Claude Code and Cursor alike. It takes no side.</div></div>
               <div class="h2-fact"><div class="ft">What it removes</div><div class="fv">Nothing you cannot get back. Every trim is one command from whole.</div></div>
             </div>
@@ -724,10 +739,10 @@
         <footer class="h2-foot h2-reveal">
           <div class="h2-foot-nav">
             <a onclick="go('see')">See where your context goes</a>
-            <a onclick="go('save')">The proof, tool by tool</a>
+            <a onclick="go('save')">The evidence, tool by tool</a>
             <a onclick="go('settings')">Settings</a>
           </div>
-          <div class="h2-foot-note">All local. Nothing leaves this machine.</div>
+          <div class="h2-foot-note">Local by default. Data leaves only when you explicitly export or send a previewed report/check-in.</div>
         </footer>
       </div>
     </section>
@@ -836,7 +851,7 @@
         <div id="see-band"></div>
         <div id="see-out"></div>
         <div id="see-in"></div>
-        <div class="see-foot">All local. Nothing leaves this machine. Any prune is one command back.</div>
+        <div class="see-foot">Local by default. Any prune is one command back; sharing is always an explicit action.</div>
       </div>
     </section>
 
@@ -957,15 +972,15 @@
       </style>
       <div class="sv-wrap">
         <div class="sv-top">
-          <div class="sv-eyebrow0">Save only what is safe</div>
-          <h1 class="sv-title">The proof, tool by tool.</h1>
-          <p class="sv-lede">ctx trims a tool only after your own sessions show it was safe. This is the ladder every tool climbs, the evidence behind each verdict, and where ctx can act on your behalf.</p>
+          <div class="sv-eyebrow0">Act only after the safety check passes</div>
+          <h1 class="sv-title">The evidence, tool by tool.</h1>
+          <p class="sv-lede">CTX trims a tool only after comparable randomized runs in your own sessions pass its safety check. This is the evidence behind each verdict and where CTX can act on your behalf.</p>
         </div>
         <div id="save-ladder"></div>
         <div id="save-tools"></div>
         <div id="save-agents"></div>
         <div id="save-comp"></div>
-        <div class="sv-footer">All local. Nothing leaves this machine. Every verdict comes from your own sessions.</div>
+        <div class="sv-footer">Local by default. Every verdict comes from observed behavior in your own sessions.</div>
       </div>
     </section>
 
@@ -974,7 +989,7 @@
       <div class="hero">
         <div class="eyebrow"><span class="pip"></span> See where your context goes</div>
         <h1 class="title">Your context bill</h1>
-        <p class="lede">Every tool result your agent reads spends context. This is the bill, itemized from your own sessions: the biggest sinks first, how much ctx could safely reclaim, and how much it already has. No proof needed to see it, it is just your data.</p>
+        <p class="lede">Every tool result your agent reads spends context. This is the bill, itemized from your own sessions: the biggest sinks first, how much the current transform marks eligible, and how much CTX already reclaimed. Eligibility and activation are separate decisions.</p>
       </div>
       <style>
         .bill-tot { display:flex; gap:14px; flex-wrap:wrap; margin:22px 0 10px; }
@@ -1147,7 +1162,7 @@
         <div class="st-head">
           <div class="st-eyebrow">Yours, and only yours</div>
           <h1 class="st-title">Settings</h1>
-          <p class="st-lede">Everything saves to <code>~/.ctx/config.toml</code> on this machine. No account, no telemetry.</p>
+          <p class="st-lede">Everything saves on this machine. No account or background telemetry; exports and previewed feedback are explicit.</p>
         </div>
         <div class="st-subtabs">
           <button class="st-subtab on" id="st-tab-settings" onclick="settingsTab('settings')">Settings</button>
@@ -1155,7 +1170,7 @@
         </div>
         <div class="st-panel on" id="st-panel-settings"></div>
         <div class="st-panel" id="st-panel-activity"></div>
-        <div class="st-footer">All local. Nothing leaves this machine.</div>
+        <div class="st-footer">Local by default. Nothing is sent without an explicit Send action.</div>
       </div>
     </section>
   </main>
@@ -1224,18 +1239,18 @@
     if ((p.trimmed_n || 0) > 0) return "proving";
     return "watch";
   }
-  const STAGE_LABEL = { earned: "Earned", trial: "On trial", proving: "Unproven", off: "Kept off", watch: "Watching" };
+  const STAGE_LABEL = { earned: "Earned", trial: "On trial", proving: "Evaluating", off: "Kept off", watch: "Watching" };
   const STAGE_ORDER = { earned: 0, trial: 1, proving: 2, off: 3, watch: 4 };
   function stageLabel(r) {
     if (!r) return "Watching";
     if (r.stage === "proving" && r.p) {
       if (r.p.verdict === "unclear") return "Close to verdict";
-      if (r.p.verdict === "collecting") return "Collecting proof";
+      if (r.p.verdict === "collecting") return "Collecting evidence";
     }
     return STAGE_LABEL[r.stage] || r.stage;
   }
-  // Within "watch", tell two states apart: still gathering the left-alone baseline ("gather"), vs
-  // already having enough baseline but no trimmed "after" runs to compare against ("wait"). A tool
+  // Within "watch", tell two states apart: still gathering unchanged runs ("gather"), versus
+  // having enough unchanged history but no trimmed runs to compare against ("wait"). A tool
   // can't earn without both halves, and the trimmed half never accrues while autopilot is off and
   // the tool isn't on trial. This is what makes "272 of about 30, still watching" honest instead
   // of looking stuck for no reason (CTX-36).
@@ -1249,7 +1264,7 @@
   }
   function shortMsg(r, autopilot, minB) {
     const { stage, p, c } = r;
-    if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Earned it. Across ${runs} of your runs, trimming did not make you ${toolIsEdit(r.tool) ? "re-edit" : "re-read"} or correct more.`; }
+    if (stage === "earned") { const runs = (p.baseline_n || 0) + (p.trimmed_n || 0); return `Trimming. Across ${runs} observed runs, the safety check passed.`; }
     if (stage === "off") {
       const cd = p && p.correction_delta, rd = p && p.reread_delta;
       if (cd && cd.verdict === "harmful") return "Tested and corrections rose after trims, so ctx keeps it whole.";
@@ -1258,17 +1273,17 @@
     }
     if (stage === "trial") {
       if (p && p.verdict === "unclear") return "On live trial, close to a verdict.";
-      return "On live trial. ctx is trimming it on your runs to finish the proof.";
+      return "On live trial. ctx is collecting the comparison runs needed for a decision.";
     }
     if (stage === "proving") {
-      if (p && p.verdict === "unclear") return "Close to a verdict. ctx keeps output whole until the proof locks.";
+      if (p && p.verdict === "unclear") return "Waiting for data. CTX keeps output unchanged while it resolves the remaining uncertainty.";
       if (p && p.verdict === "collecting") return "Collecting the trimmed half. Your output stays whole for now.";
       return "Has trim history but no locked verdict yet. Output stays whole.";
     }
     if (watchKind(r, minB) === "wait") {
       return autopilot
-        ? "Watching. It has the before-data; ctx will trim it on a few runs to finish the proof."
-        : "Watching. It has the before-data, but ctx must trim it to prove it, and autopilot is off.";
+        ? "Watching. It has the before-data; ctx will evaluate the transform on a few comparison runs."
+        : "Watching. It has the before-data, but comparison runs need autopilot or a manual trial.";
     }
     const j = (c && c.joined) || 0, n = (c && c.need) || minB || 30;
     return `Watching. ${Math.min(j, n)} of about ${n} runs judged so far.`;
@@ -1281,10 +1296,36 @@
       .sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage]);
   }
 
+  // A tool can have evidence on more than one agent surface. Show the best-populated surface, but
+  // never combine surfaces or fall back to the observational tally for a trim decision.
+  function randomizedEvidenceByTool(mp) {
+    const byTool = {};
+    (mp && mp.explore_tools || []).forEach((t) => {
+      const prev = byTool[t.tool];
+      const n = (t.control_collected || 0) + (t.treatment_collected || 0);
+      const prevN = prev ? (prev.control_collected || 0) + (prev.treatment_collected || 0) : -1;
+      if (!prev || n > prevN) byTool[t.tool] = t;
+    });
+    return byTool;
+  }
+
+  function applyDecisionStages(rows, expBy, proof) {
+    const explicitTrials = new Set((proof && proof.trial_tools) || []);
+    rows.forEach((r) => {
+      const e = expBy[r.tool];
+      if (e && e.status === "trimming") r.stage = "earned";
+      else if (e && e.status === "kept_whole") r.stage = "off";
+      else if ((e && e.treatment_collected > 0) || explicitTrials.has(r.tool)) r.stage = "trial";
+      else r.stage = "watch";
+    });
+    rows.sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage]);
+    return rows;
+  }
+
   // ════ HOME ════
   // The north star, made visible (CTX-63). A week is net-ahead when ctx reclaimed enough context AND
-  // trimming stayed at or below the developer's own harm baseline. Fail-closed: safety must be
-  // confirmed, never assumed, so a week that reclaimed room but has not proven its trims safe reads
+  // trimming stayed at or below the developer's own observed re-check rate. Safety must be
+  // confirmed, never assumed, so a week that reclaimed room but has not passed the safety check reads
   // as "reclaiming, not yet confirmed", not a win.
   // Rough share of a 200K-token context window, so a token count means something to a reader.
   function windowShare(tokens) {
@@ -1295,12 +1336,12 @@
 
   // Insight-actions, taught (CTX-63): what each action is, why it matters, and what is still on the
   // table. Education only counts when it changes what you do, so this explains the actions rather
-  // than tallying them. ctx has no telemetry; it can only see actions it logs locally.
+  // than tallying them. ctx has no background telemetry; it can only see actions logged locally.
   function insightActionsBlock(a) {
     const rec = a.recoveries || 0, prunes = a.mcp_prunes || 0;
     const recRow = rec > 0
-      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. That is the safety net working: ctx can trim hard because nothing is ever truly lost, the original is one call away.</div></div>`
-      : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No trims recovered yet.</b> When ctx trims something your agent still needs, it calls ctx_expand to get the verbatim original back. You will see that here, and it is the reason trimming stays safe.</div></div>`;
+      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. That is the recovery path working: the original remained available locally.</div></div>`
+      : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No trims recovered yet.</b> If an agent needs a trimmed block, it can call ctx_expand to retrieve the verbatim original. Recovery is available, but has not been exercised in this history.</div></div>`;
     const pruneRow = prunes > 0
       ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(prunes)} MCP prune${prunes === 1 ? "" : "s"}.</b> You switched to a leaner profile and dropped MCP servers that were loading their whole tool list into every request. That is context tax cut at the source.</div></div>`
       : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No MCP servers pruned yet.</b> Every MCP server you connect loads its full tool list into context on every request, whether you use it or not. The <span class="link" onclick="go('bill')">Context bill</span> shows which ones you load but rarely call, those are free to cut.</div></div>`;
@@ -1348,7 +1389,7 @@
     } else {
       harmPass = w.harm_ok;
       harmV = `${trimRate}% vs ${baseRate}%`;
-      harmExplain = `When ctx trimmed, your agent went back to the source ${trimRate}% of the time. When it left output whole, ${baseRate}%. Lower on the trimmed side means trimming is not making your agent work harder. ${harmPass ? "So the safety check passes." : "Here it is higher, so trimming is costing you and ctx holds those tools whole."}`;
+      harmExplain = `When CTX trimmed, your agent went back to the source ${trimRate}% of the time. When it left output whole, ${baseRate}%. This is an observed association, not a causal estimate. ${harmPass ? "The current comparison passes the safety check." : "The trimmed side is higher, so CTX holds those tools whole."}`;
     }
     const harmCard = `<div class="wnad-c ${harmPass ? "pass" : ""}">
       <div class="wnad-c-h"><span class="wnad-c-mark ${harmPass ? "pass" : "wait"}">${harmPass ? "✓" : "2"}</span> No extra work for your agent</div>
@@ -1361,9 +1402,9 @@
     if (w.net_ahead) {
       outcome = `Both true, so this week is net-ahead: ctx bought back real context room and your agent did not pay for it. This is the number the whole tool is trying to move.`;
     } else if (!w.reclaim_ok && (w.harm_ok || w.harm_unconfirmed)) {
-      outcome = `One step away, and it is the easy one. ${w.harm_ok ? "Safety already checks out" : "Safety is still being confirmed"}; you just need ${fmtK(short)} more tokens reclaimed. The tools on trial (Edit, Read) are still proving themselves; as they earn, ctx trims more and this crosses 50K on its own. Nothing for you to do.`;
+      outcome = `One step away. ${w.harm_ok ? "The safety check passes" : "The safety check is still open"}; ${fmtK(short)} more reclaimed tokens would reach the weekly target. Tools being tested are still gathering comparison runs; earned tools can increase this total.`;
     } else {
-      outcome = `Room was reclaimed, but trimming pushed your agent back to the source more than leaving output whole did, so ctx holds the affected tools whole. Safety vetoes the week even when there were savings. That is the guardrail doing its job.`;
+      outcome = `Room was reclaimed, but the trimmed side had a higher return-to-source rate, so CTX keeps the affected tools unchanged. The safety check can reject a week even when there were savings.`;
     }
 
     return `<div class="sec-eyebrow">Are you net-ahead this week?</div>
@@ -1406,21 +1447,37 @@
     const missTag = misses > 0
       ? '<b style="color:var(--danger)">' + misses + ' tool-misses</b>'
       : '<b style="color:var(--primary-lt)">0 tool-misses</b>';
-    const harm = 'One harm read across both, one verdict below. Input side ' + missTag + ', output side re-reads and re-edits checked.';
+    const harm = 'One safety read across both, one verdict below. Input side ' + missTag + ', output side re-reads and re-edits checked.';
 
     return '<div class="taxes-head">ctx manages both sides of your context window</div>' +
       '<div class="taxes">' + outCard + inCard + '</div>' +
       '<div class="taxes-tie">' + harm + '</div>';
   }
 
+  function renderBetaOnboarding(o) {
+    const el = $("h2-onboarding"); if (!el) return;
+    if (!o || !o.enrolled) { el.classList.remove("on"); el.innerHTML = ""; return; }
+    const rank = { installed:0, observing:1, bill_ready:2, trialing:2, reclaiming:3 }[o.stage] || 0;
+    const step = (at, title, body) => `<div class="beta-ob-step ${rank >= at ? "done" : ""}"><b>${title}</b>${body}</div>`;
+    const autopilot = o.autopilot_enabled
+      ? `<button class="beta-ob-btn" onclick="setPreset('off')">Pause autopilot</button>`
+      : `<button class="beta-ob-btn primary" onclick="setPreset('full')">Resume autopilot</button>`;
+    const checkin = o.checkin_due ? `<button class="beta-ob-btn primary" onclick="openBetaCheckin()">Preview beta check-in</button>` : "";
+    el.innerHTML = `<div class="beta-ob-top"><div><div class="beta-ob-k">Token-gated beta</div><div class="beta-ob-h">${o.autopilot_enabled ? "Autopilot is on, and still evidence-gated." : "Autopilot is paused. Observation continues."}</div></div><div class="beta-ob-actions">${checkin}${autopilot}</div></div>`
+      + `<div class="beta-ob-steps">${step(0,"1. Installed","Hooks and recovery are wired.")}${step(1,"2. Build your Context Bill","Use Claude Code normally; no project data leaves this machine.")}${step(3,"3. Reclaim with a way back","Every applied trim keeps the original for rewind.")}</div>`;
+    el.classList.add("on");
+  }
+
   async function loadHome() {
-    let ctx, proof, bill, tbill;
-    try { [ctx, proof, bill, tbill] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({}))]); setHealth(true); }
+    let ctx, proof, bill, tbill, onboarding, mp;
+    try { [ctx, proof, bill, tbill, onboarding, mp] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({})), getJSON("/api/onboarding").catch(() => null), getJSON("/api/context/model-progress").catch(() => null)]); setHealth(true); }
     catch (e) { setHealth(false); const h = $("h2-hero"); if (h) h.innerHTML = `<div class="h2-warm">Could not reach ctx.</div><p class="h2-subline">Is the dashboard running? Start it and this page fills in.</p>`; return; }
+
+    renderBetaOnboarding(onboarding);
 
     const stats = ctx.stats || {};
     const on = (ctx.preset || "off") !== "off";
-    const rows = mergeTools(ctx, proof);
+    const rows = applyDecisionStages(mergeTools(ctx, proof), randomizedEvidenceByTool(mp), proof);
     const total = stats.total || 0;
     // The deny-set is absolute: held tools (ctx's own server, one-shot mutations) never trim, so they
     // never climb the ladder. Count every rung from eligible tools only and park all held tools off
@@ -1441,8 +1498,8 @@
     const hero = $("h2-hero");
     if (reclaimed > 0) {
       const sub = eligN.earned
-        ? `<b>Autopilot is trimming ${eligN.earned} tool${eligN.earned > 1 ? "s" : ""}</b> it proved safe on your own work. The tools still run in full, and nothing here needs a decision from you.`
-        : `Reclaimed from tool output trimmed and tool menu pruned. ctx keeps going only where your own work proves it safe.`;
+        ? `<b>Autopilot is trimming ${eligN.earned} tool${eligN.earned > 1 ? "s" : ""}</b> whose comparable runs passed the safety check. The tools still run in full, and nothing here needs a decision from you.`
+        : `Reclaimed from tool output trimmed and tool menu pruned. CTX keeps going only where comparable runs pass its safety check.`;
       hero.innerHTML =
         `<div class="h2-figure"><div class="h2-num" id="h2-count" data-to="${reclaimed}">0</div>`
         + `<div class="h2-side"><div class="h2-unit">tokens</div><div class="h2-cap">reclaimed so far</div></div></div>`
@@ -1450,8 +1507,8 @@
         + `<a class="h2-cta" onclick="scrollToBeat('h2-save')">See how it decides &darr;</a>`;
     } else if (total > 0) {
       const line = on
-        ? `Autopilot is on. The moment a trim proves safe on your own work, ctx starts reclaiming room and a number appears here.`
-        : `Turn on autopilot in <b class="h2-link" onclick="go('settings')" style="cursor:pointer;color:var(--accent-ink)">Settings</b> and ctx starts reclaiming room the moment a trim proves safe on your work.`;
+        ? `Autopilot is on. When comparable trimmed and unchanged runs pass the safety check, CTX starts reclaiming room and a number appears here.`
+        : `Turn on autopilot in <b class="h2-link" onclick="go('settings')" style="cursor:pointer;color:var(--accent-ink)">Settings</b> and CTX starts reclaiming room after comparable runs pass the safety check.`;
       hero.innerHTML =
         `<div class="h2-warm">Watching ${num(total)} tool results, reclaiming nothing yet.</div>`
         + `<p class="h2-subline">${line}</p>`
@@ -1459,7 +1516,7 @@
     } else {
       hero.innerHTML =
         `<div class="h2-warm">ctx just started and has not seen any tool output yet.</div>`
-        + `<p class="h2-subline">Run a few agent turns. ctx watches what your tools return, then reclaims the room it can prove is safe. Your number appears right here.</p>`
+        + `<p class="h2-subline">Run a few agent turns. CTX watches what your tools return, then reclaims room only after comparable runs pass its safety check. Your number appears right here.</p>`
         + `<a class="h2-cta" onclick="scrollToBeat('h2-save')">See how it will decide &darr;</a>`;
     }
 
@@ -1478,20 +1535,20 @@
       ladder.innerHTML =
         `<div class="h2-rungs">`
         + rung("Watching", eligibleWatchN, "on", "measured, not touched")
-        + rung("Trial", eligN.trial, "part", "trimmed on a control slice")
+        + rung("Testing", eligN.trial, "part", "building comparable runs")
         + rung("Proving", eligN.proving, "part", "gathering enough evidence")
-        + rung("Earned", eligN.earned, "on", "safe on your work, trimming")
+        + rung("Earned", eligN.earned, "on", "safety check passed")
         + `</div>` + heldH + kept
         + `<div class="h2-revert"><span class="k">reversible</span><p>A trimmed detail already ran in full and is one command back. <b>ctx never removes a capability</b>, it only shows less of a result until your work says it can.</p></div>`;
     } else {
-      ladder.innerHTML = `<div class="h2-empty">No tools on the ladder yet. As you work, each tool starts at Watching and only moves toward Earned once your own sessions show that trimming it was safe.</div>`;
+      ladder.innerHTML = `<div class="h2-empty">No tools on the ladder yet. As you work, each tool starts at Watching and only moves toward Earned once comparable runs pass the safety check.</div>`;
     }
 
     // BEAT 3: Trust. The same one number, restated.
     const restate = $("h2-restate");
     restate.innerHTML = reclaimed > 0
       ? `All told, ctx has reclaimed <b>${fmtK(reclaimed)} tokens</b> of context on your work so far, output trimmed and tool menu pruned, counted once. See itemizes those two parts, output reclaimed plus input reclaimed, and they add up to exactly this.`
-      : `Nothing reclaimed yet, and ctx will not pretend otherwise. The number moves here only after a trim proves safe on your own runs.`;
+      : `Nothing reclaimed yet, and CTX will not pretend otherwise. The number moves here only after comparable runs pass the safety check.`;
 
     initHomeMotion();
   }
@@ -1545,7 +1602,7 @@
   async function setPreset(p) { await post("/api/context/preset", { preset: p }); loadHome(); }
 
   // ════ PER-TOOL EVIDENCE (rendered inside Loop health, CTX-35) ════
-  // The harm signal ctx judges a tool by: a re-edit of the same file for edit tools, a re-read for
+  // The safety signal ctx judges a tool by: a re-edit of the same file for edit tools, a re-read for
   // reference tools (CTX-62). One place to phrase it so the whole report labels edit tools honestly.
   const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit", "str_replace", "str_replace_editor", "create_file", "applypatch", "apply_patch", "searchreplace", "search_replace"]);
   function toolIsEdit(name) { return EDIT_TOOLS.has(String(name || "").toLowerCase()); }
@@ -1578,25 +1635,25 @@
         if (bad) lean = " Early signal: trimming may be costing you. ctx is being careful.";
         else if (good) lean = " <span class=\"good\">Early signs look fine</span>, but the range is still wide.";
       }
-      return `ctx is trimming <b>${esc(r.tool)}</b>'s output on your real runs to test whether that is safe. After each trim it watches what you do next: going back for the content it cut counts against trimming this tool.${lean}`;
+      return `CTX is trimming <b>${esc(r.tool)}</b>'s output on a controlled share of real runs. After each trim it watches what you do next: going back for dropped content counts against earning this tool.${lean}`;
     }
     if (r.stage === "proving") {
       if (p && p.verdict === "unclear") {
-        return `<b>${esc(r.tool)}</b> has enough trim history for a verdict, but the confidence range still crosses the harm bar. ctx is <span class="good">not trimming live</span> until the proof locks. The point estimate looks fine; the gate fails closed when the upper bound is too wide.`;
+        return `<b>${esc(r.tool)}</b> has enough trim history for a verdict, but the result is still too uncertain. CTX is <span class="good">keeping output unchanged</span> until the safety check passes.`;
       }
       const tn = p ? (p.trimmed_collected || p.trimmed_n || 0) : 0, bn = p ? (p.baseline_n || 0) : 0;
-      return `<b>${esc(r.tool)}</b> is building the trimmed half of its proof (${num(tn)} trimmed, ${num(bn)} left whole). ctx is still judging. Your output stays whole unless this tool earns trim.`;
+      return `<b>${esc(r.tool)}</b> is building a fair comparison (${num(tn)} trimmed, ${num(bn)} unchanged). CTX is still deciding. Normal output stays unchanged until the safety check passes.`;
     }
     if (watchKind(r, minB) === "wait") {
       const before = p ? (p.baseline_n || 0) : ((c && c.joined) || 0);
       const lead = `<b>${esc(r.tool)}</b> already has the before-data: ctx has watched about <b>${num(before)}</b> of your runs where it left the output whole. To earn trimming it also needs runs where it actually trimmed, then it compares your re-reads and corrections across the two. It has <span class="bad">none of those yet</span>.`;
       const why = autopilot
-        ? ` Autopilot is on, so ctx will start trimming it on a few runs and finish the proof on its own.`
+        ? ` Autopilot is on, so CTX will evaluate it on a few comparison runs.`
         : ` ctx never trims while autopilot is off, so this can't finish on its own. Turn on autopilot, or put this one tool on trial, to collect the trimmed half.`;
       return lead + why;
     }
     const j = (c && c.joined) || 0, n = (c && c.need) || minB || 30;
-    return `<b>${esc(r.tool)}</b> is still gathering its baseline. ctx records what it would trim and checks it against what you needed next. So far <b>${Math.min(j, n)} of about ${n}</b> runs have a verdict, and nothing in your output has changed.`;
+    return `<b>${esc(r.tool)}</b> is still gathering unchanged runs for comparison. CTX records what it would trim and checks what you needed next. So far <b>${Math.min(j, n)} of about ${n}</b> runs have been scored, and nothing in your output has changed.`;
   }
 
   function deltaLine(r) {
@@ -1606,18 +1663,18 @@
     if (!parts.length) return "";
     let tail = " The range still crosses zero, so it is too close to call.";
     if (r.stage === "earned") tail = " Both sit at or below zero, so trimming is not measurably worse. That is enough to earn it.";
-    else if (r.stage === "off") tail = " That is real harm, clearly above zero, so it stays off.";
+    else if (r.stage === "off") tail = " The trimmed runs required meaningfully more follow-up, so CTX keeps this output unchanged.";
     else if (r.stage === "trial") tail = " Too early to read the gap. The trimmed side is still thin, so the range is wide.";
-    else if (r.stage === "proving") tail = " The range still crosses the harm bar, so ctx keeps output whole until it clears.";
-    return `<div class="ev-callout">Trimmed vs left whole: ${parts.join(" and ")}.${tail}</div>`;
+    else if (r.stage === "proving") tail = " The result is still too uncertain, so CTX keeps output unchanged until the safety check passes.";
+    return `<div class="ev-callout">Trimmed versus unchanged: ${parts.join(" and ")}.${tail}</div>`;
   }
 
   function armsBlock(e, minArm) {
     if (!e || (e.control_collected + e.treatment_collected) <= 0) return "";
-    const arm = (label, n, coll, corr, rr) => `<div class="arm"><div class="arm-h">${label}</div><div class="arm-n">${num(n)} scored <span>/ ${num(coll)} trimmed</span></div><div class="arm-s">${n > 0 ? `corrected ${pct(corr)}, re-read ${pct(rr)}` : "no scored runs yet"}</div></div>`;
-    let effect = `<div class="ba-note">"Scored" means ctx could tell from your next move whether you needed the trimmed text. It needs about ${minArm || 20} scored on each side before it will even lean.</div>`;
-    if (e.reread_delta != null) { const sign = e.reread_delta <= 0 ? "no more" : "more"; effect = `<div class="ba-note">Trimming led to <b style="color:${e.reread_delta <= 0 ? "var(--primary-lt)" : "var(--danger)"}">${sign} re-reads</b> (${signedPts(e.reread_delta)}) and ${signedPts(e.correction_delta)} corrections, compared with the runs ctx left alone.</div>`; }
-    return `<div style="margin-top:18px"><div class="ev-block"><div class="ev-sec">The clean test, a random sample</div><div class="arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_correction, e.treatment_reread)}${arm("Left alone", e.control_n, e.control_collected, e.control_correction, e.control_reread)}</div>${effect}</div></div>`;
+    const arm = (label, n, coll, corr, rr) => `<div class="arm"><div class="arm-h">${label}</div><div class="arm-n">${num(n)} scored <span>/ ${num(coll)} collected</span></div><div class="arm-s">${n > 0 ? `corrected ${pct(corr)}, re-read ${pct(rr)}` : "no scored runs yet"}</div></div>`;
+    let effect = `<div class="ba-note"><b>${num(e.runs_needed != null ? e.runs_needed : (minArm || 20))} more comparable run${(e.runs_needed || minArm || 20) === 1 ? "" : "s"}</b> needed before CTX decides. “Scored” means CTX could tell from the agent's next move whether the output was sufficient.</div>`;
+    if (e.reread_delta != null) { const sign = e.reread_delta <= 0 ? "no more" : "more"; effect = `<div class="ba-note">On comparable random runs, trimming led to <b style="color:${e.reread_delta <= 0 ? "var(--primary-lt)" : "var(--danger)"}">${sign} re-reads</b> (${signedPts(e.reread_delta)}) and ${signedPts(e.correction_delta)} corrections than leaving the output unchanged.</div>`; }
+    return `<div style="margin-top:18px"><div class="ev-block"><div class="ev-sec">Safety check</div><div class="arms">${arm("Trimmed runs", e.treatment_n, e.treatment_collected, e.treatment_correction, e.treatment_reread)}${arm("Unchanged runs", e.control_n, e.control_collected, e.control_correction, e.control_reread)}</div>${effect}</div></div>`;
   }
 
   function toolActions(r) {
@@ -1641,23 +1698,23 @@
       // both so it does not read as "0 trimmed" while trims are visibly happening (CTX-62).
       const pending = collected - done;
       const label = pending > 0
-        ? `Trimmed <b>${num(collected)}</b> so far. ctx waits a few of your turns after each trim to see if you needed the content back, so <b>${done} are judged</b> and the rest are still too recent. It needs about <b>${need}</b> judged before it can say whether trimming this is safe.`
+        ? `Trimmed <b>${num(collected)}</b> so far. CTX waits a few turns after each trim to observe whether you needed the content back, so <b>${done} are judged</b> and the rest are still too recent. It needs about <b>${need}</b> judged runs before applying the threshold decision.`
         : `<b>${done}</b> of about <b>${need}</b> judged. ctx will not rely on trimming this until enough are.`;
       return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${label}</div></div>`;
     }
     if (r.stage === "proving") {
       if (p && p.verdict === "unclear") {
         const runs = (p.baseline_n || 0) + (p.trimmed_n || 0);
-        return `<div class="report-verdict hold"><span class="rv-dot"></span><span class="rv-text">Proof not locked across ${runs} runs. Output stays whole until the confidence range clears the bar.</span></div>`;
+        return `<div class="report-verdict hold"><span class="rv-dot"></span><span class="rv-text">The result is still uncertain across ${runs} runs. Normal output stays unchanged while testing continues.</span></div>`;
       }
       const done = p ? p.trimmed_n || 0 : 0, need = minT || 30;
       const w = Math.min(100, Math.round((done / need) * 100));
-      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${done} of about ${need} trimmed runs collected. Output stays whole until the proof lands.</div></div>`;
+      return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill" style="width:${w}%"></div></div><div class="tp-label">${done} of about ${need} trimmed runs collected. Normal output stays unchanged until the safety check passes.</div></div>`;
     }
     if (r.stage === "watch") {
       const c = r.c, need = (c && c.need) || minB || 30;
       if (watchKind(r, minB) === "wait") {
-        return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill wait" style="width:50%"></div></div><div class="tp-label">Before-data is ready. ctx has no trimmed runs to compare against yet${autopilot ? "" : ", because autopilot is off"}, so the proof can't finish.</div></div>`;
+        return `<div class="tool-progress"><div class="tp-bar"><div class="tp-fill wait" style="width:50%"></div></div><div class="tp-label">Before-data is ready. CTX has no trimmed runs to compare against yet${autopilot ? "" : ", because autopilot is off"}, so it cannot make a threshold decision.</div></div>`;
       }
       const j = (c && c.joined) || 0;
       const w = Math.min(100, Math.round((j / need) * 100));
@@ -1665,7 +1722,7 @@
     }
     if (r.stage === "earned") {
       const runs = p ? (p.baseline_n || 0) + (p.trimmed_n || 0) : 0;
-      return `<div class="report-verdict earned"><span class="rv-dot"></span><span class="rv-text">Proven across ${runs} runs. ctx trims it now; the tool still runs in full.</span></div>`;
+      return `<div class="report-verdict earned"><span class="rv-dot"></span><span class="rv-text">The safety check passed across ${runs} runs. CTX trims its displayed output now; the tool still runs in full.</span></div>`;
     }
     return "";
   }
@@ -1673,16 +1730,15 @@
   function evidenceBlock(r, e, minT) {
     const p = r.p, hasNums = !!(p && (p.baseline_n || p.trimmed_n));
     const hasExp = !!(e && (e.control_collected + e.treatment_collected) > 0);
-    let out = hasExp
-      ? `<div class="ev-lead">Two ways to look at it. The <b>rough tally</b> is everything ctx has seen so far. The <b>clean test</b> below is a random sample, so trust that one most.</div>`
-      : `<div class="ev-lead">This is the <b>rough tally</b>: every run ctx scored by what you did next, split by whether it trimmed the output or left it whole.</div>`;
-    if (hasNums) {
-      out += `<div class="ev-block"><div class="ev-sec">The rough tally so far</div>`;
-      out += deltaLine(r);
-      out += `<div class="ba">${baCol("When ctx kept it whole", p.baseline_n, p.baseline_corrections, p.baseline_rereads, r.tool)}${baCol("When ctx trimmed it", p.trimmed_n, p.trimmed_corrections, p.trimmed_rereads, r.tool)}</div>`;
-      out += `<div class="ba-note">Each grey range is how sure ctx is: 95% of the time the real rate sits inside it. Fewer runs means a wider range.</div></div>`;
+    if (hasExp) {
+      return `<div class="ev-lead">This randomized comparison is the evidence CTX uses to decide whether this tool may trim normally.</div>${armsBlock(e, minT)}`;
     }
-    if (hasExp) out += armsBlock(e, minT);
+    let out = `<div class="ev-lead"><b>Activity history—not a trim decision.</b> CTX has observed these runs, but it does not have a randomized comparison for this tool yet.</div>`;
+    if (hasNums) {
+      out += `<div class="ev-block"><div class="ev-sec">Observed activity</div>`;
+      out += `<div class="ba">${baCol("When ctx kept it whole", p.baseline_n, p.baseline_corrections, p.baseline_rereads, r.tool)}${baCol("When ctx trimmed it", p.trimmed_n, p.trimmed_corrections, p.trimmed_rereads, r.tool)}</div>`;
+      out += `<div class="ba-note">These counts explain what CTX has seen. They do not activate trimming; only the randomized safety check can do that.</div></div>`;
+    }
     return out;
   }
 
@@ -1901,7 +1957,7 @@
       body = `Hidden across <b>${num(hs)}</b> session${hs === 1 ? "" : "s"} since you pruned it and never reached for.`;
     } else if (stage === "candidate" || stage === "proving") {
       cls = "ok";
-      body = `Proving safe: <b>${num(hs)}/${num(hn)}</b> clean sessions, <b>${num(m)}</b> reach${m === 1 ? "" : "es"} so far.`;
+      body = `Evaluating: <b>${num(hs)}/${num(hn)}</b> sessions without a reach, <b>${num(m)}</b> reach${m === 1 ? "" : "es"} so far.`;
     } else {
       body = `Not hidden, so nothing to reach for. Prune it and ctx watches whether a session reaches back.`;
     }
@@ -1969,7 +2025,7 @@
       }).join("");
       const restTok = tok(rest.reduce((a, t) => a + (t.sink_chars || 0), 0));
       const more = rest.length ? `<div class="see-note" style="margin-top:10px">Plus ${rest.length} smaller tool${rest.length === 1 ? "" : "s"}, ${fmtK(restTok)} tokens combined. The room is in the ones above.</div>` : "";
-      $("see-out").innerHTML = `<section class="see-sec">${outHead}<p class="see-note">Biggest first. The green share is what ctx could safely reclaim, measured on your own runs.</p><div class="see-rows">${rows}</div>${more}</section>`;
+      $("see-out").innerHTML = `<section class="see-sec">${outHead}<p class="see-note">Biggest first. The green share can be shortened by the current transform; activation still depends on the randomized safety check.</p><div class="see-rows">${rows}</div>${more}</section>`;
     }
 
     // Input section: per-server menu tax, ranked by dead weight, expandable to the tools you use.
@@ -1980,8 +2036,8 @@
       $("see-in").innerHTML = `<section class="see-sec">${inHead}<div class="see-note">No MCP servers seen yet. Connect one and invoke a tool, and your input bill fills in here.</div></section>`;
     } else {
       const harm = tbill.total_misses > 0
-        ? `Harm read: <b class="bad">${num(tbill.total_misses)} tool-miss${tbill.total_misses === 1 ? "" : "es"}</b> in ${days} days. A prune must not raise this.`
-        : `Harm read: <b class="ok">0 tool-misses</b> in ${days} days. Nothing hidden has been reached for, so a prune has nothing to walk back.`;
+        ? `Safety check: <b class="bad">${num(tbill.total_misses)} tool-miss${tbill.total_misses === 1 ? "" : "es"}</b> in ${days} days. A prune must not raise this.`
+        : `Safety check: <b class="ok">0 tool-misses</b> in ${days} days. Nothing hidden has been reached for, so a prune has nothing to walk back.`;
       const rows = servers.map((s) => {
         const deadPct = s.catalog_tools > 0 ? Math.round((s.dead_tools / s.catalog_tools) * 100) : 0;
         const usedW = Math.max(0, 100 - deadPct);
@@ -2112,8 +2168,8 @@
       '</div>' +
       '<div style="margin:14px 2px 0;font-size:12.5px;color:var(--t3)">' +
       (b.total_misses > 0
-        ? '<b style="color:var(--danger)">' + num(b.total_misses) + '</b> tool-miss' + (b.total_misses === 1 ? '' : 'es') + ' in ' + days + 'd, ' + (b.miss_rate || 0).toFixed(2) + '/session (a reach for a hidden tool). This is the harm a prune must not raise.'
-        : 'Harm read: <b style="color:var(--primary-lt)">0 tool-misses</b>. Nothing hidden has been reached for, so the prune baseline is clean.') +
+        ? '<b style="color:var(--danger)">' + num(b.total_misses) + '</b> tool-miss' + (b.total_misses === 1 ? '' : 'es') + ' in ' + days + 'd, ' + (b.miss_rate || 0).toFixed(2) + '/session (a reach for a hidden tool). The safety check does not allow this rate to rise.'
+        : 'Safety check: <b style="color:var(--primary-lt)">0 tool-misses</b>. Nothing hidden has been reached for, so the prune baseline is clean.') +
       '</div>';
     const cap =
       '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between;margin:24px 2px 12px">' +
@@ -2128,13 +2184,13 @@
       let pruneNote, noteColor = "var(--primary-lt)", earnit = "";
       if (s.prune_stage === "earned") {
         pruneNote = "earned ✓";
-        earnit = " Hidden across <b>" + s.hidden_sessions + " sessions</b> since you pruned it and never reached for, so ctx now counts this prune as earned: safe to keep hidden.";
+        earnit = " Hidden across <b>" + s.hidden_sessions + " sessions</b> since you pruned it with no recorded reach, so CTX now counts this prune as earned. A future reach still reverses it.";
       } else if (s.prune_stage === "blocked") {
         pruneNote = "reached " + s.misses + "x"; noteColor = "var(--danger)";
         earnit = " You reached for it <b>" + s.misses + " times</b> while it was hidden, so hiding it is costing you round trips. ctx suggests undoing this prune, and autopilot reverses it for you.";
       } else if (s.prune_stage === "candidate") {
-        pruneNote = "proving safe " + s.hidden_sessions + "/" + s.hidden_needed;
-        earnit = " ctx is checking the prune is safe: it watches whether you reach for this server while it is hidden. <b>" + s.hidden_sessions + " of " + s.hidden_needed + "</b> clean sessions in, <b>" + (s.misses || 0) + " reaches</b>. Stay at zero and the prune is confirmed earned; reach for it and it comes back and the prune reverses.";
+        pruneNote = "evaluating " + s.hidden_sessions + "/" + s.hidden_needed;
+        earnit = " CTX is evaluating the prune by watching whether you reach for this server while it is hidden. <b>" + s.hidden_sessions + " of " + s.hidden_needed + "</b> sessions in, <b>" + (s.misses || 0) + " reaches</b>. Stay at zero and the prune becomes earned; reach for it and the prune reverses.";
       } else {
         pruneNote = "reversible";
       }
@@ -2186,8 +2242,8 @@
         what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. The tool still ran in full.`;
         tag = "trimmed"; tagcss = "background:var(--primary-dim);color:var(--primary-lt)";
       } else if (r.explore_arm === "control") {
-        what = `Kept <span class="keep">all ${total} lines</span> as a control run, so the clean test stays honest. This tool still trims the rest.`;
-        tag = "control"; tagcss = "background:var(--surface3);color:var(--t3)";
+        what = `Kept <span class="keep">all ${total} lines</span> unchanged for a fair comparison. This tool may trim other randomly selected runs.`;
+        tag = "comparison"; tagcss = "background:var(--surface3);color:var(--t3)";
       } else {
         what = `Would set aside <span class="drop">${drop} lines</span>, keep <span class="keep">${r.lines_keep || 0}</span>. Still only watching this tool.`;
         tag = "watching"; tagcss = "background:var(--surface3);color:var(--t3)";
@@ -2200,44 +2256,50 @@
   // ════ TOOL REPORT (narrative-first; was Loop health, CTX-35) ════
   // ════ SAVE: the proof surface, clean light (pass 3). Reuses the narrative helpers (longStory,
   // deltaLine, shortMsg) so the verdicts read exactly as the old Tool report, just restyled. ════
-  // The randomized clean test (explore arms, /api/context/model-progress). ctx trims a random half of
-  // a tool's runs and leaves the other half alone, so the two arms are comparable in a way the rough
-  // tally above is not. Save-native styling; same read as the orphaned armsBlock, restyled to match.
+  // The randomized comparison (/api/context/model-progress). CTX trims a random share of a tool's
+  // runs and leaves the rest unchanged so the results are comparable.
   function svExpArms(e, minArm) {
     if (!e || (e.control_collected + e.treatment_collected) <= 0) return "";
-    const arm = (label, n, coll, rr) => `<div class="sv-arm"><div class="sv-arm-h">${label}</div><div class="sv-arm-n">${num(n)} scored <span>/ ${num(coll)} trimmed</span></div><div class="sv-arm-s">${n > 0 ? `re-read ${pct(rr)}` : "no scored runs yet"}</div></div>`;
+    const arm = (label, n, coll, rr, action) => `<div class="sv-arm"><div class="sv-arm-h">${label}</div><div class="sv-arm-n">${num(n)} scored <span>/ ${num(coll)} ${action}</span></div><div class="sv-arm-s">${n > 0 ? `re-read ${pct(rr)}` : "no scored runs yet"}</div></div>`;
     let note;
     if (e.reread_delta != null) {
       const worse = e.reread_delta > 0;
-      note = `On this random sample, trimming led to <b class="${worse ? "bad" : "good"}">${worse ? "more" : "no more"} re-reads</b> (${signedPts(e.reread_delta)}) than the runs ctx left whole. Trust this over the rough tally above.`;
+      const uncertain = e.reason_code === "randomized_result_uncertain" ? " The difference is still too uncertain for CTX to act, so testing continues." : "";
+      note = `On comparable random runs, trimming led to <b class="${worse ? "bad" : "good"}">${worse ? "more" : "no more"} re-reads</b> (${signedPts(e.reread_delta)}) than leaving the output unchanged.${uncertain}`;
     } else {
-      note = `Still collecting: ctx needs about <b>${minArm || 20}</b> scored runs on each side before it will even lean.`;
+      note = `<b>${num(e.runs_needed != null ? e.runs_needed : (minArm || 20))} more comparable run${(e.runs_needed || minArm || 20) === 1 ? "" : "s"}</b> needed before CTX decides.`;
     }
-    return `<div class="sv-exp"><div class="sv-exp-h">The clean test, a random sample</div><div class="sv-arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_reread)}${arm("Left alone", e.control_n, e.control_collected, e.control_reread)}</div><div class="sv-exp-note">${note}</div></div>`;
+    return `<div class="sv-exp"><div class="sv-exp-h">How CTX decides</div><div class="sv-arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_reread, "trimmed")}${arm("Left unchanged", e.control_n, e.control_collected, e.control_reread, "unchanged")}</div><div class="sv-exp-note">${note}<br><br><b>Safety check:</b> CTX acts only when 20 randomly selected runs on each side rule out more than 10 extra re-reads or corrections per 100 runs, using a 95% interval.</div></div>`;
   }
   function saveCard(r, autopilot, minB, minT, e, attr) {
     const p = r.p || {}, stage = r.stage;
-    const PILL = { earned: "Earned", trial: "On trial", off: "Kept whole", proving: "Collecting proof", watch: "Watching" };
-    const story = longStory(r, autopilot, minB);
-    const runs = (p.baseline_n || 0) + (p.trimmed_n || 0);
+    const PILL = { earned: "Trimming", trial: "Testing", off: "Kept whole", proving: "Waiting for data", watch: "Watching" };
+    let story = longStory(r, autopilot, minB);
+    if (e) {
+      const trimRate = e.treatment_reread, wholeRate = e.control_reread;
+      const early = trimRate != null && wholeRate != null
+        ? ` Early result: after trimming, the agent re-read ${pct(trimRate)} of the time, compared with ${pct(wholeRate)} when CTX left it unchanged.`
+        : "";
+      if (e.status === "trimming") story = `CTX is shortening <b>${esc(r.tool)}</b> output now. Its randomized comparison passed the safety check; the tool still runs in full and only what the agent reads back is shorter.`;
+      else if (e.status === "kept_whole") story = `CTX is keeping <b>${esc(r.tool)}</b> output unchanged. The randomized comparison did not pass the safety check, so CTX will not trim it.${early}`;
+      else {
+        const next = e.reason_code === "randomized_result_uncertain"
+          ? " The result is still too uncertain, so CTX keeps testing and normal output stays unchanged."
+          : ` <b>${num(e.runs_needed != null ? e.runs_needed : (minT || 20))} more comparable run${(e.runs_needed || minT || 20) === 1 ? "" : "s"}</b> needed before CTX decides.`;
+        story = `CTX is ${e.treatment_collected > 0 ? "testing a small randomized share of" : "keeping"} <b>${esc(r.tool)}</b> output ${e.treatment_collected > 0 ? "and keeping normal runs unchanged" : "unchanged"}.${early}${next}`;
+      }
+    }
+    const runs = e ? (e.control_n || 0) + (e.treatment_n || 0) : 0;
     const chips = [];
-    if (runs) chips.push(`<span class="sv-chip"><b>${num(runs)}</b> runs</span>`);
+    if (runs) chips.push(`<span class="sv-chip"><b>${num(runs)}</b> comparable runs</span>`);
     const deltaTip = "Change versus leaving the output whole. At or below zero means trimming did not cost you an extra look-back or fix. A large negative just means the trimmed runs went back even less often.";
-    if (p.reread_delta) chips.push(`<span class="sv-chip ${p.reread_delta.diff <= 0 ? "good" : "bad"}" title="${deltaTip}">${retouchNoun(r.tool)} ${signedPts(p.reread_delta)}</span>`);
-    if (p.correction_delta && p.correction_delta.diff != null) chips.push(`<span class="sv-chip ${p.correction_delta.diff <= 0 ? "good" : "bad"}" title="${deltaTip}">fixes ${signedPts(p.correction_delta)}</span>`);
+    if (e && e.reread_delta != null) chips.push(`<span class="sv-chip ${e.reread_delta <= 0 ? "good" : "bad"}" title="${deltaTip}">${retouchNoun(r.tool)} ${signedPts(e.reread_delta)}</span>`);
+    if (e && e.correction_delta != null) chips.push(`<span class="sv-chip ${e.correction_delta <= 0 ? "good" : "bad"}" title="${deltaTip}">fixes ${signedPts(e.correction_delta)}</span>`);
     // How often the agent pulled this tool's trimmed output back with ctx_expand. The safety net,
     // per tool: proof it can recover, not a cost. Sourced from ctx.attribution[tool].reexpanded.
     if (attr && (attr.reexpanded || 0) > 0) chips.push(`<span class="sv-chip good" title="Times the agent pulled this tool's trimmed output back verbatim with ctx_expand. The original is always one call away.">${num(attr.reexpanded)} pulled back</span>`);
-    const hasEv = (p.baseline_n || 0) > 0 || (p.trimmed_n || 0) > 0;
     const exp = svExpArms(e, minT);
-    // The base arms are the rough tally: ctx chose when to trim, so the split is confounded. Label it
-    // as such (mirrors See's evidenceBlock), and when no randomized clean test sits beside it (explore
-    // rate is 0 for this tool) say plainly that it is observational, so it is not read as proof.
-    const roughNote = exp ? "" : `<div class="sv-exp-note">No randomized sample yet, so this is observational: ctx picked when to trim, which can flatter trimming. Read it as a lean, not proof.</div>`;
-    const arms = hasEv
-      ? `<div class="sv-exp"><div class="sv-exp-h">The rough tally so far</div><div class="sv-arms"><div class="sv-arm"><div class="sv-arm-h">Trimmed</div><div class="sv-arm-n">${num(p.trimmed_n || 0)} runs</div></div><div class="sv-arm"><div class="sv-arm-h">Left whole</div><div class="sv-arm-n">${num(p.baseline_n || 0)} runs</div></div></div>${roughNote}</div>`
-      : "";
-    const evidence = (hasEv ? arms + deltaLine(r) : "") + exp;
+    const evidence = exp;
     const evBtn = evidence ? `<button class="sv-ev" onclick="this.closest('.sv-card').classList.toggle('open')">Show the evidence</button>` : "";
     // A held tool never trims, so a trial on it no-ops in the backend. Offer no action button (the
     // held section renders it without one anyway; this just guards against a held tool reaching here).
@@ -2257,12 +2319,13 @@
     catch (e) { setHealth(false); $("save-ladder").innerHTML = '<div class="sv-empty">Could not reach ctx. Is the dashboard running?</div>'; $("save-tools").innerHTML = ""; $("save-agents").innerHTML = ""; $("save-comp").innerHTML = ""; return; }
 
     const rows = mergeTools(ctx, proof);
+    const autopilot = (ctx.preset || "off") !== "off";
+    const minB = 20, minT = (mp && mp.explore_min_arm) || 20;
+    // Randomized comparisons and per-tool recovery signals, keyed by tool for the cards below.
+    const expBy = randomizedEvidenceByTool(mp);
+    applyDecisionStages(rows, expBy, proof);
     const g = { earned: [], trial: [], proving: [], off: [], watch: [] };
     rows.forEach((r) => g[r.stage].push(r));
-    const autopilot = (ctx.preset || "off") !== "off";
-    const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
-    // Explore arms (the clean test) and per-tool recovery signal, keyed by tool for the cards below.
-    const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
     const attrBy = {}; (ctx.attribution || []).forEach((t) => (attrBy[t.tool] = t));
 
     // The deny-set is absolute: a held tool (ctx's own recovery server, one-shot mutations) never
@@ -2279,12 +2342,12 @@
     const gOff = g.off.filter((r) => !isHeld(r));
     const eligibleWatch = g.watch.filter((r) => !isHeld(r));
 
-    // Ladder summary + the harm read: the one bar every tool clears.
+    // Ladder summary plus the safety history every tool must clear.
     const rung = (name, count, cls, desc) => `<div class="sv-rung ${count > 0 ? cls : ""}"><div class="sv-track"><i></i></div><span class="sv-dot"></span><div class="sv-rname">${name}</div><div class="sv-rcount">${num(count)}</div><div class="sv-rdesc">${desc}</div></div>`;
     const tn = proof.trimmed_n_total || 0, tc = proof.trimmed_corrections_total || 0;
     const harm = tn > 0
-      ? `Harm read: <b class="ok">${num(tn)} trimmed results</b> checked against what you did next. <b class="${tc > 0 ? "bad" : "ok"}">${num(tc)} correction${tc === 1 ? "" : "s"}.</b> On every earned tool, your re-reads stayed at or below the rate when the output was left whole. That is the whole bar a tool has to clear.`
-      : `Nothing has been trimmed yet, so there is no harm to read. As tools earn trim, this fills with the corrections and re-reads ctx checked against your own next moves.`;
+      ? `Safety history: <b class="ok">${num(tn)} randomized trimmed results</b> checked against what you did next. <b class="${tc > 0 ? "bad" : "ok"}">${num(tc)} correction${tc === 1 ? "" : "s"}.</b> A tool trims normally only after its comparable unchanged and trimmed runs pass the safety check.`
+      : `No randomized trims have been scored yet. CTX keeps normal output unchanged while it builds a comparable safety test.`;
     const keptLine = gOff.length ? ` <b class="bad">${num(gOff.length)} kept whole</b> after testing, where trimming looked worse than leaving it.` : "";
 
     // Recoveries: times the agent hit a trimmed block and pulled the full text back with ctx_expand.
@@ -2293,8 +2356,8 @@
     // attribution[tool].reexpanded (the two agree). Recovery is proof, not a cost, so it reads green.
     const rec = (ctx.insight_actions || {}).recoveries || 0;
     const recBody = rec > 0
-      ? `<b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. That is the safety net working: ctx can trim hard because the original is one call away.`
-      : `<b>No trims recovered yet.</b> When ctx trims something your agent still needs, it calls ctx_expand to get the verbatim original back. You will see that here, and it is the reason trimming stays safe.`;
+      ? `<b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. The recovery path worked and the original remained available locally.`
+      : `<b>No trims recovered yet.</b> If an agent needs a trimmed block, it can call ctx_expand to retrieve the verbatim original. Recovery is available, but has not been exercised in this history.`;
     const reexp = (ctx.attribution || []).filter((t) => (t.reexpanded || 0) > 0).sort((a, b) => (b.reexpanded || 0) - (a.reexpanded || 0));
     const reexpLine = reexp.length ? `<div class="sv-recover-by">${reexp.map((t) => `<span class="sv-recover-chip">${esc(prettyTool(t.tool))} <b>${num(t.reexpanded)}</b> pulled back</span>`).join("")}</div>` : "";
     const recoverModule = `<div class="sv-recover ${rec > 0 ? "on" : ""}"><span class="sv-recover-mark">${rec > 0 ? "&#10003;" : "&#9675;"}</span><div class="sv-recover-body">${recBody}${reexpLine}</div></div>`;
@@ -2302,7 +2365,7 @@
     const heldParked = heldAll.length
       ? `<div class="sv-parked"><b>${num(heldAll.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
       : "";
-    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Trial", gTrial.length, "part", "trimmed on a control slice")}${rung("Proving", gProving.length, "part", "gathering evidence")}${rung("Earned", gEarned.length, "on", "safe, trimming now")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
+    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Testing", gTrial.length, "part", "building comparable runs")}${rung("Evaluating", gProving.length, "part", "gathering evidence")}${rung("Trimming", gEarned.length, "on", "safety check passed")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
 
     // Tool cards, grouped like the old report: spotlight, proving, then a quiet watch list.
     let body = "";
@@ -2310,8 +2373,8 @@
       body = `<div class="sv-empty">No tool has enough trim-eligible runs yet. As you work, each tool gets a verdict here.</div>`;
     } else {
       const spotlight = [...gEarned, ...gTrial, ...gOff];
-      if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Earned it</div><h2 class="sv-sec-h">Trimming now, because your work proved it safe.</h2><p class="sv-note">These run in full. ctx only shortens what the agent reads back, and a trimmed detail is one command away. In each chip, a value at or below zero means trimming did not raise that signal versus leaving the output whole, so below zero is the safe side.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
-      if (gProving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some proof, not enough yet.</h2><p class="sv-note">Output stays whole until the confidence range clears the harm bar. Nothing here is being trimmed.</p>${gProving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
+      if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Active decisions</div><h2 class="sv-sec-h">What CTX is trimming, testing, or keeping unchanged.</h2><p class="sv-note">Tools always run in full. CTX shortens only what the agent reads back, and the original is one command away. Each card uses the same randomized comparison as the automatic decision.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
+      if (gProving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some evidence, not enough yet.</h2><p class="sv-note">Output stays unchanged until the safety check passes. Nothing here is being trimmed.</p>${gProving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
       // eligibleWatch and heldAll are computed above, where the ladder counts its rungs and the parked
       // held count. Reuse them here so the tool cards and the rung counts can never drift apart.
       const trialSet = new Set(proof.trial_tools || []);
@@ -2332,7 +2395,7 @@
       // as a Proving card with a dead trial button.
       const heldShown = heldAll.filter((r) => r.c && r.c.decisions >= 1).slice(0, 16);
       if (heldShown.length) {
-        const heldNote = `These are held out of trimming on purpose. ctx's own recovery tools stay whole so a trim is always reversible, and one-shot mutations the agent acts on once, never re-reading, give the harm gate nothing to check. They are watched for cost, not for trimming, so there is no trial here.`;
+        const heldNote = `These are held out of trimming on purpose. CTX's own recovery tools stay unchanged so a trim is always reversible, and one-shot mutations do not produce a meaningful comparison for the safety check. They are watched for cost, not for trimming, so there is no test here.`;
         body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Held, measured but never trimmed</div><h2 class="sv-sec-h">Watched for cost, kept whole on purpose.</h2><p class="sv-note">${heldNote}</p>${heldShown.map((r) => `<div class="sv-mini held"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${esc(r.c.held_reason)}</span><span class="p">held</span></div>`).join("")}</section>`;
         const heldMore = heldAll.length - heldShown.length;
         if (heldMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(heldMore)} more held tools with lighter usage are not shown.</p>`;
@@ -2340,19 +2403,21 @@
     }
     $("save-tools").innerHTML = body;
 
-    // Where ctx acts: one honest line per agent it has seen.
-    const SURF_ACT = { "claude-code": "acting", "cursor": "observing", "codex": "observing" };
-    const SURF_CAP = {
-      "claude-code": "ctx trims MCP results and long tool output here, live, once a tool has earned it.",
-      "cursor": "ctx reads Cursor's own transcripts, so your Cursor work sits here too. Live inside Cursor it trims earned MCP results; built-in Read and Grep stay observe-only.",
-    };
+    // Where CTX acts: capability comes from the API, not a browser-side platform guess.
     const seen = (ctx.surfaces || []).filter((s) => s.seen);
     if (seen.length) {
       const cards = seen.map((s) => {
         const name = SURFACE_NAME[s.surface] || s.surface;
-        const act = SURF_ACT[s.surface] || "observing";
+        const act = (s.status === "active" || s.status === "partially_active") ? "acting" : "observing";
+        const status = (s.status || "observing").replaceAll("_", " ");
         const ago = s.last_seen ? timeAgo(s.last_seen) : "n/a";
-        return `<div class="sv-agent"><div class="sv-agent-top"><span class="sv-agent-name">${esc(name)}</span><span class="sv-agent-pill ${act}">${act}</span></div><div class="sv-agent-cap">${SURF_CAP[s.surface] || ""}</div><div class="sv-agent-meta">last seen ${ago}</div></div>`;
+        const caps = [
+          `Shell output: ${s.can_trim_shell ? "can shorten after the safety check" : "observed only"}`,
+          `Built-in Read / search: ${s.can_trim_builtin ? "can shorten" : "observed only"}`,
+          `MCP results: ${s.can_trim_mcp ? "can shorten" : "observed only"}`,
+          `Compaction: ${s.compaction_seen ? "visible" : "not observed yet"}`
+        ];
+        return `<div class="sv-agent"><div class="sv-agent-top"><span class="sv-agent-name">${esc(name)}</span><span class="sv-agent-pill ${act}">${esc(status)}</span></div><div class="sv-agent-cap">${caps.map(esc).join("<br>")}</div><div class="sv-agent-meta">last seen ${ago}</div></div>`;
       }).join("");
       $("save-agents").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Where ctx acts</div><h2 class="sv-sec-h">One honest layer under every agent.</h2><p class="sv-note">No agent vendor measures the others. This is the only place they sit together, on your own work.</p><div class="sv-agents">${cards}</div></section>`;
     } else { $("save-agents").innerHTML = ""; }
@@ -2388,9 +2453,10 @@
     const lh = ctx.loop_health || {};
     const stats = ctx.stats || {};
     const rows = mergeTools(ctx, proof);
-    const minB = proof.min_baseline || 30, minT = proof.min_trimmed || 30;
+    const minB = 20, minT = (mp && mp.explore_min_arm) || 20;
     const autopilot = (ctx.preset || "off") !== "off";
-    const expBy = {}; if (mp) (mp.explore_tools || []).forEach((t) => (expBy[t.tool] = t));
+    const expBy = randomizedEvidenceByTool(mp);
+    applyDecisionStages(rows, expBy, proof);
     const narr = buildSystemNarrative(ctx, proof, rows);
 
     const hero = narr.empty
@@ -2438,7 +2504,7 @@
       );
       body += reportSection(
         "Close to a verdict",
-        "ctx has trim history but the proof is not locked yet. Your output stays whole until the confidence range clears the bar.",
+        "CTX has trim history, but the result is still uncertain. Normal output stays unchanged while testing continues.",
         proving.map((r) => card(r, false))
       );
       body += reportSection(
@@ -2485,7 +2551,7 @@
       const sinkLine = top
         ? `Your biggest context sink is <b>${esc(prettyTool(top.tool))}</b>, about ${fmtK(tok(top.sink_chars || 0))} tokens over time. The more a session pours into the window, the sooner it compacts. Unused MCP servers are the usual hidden culprit; prune the ones you don't need.`
         : `Unused MCP servers are the usual hidden sink; their tool definitions and outputs fill the window fast. Prune the ones you don't need.`;
-      action = `<div class="cf-action"><div class="cf-action-h">What reduces it</div><ul class="cf-action-list"><li>Split a long session once the task shifts. A fresh session starts with an empty window, so it compacts later or not at all.</li><li>${sinkLine}</li></ul><div class="cf-action-foot">Open the <a href="#bill" onclick="go('bill')">Context bill</a> to see what is filling the window, and <a href="#loop" onclick="go('loop')">Tool report</a> for what ctx can safely reclaim.</div></div>`;
+      action = `<div class="cf-action"><div class="cf-action-h">What reduces it</div><ul class="cf-action-list"><li>Split a long session once the task shifts. A fresh session starts with an empty window, so it compacts later or not at all.</li><li>${sinkLine}</li></ul><div class="cf-action-foot">Open the <a href="#bill" onclick="go('bill')">Context bill</a> to see what is filling the window, and <a href="#loop" onclick="go('loop')">Tool report</a> for current transform eligibility and activation evidence.</div></div>`;
     }
 
     const card = (s) => {
@@ -2540,6 +2606,7 @@
   const SURFACE_CAP = {
     "claude-code": "ctx trims MCP results and long tool output here, live, once a tool has earned it.",
     "cursor": "ctx reads Cursor's own session transcripts on this machine, so it can show your Cursor work next to Claude Code. When ctx runs live inside Cursor it trims MCP results once earned; built-in Read and Grep stay observe-only, because Cursor won't let a hook rewrite their output.",
+    "codex": "CTX observes local Codex tool activity through its plugin. It can shorten eligible shell output before Codex reads it; built-in and MCP results remain observation-only because Codex does not expose a clean tool-native replacement path that CTX can safely enable.",
   };
   async function loadSurfaces() {
     let ctx;
@@ -2579,13 +2646,16 @@
           <div class="sf-foot">Read from ${esc(name)}'s own transcripts on this machine, not live. ctx never trimmed anything here. Last transcript ${esc(ago)}.</div>
         </div>`;
       }
-      const acting = (s.acted || 0) > 0;
-      const pill = acting ? `<div class="sf-pill acting">acting</div>` : `<div class="sf-pill obs">observing</div>`;
+      const acting = s.status === "active" || s.status === "partially_active";
+      const status = (s.status || (acting ? "active" : "observing")).replaceAll("_", " ");
+      const pill = acting ? `<div class="sf-pill acting">${esc(status)}</div>` : `<div class="sf-pill obs">${esc(status)}</div>`;
       const savedTok = tok(s.chars_saved || 0);
       const saved = savedTok > 0 ? fmtK(savedTok) + " tok" : "none yet";
+      const capabilityRows = `<div class="sf-foot"><b>Shell output:</b> ${s.can_trim_shell ? "can shorten after the safety check" : "observed only"}<br><b>Built-in Read / search:</b> ${s.can_trim_builtin ? "can shorten" : "observed only"}<br><b>MCP results:</b> ${s.can_trim_mcp ? "can shorten" : "observed only"}<br><b>Compaction:</b> ${s.compaction_seen ? "visible" : "not observed yet"}</div>`;
       return `<div class="sf-card">
         <div class="sf-head"><div class="sf-name">${esc(name)}</div>${pill}</div>
         <div class="sf-cap">${esc(cap)}</div>
+        ${capabilityRows}
         <div class="sf-metrics">
           <div><div class="sf-k">Decisions</div><div class="sf-v">${num(s.decisions)}</div></div>
           <div><div class="sf-k">Trims applied</div><div class="sf-v">${num(s.acted)}</div></div>
@@ -2596,7 +2666,7 @@
       </div>`;
     };
 
-    const order = ["claude-code", "cursor"];
+    const order = ["claude-code", "cursor", "codex"];
     const cards = order
       .map((id) => surfaces.find((s) => s.surface === id))
       .filter(Boolean)
@@ -2605,7 +2675,7 @@
 
     $("surfaces-body").innerHTML =
       lead +
-      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Acting means ctx is shortening what the agent reads back. Observing means it is watching live. Watched means ctx read the agent's saved transcripts but never ran inside it. Every number is this machine's real activity, not an estimate.</p><div class="sf-grid">${cards}</div></div>`;
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Partially active means CTX can shorten the specific paths listed on the card, not every result. Observing means it is watching live. Every number is this machine's real activity, not an estimate.</p><div class="sf-grid">${cards}</div></div>`;
   }
 
   // ════ SETTINGS ════
@@ -2631,7 +2701,7 @@
     $("st-panel-settings").innerHTML = `
       <div class="st-card">
         <div class="st-card-h">Autopilot</div>
-        <div class="st-card-sub">When autopilot is on, ctx trims a tool the moment it proves safe on your own work, and never before. Pausing keeps ctx watching and proving, but stops it changing any output.</div>
+        <div class="st-card-sub">When autopilot is on, CTX trims a tool after comparable randomized runs pass the safety check. Pausing keeps CTX watching, but stops it changing any output.</div>
         <div class="st-card-body">
           <div class="st-statusline"><span class="dot ${on ? "on" : "off"}"></span><span>${on ? 'Autopilot is <b class="on">on</b>. ctx trims each tool that has earned it, and the tool still runs in full.' : "Autopilot is <b>off</b>. ctx is only watching and proving. It will not change any output until you turn it on."}</span></div>
           ${on ? `<button class="st-cta danger" onclick="setPresetFrom('off')">Pause autopilot</button>` : `<button class="st-cta" onclick="setPresetFrom('full')">Turn on autopilot</button>`}
@@ -2639,7 +2709,7 @@
       </div>
       <div class="st-card">
         <div class="st-card-h">Privacy and data</div>
-        <div class="st-card-sub">Control what ctx keeps locally. Nothing leaves this machine unless you export it.</div>
+        <div class="st-card-sub">Control what ctx keeps locally. Nothing leaves unless you explicitly export or send a previewed report/check-in.</div>
         <div class="st-card-body">
           ${tgl("set-store-prompt", !!s.store_prompt_text, "Store prompt text", "Keeps the start of each message in SQLite for Activity and similarity. Turn off for metrics only.")}
           ${tgl("set-embed", !!s.embeddings_enabled, "Session embeddings", "Builds local vector fingerprints of sessions for auto-profile and adaptive prefix.")}
@@ -2657,7 +2727,7 @@
       </div>
       <div class="st-card">
         <div class="st-card-h">Your data</div>
-        <div class="st-card-sub">Local storage only. No telemetry. Tool-menu pruning now lives on the <span onclick="go('see')" style="color:var(--accent-ink);cursor:pointer">See</span> page, per server.</div>
+        <div class="st-card-sub">Local storage with no background telemetry. Tool-menu pruning now lives on the <span onclick="go('see')" style="color:var(--accent-ink);cursor:pointer">See</span> page, per server.</div>
         <div class="st-card-body"><div class="st-meta">
           <div><div class="st-mk">Database size</div><div class="st-mv">${fmtBytes(s.db_size_bytes)}</div></div>
           <div><div class="st-mk">Sessions</div><div class="st-mv">${num(rc.sessions)}</div></div>
@@ -2681,7 +2751,7 @@
         if (r.protected && drop > 0) { what = `Kept <span class="keep">all ${total} lines</span>, set nothing aside. Looks like a file you might edit.`; tag = "protected"; }
         else if (drop <= 0) { what = `Looked at this and kept <span class="keep">all ${total} lines</span>. Nothing worth trimming.`; tag = "watched"; }
         else if (r.applied) { what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. The tool still ran in full.`; tag = "trimmed"; }
-        else if (r.explore_arm === "control") { what = `Kept <span class="keep">all ${total} lines</span> as a control run, so the clean test stays honest. This tool still trims the rest.`; tag = "control"; }
+        else if (r.explore_arm === "control") { what = `Kept <span class="keep">all ${total} lines</span> unchanged for a fair comparison. This tool may trim other randomly selected runs.`; tag = "comparison"; }
         else { what = `Would set aside <span class="drop">${drop} lines</span>, keep <span class="keep">${r.lines_keep || 0}</span>. Still only watching this tool.`; tag = "watching"; }
         const sub = r.command_or_path ? `<div class="st-act-sub">${esc(String(r.command_or_path).slice(0, 70))}</div>` : "";
         return `<div class="st-act"><span class="st-act-time">${esc(timeAgo(r.ts))}</span><span class="st-act-name">${esc(label)}</span><span><div class="st-act-what">${what}</div>${sub}</span><span class="st-act-tag ${tag}">${tag}</span></div>`;
@@ -2731,10 +2801,9 @@
   // ── Report an issue: opt-in, redacted feedback that opens a GitHub issue via the intake endpoint.
   // The diagnostic snapshot is built from the same aggregates the dashboard already shows: counts and
   // rates only, never paths, commands, or output. Nothing is sent until Send, and the user reviews the
-  // whole body first. POSTs to REPORT_ENDPOINT (the Lambda intake); empty until that is wired.
-  // Public intake (Lambda Function URL). Not a secret; the GitHub PAT lives server-side in SSM. Keep
-  // this out of any build distributed to alpha users until the endpoint has rate limiting (Phase 2).
-  const REPORT_ENDPOINT = "https://yds5zrqx7pbhf7jcigvsjirepm0twbga.lambda-url.us-east-1.on.aws/";
+  // whole body first. The localhost proxy adds the scoped beta capability server-side; browser JS
+  // never receives it, and the remote intake rejects unauthenticated requests.
+  const REPORT_ENDPOINT = "/api/report-intake";
   let rpKind = "bug", rpIncludeSnap = true, rpBundle = null;
   const rpShots = [];
 
@@ -2743,10 +2812,10 @@
 
   async function rpLoadBundle() {
     try {
-      const [ctx, proof, bill] = await Promise.all([
-        getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})),
+      const [ctx, proof, bill, mp] = await Promise.all([
+        getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/model-progress").catch(() => null),
       ]);
-      const rows = mergeTools(ctx, proof);
+      const rows = applyDecisionStages(mergeTools(ctx, proof), randomizedEvidenceByTool(mp), proof);
       const billBy = {}; (bill.tools || []).forEach((t) => (billBy[t.tool] = t));
       const attrBy = {}; (ctx.attribution || []).forEach((t) => (attrBy[t.tool] = t));
       const tools = rows.map((r) => ({
@@ -2775,7 +2844,7 @@
 
   function rpSetKind(el) { [...$("rp-seg").children].forEach((x) => x.classList.remove("on")); el.classList.add("on"); rpKind = el.dataset.v; rpRenderPreview(); }
   function rpToggleSnap() { rpIncludeSnap = !rpIncludeSnap; $("rp-snapToggle").classList.toggle("on", rpIncludeSnap); rpRenderPreview(); }
-  function rpAddImgs(files) { [...files].forEach((f) => { if (!f.type.startsWith("image/")) return; const r = new FileReader(); r.onload = () => { rpShots.push({ name: f.name, contentType: f.type, dataUrl: r.result }); rpRenderShots(); rpRenderPreview(); }; r.readAsDataURL(f); }); }
+  function rpAddImgs(files) { [...files].slice(0, Math.max(0, 3 - rpShots.length)).forEach((f) => { if (!f.type.startsWith("image/") || f.size > 5 * 1024 * 1024) return; const r = new FileReader(); r.onload = () => { rpShots.push({ name: f.name, contentType: f.type, dataUrl: r.result }); rpRenderShots(); rpRenderPreview(); }; r.readAsDataURL(f); }); }
   function rpDataUrlToBlob(dataUrl) { const [meta, b64] = dataUrl.split(","); const mime = (meta.match(/:(.*?);/) || [])[1] || "image/png"; const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i); return new Blob([arr], { type: mime }); }
   function rpRenderShots() { $("rp-shots").innerHTML = rpShots.map((s, i) => `<div class="rp-shot" onclick="rpRemoveShot(${i})"><img src="${s.dataUrl}"/><div class="rp-x">Remove</div></div>`).join(""); }
   function rpRemoveShot(i) { rpShots.splice(i, 1); rpRenderShots(); rpRenderPreview(); }
@@ -2817,6 +2886,31 @@
     } catch (e) { $("rp-sentBox").innerHTML = `<div class="rp-sent bad">Could not send (${esc(String(e.message || e))}). Try again, or copy the preview and send it manually.</div>`; btn.textContent = "Send report"; btn.disabled = false; }
   }
 
+  // ── Beta check-in: four product questions plus the allowlisted aggregate snapshot. Preview is a
+  // separate action from Send; edits invalidate the preview so the visible JSON always matches.
+  let bcPreviewed = false;
+  function openBetaCheckin() { const o = $("checkin-ov"); if (!o) return; o.hidden = false; document.body.style.overflow = "hidden"; bcInvalidate(); }
+  function closeBetaCheckin() { const o = $("checkin-ov"); if (o) o.hidden = true; document.body.style.overflow = ""; }
+  function bcBody(action) { return { action, learned_something: $("bc-learned").value, changed_behavior: $("bc-changed").value, keep_using: $("bc-keep").value, price_interest_25_per_developer: $("bc-price").value }; }
+  function bcInvalidate() { bcPreviewed = false; const b = $("bc-send"); if (b) b.disabled = true; const s = $("bc-status"); if (s) s.textContent = "Preview the exact JSON before Send becomes available."; }
+  async function bcPreview() {
+    const pre = $("bc-preview"), status = $("bc-status"); status.textContent = "Building local preview...";
+    try { const r = await post("/api/beta/checkin", bcBody("preview")); if (!r.ok) throw new Error(await r.text()); const out = await r.json(); pre.textContent = JSON.stringify(out, null, 2); bcPreviewed = true; $("bc-send").disabled = false; status.textContent = "Nothing has been sent. Review the JSON, then choose Send or Not now."; }
+    catch (e) { status.textContent = "Could not build preview: " + String(e.message || e); }
+  }
+  async function bcSend() {
+    if (!bcPreviewed) return;
+    const btn = $("bc-send"), status = $("bc-status"); btn.disabled = true; btn.textContent = "Sending...";
+    try { const r = await post("/api/beta/checkin", { action:"send" }); if (!r.ok) throw new Error(await r.text()); status.textContent = "Sent. Thank you — only the JSON you reviewed left this machine."; btn.textContent = "Sent"; setTimeout(() => { closeBetaCheckin(); loadHome(); }, 900); }
+    catch (e) { status.textContent = "Could not send. The reviewed payload is preserved locally so you can retry. " + String(e.message || e); btn.textContent = "Send"; btn.disabled = false; }
+  }
+  async function bcDismiss() { await post("/api/beta/checkin", { action:"dismiss" }); closeBetaCheckin(); loadHome(); }
+
+  function bcWire() {
+    ["bc-learned","bc-changed","bc-keep","bc-price"].forEach((id) => { const el = $(id); if (el) el.addEventListener("input", bcInvalidate); });
+    const ov = $("checkin-ov"); if (ov) ov.addEventListener("click", (e) => { if (e.target.id === "checkin-ov") closeBetaCheckin(); });
+  }
+
   // The modal markup is injected after this script, so wire it once the DOM (including it) exists.
   function rpWire() {
     const drop = $("rp-drop"), file = $("rp-file"); if (!drop) return;
@@ -2829,7 +2923,7 @@
     $("report-ov").addEventListener("click", (e) => { if (e.target.id === "report-ov") closeReport(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("report-ov").hidden) closeReport(); });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", rpWire); else rpWire();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => { rpWire(); bcWire(); }); else { rpWire(); bcWire(); }
 
   // ── boot + live refresh ──
   render();
@@ -2972,6 +3066,46 @@
       <div class="note">Opens a private GitHub issue for the ctx team, not public. No account needed, and you can ask us to delete it any time.</div>
       <button class="rp-cta ghost" onclick="closeReport()">Cancel</button>
       <button class="rp-cta primary" id="rp-send" onclick="rpSend()">Send report</button>
+    </div>
+  </div>
+</div>
+<style>
+  #checkin-ov { position:fixed; inset:0; z-index:70; background:rgba(6,9,8,.58); display:flex; align-items:flex-start; justify-content:center; padding:5vh 16px; color:#161a18; }
+  #checkin-ov[hidden] { display:none; }
+  .bc-modal { width:min(720px,100%); max-height:90vh; overflow:auto; background:#fff; border:1px solid #e3e7e1; border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.25); padding:24px; }
+  .bc-k { font:11px ui-monospace,"SF Mono",monospace; letter-spacing:.12em; text-transform:uppercase; color:#0b5c40; }
+  .bc-title { font:600 26px ui-serif,Georgia,serif; margin-top:7px; }
+  .bc-lede { color:#565e59; font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin-top:8px; }
+  .bc-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:20px; }
+  .bc-field { display:flex; flex-direction:column; gap:7px; font:600 12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#565e59; }
+  .bc-field textarea,.bc-field select { border:1px solid #e3e7e1; border-radius:9px; padding:10px 11px; color:#161a18; background:#f6f7f4; font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:42px; }
+  .bc-field textarea { min-height:74px; resize:vertical; }
+  .bc-preview { margin-top:18px; background:#f6f7f4; border:1px solid #e3e7e1; border-radius:10px; padding:12px; max-height:230px; overflow:auto; white-space:pre; font:10.5px/1.5 ui-monospace,"SF Mono",monospace; color:#565e59; }
+  .bc-status { font:12px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#565e59; margin-top:10px; }
+  .bc-actions { display:flex; gap:9px; justify-content:flex-end; margin-top:18px; }
+  .bc-btn { border:1px solid #e3e7e1; background:#fff; color:#565e59; border-radius:9px; padding:9px 14px; font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; cursor:pointer; }
+  .bc-btn.primary { background:#0f7a54; color:#fff; border-color:#0f7a54; }
+  .bc-btn:disabled { opacity:.45; cursor:not-allowed; }
+  @media(max-width:620px) { .bc-grid { grid-template-columns:1fr; } }
+</style>
+
+<div id="checkin-ov" hidden>
+  <div class="bc-modal" role="dialog" aria-label="Beta check-in">
+    <div class="bc-k">Opt-in beta check-in</div>
+    <h2 class="bc-title">What did CTX change for you?</h2>
+    <p class="bc-lede">CTX has no background telemetry. Your answers and an aggregate counts-only snapshot are shown below before anything is sent. No prompts, output, commands, paths, repos, or tool names are included.</p>
+    <div class="bc-grid">
+      <label class="bc-field">Did you learn something about your context?<textarea id="bc-learned" placeholder="A short observation, or ‘no’. "></textarea></label>
+      <label class="bc-field">Did you change anything because of it?<textarea id="bc-changed" placeholder="Paused a tool, rewound a trim, changed an MCP menu, or ‘no’. "></textarea></label>
+      <label class="bc-field">Would you keep using CTX?<select id="bc-keep"><option value="">Choose one</option><option>yes</option><option>maybe</option><option>no</option></select></label>
+      <label class="bc-field">Would a team lead consider $25/developer/month?<select id="bc-price"><option value="">Choose one</option><option>yes</option><option>maybe</option><option>no</option><option>not sure / not a lead</option></select></label>
+    </div>
+    <pre class="bc-preview" id="bc-preview">Preview will appear here.</pre>
+    <div class="bc-status" id="bc-status">Preview the exact JSON before Send becomes available.</div>
+    <div class="bc-actions">
+      <button class="bc-btn" onclick="bcDismiss()">Not now</button>
+      <button class="bc-btn" onclick="bcPreview()">Preview JSON</button>
+      <button class="bc-btn primary" id="bc-send" onclick="bcSend()" disabled>Send</button>
     </div>
   </div>
 </div>

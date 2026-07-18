@@ -1,5 +1,10 @@
 //! ctx library surface for integration tests and the `ctx` binary.
 
+// Database boundary functions deliberately mirror wide SQLite rows, and dashboard aggregate rows
+// use tuple shapes local to a query. Refactoring those stable boundaries solely for a style lint
+// would add churn without improving their safety or readability.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 pub mod ab;
 pub mod adaptive;
 pub mod agent;
@@ -7,11 +12,14 @@ pub mod allowance;
 pub mod analytics;
 pub mod behavior_guard;
 pub mod bench;
+pub mod beta;
 pub mod budget_guard;
 pub mod claude_settings;
 pub mod cli;
 pub mod cmd_run;
 pub mod coach;
+pub mod codex_hook;
+pub mod codex_plugin;
 pub mod compress;
 pub mod config;
 pub mod context_ctl;
@@ -22,6 +30,7 @@ pub mod daemon;
 pub mod dashboard;
 pub mod dashboard_push;
 pub mod db;
+pub mod doctor;
 pub mod embedder;
 pub mod experiment_plan;
 pub mod filter;
@@ -48,6 +57,7 @@ pub mod surface;
 pub mod test_lock;
 pub mod tool_usage_analysis;
 pub mod tuning;
+pub mod updater;
 pub mod user_profile;
 
 use anyhow::Result;
@@ -105,13 +115,16 @@ pub async fn run() -> Result<()> {
             no_zshrc_prompt,
             dry_run,
             yes,
+            beta,
         } => {
             if uninstall {
                 setup::uninstall()?;
             } else {
-                setup::run(no_install, no_zshrc_prompt, dry_run, yes)?;
+                setup::run(no_install, no_zshrc_prompt, dry_run, yes, beta)?;
             }
         }
+        Commands::Doctor { json } => doctor::run(json)?,
+        Commands::Update { check } => updater::run(check).await?,
         Commands::Dashboard { port, no_open } => dashboard::serve(port, no_open).await?,
         Commands::Hook { command } => match command {
             HookCommand::UserPromptSubmit => hook::user_prompt_submit()?,
@@ -119,8 +132,19 @@ pub async fn run() -> Result<()> {
             HookCommand::CursorPostToolUse => cursor_hook::post_tool_use()?,
             HookCommand::CursorPreToolUse => cursor_hook::pre_tool_use()?,
             HookCommand::CursorPreCompact => cursor_hook::pre_compact()?,
+            HookCommand::CodexSessionStart => codex_hook::session_start()?,
+            HookCommand::CodexUserPromptSubmit => codex_hook::user_prompt_submit()?,
+            HookCommand::CodexPreToolUse => codex_hook::pre_tool_use()?,
+            HookCommand::CodexPostToolUse => codex_hook::post_tool_use()?,
+            HookCommand::CodexPreCompact => codex_hook::pre_compact()?,
+            HookCommand::CodexPostCompact => codex_hook::post_compact()?,
+            HookCommand::CodexStop => codex_hook::stop()?,
         },
-        Commands::Run { command } => cmd_run::exec(command)?,
+        Commands::Run {
+            surface,
+            session,
+            command,
+        } => cmd_run::exec(command, &surface, session.as_deref())?,
         Commands::Mcp => mcp::serve_stdio()?,
         Commands::Mode { name, command } => match command {
             Some(ModeCommand::List) => {
@@ -249,10 +273,7 @@ pub async fn run() -> Result<()> {
             ContextCommand::On => context_ctl::set_preset("safe")?,
             ContextCommand::Off => context_ctl::set_preset("off")?,
             ContextCommand::Reset { yes } => context_ctl::reset(yes)?,
-            ContextCommand::Repair {
-                skip_ingest,
-                json,
-            } => context_ctl::repair(skip_ingest, json)?,
+            ContextCommand::Repair { skip_ingest, json } => context_ctl::repair(skip_ingest, json)?,
             ContextCommand::Learn { json } => learn::run(json)?,
             ContextCommand::Labels { tool, limit, json } => {
                 context_ctl::labels(tool.as_deref(), limit, json)?
@@ -271,9 +292,13 @@ pub async fn run() -> Result<()> {
         Commands::Bench { command } => match command {
             BenchCommand::Run { json } => bench::run(json)?,
         },
-        Commands::Report { repo, out, list } => {
-            report::run(repo.as_deref(), out.as_deref(), list)?
-        }
+        Commands::Report {
+            repo,
+            out,
+            list,
+            privacy,
+            format,
+        } => report::run(repo.as_deref(), out.as_deref(), list, privacy, format)?,
     }
 
     Ok(())

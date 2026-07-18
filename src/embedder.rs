@@ -181,10 +181,10 @@ mod onnx_impl {
             };
             let mut pooled = vec![0f32; embed_dim.min(EMBED_DIM)];
             for t in 0..tokens {
-                for d in 0..pooled.len() {
+                for (d, value) in pooled.iter_mut().enumerate() {
                     let idx = t * embed_dim + d;
                     if idx < data.len() {
-                        pooled[d] += data[idx];
+                        *value += data[idx];
                     }
                 }
             }

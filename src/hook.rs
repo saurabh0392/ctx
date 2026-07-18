@@ -192,7 +192,7 @@ pub fn coaching_user_texts_public(session_id: Option<&str>, current_prompt: &str
 
 fn coaching_user_texts_inner(session_id: Option<&str>, current_prompt: &str) -> Vec<String> {
     let mut out = session_id
-        .and_then(|sid| find_claude_session_jsonl(sid))
+        .and_then(find_claude_session_jsonl)
         .map(|p| tail_user_texts_from_jsonl(&p))
         .unwrap_or_default();
     if !current_prompt.trim().is_empty() {
@@ -405,10 +405,16 @@ pub fn user_prompt_submit() -> Result<()> {
     if cfg.auto_apply_recommendations {
         let (pruned, unpruned) = crate::compress::tool_activation::autopilot_manage_servers(&cfg);
         if !pruned.is_empty() {
-            eprintln!("[ctx] autopilot trial-hid dead-weight server(s): {}", pruned.join(", "));
+            eprintln!(
+                "[ctx] autopilot trial-hid dead-weight server(s): {}",
+                pruned.join(", ")
+            );
         }
         if !unpruned.is_empty() {
-            eprintln!("[ctx] autopilot re-added reached-for server(s): {}", unpruned.join(", "));
+            eprintln!(
+                "[ctx] autopilot re-added reached-for server(s): {}",
+                unpruned.join(", ")
+            );
         }
     }
 

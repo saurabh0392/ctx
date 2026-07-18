@@ -294,7 +294,8 @@ mod tests {
             r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Let me edit src/agent.rs to add the guard."},{"type":"tool_use","name":"Read","input":{"path":"src/agent.rs"}}]}}"#.to_string(),
         ]
         .join("\n");
-        let got = recent_intent_text_from_transcript(&transcript, 3).expect("cursor narration parsed");
+        let got =
+            recent_intent_text_from_transcript(&transcript, 3).expect("cursor narration parsed");
         assert!(got.contains("edit src/agent.rs"));
         // The same narration drives the protective intent signal, surface-agnostic.
         let intent = IntentSignal::from_text(Some(&got), Some("src/agent.rs"));

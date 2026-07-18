@@ -54,7 +54,12 @@ pub trait AgentTransport {
 /// Compute the controller decision for a tool result. Pure with respect to the agent:
 /// every transport runs the same shadow computation, preset check, and evidence gate.
 pub fn decide(cfg: &Config, tr: &ToolResult) -> ControllerDecision {
-    decide_inner(cfg, tr, explore_unit_draw())
+    decide_for_surface(cfg, tr, "claude-code")
+}
+
+/// Compute a controller decision with an action gate isolated to one agent surface.
+pub fn decide_for_surface(cfg: &Config, tr: &ToolResult, surface: &str) -> ControllerDecision {
+    decide_inner(cfg, tr, surface, explore_unit_draw())
 }
 
 /// A uniform draw in [0, 1) for exploration assignment. Dependency-free (no `rand` crate, per the
@@ -74,7 +79,12 @@ fn explore_unit_draw() -> f64 {
     (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
-fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerDecision {
+fn decide_inner(
+    cfg: &Config,
+    tr: &ToolResult,
+    surface: &str,
+    explore_draw: f64,
+) -> ControllerDecision {
     let mut shadow = compress::compute_shadow_decision(
         &tr.tool_name,
         &tr.tool_input,
@@ -99,10 +109,12 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
     // the kind AND the tool must either have earned activation OR be in automatic burn-in (ADR 0012
     // / CTX-23), the bounded on-ramp that lets a tool with a clean baseline build its "after" arm.
     // Burn-in respects the preset, so it never trims when autopilot is off.
-    let activated = compress::activation::tool_activated(cfg, &tr.tool_name, &kind_label);
+    let activated =
+        compress::activation::tool_activated_on_surface(cfg, &tr.tool_name, &kind_label, surface);
     let base_apply = cfg.compress_trialing(&tr.tool_name)
         || (cfg.compress_applies_kind(&kind_label)
-            && (activated || compress::activation::tool_in_burn_in(cfg, &tr.tool_name)));
+            && (activated
+                || compress::activation::tool_in_burn_in_on_surface(cfg, &tr.tool_name, surface)));
 
     let is_read = kind_label == "read";
     let read_path = read_file_path(&tr.tool_input);
@@ -151,8 +163,8 @@ fn decide_inner(cfg: &Config, tr: &ToolResult, explore_draw: f64) -> ControllerD
         d.features.self_dev = is_self_dev_repo(&tr.cwd).then_some(true);
         d.features.file_ext = read_file_path(&tr.tool_input).and_then(file_ext_of);
         if is_read {
-            d.features.path_role = read_file_path(&tr.tool_input)
-                .and_then(|p| path_role_of(p).map(str::to_string));
+            d.features.path_role =
+                read_file_path(&tr.tool_input).and_then(|p| path_role_of(p).map(str::to_string));
         }
         let features_json = d.features_json();
         if let Some(score) = crate::learn::score_parts(
@@ -486,7 +498,10 @@ mod tests {
                 recent_intent_text: None,
             };
             let d = decide(&trialed, &tr);
-            assert!(d.apply, "{tool} trims under an explicit trial, like any tool");
+            assert!(
+                d.apply,
+                "{tool} trims under an explicit trial, like any tool"
+            );
             assert!(
                 d.shadow.is_some(),
                 "{tool} is still recorded for the edit-follow timeline"
@@ -839,7 +854,7 @@ mod tests {
     fn exploration_assigns_control_when_draw_below_rate() {
         with_empty_ctx_home(|| {
             let cfg = explore_read_cfg(0.20);
-            let d = decide_inner(&cfg, &reference_read(), 0.05);
+            let d = decide_inner(&cfg, &reference_read(), "claude-code", 0.05);
             assert_eq!(d.explore_arm, Some("control"));
             assert!(
                 !d.apply,
@@ -852,7 +867,7 @@ mod tests {
     fn exploration_assigns_treatment_when_draw_above_rate() {
         with_empty_ctx_home(|| {
             let cfg = explore_read_cfg(0.20);
-            let d = decide_inner(&cfg, &reference_read(), 0.80);
+            let d = decide_inner(&cfg, &reference_read(), "claude-code", 0.80);
             assert_eq!(d.explore_arm, Some("treatment"));
             assert!(d.apply, "a treatment sample still trims as normal");
         });
@@ -861,7 +876,7 @@ mod tests {
     #[test]
     fn exploration_off_leaves_no_arm_and_trims() {
         let cfg = explore_read_cfg(0.0);
-        let d = decide_inner(&cfg, &reference_read(), 0.01);
+        let d = decide_inner(&cfg, &reference_read(), "claude-code", 0.01);
         assert_eq!(d.explore_arm, None, "rate 0 disables the experiment");
         assert!(d.apply, "an eligible trial trims as before");
     }
@@ -889,10 +904,13 @@ mod tests {
             recent_intent_text: None,
         };
         with_empty_ctx_home(|| {
-            let control = decide_inner(&cfg, &edit, 0.05);
+            let control = decide_inner(&cfg, &edit, "claude-code", 0.05);
             assert_eq!(control.explore_arm, Some("control"));
-            assert!(!control.apply, "a control-arm edit is left untrimmed to build the baseline");
-            let treatment = decide_inner(&cfg, &edit, 0.80);
+            assert!(
+                !control.apply,
+                "a control-arm edit is left untrimmed to build the baseline"
+            );
+            let treatment = decide_inner(&cfg, &edit, "claude-code", 0.80);
             assert_eq!(treatment.explore_arm, Some("treatment"));
             assert!(treatment.apply, "the rest still trim on trial");
         });
@@ -903,7 +921,7 @@ mod tests {
         // A guarded project read is not trim-eligible, so it must never enter the experiment, no
         // matter the draw. Exploration can only ever withhold a trim ctx would otherwise make.
         let cfg = explore_read_cfg(0.20);
-        let d = decide_inner(&cfg, &read_tr("src/foo.rs"), 0.01);
+        let d = decide_inner(&cfg, &read_tr("src/foo.rs"), "claude-code", 0.01);
         assert_eq!(d.explore_arm, None);
         assert!(!d.apply);
     }

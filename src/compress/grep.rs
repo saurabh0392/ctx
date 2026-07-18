@@ -34,7 +34,7 @@ pub fn compress_grep_output(
     let max_per_file = 5usize;
     let mut parts: Vec<String> = Vec::new();
     let mut files: Vec<_> = by_file.into_iter().collect();
-    files.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    files.sort_by_key(|row| std::cmp::Reverse(row.1.len()));
     let file_count = files.len();
 
     for (file, matches) in files.iter().take(20) {

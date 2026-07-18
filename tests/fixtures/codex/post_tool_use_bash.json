@@ -1,0 +1,13 @@
+{
+  "cwd": "/work/example",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "session_id": "session-1",
+  "tool_input": {"command": "printf 'hello\\n'"},
+  "tool_name": "Bash",
+  "tool_response": "hello\n",
+  "tool_use_id": "exec-1",
+  "transcript_path": "/redacted/session.jsonl",
+  "turn_id": "turn-1"
+}

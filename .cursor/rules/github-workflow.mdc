@@ -1,0 +1,30 @@
+---
+description: How to ship work to GitHub in this repo (branch, commit, PR, merge). gh is NOT installed.
+alwaysApply: true
+---
+
+# GitHub workflow (saurabh0392/ctx)
+
+This is the verified, working process for getting changes onto GitHub here. Follow it exactly. Do not assume tools that are not present.
+
+## Environment facts (checked, not guessed)
+
+- Remote: `https://github.com/saurabh0392/ctx.git`. Default branch: `main`.
+- **`gh` is NOT installed.** Never run `gh ...` expecting it to work, and never report a PR as "created" when you only have a link. If you genuinely need programmatic PR create/merge, ask the user before installing `gh`.
+- `git push` already works over HTTPS through the macOS keychain. No token, no extra auth.
+
+## Steps
+
+1. **Ticket first.** A Linear `CTX-<N>` issue must exist before any code (see the linear-ticket-first rule). Reuse the ticket's `gitBranchName`.
+2. **Branch** off the latest `main`: `saurabhsharan03/ctx-<N>-<short-slug>`.
+3. **Commit, tight.** First line is `CTX-<N>: <concise, outcome-oriented summary>` (e.g. `CTX-43: ship with profile filtering off by default`). One or few commits per PR, not a pile.
+4. **Push:** `git push -u origin HEAD`.
+5. **Open the PR by handing over a one-click link** (because `gh` is absent):
+   `https://github.com/saurabh0392/ctx/compare/main...<branch>?expand=1`
+   PR title = `CTX-<N>: <summary>`. Body references the ticket and uses `Fixes CTX-<N>` when it fully closes it. Say plainly that the user needs to click it; do not pretend it is already open.
+6. **Merging is the user's call.** PRs land as **merge commits** via the GitHub "Merge pull request" button. Do NOT merge into `main` yourself, and NEVER force-push `main`, unless the user explicitly asks.
+7. **Close the loop in Linear:** update the ticket status and add a short note on what shipped, with the PR link attached.
+
+## Don't
+
+- Don't call `gh` blindly. Don't claim a PR exists when you only produced a URL. Don't squash, rebase, or force-push `main`. Don't commit or push unless asked to.

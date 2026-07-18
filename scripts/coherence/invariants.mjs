@@ -166,16 +166,17 @@ export const invariants = [
       await H.goto('save');
       const rungs = Object.fromEntries(await H.$$('#save-ladder .sv-rung', (els) => els.map((e) => [
         (e.querySelector('.sv-rname') || {}).textContent.trim(), Number((e.querySelector('.sv-rcount') || {}).textContent.replace(/[^\d]/g, '')) ])));
-      // Earned rung == cards in the "Earned it" spotlight that read EARNED.
-      const earnedCards = await H.$$('#view-save .sv-card .sv-pill', (els) => els.filter((p) => /earned/i.test(p.textContent)).length);
+      // Trimming rung == cards in the active spotlight that read TRIMMING. The underlying stage is
+      // still named `earned`; the dashboard label is deliberately plain-language product copy.
+      const trimmingCards = await H.$$('#view-save .sv-card .sv-pill', (els) => els.filter((p) => /trimming/i.test(p.textContent)).length);
       const problems = [];
-      if (rungs.Earned !== earnedCards) problems.push(`Earned rung ${rungs.Earned} != ${earnedCards} earned cards`);
+      if (rungs.Trimming !== trimmingCards) problems.push(`Trimming rung ${rungs.Trimming} != ${trimmingCards} trimming cards`);
       // Parked held count == rows in the Held section (when all are shown).
       const parked = H.parseK((await H.text('#save-ladder .sv-parked b')) || '0');
       const heldRows = await H.$$('#view-save .sv-mini.held', (els) => els.length);
       const heldMoreShown = await H.$$('#view-save .sv-note', (els) => els.some((e) => /more held tools/.test(e.textContent)));
       if (!heldMoreShown && parked && parked !== heldRows) problems.push(`parked held ${parked} != ${heldRows} held rows`);
-      return problems.length ? fail(problems.join('; '), { rungs, earnedCards, parked, heldRows }) : ok('ladder counts match their sections');
+      return problems.length ? fail(problems.join('; '), { rungs, trimmingCards, parked, heldRows }) : ok('ladder counts match their sections');
     },
   },
 

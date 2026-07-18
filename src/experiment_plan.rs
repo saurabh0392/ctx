@@ -410,7 +410,7 @@ pub fn current_day(plan: &ExperimentPlan, today: NaiveDate) -> u32 {
     (delta.max(0) as u32) + 1
 }
 
-pub fn resolve_phase<'a>(plan: &'a ExperimentPlan, day: u32) -> &'a ExperimentPhase {
+pub fn resolve_phase(plan: &ExperimentPlan, day: u32) -> &ExperimentPhase {
     plan.phases
         .iter()
         .find(|p| day <= p.until_day)
@@ -435,8 +435,7 @@ pub fn plan_init(corpus: &str, template: &str) -> Result<()> {
     std::fs::write(plan_path(), &content)?;
     let plan: ExperimentPlan = toml::from_str(&content)?;
     save_plan(&plan)?;
-    let mut state = PlanState::default();
-    state.last_tick_date = None;
+    let state = PlanState::default();
     save_state(&state)?;
     println!("Created {}", plan_path().display());
     println!("  started_at: {}", plan.started_at);
@@ -699,16 +698,10 @@ pub struct ExperimentPlanDashboard {
     pub one_liner: String,
     pub sample_gates: Vec<SampleGate>,
     /// False during pre-ctx (hooks stripped).
-    #[serde(default = "experiment_hooks_enabled_default")]
     pub hooks_enabled: bool,
     /// False when calendar phase advanced but patch not applied yet (waiting for tick).
-    #[serde(default = "experiment_hooks_enabled_default")]
     pub phase_applied: bool,
     pub baseline_comparison: Option<BaselineComparison>,
-}
-
-fn experiment_hooks_enabled_default() -> bool {
-    true
 }
 
 pub fn plan_for_dashboard() -> ExperimentPlanDashboard {

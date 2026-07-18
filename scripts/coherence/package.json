@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Behavioral coherence checks for the ctx dashboard, run against a live isolated instance.",
   "scripts": {
-    "coherence": "bash coherence.sh"
+    "coherence": "bash coherence.sh",
+    "claims": "node claims.mjs"
   },
   "dependencies": {
     "playwright-core": "^1.40.0"

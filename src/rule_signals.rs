@@ -107,10 +107,8 @@ fn collect_json_strings(v: &Value, out: &mut Vec<String>, depth: usize) {
         return;
     }
     match v {
-        Value::String(s) => {
-            if s.contains("mcp__") || s.to_lowercase().contains(" mcp") {
-                out.push(s.clone());
-            }
+        Value::String(s) if (s.contains("mcp__") || s.to_lowercase().contains(" mcp")) => {
+            out.push(s.clone());
         }
         Value::Array(arr) => {
             for item in arr {

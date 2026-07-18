@@ -53,20 +53,37 @@ fn main() -> anyhow::Result<()> {
     let conn = db::open_db()?;
     db::ensure_schema(&conn)?;
 
-    let mut batches: Vec<Vec<CompressDecision>> = Vec::new();
     // Held (deny-set): a built-in one-shot, another one-shot, and an MCP write. Each has reclaimable
     // output (would_out < chars_in) so the reclaimable-excludes-held check has something to catch.
-    batches.push(dec("TodoWrite", "generic", 6, 2000, 1700, false, None));
-    batches.push(dec("TaskOutput", "generic", 3, 1500, 1400, false, None));
-    batches.push(dec("mcp__acme_Widgets__save_thing", "mcp", 4, 3000, 2600, false, None));
-    // Eligible reads with applied trims: real reclaimed output to reconcile on Home vs See.
-    batches.push(dec("Read", "read", 20, 6000, 2000, true, None));
-    batches.push(dec("Edit", "edit", 14, 4000, 1500, true, None));
-    // One clean-test control holdout on an eligible tool (applied=false, explore_arm=control).
-    batches.push(dec("Read", "read", 4, 6000, 2000, false, Some("control")));
-    // Eligible tools with enough calls but no trims yet, so they sit in Watching with a trial control.
-    batches.push(dec("Bash", "bash", 12, 1200, 900, false, None));
-    batches.push(dec("mcp__acme_Widgets__get_thing", "mcp", 12, 2500, 1600, false, None));
+    let batches: Vec<Vec<CompressDecision>> = vec![
+        dec("TodoWrite", "generic", 6, 2000, 1700, false, None),
+        dec("TaskOutput", "generic", 3, 1500, 1400, false, None),
+        dec(
+            "mcp__acme_Widgets__save_thing",
+            "mcp",
+            4,
+            3000,
+            2600,
+            false,
+            None,
+        ),
+        // Eligible reads with applied trims: real reclaimed output to reconcile on Home vs See.
+        dec("Read", "read", 20, 6000, 2000, true, None),
+        dec("Edit", "edit", 14, 4000, 1500, true, None),
+        // One clean-test control holdout on an eligible tool (applied=false, explore_arm=control).
+        dec("Read", "read", 4, 6000, 2000, false, Some("control")),
+        // Eligible tools with enough calls but no trims yet, so they sit in Watching with a trial control.
+        dec("Bash", "bash", 12, 1200, 900, false, None),
+        dec(
+            "mcp__acme_Widgets__get_thing",
+            "mcp",
+            12,
+            2500,
+            1600,
+            false,
+            None,
+        ),
+    ];
 
     let mut total = 0;
     for batch in &batches {
@@ -76,6 +93,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("seeded {total} compress_decisions into {}", ctx::config::db_path().display());
+    println!(
+        "seeded {total} compress_decisions into {}",
+        ctx::config::db_path().display()
+    );
     Ok(())
 }

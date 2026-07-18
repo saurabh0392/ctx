@@ -81,7 +81,10 @@ fn cursor_decisions_join_via_ordinal_timeline() {
     // The read happened before the "no, that's broken, revert" correction turn.
     let (j_read, corr_read, rr_read) = outcome(&conn, "/x/a.rs");
     assert_eq!(j_read, 1);
-    assert_eq!(corr_read, 1, "explicit complaint on a trimmed read is a gate correction");
+    assert_eq!(
+        corr_read, 1,
+        "explicit complaint on a trimmed read is a gate correction"
+    );
     assert_eq!(rr_read, 0, "the path was only read once");
 
     // git status was run twice: correction after the first, and a re-read.

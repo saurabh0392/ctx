@@ -51,7 +51,7 @@ coaching_pct = 100
     }
     drop(conn);
 
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     for i in 0..20 {
         let stdin_json = serde_json::json!({
             "cwd": "/tmp",
