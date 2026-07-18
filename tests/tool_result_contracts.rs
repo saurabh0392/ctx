@@ -210,6 +210,7 @@ fn typed_mcp_compressor_is_observation_only() {
     let raw_output = tr.raw_output.clone();
     let cfg = ctx::config::Config {
         compress_enabled: true,
+        compress_shadow_enabled: true,
         compress_preset: ctx::config::CompressPreset::Off,
         ..Default::default()
     };
@@ -226,6 +227,32 @@ fn typed_mcp_compressor_is_observation_only() {
     assert!(contract.round_trip_identical);
     assert_eq!(contract.text_blocks, 1);
     assert!(contract.candidate_strategy.is_some());
+}
+
+#[test]
+fn typed_mcp_evidence_does_no_work_when_shadow_collection_is_disabled() {
+    let payload = read_json(&fixture_dir().join("claude-code-2.1.153-post-tool-use-mcp.json"));
+    let tr = ClaudeCodeTransport
+        .extract(&payload)
+        .expect("Claude MCP result");
+    let cfg = ctx::config::Config {
+        compress_enabled: true,
+        compress_shadow_enabled: false,
+        compress_preset: ctx::config::CompressPreset::Off,
+        ..Default::default()
+    };
+
+    let decision = ctx::agent::decide(&cfg, &tr);
+    assert!(!decision.apply);
+    assert!(
+        decision
+            .shadow
+            .expect("controller still computes its existing decision")
+            .features
+            .mcp_contract
+            .is_none(),
+        "typed MCP evidence must be skipped when shadow collection is disabled"
+    );
 }
 
 #[test]

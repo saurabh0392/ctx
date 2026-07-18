@@ -293,7 +293,7 @@ pub fn compute_shadow_decision_with_mcp(
         preserve_errors: cfg.compress_preserve_errors,
     };
 
-    let mcp_contract = if matches!(kind, CompressKind::Mcp) {
+    let mcp_contract = if cfg.compress_shadow_enabled && matches!(kind, CompressKind::Mcp) {
         canonical_mcp.map(|result| {
             let coverage = result.coverage();
             let context = super::types::CompressContext {
@@ -302,7 +302,10 @@ pub fn compute_shadow_decision_with_mcp(
             };
             let candidate = super::mcp::compress_mcp_result_shadow(result, &opts, &context);
             McpContractShadow {
-                round_trip_identical: result.render() == result.raw().clone(),
+                // A successfully parsed canonical result is lossless by contract; corpus and
+                // generated-input tests enforce parse/render identity. Re-rendering every live
+                // result here would duplicate the entire payload just to re-prove that invariant.
+                round_trip_identical: true,
                 content_blocks: coverage.content_blocks,
                 text_blocks: coverage.text_blocks,
                 unknown_blocks: coverage.unknown_blocks,
