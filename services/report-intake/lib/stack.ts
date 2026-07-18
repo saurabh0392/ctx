@@ -9,21 +9,18 @@ import * as path from 'path';
 export interface ReportIntakeStackProps extends cdk.StackProps {
   githubRepo: string;      // "owner/repo" issues are filed against
   ssmTokenParam: string;   // SSM SecureString name holding the fine-grained PAT
+  ssmTokensParam: string;  // shared beta invite roster; removing a line revokes capabilities
+  ssmCapabilitySecretParam: string;
 }
 
 export class ReportIntakeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ReportIntakeStackProps) {
     super(scope, id, props);
 
-    // Images bucket. Objects under images/ are public-read (so they render in the issue and persist),
-    // but keys are unguessable UUIDs and listing is denied, so a URL reveals one image and nothing more.
+    // Private beta evidence bucket. Screenshots expire quickly; aggregate check-ins are retained for
+    // the length of the validation cycle. GitHub issues receive seven-day signed image links.
     const bucket = new s3.Bucket(this, 'Images', {
-      blockPublicAccess: new s3.BlockPublicAccess({
-        blockPublicAcls: true,
-        ignorePublicAcls: true,
-        blockPublicPolicy: false,   // allow the bucket policy below
-        restrictPublicBuckets: false,
-      }),
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       cors: [{
         allowedMethods: [s3.HttpMethods.POST, s3.HttpMethods.PUT],
@@ -31,47 +28,46 @@ export class ReportIntakeStack extends cdk.Stack {
         allowedHeaders: ['*'],
         maxAge: 3000,
       }],
-      lifecycleRules: [{ prefix: 'images/', expiration: cdk.Duration.days(90) }],
-      removalPolicy: cdk.RemovalPolicy.DESTROY,   // alpha: tear down cleanly with cdk destroy
-      autoDeleteObjects: true,
+      lifecycleRules: [
+        { prefix: 'images/', expiration: cdk.Duration.days(30) },
+        { prefix: 'checkins/', expiration: cdk.Duration.days(365) },
+      ],
+      // A mistaken stack deletion must not erase beta evidence ahead of its lifecycle policy.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
-    bucket.addToResourcePolicy(new iam.PolicyStatement({
-      actions: ['s3:GetObject'],
-      resources: [bucket.arnForObjects('images/*')],
-      principals: [new iam.AnyPrincipal()],
-    }));
-
     const tokenArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmTokenParam}`;
+    const tokensArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmTokensParam}`;
+    const capabilityArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmCapabilitySecretParam}`;
 
     const fn = new NodejsFunction(this, 'Intake', {
       entry: path.join(__dirname, '..', 'lambda', 'handler.ts'),
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_22_X,
       timeout: cdk.Duration.seconds(15),
       memorySize: 256,
+      reservedConcurrentExecutions: 5,
       environment: {
         BUCKET: bucket.bucketName,
         GITHUB_REPO: props.githubRepo,
         SSM_TOKEN_PARAM: props.ssmTokenParam,
-        MAX_IMAGES: '25',
-        MAX_IMAGE_MB: '10',
+        SSM_TOKENS_PARAM: props.ssmTokensParam,
+        SSM_CAPABILITY_SECRET_PARAM: props.ssmCapabilitySecretParam,
+        MAX_IMAGES: '3',
+        MAX_IMAGE_MB: '5',
       },
-      bundling: { minify: true, target: 'node20' },
+      bundling: { minify: true, target: 'node22' },
     });
 
     // Least privilege: read only that one SecureString, write only into images/ on this bucket.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ssm:GetParameter'],
-      resources: [tokenArn],
+      resources: [tokenArn, tokensArn, capabilityArn],
     }));
     bucket.grantPut(fn, 'images/*');
+    bucket.grantRead(fn, 'images/*');
+    bucket.grantPut(fn, 'checkins/*');
 
     const url = fn.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE,   // public: the modal has no AWS credentials
-      cors: {
-        allowedOrigins: ['*'],
-        allowedMethods: [lambda.HttpMethod.POST],
-        allowedHeaders: ['content-type'],
-      },
+      authType: lambda.FunctionUrlAuthType.NONE, // capability auth is enforced in the handler
     });
 
     new cdk.CfnOutput(this, 'IntakeUrl', { value: url.url, description: 'POST here from the dashboard modal (REPORT_ENDPOINT)' });

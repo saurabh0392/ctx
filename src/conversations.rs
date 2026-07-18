@@ -247,7 +247,7 @@ fn parse_row_with_context(line: &str, last_model: &mut Option<String>) -> Row {
             .get("timestamp")
             .and_then(|x| x.as_str())
             .map(|s| s.to_string());
-        let human_text = v.get("message").and_then(|m| extract_human_text(m));
+        let human_text = v.get("message").and_then(extract_human_text);
         return Row::User(UserRow {
             timestamp,
             is_meta,
@@ -998,7 +998,7 @@ fn ingest_one_jsonl_session(
         (String::new(), String::new(), "[]".to_string())
     };
     let sid = crate::db::upsert_claude_session(
-        &*tx,
+        tx,
         &external_key,
         &parsed.session.project,
         &parsed.session.started_at,
@@ -1018,7 +1018,7 @@ fn ingest_one_jsonl_session(
         &parsed.session.project,
         &top_json,
     )?;
-    crate::db::replace_session_turns(&*tx, sid)?;
+    crate::db::replace_session_turns(tx, sid)?;
     for t in &parsed.turns {
         let flags_json = serde_json::to_string(&t.flags)?;
         let prefix = if store_prompt_text {
@@ -1032,7 +1032,7 @@ fn ingest_one_jsonl_session(
             .filter(|s| !s.is_empty())
             .or(Some(parsed.session.started_at.as_str()));
         let _tid = crate::db::insert_turn(
-            &*tx,
+            tx,
             sid,
             t.turn_index as i64,
             "turn",
@@ -1048,7 +1048,7 @@ fn ingest_one_jsonl_session(
         )?;
     }
     for (tool_name, server_prefix, ts) in &tool_uses {
-        crate::db::insert_tool_invocation(&*tx, sid, None, tool_name, server_prefix, ts)?;
+        crate::db::insert_tool_invocation(tx, sid, None, tool_name, server_prefix, ts)?;
     }
     Ok(true)
 }
@@ -1082,16 +1082,15 @@ pub fn ingest_claude_jsonl(force_full: bool) -> anyhow::Result<usize> {
     let last_ingest_cutoff: Option<std::time::SystemTime> = if force_full {
         None
     } else {
-        conn
-            .query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .ok()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-            .map(|dt| {
-                std::time::SystemTime::UNIX_EPOCH
-                    + std::time::Duration::from_secs(dt.timestamp().max(0) as u64)
-            })
+        conn.query_row("SELECT v FROM meta WHERE k = 'last_ingest_at'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| {
+            std::time::SystemTime::UNIX_EPOCH
+                + std::time::Duration::from_secs(dt.timestamp().max(0) as u64)
+        })
     };
 
     let tx = conn.unchecked_transaction()?;

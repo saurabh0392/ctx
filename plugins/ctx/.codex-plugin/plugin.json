@@ -1,0 +1,31 @@
+{
+  "name": "ctx",
+  "version": "0.1.0+codex.20260718143132",
+  "description": "Local context efficiency, evidence, and reversible shell-output trimming for Codex.",
+  "author": {
+    "name": "Saurabh",
+    "url": "https://github.com/saurabh0392/ctx"
+  },
+  "homepage": "https://github.com/saurabh0392/ctx",
+  "repository": "https://github.com/saurabh0392/ctx",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CTX",
+    "shortDescription": "See and safely reclaim Codex context.",
+    "longDescription": "CTX observes local Codex tool activity, exposes local context status and recovery through MCP, and can shorten eligible shell output before Codex reads it after a surface-specific safety check.",
+    "developerName": "Saurabh",
+    "category": "Productivity",
+    "capabilities": [
+      "Local tool observation",
+      "Reversible shell output trimming",
+      "Context status and recovery"
+    ],
+    "defaultPrompt": [
+      "Show my CTX context status.",
+      "Explain what CTX can and cannot trim in Codex.",
+      "Help me restore a CTX-trimmed result."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -25,20 +25,18 @@ pub struct CausalThresholds {
     /// below this for BOTH corrections and re-reads. The claim is "not measurably worse by more
     /// than this margin", not "provably better".
     ///
-    /// Calibration matters here. With only `min_trimmed` runs the Newcombe interval is wide
-    /// (about ±0.09 at 30 to 40 trimmed runs), so a margin of 0.05 is unreachable: even a tool
-    /// with zero observed harm across 37 runs cannot clear it, and nothing ever earns. 0.10 is
-    /// the smallest margin a genuinely clean tool can clear at this sample size, while a clearly
-    /// harmful tool (say a 40-point jump) still sits far above it and stays closed. The interval
-    /// shrinks as more trimmed runs land, so the effective bar tightens on its own over time.
+    /// Twenty runs per side is the minimum at which CTX evaluates the randomized comparison, not a
+    /// promise that the interval will already be decisive. A clean but still-wide result keeps
+    /// collecting. 0.10 is the maximum meaningful increase: a clearly harmful tool stays closed,
+    /// while the interval naturally tightens as more comparable runs land.
     pub max_harm_delta: f64,
 }
 
 impl Default for CausalThresholds {
     fn default() -> Self {
         Self {
-            min_baseline: 30,
-            min_trimmed: 30,
+            min_baseline: 20,
+            min_trimmed: 20,
             max_harm_delta: 0.10,
         }
     }
@@ -77,6 +75,17 @@ impl Default for ActivationThresholds {
 /// `compress_force_active` bypasses the evidence bar for power users who explicitly opt into
 /// aggressive trimming; otherwise the gate is causal and fails closed.
 pub fn tool_activated(cfg: &Config, tool_name: &str, _kind_label: &str) -> bool {
+    tool_activated_on_surface(cfg, tool_name, _kind_label, "claude-code")
+}
+
+/// Surface-isolated activation check. Evidence from a different agent transport can never open
+/// this gate, even when both surfaces normalize to the same tool name.
+pub fn tool_activated_on_surface(
+    cfg: &Config,
+    tool_name: &str,
+    _kind_label: &str,
+    surface: &str,
+) -> bool {
     if cfg.compress_force_active {
         return true;
     }
@@ -87,11 +96,12 @@ pub fn tool_activated(cfg: &Config, tool_name: &str, _kind_label: &str) -> bool 
         return false;
     }
     let th = CausalThresholds::default();
-    let outcomes = crate::db::causal_tool_outcomes(&conn, Some(tool_name));
+    let outcomes =
+        crate::db::explore_tool_outcomes_for_surface(&conn, Some(tool_name), Some(surface));
     let Some(o) = outcomes.into_iter().find(|o| o.tool_name == tool_name) else {
         return false;
     };
-    causal_clears_bar(&o, &th)
+    randomized_clears_bar(&o, &th)
 }
 
 /// Whether a tool should be auto-trialed (in burn-in) right now: it has a solid clean baseline but
@@ -100,6 +110,11 @@ pub fn tool_activated(cfg: &Config, tool_name: &str, _kind_label: &str) -> bool 
 /// `compress_trial_tools` list. The caller has already confirmed the preset allows the kind, so
 /// burn-in never trims when autopilot is off. Off when `compress_auto_trial` is disabled.
 pub fn tool_in_burn_in(cfg: &Config, tool_name: &str) -> bool {
+    tool_in_burn_in_on_surface(cfg, tool_name, "claude-code")
+}
+
+/// Surface-isolated burn-in check; see [`tool_activated_on_surface`].
+pub fn tool_in_burn_in_on_surface(cfg: &Config, tool_name: &str, surface: &str) -> bool {
     if !cfg.compress_enabled || !cfg.compress_auto_trial {
         return false;
     }
@@ -109,11 +124,61 @@ pub fn tool_in_burn_in(cfg: &Config, tool_name: &str) -> bool {
     if crate::db::ensure_schema(&conn).is_err() {
         return false;
     }
-    let outcomes = crate::db::causal_tool_outcomes(&conn, Some(tool_name));
-    let Some(o) = outcomes.into_iter().find(|o| o.tool_name == tool_name) else {
+    let observational =
+        crate::db::causal_tool_outcomes_for_surface(&conn, Some(tool_name), Some(surface));
+    let Some(o) = observational.into_iter().find(|o| o.tool_name == tool_name) else {
         return false;
     };
-    burn_in_clears(&o, &CausalThresholds::default())
+    let th = CausalThresholds::default();
+    if o.baseline_n < th.min_baseline {
+        return false;
+    }
+    let corr_rate = o.baseline_corrections as f64 / o.baseline_n as f64;
+    if corr_rate > BURN_IN_MAX_BASELINE_CORR {
+        return false;
+    }
+    // Once the observational on-ramp is clean, keep the bounded experiment running until both
+    // randomized arms—not the rough all-runs tally—have enough scored samples for the live gate.
+    let experiment =
+        crate::db::explore_tool_outcomes_for_surface(&conn, Some(tool_name), Some(surface));
+    match experiment.into_iter().find(|e| e.tool_name == tool_name) {
+        Some(e) if e.control_n < th.min_baseline || e.treatment_n < th.min_trimmed => true,
+        Some(e) if randomized_clears_bar(&e, &th) => false,
+        Some(e) => {
+            let correction_delta = e.treatment_corrections as f64 / e.treatment_n as f64
+                - e.control_corrections as f64 / e.control_n as f64;
+            let retouch_delta = e.treatment_rereads as f64 / e.treatment_n as f64
+                - e.control_rereads as f64 / e.control_n as f64;
+            // Stop promptly on an observed harmful effect. Otherwise keep gathering randomized
+            // evidence until the interval becomes decisive, with a finite ceiling.
+            correction_delta <= th.max_harm_delta
+                && retouch_delta <= th.max_harm_delta
+                && (e.control_n < 200 || e.treatment_n < 200)
+        }
+        None => true,
+    }
+}
+
+/// The live safety check over randomly assigned unchanged and trimmed runs. This is the same math
+/// the dashboard API explains, so there is one decision source instead of a rough tally plus a
+/// contradictory "clean test".
+pub fn randomized_clears_bar(o: &crate::db::ExploreToolOutcome, th: &CausalThresholds) -> bool {
+    if o.control_n < th.min_baseline || o.treatment_n < th.min_trimmed {
+        return false;
+    }
+    let (_, _, correction_hi) = crate::stats::newcombe_diff(
+        o.treatment_corrections,
+        o.treatment_n,
+        o.control_corrections,
+        o.control_n,
+    );
+    let (_, _, retouch_hi) = crate::stats::newcombe_diff(
+        o.treatment_rereads,
+        o.treatment_n,
+        o.control_rereads,
+        o.control_n,
+    );
+    correction_hi <= th.max_harm_delta && retouch_hi <= th.max_harm_delta
 }
 
 /// Pure burn-in entry decision, extracted for tests. Start a bounded trial when there is enough
@@ -363,11 +428,11 @@ mod tests {
     fn burn_in_then_gate_handoff_is_continuous() {
         // A clean tool mid-burn-in (some trimmed runs, not yet full) keeps trimming via burn-in,
         // and the causal gate is not yet satisfied because the arm is below min_trimmed.
-        let mid = outcome(60, 1, 2, 20, 0, 0);
+        let mid = outcome(60, 1, 2, 10, 0, 0);
         assert!(burn_in_clears(&mid, &CausalThresholds::default()));
         assert!(!causal_clears_bar(&mid, &CausalThresholds::default()));
         // Once the arm fills cleanly, burn-in stops and the gate earns it.
-        let full = outcome(60, 1, 2, 30, 0, 0);
+        let full = outcome(80, 1, 2, 80, 0, 0);
         assert!(!burn_in_clears(&full, &CausalThresholds::default()));
         assert!(causal_clears_bar(&full, &CausalThresholds::default()));
     }
@@ -378,7 +443,7 @@ mod tests {
         let o = outcome(12, 0, 0, 0, 0, 0);
         assert_eq!(
             tool_stage(&o, &CausalThresholds::default()),
-            ToolStage::Watching { baseline_to_go: 18 }
+            ToolStage::Watching { baseline_to_go: 8 }
         );
     }
 
@@ -388,7 +453,7 @@ mod tests {
         let o = outcome(60, 1, 2, 8, 0, 0);
         assert_eq!(
             tool_stage(&o, &CausalThresholds::default()),
-            ToolStage::Learning { trimmed_to_go: 22 }
+            ToolStage::Learning { trimmed_to_go: 12 }
         );
     }
 

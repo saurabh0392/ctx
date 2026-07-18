@@ -7,8 +7,10 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as path from 'path';
 
 export interface CtxDistStackProps extends cdk.StackProps {
-  // SSM SecureString holding the alpha token allowlist (one token per line, optional "= label").
+  // SSM SecureString holding the beta invite roster (one token per line, optional "= label").
   ssmTokensParam: string;
+  ssmCapabilitySecretParam: string;
+  feedbackEndpoint?: string;
 }
 
 export class CtxDistStack extends cdk.Stack {
@@ -26,34 +28,34 @@ export class CtxDistStack extends cdk.Stack {
     });
 
     const tokensArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmTokensParam}`;
+    const capabilityArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmCapabilitySecretParam}`;
 
     const fn = new NodejsFunction(this, 'Install', {
       entry: path.join(__dirname, '..', 'lambda', 'handler.ts'),
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_22_X,
       timeout: cdk.Duration.seconds(15),
       memorySize: 256,
+      reservedConcurrentExecutions: 5,
       environment: {
         BUCKET: bucket.bucketName,
         SSM_TOKENS_PARAM: props.ssmTokensParam,
+        SSM_CAPABILITY_SECRET_PARAM: props.ssmCapabilitySecretParam,
+        FEEDBACK_ENDPOINT: props.feedbackEndpoint || '',
         PRESIGN_TTL: '300',
+        CAPABILITY_TTL_DAYS: '90',
       },
-      bundling: { minify: true, target: 'node20' },
+      bundling: { minify: true, target: 'node22' },
     });
 
     // Least privilege: read the one token SecureString, read objects to presign and to serve install.sh.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ssm:GetParameter'],
-      resources: [tokensArn],
+      resources: [tokensArn, capabilityArn],
     }));
     bucket.grantRead(fn);
 
     const url = fn.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE, // public: users have no AWS credentials
-      cors: {
-        allowedOrigins: ['*'],
-        allowedMethods: [lambda.HttpMethod.GET, lambda.HttpMethod.POST],
-        allowedHeaders: ['content-type'],
-      },
+      authType: lambda.FunctionUrlAuthType.NONE, // public: application capability auth is enforced
     });
 
     new cdk.CfnOutput(this, 'InstallUrl', {

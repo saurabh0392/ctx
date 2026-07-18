@@ -158,7 +158,9 @@ fn compress_prose(
     out.push(header);
     out.extend(lines[..head_end].iter().map(|s| s.to_string()));
     if omitted > 0 {
-        out.push(format!("… {omitted} lines … (ctx_expand for the full file)"));
+        out.push(format!(
+            "… {omitted} lines … (ctx_expand for the full file)"
+        ));
     }
     out.extend(lines[tail_start..].iter().map(|s| s.to_string()));
 
@@ -260,12 +262,19 @@ mod tests {
         let mut lines: Vec<String> = Vec::new();
         lines.push("# Project memory".to_string());
         for i in 0..200 {
-            lines.push(format!("body line {i} with enough text to exceed the budget comfortably"));
+            lines.push(format!(
+                "body line {i} with enough text to exceed the budget comfortably"
+            ));
         }
         lines.push("## Final decision: ship it".to_string());
         lines.push("the concluding detail the agent needed".to_string());
         let doc = lines.join("\n");
-        let r = compress_read_output(&doc, "notes/memory.md", &opts(), &CompressContext::default());
+        let r = compress_read_output(
+            &doc,
+            "notes/memory.md",
+            &opts(),
+            &CompressContext::default(),
+        );
         assert_eq!(r.strategy, "read-prose");
         assert!(r.text.contains("# Project memory"), "keeps the head");
         assert!(r.text.contains("Final decision"), "keeps the tail heading");

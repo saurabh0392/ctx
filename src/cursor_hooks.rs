@@ -215,7 +215,10 @@ mod tests {
             .contains(CTX_CURSOR_PRE_COMPACT_SUBCOMMAND));
 
         assert!(strip_ctx_cursor_hook(&mut doc));
-        assert!(doc.get("hooks").and_then(|h| h.get("postToolUse")).is_none());
+        assert!(doc
+            .get("hooks")
+            .and_then(|h| h.get("postToolUse"))
+            .is_none());
         assert!(doc.get("hooks").and_then(|h| h.get("preToolUse")).is_none());
         assert!(doc.get("hooks").and_then(|h| h.get("preCompact")).is_none());
     }
@@ -277,7 +280,11 @@ mod tests {
         assert_eq!(post.len(), 1);
         assert_eq!(post[0]["command"].as_str(), Some("./hooks/user-audit.sh"));
         let pre = doc["hooks"]["preToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 1, "stripping ctx leaves the user's preToolUse hook");
+        assert_eq!(
+            pre.len(),
+            1,
+            "stripping ctx leaves the user's preToolUse hook"
+        );
         assert_eq!(pre[0]["command"].as_str(), Some("./hooks/user-pre.sh"));
         // The user's other event is never touched.
         assert!(doc["hooks"]["beforeShellExecution"].is_array());

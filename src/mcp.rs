@@ -105,7 +105,7 @@ fn build_tools_list() -> Value {
         json!({
             "name": name,
             "description": desc,
-            "inputSchema": if schema.is_object() && schema.as_object().map_or(true, |m| m.is_empty()) {
+            "inputSchema": if schema.is_object() && schema.as_object().is_none_or(|m| m.is_empty()) {
                 json!({"type": "object", "properties": {}})
             } else {
                 schema
@@ -204,6 +204,7 @@ fn tool_expand(args: &Value) -> Result<Value, String> {
     match crate::db::get_rewind(&conn, id) {
         Some(e) => {
             crate::db::mark_rewind_expanded(&conn, id);
+            let _ = crate::db::record_product_event(&conn, "rewind_expanded", "mcp", None);
             Ok(json!({
                 "id": e.id,
                 "tool": e.tool_name,
@@ -290,7 +291,10 @@ fn tool_restore(args: &Value) -> Result<Value, String> {
         .unwrap_or("")
         .trim();
     if tool.is_empty() {
-        return Err("Pass the server or tool to restore (e.g. \"Linear\" or a full mcp__ tool name).".to_string());
+        return Err(
+            "Pass the server or tool to restore (e.g. \"Linear\" or a full mcp__ tool name)."
+                .to_string(),
+        );
     }
     let tasks = args
         .get("tasks")
@@ -327,7 +331,9 @@ fn tool_restore(args: &Value) -> Result<Value, String> {
          tools will be there."
     );
     if !tasks.is_empty() {
-        msg.push_str(" Your note was saved and will be surfaced to that session so you can finish: ");
+        msg.push_str(
+            " Your note was saved and will be surfaced to that session so you can finish: ",
+        );
         msg.push_str(tasks);
     }
     if !expanded {

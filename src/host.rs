@@ -133,7 +133,9 @@ impl HostAdapter for IdeHost {
 
     fn editor_rules_path(&self) -> Option<PathBuf> {
         match self.kind {
-            IdeKind::Cursor => crate::config::home_dir_for_paths().map(|h| h.join(".cursor/rules/ctx.mdc")),
+            IdeKind::Cursor => {
+                crate::config::home_dir_for_paths().map(|h| h.join(".cursor/rules/ctx.mdc"))
+            }
             _ => None,
         }
     }
@@ -220,7 +222,7 @@ mod tests {
 
     impl ClearHostEnv {
         fn new(keys: &'static [&'static str]) -> Self {
-            let saved: Vec<_> = keys.iter().map(|k| std::env::var_os(k)).collect();
+            let saved: Vec<_> = keys.iter().map(std::env::var_os).collect();
             for k in keys {
                 std::env::remove_var(k);
             }

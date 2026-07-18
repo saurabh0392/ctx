@@ -6,7 +6,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::compress::activation::{causal_clears_bar, CausalThresholds};
+use crate::compress::activation::{randomized_clears_bar, CausalThresholds};
 use crate::config::{CompressPreset, Config};
 
 #[derive(Serialize)]
@@ -38,13 +38,20 @@ struct ContextStatus {
 fn gather() -> ContextStatus {
     let cfg = Config::load();
     let conn = crate::db::open_db().ok();
-    let (stats, progress, causal) = match conn {
+    let (stats, progress, randomized) = match conn {
         Some(c) => {
             let _ = crate::db::ensure_schema(&c);
+            let experiments: Vec<crate::db::ExploreToolOutcome> =
+                ["claude-code", "cursor", "codex"]
+                    .into_iter()
+                    .flat_map(|surface| {
+                        crate::db::explore_tool_outcomes_for_surface(&c, None, Some(surface))
+                    })
+                    .collect();
             (
                 crate::db::compress_decision_stats(&c),
                 crate::db::compress_tool_progress(&c),
-                crate::db::causal_tool_outcomes(&c, None),
+                experiments,
             )
         }
         None => Default::default(),
@@ -56,11 +63,9 @@ fn gather() -> ContextStatus {
             // "ready" means earned to trim: causal evidence that trimming this tool is not
             // measurably worse than leaving it alone. Fails closed until a trial collects the
             // trimmed arm, so we never label a tool ready on baseline counts alone.
-            let earned = causal
+            let earned = randomized
                 .iter()
-                .find(|o| o.tool_name == p.tool_name)
-                .map(|o| causal_clears_bar(o, &th))
-                .unwrap_or(false);
+                .any(|o| o.tool_name == p.tool_name && randomized_clears_bar(o, &th));
             ToolStatus {
                 tool: p.tool_name.clone(),
                 decisions: p.decisions,
@@ -144,49 +149,63 @@ fn pct(x: f64) -> String {
     format!("{:.1}%", x * 100.0)
 }
 
-/// Causal before/after proof for one tool (E1.3 / SAU-150). Compares the correction and
-/// re-read rate on decisions where ctx wanted to trim, split by whether the trim was
-/// actually applied. The "after" stays empty until the tool is deliberately activated, so
-/// this honestly reads "not yet" rather than inventing a result.
+/// Randomized unchanged-vs-trimmed safety check for one tool.
 pub fn proof(tool: Option<&str>, json: bool) -> Result<()> {
     let conn = crate::db::open_db()?;
     let _ = crate::db::ensure_schema(&conn);
-    let rows = crate::db::causal_tool_outcomes(&conn, tool);
+    let rows: Vec<(String, crate::db::ExploreToolOutcome)> = ["claude-code", "cursor", "codex"]
+        .into_iter()
+        .flat_map(|surface| {
+            crate::db::explore_tool_outcomes_for_surface(&conn, tool, Some(surface))
+                .into_iter()
+                .map(move |outcome| (surface.to_string(), outcome))
+        })
+        .collect();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        let value: Vec<_> = rows
+            .iter()
+            .map(|(surface, outcome)| {
+                serde_json::json!({
+                    "surface": surface,
+                    "data_source": "randomized_treatment_control",
+                    "outcome": outcome,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
 
     let scope = tool.unwrap_or("all tools");
     let rows: Vec<_> = rows
         .into_iter()
-        .filter(|r| r.baseline_n > 0 || r.trimmed_n > 0)
+        .filter(|(_, r)| r.control_collected > 0 || r.treatment_collected > 0)
         .collect();
     if rows.is_empty() {
-        println!("No would-trim decisions collected yet for {scope}.");
-        println!("ctx only has a before/after to show once the heuristic wants to trim a tool. Keep using your agents.");
+        println!("No randomized comparison runs collected yet for {scope}.");
+        println!("CTX keeps normal output unchanged until comparable testing data exists.");
         return Ok(());
     }
 
-    println!("Causal before/after for {scope}");
+    let th = CausalThresholds::default();
+    println!("Randomized safety check for {scope}");
     println!(
-        "We look only at runs where ctx wanted to trim. Baseline is when we left the output alone."
+        "CTX compares eligible runs it randomly trimmed with eligible runs it left unchanged."
     );
-    println!("Trimmed is when we actually cut it. A correction or re-read soon after is the cost of cutting.");
-    println!("Trimming is safe for a tool only when the trimmed rate is not higher than baseline.");
+    println!("It needs at least 20 scored runs per side and rules out more than 10 extra corrections or re-touches per 100 runs.");
     println!();
 
-    for r in &rows {
-        println!("{}", r.tool_name);
-        let (bc_lo, bc_hi) = wilson_interval(r.baseline_corrections, r.baseline_n);
-        let (br_lo, br_hi) = wilson_interval(r.baseline_rereads, r.baseline_n);
-        if r.baseline_n > 0 {
-            let bc = r.baseline_corrections as f64 / r.baseline_n as f64;
-            let br = r.baseline_rereads as f64 / r.baseline_n as f64;
+    for (surface, r) in &rows {
+        println!("{} ({surface})", r.tool_name);
+        let (bc_lo, bc_hi) = wilson_interval(r.control_corrections, r.control_n);
+        let (br_lo, br_hi) = wilson_interval(r.control_rereads, r.control_n);
+        if r.control_n > 0 {
+            let bc = r.control_corrections as f64 / r.control_n as f64;
+            let br = r.control_rereads as f64 / r.control_n as f64;
             println!(
-                "  baseline (left alone)  n={:<4}  corrections {} [{}, {}]   re-reads {} [{}, {}]",
-                r.baseline_n,
+                "  left unchanged  n={:<4}  corrections {} [{}, {}]   re-touches {} [{}, {}]",
+                r.control_n,
                 pct(bc),
                 pct(bc_lo),
                 pct(bc_hi),
@@ -195,17 +214,17 @@ pub fn proof(tool: Option<&str>, json: bool) -> Result<()> {
                 pct(br_hi)
             );
         } else {
-            println!("  baseline (left alone)  n=0     not yet");
+            println!("  left unchanged  n=0     not yet");
         }
 
-        if r.trimmed_n > 0 {
-            let tc = r.trimmed_corrections as f64 / r.trimmed_n as f64;
-            let tr = r.trimmed_rereads as f64 / r.trimmed_n as f64;
-            let (tc_lo, tc_hi) = wilson_interval(r.trimmed_corrections, r.trimmed_n);
-            let (tr_lo, tr_hi) = wilson_interval(r.trimmed_rereads, r.trimmed_n);
+        if r.treatment_n > 0 {
+            let tc = r.treatment_corrections as f64 / r.treatment_n as f64;
+            let tr = r.treatment_rereads as f64 / r.treatment_n as f64;
+            let (tc_lo, tc_hi) = wilson_interval(r.treatment_corrections, r.treatment_n);
+            let (tr_lo, tr_hi) = wilson_interval(r.treatment_rereads, r.treatment_n);
             println!(
-                "  trimmed (cut)          n={:<4}  corrections {} [{}, {}]   re-reads {} [{}, {}]",
-                r.trimmed_n,
+                "  trimmed         n={:<4}  corrections {} [{}, {}]   re-touches {} [{}, {}]",
+                r.treatment_n,
                 pct(tc),
                 pct(tc_lo),
                 pct(tc_hi),
@@ -214,47 +233,44 @@ pub fn proof(tool: Option<&str>, json: bool) -> Result<()> {
                 pct(tr_hi)
             );
             let (dc, dc_lo, dc_hi) = newcombe_diff(
-                r.trimmed_corrections,
-                r.trimmed_n,
-                r.baseline_corrections,
-                r.baseline_n,
+                r.treatment_corrections,
+                r.treatment_n,
+                r.control_corrections,
+                r.control_n,
             );
             let (dr, dr_lo, dr_hi) = newcombe_diff(
-                r.trimmed_rereads,
-                r.trimmed_n,
-                r.baseline_rereads,
-                r.baseline_n,
+                r.treatment_rereads,
+                r.treatment_n,
+                r.control_rereads,
+                r.control_n,
             );
-            let verdict = |lo: f64, hi: f64| -> &'static str {
-                if hi <= 0.0 {
-                    "trimming looks safe so far"
-                } else if lo > 0.0 {
-                    "trimming looks harmful, keep it off"
-                } else {
-                    "too close to call, need more trimmed runs"
-                }
-            };
             println!(
-                "  correction delta (trimmed minus baseline): {} [{}, {}]  {}",
+                "  correction change: {} [{}, {}]",
                 signed_pct(dc),
                 signed_pct(dc_lo),
-                signed_pct(dc_hi),
-                verdict(dc_lo, dc_hi)
+                signed_pct(dc_hi)
             );
             println!(
-                "  re-read delta:                              {} [{}, {}]  {}",
+                "  re-touch change:   {} [{}, {}]",
                 signed_pct(dr),
                 signed_pct(dr_lo),
-                signed_pct(dr_hi),
-                verdict(dr_lo, dr_hi)
+                signed_pct(dr_hi)
             );
+            let verdict = if r.control_n < th.min_baseline || r.treatment_n < th.min_trimmed {
+                format!(
+                    "waiting — need {} scored runs on each side",
+                    th.min_baseline
+                )
+            } else if randomized_clears_bar(r, &th) {
+                "trimming — safety check passed".to_string()
+            } else if dc > th.max_harm_delta || dr > th.max_harm_delta {
+                "kept unchanged — the trimmed side is worse".to_string()
+            } else {
+                "waiting — the result is still too uncertain".to_string()
+            };
+            println!("  verdict: {verdict}");
         } else {
-            println!(
-                "  trimmed (cut)          n=0     not yet. Nothing has been trimmed for this tool."
-            );
-            println!(
-                "  We cannot show an honest after until ctx actually trims it during real use."
-            );
+            println!("  trimmed         n=0     not yet");
         }
         println!();
     }
@@ -357,7 +373,9 @@ pub fn signal_audit(signal: Option<&str>, limit: usize, json: bool) -> Result<()
         let scope = signal.unwrap_or("any signal");
         println!("No decisions carry {scope} yet.");
         println!("Signals are recorded when ingest joins a transcript outcome. Run `ctx ingest`,");
-        println!("or wait for more sessions. (Recording started with ADR 0019; older rows have none.)");
+        println!(
+            "or wait for more sessions. (Recording started with ADR 0019; older rows have none.)"
+        );
         return Ok(());
     }
 
@@ -374,10 +392,16 @@ pub fn signal_audit(signal: Option<&str>, limit: usize, json: bool) -> Result<()
         "Signal audit for {scope}  ({} joined decisions carry a signal)",
         all.len()
     );
-    println!("None of these vote in the gate yet. Hand-label a sample and check precision per signal");
-    println!("before promoting any of them (ADR 0019). A false positive here is worse than no signal.");
+    println!(
+        "None of these vote in the gate yet. Hand-label a sample and check precision per signal"
+    );
+    println!(
+        "before promoting any of them (ADR 0019). A false positive here is worse than no signal."
+    );
     println!();
-    println!("This corpus excludes ctx's own development activity (CTX-32), so these are your real");
+    println!(
+        "This corpus excludes ctx's own development activity (CTX-32), so these are your real"
+    );
     println!("sessions, not the churn of building ctx. To promote a signal it needs at least 0.8");
     println!("precision on at least 20 hand-labeled samples, and it has to add positives that");
     println!("corrections alone miss.");
@@ -388,7 +412,10 @@ pub fn signal_audit(signal: Option<&str>, limit: usize, json: bool) -> Result<()
         let status = if *n >= PROMOTE_MIN_SAMPLES {
             "enough to start labeling".to_string()
         } else {
-            format!("not yet, need {} more", PROMOTE_MIN_SAMPLES.saturating_sub(*n))
+            format!(
+                "not yet, need {} more",
+                PROMOTE_MIN_SAMPLES.saturating_sub(*n)
+            )
         };
         println!("   {name:<22} {n:>4}   {status}");
     }
@@ -534,8 +561,7 @@ pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
 pub fn cache_audit(days: Option<i64>, json: bool) -> Result<()> {
     let conn = crate::db::open_db()?;
     let _ = crate::db::ensure_schema(&conn);
-    let since =
-        days.map(|d| (chrono::Utc::now() - chrono::Duration::days(d.max(0))).to_rfc3339());
+    let since = days.map(|d| (chrono::Utc::now() - chrono::Duration::days(d.max(0))).to_rfc3339());
     let buckets = crate::db::cache_audit(&conn, since.as_deref());
 
     if json {
@@ -578,14 +604,21 @@ pub fn cache_audit(days: Option<i64>, json: bool) -> Result<()> {
     }
     println!();
     println!("cache-read: share of input served from cache at the discount. Higher is better.");
-    println!("cache-write: share re-cached at a premium. Higher in a touched bucket is the warning.");
+    println!(
+        "cache-write: share re-cached at a premium. Higher in a touched bucket is the warning."
+    );
     println!("fresh: share processed uncached at full price.");
 
     let arms = crate::db::cache_audit_arms(&conn, since.as_deref());
     if !arms.is_empty() {
         use std::collections::BTreeMap;
-        let mut by_feature: BTreeMap<String, (Option<&crate::db::CacheAuditArm>, Option<&crate::db::CacheAuditArm>)> =
-            BTreeMap::new();
+        let mut by_feature: BTreeMap<
+            String,
+            (
+                Option<&crate::db::CacheAuditArm>,
+                Option<&crate::db::CacheAuditArm>,
+            ),
+        > = BTreeMap::new();
         for a in &arms {
             let e = by_feature.entry(a.feature.clone()).or_default();
             if a.arm == "treatment" {
@@ -596,10 +629,18 @@ pub fn cache_audit(days: Option<i64>, json: bool) -> Result<()> {
         }
         println!();
         println!("By experiment arm");
-        println!("If an A/B is running, this compares cache behavior with each feature on (treatment)");
-        println!("vs off (control) on your own traffic. A feature that busts the cache shows a lower");
-        println!("cache-read share and higher cost in treatment. Assignment is per request and the");
-        println!("cache is shared across arms, so read this as strong-suggestive, not a clean verdict.");
+        println!(
+            "If an A/B is running, this compares cache behavior with each feature on (treatment)"
+        );
+        println!(
+            "vs off (control) on your own traffic. A feature that busts the cache shows a lower"
+        );
+        println!(
+            "cache-read share and higher cost in treatment. Assignment is per request and the"
+        );
+        println!(
+            "cache is shared across arms, so read this as strong-suggestive, not a clean verdict."
+        );
         for (feature, (t, c)) in by_feature {
             println!();
             println!("  {feature}");
@@ -673,6 +714,7 @@ pub fn expand(id: &str) -> Result<()> {
     match crate::db::get_rewind(&conn, id) {
         Some(e) => {
             crate::db::mark_rewind_expanded(&conn, id);
+            let _ = crate::db::record_product_event(&conn, "rewind_expanded", "cli", None);
             println!("{}", e.original);
             Ok(())
         }
@@ -686,6 +728,15 @@ pub fn set_preset(value: &str) -> Result<()> {
     let mut cfg = Config::load();
     cfg.compress_preset = preset;
     cfg.save()?;
+    crate::beta::record_event(
+        if preset == CompressPreset::Off {
+            "autopilot_paused"
+        } else {
+            "autopilot_resumed"
+        },
+        "control",
+        None,
+    );
     match preset {
         CompressPreset::Off => {
             println!("Compression is off. ctx keeps watching and recording decisions, but does not change tool output.");

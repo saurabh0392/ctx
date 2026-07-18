@@ -158,21 +158,23 @@ fn record_belongs_to_session(rec: &Record) -> bool {
     rec.tools_removed > 0 || rec.tokens_saved > 0
 }
 
+type SessionAccumulator = (
+    DateTime<Utc>,
+    DateTime<Utc>,
+    usize,
+    usize,
+    usize,
+    String,
+    String,
+);
+
 pub fn group_into_sessions(records: &[Record]) -> Vec<Session> {
     let gap_mins = crate::config::Config::load()
         .session_gap_minutes
         .unwrap_or(30) as i64;
     let gap = chrono::Duration::minutes(gap_mins);
     let mut sessions: Vec<Session> = Vec::new();
-    let mut current: Option<(
-        DateTime<Utc>,
-        DateTime<Utc>,
-        usize,
-        usize,
-        usize,
-        String,
-        String,
-    )> = None;
+    let mut current: Option<SessionAccumulator> = None;
 
     for rec in records.iter().filter(|r| record_belongs_to_session(r)) {
         let Ok(ts) = rec.ts.parse::<DateTime<Utc>>() else {
@@ -271,8 +273,7 @@ pub fn show() -> Result<()> {
 
     let fmt = crate::profiles::fmt_k;
 
-    if n_filter > 0 {
-        let avg_tools = total_tools / n_filter;
+    if let Some(avg_tools) = total_tools.checked_div(n_filter) {
         println!(
             "ctx stripped {} tool definitions across {} requests ({avg_tools} avg/req),",
             total_tools.to_string().green().bold(),
@@ -291,7 +292,7 @@ pub fn show() -> Result<()> {
 
 pub fn show_brief() -> Result<()> {
     let records = load_records();
-    let last = records.iter().filter(|r| r.tools_removed > 0).last();
+    let last = records.iter().rfind(|r| r.tools_removed > 0);
     if let Some(rec) = last {
         let fmt = crate::profiles::fmt_k;
         eprintln!(

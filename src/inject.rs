@@ -83,6 +83,22 @@ pub fn enable() -> Result<()> {
     Ok(())
 }
 
+const DEFAULT_PREFIX: &str = r#"# Workspace Standards
+
+## Code style
+- No em dashes in any output
+- Concise responses; avoid restating what was just done
+- No trailing summaries after completing a task
+
+## Commits
+- Conventional commits: feat/fix/refactor/chore
+- Co-authored-by footer when using AI assistance
+
+## Reviews
+- Flag security issues (injection, auth, secrets in code) before anything else
+- Prefer editing existing files over creating new ones
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,19 +166,3 @@ mod tests {
         assert_eq!(v["max_tokens"].as_u64().unwrap(), 1024);
     }
 }
-
-const DEFAULT_PREFIX: &str = r#"# Workspace Standards
-
-## Code style
-- No em dashes in any output
-- Concise responses; avoid restating what was just done
-- No trailing summaries after completing a task
-
-## Commits
-- Conventional commits: feat/fix/refactor/chore
-- Co-authored-by footer when using AI assistance
-
-## Reviews
-- Flag security issues (injection, auth, secrets in code) before anything else
-- Prefer editing existing files over creating new ones
-"#;

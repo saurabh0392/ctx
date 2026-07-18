@@ -840,8 +840,7 @@ fn auto_select_by_path(cwd: &str, prompt: &str, active_slug: &str) -> Option<(St
             if p.matches_path(&cwd_lower) {
                 let dir_label = cwd
                     .split('/')
-                    .filter(|s| !s.is_empty())
-                    .last()
+                    .rfind(|s| !s.is_empty())
                     .unwrap_or(cwd)
                     .to_string();
                 if slug != active_slug {
@@ -1752,8 +1751,8 @@ pub fn list() -> Result<()> {
     let slugs = visible_profile_slugs(active);
 
     println!(
-        "{:<12} {:<6} {:<11} {}",
-        "PROFILE", "TOOLS", "TOKENS/TURN", "DESCRIPTION"
+        "{:<12} {:<6} {:<11} DESCRIPTION",
+        "PROFILE", "TOOLS", "TOKENS/TURN"
     );
     println!("{}", "─".repeat(58));
     let metrics_ready = tool_metrics_ready();
@@ -1937,7 +1936,7 @@ pub fn migrate_tools(slug: Option<&str>, force: bool) -> Result<()> {
         );
     }
 
-    let slugs: Vec<String> = match slug.as_deref() {
+    let slugs: Vec<String> = match slug {
         Some(s) => {
             if s == "personal" && !existing.contains_key("personal") {
                 let stats = usage_stats();
@@ -2486,14 +2485,15 @@ pub fn after_ingest_profile_sync() -> Result<()> {
         return Ok(());
     }
 
-    if categories_ready(&usage_stats()) && !has_category_profiles_in_toml() {
-        if generate_from_config(false).is_ok() {
-            if let Some(slug) = preferred_generated_slug() {
-                switch(&slug, true)?;
-                eprintln!(
+    if categories_ready(&usage_stats())
+        && !has_category_profiles_in_toml()
+        && generate_from_config(false).is_ok()
+    {
+        if let Some(slug) = preferred_generated_slug() {
+            switch(&slug, true)?;
+            eprintln!(
                     "[ctx] Category profiles generated from MCP usage; active: {slug} (switch with `ctx use`)"
                 );
-            }
         }
     }
     Ok(())
@@ -2782,14 +2782,20 @@ mod tests {
                 !rules.iter().any(|r| r.ends_with('*')),
                 "live server must not be wildcard-denied: {rules:?}"
             );
-            for used in ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_issues"] {
+            for used in [
+                "mcp__claude_ai_Linear__get_issue",
+                "mcp__claude_ai_Linear__list_issues",
+            ] {
                 assert!(
                     !rules.iter().any(|r| r.eq_ignore_ascii_case(used)),
                     "used tool {used} must never be denied: {rules:?}"
                 );
             }
             // Empty catalog cache means no provable dead names, so nothing is denied at all.
-            assert!(rules.is_empty(), "expected no denies with empty catalog, got {rules:?}");
+            assert!(
+                rules.is_empty(),
+                "expected no denies with empty catalog, got {rules:?}"
+            );
         });
     }
 
@@ -2797,7 +2803,11 @@ mod tests {
     fn pruned_dead_server_gets_whole_server_wildcard() {
         let prefix = "mcp__claude_ai_Canva__";
         // No invocation history for Canva anywhere in the observed set.
-        let rows = vec![observed("mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__", 3)];
+        let rows = vec![observed(
+            "mcp__claude_ai_Linear__get_issue",
+            "mcp__claude_ai_Linear__",
+            3,
+        )];
         let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
         assert_eq!(rules, vec!["mcp__claude_ai_Canva__*".to_string()]);
     }
@@ -2817,8 +2827,14 @@ mod tests {
                 .unwrap();
             let rows = vec![observed(used, prefix, 5)];
             let rules = pruned_prefix_deny_rules(prefix, &rows, &[]);
-            assert!(rules.contains(&dead.to_string()), "dead tool must be denied: {rules:?}");
-            assert!(!rules.iter().any(|r| r == used), "used tool must stay: {rules:?}");
+            assert!(
+                rules.contains(&dead.to_string()),
+                "dead tool must be denied: {rules:?}"
+            );
+            assert!(
+                !rules.iter().any(|r| r == used),
+                "used tool must stay: {rules:?}"
+            );
             assert!(
                 !rules.iter().any(|r| r.ends_with('*')),
                 "live server must not be wildcard-denied: {rules:?}"

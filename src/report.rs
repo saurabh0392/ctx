@@ -1,17 +1,58 @@
 //! Shareable per-repo Context Report (CTX-56, product exit). `ctx report --repo <name>` writes a
 //! single self-contained HTML file: no ctx install, no server, no external assets, so it opens in
 //! any browser on any machine. It is a static snapshot of where a repo's agent context went, the
-//! Context Bill someone can send a teammate. Local only, nothing leaves the machine except the file
+//! Context Bill someone can send a teammate. Report generation is local; sharing the exported file
+//! is always an explicit user action.
 //! the user chooses to share.
 
 use anyhow::{bail, Result};
 
+use crate::cli::{ReportFormat, ReportPrivacy};
 use crate::db::{ContextBill, ContextBillTool};
+
+#[derive(serde::Serialize)]
+struct ContextReportV1 {
+    schema: &'static str,
+    generated_at: String,
+    privacy: &'static str,
+    repo: String,
+    decisions: i64,
+    tool_count: usize,
+    sink_tokens: i64,
+    eligible_tokens: i64,
+    reclaimed_tokens: i64,
+    eligibility_note: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ReportTool>>,
+}
+
+#[derive(serde::Serialize)]
+struct ReportTool {
+    name: String,
+    decisions: i64,
+    sink_tokens: i64,
+    eligible_tokens: i64,
+    reclaimed_tokens: i64,
+    sources: Vec<ReportSource>,
+}
+
+#[derive(serde::Serialize)]
+struct ReportSource {
+    label: String,
+    calls: i64,
+    sink_tokens: i64,
+}
 
 /// Entry point for `ctx report`. With `list` or no `repo`, prints the repos ctx has data for. With a
 /// `repo` (substring match), writes the report to `out` (default `ctx-report-<repo>.html` in the
 /// current directory) and prints the path.
-pub fn run(repo: Option<&str>, out: Option<&str>, list: bool) -> Result<()> {
+pub fn run(
+    repo: Option<&str>,
+    out: Option<&str>,
+    list: bool,
+    privacy: ReportPrivacy,
+    format: ReportFormat,
+) -> Result<()> {
     let conn = crate::db::open_db()?;
     let repos = crate::db::list_repos(&conn);
 
@@ -52,21 +93,86 @@ pub fn run(repo: Option<&str>, out: Option<&str>, list: bool) -> Result<()> {
     };
 
     let bill = crate::db::repo_bill(&conn, &chosen.repo_key);
-    let html = render_html(&chosen.repo_key, &bill);
+    let payload = match format {
+        ReportFormat::Html => render_html(&chosen.repo_key, &bill, privacy),
+        ReportFormat::Json => {
+            serde_json::to_string_pretty(&render_json(&chosen.repo_key, &bill, privacy))?
+        }
+    };
 
     let path = match out {
         Some(p) => p.to_string(),
-        None => format!("ctx-report-{}.html", slug(&repo_display(&chosen.repo_key))),
+        None => format!(
+            "ctx-report-{}.{}",
+            slug(&repo_display(&chosen.repo_key)),
+            match format {
+                ReportFormat::Html => "html",
+                ReportFormat::Json => "json",
+            }
+        ),
     };
-    std::fs::write(&path, html)?;
+    std::fs::write(&path, payload)?;
     println!(
         "Wrote {} ({}, {} decisions) to {path}",
         repo_display(&chosen.repo_key),
         human_chars(bill.total_sink_chars),
         bill.decisions
     );
-    println!("Open it in any browser, on any machine. Nothing left this one but the file.");
+    if matches!(privacy, ReportPrivacy::Detailed) {
+        println!(
+            "Detailed privacy mode includes the tool, command, and path labels shown in the file. Review before sharing."
+        );
+    } else {
+        println!(
+            "Aggregate mode omits commands, paths, absolute repo paths, and tool/server names."
+        );
+    }
+    crate::beta::record_event(
+        "context_report_exported",
+        "cli",
+        Some(match privacy {
+            ReportPrivacy::Aggregate => "aggregate",
+            ReportPrivacy::Detailed => "detailed",
+        }),
+    );
     Ok(())
+}
+
+fn render_json(repo_key: &str, bill: &ContextBill, privacy: ReportPrivacy) -> ContextReportV1 {
+    let detailed = matches!(privacy, ReportPrivacy::Detailed);
+    ContextReportV1 {
+        schema: "ctx.context-report.v1",
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        privacy: if detailed { "detailed" } else { "aggregate" },
+        repo: repo_display(repo_key),
+        decisions: bill.decisions,
+        tool_count: bill.tools.len(),
+        sink_tokens: approx_tokens(bill.total_sink_chars),
+        eligible_tokens: approx_tokens(bill.total_reclaimable_chars),
+        reclaimed_tokens: approx_tokens(bill.total_reclaimed_chars),
+        eligibility_note: "Eligible under CTX's current transform; earned activation is evaluated separately from eligibility.",
+        tools: detailed.then(|| {
+            bill.tools
+                .iter()
+                .map(|t| ReportTool {
+                    name: t.tool.clone(),
+                    decisions: t.decisions,
+                    sink_tokens: approx_tokens(t.sink_chars),
+                    eligible_tokens: approx_tokens(t.reclaimable_chars),
+                    reclaimed_tokens: approx_tokens(t.reclaimed_chars),
+                    sources: t
+                        .sources
+                        .iter()
+                        .map(|s| ReportSource {
+                            label: s.label.clone(),
+                            calls: s.calls,
+                            sink_tokens: approx_tokens(s.sink_chars),
+                        })
+                        .collect(),
+                })
+                .collect()
+        }),
+    }
 }
 
 /// Approximate tokens from characters (the ~4-chars-per-token rule the dashboard uses).
@@ -117,7 +223,7 @@ fn esc(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn render_html(repo_key: &str, bill: &ContextBill) -> String {
+fn render_html(repo_key: &str, bill: &ContextBill, privacy: ReportPrivacy) -> String {
     let name = esc(&repo_display(repo_key));
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let sink_tok = human_tokens(bill.total_sink_chars);
@@ -129,17 +235,36 @@ fn render_html(repo_key: &str, bill: &ContextBill) -> String {
         0
     };
 
-    let max_sink = bill.tools.iter().map(|t| t.sink_chars).max().unwrap_or(1).max(1);
-    let rows: String = bill
+    let max_sink = bill
         .tools
         .iter()
-        .map(|t| tool_row(t, max_sink))
-        .collect();
+        .map(|t| t.sink_chars)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let detailed = matches!(privacy, ReportPrivacy::Detailed);
+    let rows: String = if detailed {
+        bill.tools.iter().map(|t| tool_row(t, max_sink)).collect()
+    } else {
+        String::new()
+    };
 
     let body = if bill.tools.is_empty() {
-        "<div class=\"empty\">ctx has not recorded any tool output for this repo yet.</div>".to_string()
+        "<div class=\"empty\">ctx has not recorded any tool output for this repo yet.</div>"
+            .to_string()
+    } else if !detailed {
+        format!(
+            "<div class=\"empty\">{} tool categories measured. Aggregate privacy mode intentionally omits tool names, commands, paths, and source labels.</div>",
+            bill.tools.len()
+        )
     } else {
         format!("<div class=\"tools\">{rows}</div>")
+    };
+    let privacy_label = if detailed { "Detailed" } else { "Aggregate" };
+    let privacy_warning = if detailed {
+        "Detailed mode: this file contains the tool, command, and path labels visible below. Review it before sharing."
+    } else {
+        "Aggregate mode: command text, paths, absolute repo paths, and tool/server names are omitted."
     };
 
     format!(
@@ -184,25 +309,25 @@ fn render_html(repo_key: &str, bill: &ContextBill) -> String {
 <body><div class="wrap">
   <div class="eyebrow">Context report</div>
   <h1>{name}</h1>
-  <div class="sub">Where this repo's coding-agent context went. Generated locally by ctx on {date}. Single machine, early data.</div>
+  <div class="sub">Where this repo's coding-agent context went. Generated locally by ctx on {date}. Single machine, early data. {privacy_label} privacy.</div>
 
   <div class="hero">
     <div class="hero-big">{sink_tok} tokens</div>
-    <div class="hero-cap">of tool output poured into the agent's context window on this repo. That is the tax you cannot see in any agent's own UI. About {reclaimable_pct}% of it ({reclaimable_tok} tokens) is trimmable without changing what the agent runs.</div>
+    <div class="hero-cap">of tool output entered the agent's context window on this repo. About {reclaimable_pct}% of it ({reclaimable_tok} tokens) is eligible under CTX's current transform. Eligibility is not an earned-safety verdict; activation is evaluated separately from observed re-read and re-edit outcomes.</div>
   </div>
 
   <div class="stats">
-    <div class="stat"><div class="stat-k">On the table</div><div class="stat-v">{reclaimable_tok}</div><div class="stat-s">tokens trimmable</div></div>
+    <div class="stat"><div class="stat-k">Eligible</div><div class="stat-v">{reclaimable_tok}</div><div class="stat-s">tokens under the current transform</div></div>
     <div class="stat"><div class="stat-k">Reclaimed</div><div class="stat-v">{reclaimed_tok}</div><div class="stat-s">tokens ctx already removed</div></div>
     <div class="stat"><div class="stat-k">Decisions</div><div class="stat-v">{decisions}</div><div class="stat-s">tool results watched</div></div>
   </div>
 
   <div class="sec-h">Where it went, by tool</div>
-  <p class="sec-note">Biggest context sinks first. This is real output from your own sessions, not an estimate.</p>
+  <p class="sec-note">{privacy_warning}</p>
   {body}
 
   <div class="foot">
-    Generated by ctx, a local context education and savings tool. Every number here comes from tool output recorded on one machine; nothing was sent anywhere. Token counts are approximate (about four characters per token). Share this file freely: it holds only the aggregate sink sizes and command or path labels shown above.
+    Generated by ctx, a local context observability and control tool. Every number here comes from one machine; exporting this file made no network request. Token counts are approximate (about four characters per token). {privacy_warning}
   </div>
 </div></body></html>
 "#,
@@ -296,7 +421,7 @@ mod tests {
 
     #[test]
     fn report_is_self_contained_and_has_the_numbers() {
-        let html = render_html("/Users/me/Projects/ctx", &bill());
+        let html = render_html("/Users/me/Projects/ctx", &bill(), ReportPrivacy::Detailed);
         assert!(html.contains("<!doctype html>"));
         // No external assets: no http(s) links, no src= fetches.
         assert!(!html.contains("http://") && !html.contains("https://"));
@@ -312,8 +437,29 @@ mod tests {
     #[test]
     fn empty_bill_states_it_plainly() {
         let empty = ContextBill::default();
-        let html = render_html("/x/y/thing", &empty);
+        let html = render_html("/x/y/thing", &empty, ReportPrivacy::Aggregate);
         assert!(html.contains("has not recorded any tool output"));
+    }
+
+    #[test]
+    fn aggregate_report_omits_sensitive_labels() {
+        let html = render_html(
+            "/Users/me/Projects/secret-repo",
+            &bill(),
+            ReportPrivacy::Aggregate,
+        );
+        assert!(!html.contains("mcp__linear__"));
+        assert!(!html.contains("linear list projects"));
+        assert!(!html.contains("list_projects"));
+        assert!(!html.contains("/Users/me/Projects"));
+        let json = serde_json::to_value(render_json(
+            "/Users/me/Projects/secret-repo",
+            &bill(),
+            ReportPrivacy::Aggregate,
+        ))
+        .unwrap();
+        assert!(json.get("tools").is_none());
+        assert_eq!(json["schema"], "ctx.context-report.v1");
     }
 
     #[test]

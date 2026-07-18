@@ -147,7 +147,7 @@ pub fn safety_report_for_profile(profile: &crate::profiles::Profile) -> SafetyRe
                 }
             }
         }
-        tool_rows.sort_by(|a, b| b.invocations_30d.cmp(&a.invocations_30d));
+        tool_rows.sort_by_key(|row| std::cmp::Reverse(row.invocations_30d));
         return SafetyReport {
             rows,
             tool_rows,
@@ -194,7 +194,7 @@ pub fn safety_report_for_profile(profile: &crate::profiles::Profile) -> SafetyRe
         });
     }
 
-    rows.sort_by(|a, b| b.invocations_30d.cmp(&a.invocations_30d));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.invocations_30d));
     SafetyReport {
         rows,
         tool_rows,

@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       - uses: actions/cache@v4
         with:
           path: |
@@ -27,16 +27,17 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
-      - name: Format check (advisory)
+      - name: Format check
         run: cargo fmt --check
-        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Unit tests
         # Single-threaded: the suite mutates process-global env (CTX_HOME/HOME) to isolate the ctx
         # db per test. Parallel runs let those mutations race (std::env::set_var is unsafe under
         # threads), which surfaced as a platform-dependent flake. Serial execution is deterministic.
-        run: cargo test -- --test-threads=1
+        run: cargo test --all-targets --locked -- --test-threads=1
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --locked
 
   windows:
     name: Windows build + tests
@@ -57,10 +58,33 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --verbose --locked
       - name: Unit tests
         # Serial for the same reason as the Linux job: the suite mutates process-global env.
-        run: cargo test -- --test-threads=1
+        run: cargo test --all-targets --locked -- --test-threads=1
+
+  services:
+    name: Beta service typecheck + synth
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        service: [ctx-dist, report-intake]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+      - name: Install locked dependencies
+        working-directory: services/${{ matrix.service }}
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: services/${{ matrix.service }}
+        run: npm run typecheck
+      - name: Synthesize infrastructure
+        working-directory: services/${{ matrix.service }}
+        run: npm run synth
 
   coherence:
     name: Behavioral coherence
@@ -78,16 +102,20 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Build binary + fixture seeder
         run: |
-          cargo build --release
-          cargo build --release --example seed_coherence_fixture
+          cargo build --release --locked
+          cargo build --release --locked --example seed_coherence_fixture
+      - name: Claim consistency
+        run: |
+          node scripts/coherence/claims.mjs
+          node --test scripts/coherence/beta-summary.test.mjs
       - name: Install coherence deps + chromium
         working-directory: scripts/coherence
         run: |
-          npm i --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npm ci --no-audit --no-fund
+          npx playwright-core install --with-deps chromium
       - name: Seed the CI fixture (no ~/.ctx in CI)
         run: |
           mkdir -p "$RUNNER_TEMP/ctx-fixture"
@@ -108,7 +136,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Install Claude Code CLI
         run: npm i -g @anthropic-ai/claude-code
       - name: Fitcheck

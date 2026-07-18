@@ -1,10 +1,10 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
     name = "ctx",
     version,
-    about = "Context Killer — MCP savings and analytics for Claude Code"
+    about = "Local context efficiency and evidence for coding agents"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -57,6 +57,21 @@ pub enum Commands {
         /// Skip the interactive confirmation prompt (for scripts / CI)
         #[arg(long)]
         yes: bool,
+        /// Enroll a fresh install in the token-gated beta and enable evidence-gated full autopilot
+        #[arg(long)]
+        beta: bool,
+    },
+    /// Check local configuration, database, Claude hooks, dashboard, and beta credentials
+    Doctor {
+        /// Print the stable machine-readable diagnostic schema
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check for or install a checksum-verified beta release
+    Update {
+        /// Only report whether a newer release exists
+        #[arg(long)]
+        check: bool,
     },
     /// Open the savings dashboard in your browser
     Dashboard {
@@ -83,6 +98,12 @@ pub enum Commands {
     /// compacted result returns as Shell's own output. The command's real exit code is preserved,
     /// and output is left untouched unless the earn-it gate says trim and it actually saves chars.
     Run {
+        /// Agent surface that requested the wrapper; scopes both evidence and dashboard provenance.
+        #[arg(long, default_value = "cursor")]
+        surface: String,
+        /// Stable agent session id, when the hook provides one.
+        #[arg(long)]
+        session: Option<String>,
         /// The command to run, exactly as it would be typed in a shell.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
@@ -149,7 +170,7 @@ pub enum Commands {
     /// Export a shareable, self-contained Context Report for a repo (CTX-56).
     ///
     /// Writes a single HTML file that opens in any browser on any machine, no ctx install needed.
-    /// Local only: nothing leaves this machine except the file you choose to share.
+    /// Generated locally; sharing the exported file is always an explicit user action.
     Report {
         /// Repo to report on, matched as a substring of its path. Omit to list repos.
         #[arg(long)]
@@ -160,7 +181,25 @@ pub enum Commands {
         /// List the repos ctx has data for, then exit.
         #[arg(long)]
         list: bool,
+        /// Aggregate omits paths, commands, repos, and tool/server names; detailed is local-only
+        #[arg(long, value_enum, default_value_t = ReportPrivacy::Aggregate)]
+        privacy: ReportPrivacy,
+        /// Export a self-contained HTML report or the versioned JSON schema
+        #[arg(long, value_enum, default_value_t = ReportFormat::Html)]
+        format: ReportFormat,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ReportPrivacy {
+    Aggregate,
+    Detailed,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ReportFormat {
+    Html,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -205,7 +244,7 @@ pub enum ContextCommand {
         json: bool,
     },
     /// Start or stop a deliberate trim trial for one tool: trims it live (even with preset off)
-    /// so ctx can collect the trimmed "after" arm for the before/after proof. One tool at a time.
+    /// so ctx can collect the trimmed comparison arm. One tool at a time.
     Trial {
         /// Exact tool name to trial (e.g. Read, Bash). Omit with --off to clear all trials.
         tool: Option<String>,
@@ -371,6 +410,20 @@ pub enum HookCommand {
     CursorPreToolUse,
     /// Cursor preCompact: record a live Cursor compaction event (ADR 0023 / CTX-31)
     CursorPreCompact,
+    /// Codex plugin lifecycle heartbeat.
+    CodexSessionStart,
+    /// Codex user turn and correction-signal observer.
+    CodexUserPromptSubmit,
+    /// Codex shell input rewrite boundary.
+    CodexPreToolUse,
+    /// Codex local tool-result observer (never replaces the result).
+    CodexPostToolUse,
+    /// Codex native compaction start observer.
+    CodexPreCompact,
+    /// Codex native compaction completion observer.
+    CodexPostCompact,
+    /// Codex main-agent or subagent stop observer.
+    CodexStop,
 }
 
 #[derive(Subcommand)]

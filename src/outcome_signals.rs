@@ -257,9 +257,7 @@ pub fn has_output_specific_complaint(raw_lower: &str) -> bool {
 /// Assistant narration that the prior tool result was compressed or truncated.
 pub fn is_compression_narration(text: &str) -> bool {
     let lower = text.trim().to_lowercase();
-    COMPRESSION_NARRATION_CUES
-        .iter()
-        .any(|c| lower.contains(c))
+    COMPRESSION_NARRATION_CUES.iter().any(|c| lower.contains(c))
 }
 
 const COMPRESSION_NARRATION_CUES: &[&str] = &[
@@ -305,9 +303,9 @@ pub fn is_compression_workaround(
         return false;
     }
     let window_end = call_ordinal.saturating_add(window);
-    let narrated = assistant_turns.iter().any(|(o, text)| {
-        *o > call_ordinal && *o <= window_end && is_compression_narration(text)
-    });
+    let narrated = assistant_turns
+        .iter()
+        .any(|(o, text)| *o > call_ordinal && *o <= window_end && is_compression_narration(text));
     if !narrated {
         return false;
     }
@@ -588,7 +586,14 @@ mod tests {
 
     #[test]
     fn edit_tools_recognized_across_surfaces() {
-        for t in ["Write", "edit", "MultiEdit", "str_replace", "create_file", "apply_patch"] {
+        for t in [
+            "Write",
+            "edit",
+            "MultiEdit",
+            "str_replace",
+            "create_file",
+            "apply_patch",
+        ] {
             assert!(is_edit_tool(t), "should be an edit tool: {t}");
         }
         for t in ["Read", "Grep", "Shell", "Bash", "MCP:save_issue", "Glob"] {
@@ -603,7 +608,10 @@ mod tests {
         // Every name in the shared set appears, lowercased and quoted, so the timestamp join
         // classifies an edit exactly as is_edit_tool does.
         for name in EDIT_TOOL_NAMES {
-            assert!(sql.contains(&format!("'{name}'")), "missing {name} in: {sql}");
+            assert!(
+                sql.contains(&format!("'{name}'")),
+                "missing {name} in: {sql}"
+            );
             assert!(is_edit_tool(name));
         }
     }
@@ -658,20 +666,30 @@ mod tests {
     #[test]
     fn interrupts_and_system_turns_are_not_corrections() {
         assert!(is_system_turn("[Request interrupted by user for tool use]"));
-        assert!(is_system_turn("<task-notification>done</task-notification>"));
+        assert!(is_system_turn(
+            "<task-notification>done</task-notification>"
+        ));
         assert_eq!(
             classify_correction("[Request interrupted by user]", DEFAULT_TERSE_MAX_CHARS),
             CorrectionClass::None
         );
         assert_eq!(
-            classify_correction("<system-reminder>be concise</system-reminder>", DEFAULT_TERSE_MAX_CHARS),
+            classify_correction(
+                "<system-reminder>be concise</system-reminder>",
+                DEFAULT_TERSE_MAX_CHARS
+            ),
             CorrectionClass::None
         );
     }
 
     #[test]
     fn workflow_commands_are_not_corrections() {
-        for s in ["commit and push", "fold and ADR", "narrow pass", "cargo test"] {
+        for s in [
+            "commit and push",
+            "fold and ADR",
+            "narrow pass",
+            "cargo test",
+        ] {
             assert!(is_workflow_command(s), "workflow: {s}");
             assert_eq!(
                 classify_correction(s, DEFAULT_TERSE_MAX_CHARS),
@@ -708,7 +726,11 @@ mod tests {
 
     #[test]
     fn output_complaints_stay_explicit_even_with_nope() {
-        for s in ["nope. bad bg image", "nope that's wrong", "still broken, revert"] {
+        for s in [
+            "nope. bad bg image",
+            "nope that's wrong",
+            "still broken, revert",
+        ] {
             assert_eq!(
                 classify_correction(s, DEFAULT_TERSE_MAX_CHARS),
                 CorrectionClass::Explicit,
@@ -722,7 +744,14 @@ mod tests {
         let w = STRUCTURAL_WINDOW_TURNS;
         let assistants = [(2u32, "output was trimmed so I'll write the json to disk")];
         let bypass = [(3u32, "Bash", "python3 -c 'open(\"x.json\")'")];
-        assert!(is_compression_workaround(true, 40, 1, &assistants, &bypass, w));
+        assert!(is_compression_workaround(
+            true,
+            40,
+            1,
+            &assistants,
+            &bypass,
+            w
+        ));
         assert!(!is_compression_workaround(
             true,
             40,
@@ -739,6 +768,13 @@ mod tests {
             &[(3, "Read", "/a.rs")],
             w
         ));
-        assert!(!is_compression_workaround(false, 40, 1, &assistants, &bypass, w));
+        assert!(!is_compression_workaround(
+            false,
+            40,
+            1,
+            &assistants,
+            &bypass,
+            w
+        ));
     }
 }

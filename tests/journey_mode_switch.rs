@@ -33,7 +33,7 @@ adaptive_prefix_enabled = true
 "#,
     );
 
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
 
     let out = Command::new(bin)
         .args(["mode", "debug"])

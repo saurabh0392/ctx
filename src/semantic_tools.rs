@@ -99,7 +99,7 @@ pub fn recommend_tools_from_similar_sessions(
 
     let query_text = format!("[dir: {}] {}", cwd.trim(), prompt.trim());
     let embedding = crate::embedder::embed_text(&query_text)?;
-    let top_k = cfg.semantic_tool_mix_top_k.max(1).min(20);
+    let top_k = cfg.semantic_tool_mix_top_k.clamp(1, 20);
     let sims = crate::embedder::similar_sessions_by_query(conn, &embedding, top_k, None)?;
 
     let min_sim = cfg.semantic_tool_mix_min_similarity as f64;
@@ -135,8 +135,8 @@ pub fn recommend_tools_from_similar_sessions(
     };
 
     let mut recommended: Vec<String> = tool_weights
-        .into_iter()
-        .filter_map(|(tool, _weight)| {
+        .into_keys()
+        .filter_map(|tool| {
             let sessions_with = tool_sessions.get(&tool).map(|s| s.len()).unwrap_or(0);
             if sessions_with < min_sessions {
                 return None;
@@ -292,7 +292,7 @@ pub fn apply_hook_semantic_tool_mix(
                     crate::embedder::similar_sessions_by_query(
                         &conn,
                         &emb,
-                        cfg.semantic_tool_mix_top_k.max(1).min(20),
+                        cfg.semantic_tool_mix_top_k.clamp(1, 20),
                         None,
                     )
                     .ok()
@@ -564,7 +564,7 @@ pub fn list_access_friction(conn: &Connection, promote_threshold: u32) -> Vec<Ac
         })
         .collect();
     rows.retain(|r| r.count >= promote_threshold.min(1));
-    rows.sort_by(|a, b| b.count.cmp(&a.count));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.count));
     rows
 }
 

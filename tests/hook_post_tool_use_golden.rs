@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 #[test]
 #[serial]
 fn post_tool_use_output_matches_direct_composition() {
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("integration tests need the ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     let h = CtxHarness::new();
     // Force the apply path: preset full allows every kind, force_active bypasses the
     // Act 1 evidence gate (which would otherwise fail closed with no collected labels).

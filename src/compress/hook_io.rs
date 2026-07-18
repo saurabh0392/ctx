@@ -110,7 +110,7 @@ pub fn post_tool_use() -> Result<()> {
     }
 
     let sgr_arm = cfg.compress_sgr_enabled
-        && cfg.ab_test.as_ref().map_or(true, |ab| {
+        && cfg.ab_test.as_ref().is_none_or(|ab| {
             ab_assign(
                 ab.compress_sgr_pct,
                 "compress_sgr",

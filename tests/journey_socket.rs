@@ -54,13 +54,19 @@ fn journey_unix_socket() {
     let (rt, listener) = spawn_listener();
     wait_for(&sock_path, &listener);
 
-    let profile_line =
-        query_stream(UnixStream::connect(&sock_path).unwrap(), r#"{"q":"profile"}"#).unwrap();
+    let profile_line = query_stream(
+        UnixStream::connect(&sock_path).unwrap(),
+        r#"{"q":"profile"}"#,
+    )
+    .unwrap();
     let profile: serde_json::Value = serde_json::from_str(profile_line.trim()).unwrap();
     assert_eq!(profile["profile"], "carrier");
 
-    let budget_line =
-        query_stream(UnixStream::connect(&sock_path).unwrap(), r#"{"q":"budget"}"#).unwrap();
+    let budget_line = query_stream(
+        UnixStream::connect(&sock_path).unwrap(),
+        r#"{"q":"budget"}"#,
+    )
+    .unwrap();
     let budget: serde_json::Value = serde_json::from_str(budget_line.trim()).unwrap();
     assert!(budget.get("remaining_usd").is_some());
 

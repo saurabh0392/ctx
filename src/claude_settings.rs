@@ -134,7 +134,11 @@ pub fn register_ctx_mcp_server_in_user_config() -> Result<bool> {
         "env": {},
     });
 
-    if !doc.get("mcpServers").map(|m| m.is_object()).unwrap_or(false) {
+    if !doc
+        .get("mcpServers")
+        .map(|m| m.is_object())
+        .unwrap_or(false)
+    {
         doc["mcpServers"] = json!({});
     }
     if doc["mcpServers"].get("ctx") == Some(&desired) {
@@ -397,7 +401,8 @@ pub fn merge_profile_deny_rules(settings: &mut Value, slug: &str) -> Result<()> 
     let mut expansion = cfg.session_expansion.clone();
     expansion.extend(cfg.session_semantic_tools.clone());
     let local_names = crate::profiles::local_mcp_server_names(settings);
-    let mut patterns = crate::profiles::deny_patterns_for_profile(&profile, &expansion, &local_names);
+    let mut patterns =
+        crate::profiles::deny_patterns_for_profile(&profile, &expansion, &local_names);
     // Servers the developer explicitly pruned from the tool menu (CTX-64), on top of the profile's
     // own rules. A session reach re-adds them (they drop out of `expansion` above).
     patterns.extend(crate::profiles::pruned_server_deny_patterns(
@@ -601,10 +606,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(register_ctx_mcp_server_in_user_config().unwrap(), "first call writes");
+        assert!(
+            register_ctx_mcp_server_in_user_config().unwrap(),
+            "first call writes"
+        );
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["ctx"]["args"][0], "mcp");
-        assert!(doc["mcpServers"]["other"].is_object(), "existing server preserved");
+        assert!(
+            doc["mcpServers"]["other"].is_object(),
+            "existing server preserved"
+        );
 
         assert!(
             !register_ctx_mcp_server_in_user_config().unwrap(),
@@ -654,10 +665,16 @@ mod tests {
         let denied = |d: &Value| {
             d["permissions"]["deny"]
                 .as_array()
-                .map(|a| a.iter().any(|v| v.as_str() == Some("mcp__claude_ai_Canva__*")))
+                .map(|a| {
+                    a.iter()
+                        .any(|v| v.as_str() == Some("mcp__claude_ai_Canva__*"))
+                })
                 .unwrap_or(false)
         };
-        assert!(denied(&doc), "a pruned server is denied even under profile 'all'");
+        assert!(
+            denied(&doc),
+            "a pruned server is denied even under profile 'all'"
+        );
 
         // A session reach for a Canva tool overrides the prune for the session.
         let mut cfg = crate::config::Config::load();
@@ -701,14 +718,17 @@ mod tests {
     fn strip_and_merge_hooks_roundtrip() {
         let mut doc = json!({ "hooks": {}});
         merge_ctx_native_hooks(&mut doc, 8789).unwrap();
-        assert!(doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len() >= 1);
+        assert!(!doc["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert!(strip_ctx_native_hooks_from_settings(&mut doc));
         assert_eq!(
             doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
             0
         );
         merge_ctx_native_hooks(&mut doc, 8789).unwrap();
-        assert!(doc["hooks"]["Stop"].as_array().unwrap().len() >= 1);
+        assert!(!doc["hooks"]["Stop"].as_array().unwrap().is_empty());
     }
 
     #[test]

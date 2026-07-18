@@ -1,0 +1,104 @@
+{
+  "description": "CTX live Codex observation and evidence-gated shell wrapping.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-session-start",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-session-start",
+            "timeout": 5,
+            "statusMessage": "Starting CTX local observation"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-user-prompt-submit",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-user-prompt-submit",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-pre-tool-use",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-pre-tool-use",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-post-tool-use",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-post-tool-use",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-pre-compact",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-pre-compact",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-post-compact",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-post-compact",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-stop",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PLUGIN_ROOT/hooks/run-ctx.sh hook codex-stop",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$PLUGIN_ROOT\\hooks\\run-ctx.ps1\" hook codex-stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

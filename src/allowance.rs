@@ -155,8 +155,6 @@ pub fn current_allowance(conn: &Connection) -> AllowanceCurrentResponse {
 
     let configured = !windows.is_empty();
     let last_statusline_at = crate::db::get_meta(conn, "last_statusline_at");
-    let heartbeat_only = last_statusline_at.is_some() && !configured;
-
     let stale = if configured {
         windows.values().any(|w| {
             w.updated_at
@@ -165,7 +163,7 @@ pub fn current_allowance(conn: &Connection) -> AllowanceCurrentResponse {
                 .unwrap_or(true)
         })
     } else {
-        heartbeat_only || true
+        true
     };
 
     let statusline_wired = crate::claude_settings::ctx_statusline_wired_in_settings();

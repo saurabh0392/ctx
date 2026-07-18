@@ -62,7 +62,9 @@ pub fn explicit_output_cap(command: &str) -> Option<usize> {
 
 /// Parse a `-50` style single flag into its number (`50`). Returns None for `-n`, `-rn`, etc.
 fn dash_number(tok: &str) -> Option<usize> {
-    tok.strip_prefix('-').filter(|r| !r.is_empty()).and_then(|r| r.parse().ok())
+    tok.strip_prefix('-')
+        .filter(|r| !r.is_empty())
+        .and_then(|r| r.parse().ok())
 }
 
 /// Prefix classification of a single, already-normalized command (no leading `cd`/env, no
@@ -185,7 +187,10 @@ fn is_test_command(lower: &str) -> bool {
 /// what counts as MCP regardless of which agent named it.
 pub fn is_mcp_tool(tool_name: &str) -> bool {
     let name = tool_name.trim();
-    name.starts_with("mcp__") || name.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("mcp:"))
+    name.starts_with("mcp__")
+        || name
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("mcp:"))
 }
 
 pub fn classify_tool(
@@ -229,10 +234,22 @@ mod tests {
     #[test]
     fn bare_commands_still_classify() {
         assert_eq!(classify_bash_command("git status"), CompressKind::GitStatus);
-        assert_eq!(classify_bash_command("git diff HEAD"), CompressKind::GitDiff);
-        assert_eq!(classify_bash_command("git log --oneline"), CompressKind::GitLog);
-        assert_eq!(classify_bash_command("cargo test --lib"), CompressKind::TestRunner);
-        assert_eq!(classify_bash_command("grep -n foo src/lib.rs"), CompressKind::Grep);
+        assert_eq!(
+            classify_bash_command("git diff HEAD"),
+            CompressKind::GitDiff
+        );
+        assert_eq!(
+            classify_bash_command("git log --oneline"),
+            CompressKind::GitLog
+        );
+        assert_eq!(
+            classify_bash_command("cargo test --lib"),
+            CompressKind::TestRunner
+        );
+        assert_eq!(
+            classify_bash_command("grep -n foo src/lib.rs"),
+            CompressKind::Grep
+        );
         assert_eq!(classify_bash_command("echo hi"), CompressKind::Generic);
     }
 
@@ -278,7 +295,7 @@ mod tests {
         assert_eq!(explicit_output_cap("cat big.log | tail -n 20"), Some(20));
         assert_eq!(explicit_output_cap("grep -m 30 pattern file"), Some(30));
         assert_eq!(explicit_output_cap("ls -la | head"), Some(10)); // bare head default
-        // Tightest cap wins when several are present.
+                                                                    // Tightest cap wins when several are present.
         assert_eq!(
             explicit_output_cap("grep x f | head -100 | tail -5"),
             Some(5)

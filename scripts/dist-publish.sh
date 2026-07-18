@@ -29,8 +29,13 @@ import json, sys
 path, version, target, file, sha = sys.argv[1:6]
 try: m = json.load(open(path))
 except Exception: m = {}
+previous_version = m.get("version")
+m.setdefault("targets", {})
+if previous_version:
+    for existing in m["targets"].values():
+        existing.setdefault("version", previous_version)
 m["version"] = version
-m.setdefault("targets", {})[target] = {"file": file, "sha256": sha}
+m["targets"][target] = {"version": version, "file": file, "sha256": sha}
 json.dump(m, open(path, "w"), indent=2)
 print("manifest:", json.dumps(m))
 PY

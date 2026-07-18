@@ -1,3 +1,5 @@
+#[cfg(feature = "onnx")]
+use anyhow::Context;
 use anyhow::Result;
 use colored::Colorize;
 use std::io::{stdin, stdout, IsTerminal, Write};
@@ -19,9 +21,9 @@ fn claude_projects_has_jsonl() -> bool {
 }
 
 fn ctx_bin() -> String {
-    crate::config::home_dir_for_paths()
-        .map(|h| h.join(".cargo").join("bin").join("ctx"))
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
         .unwrap_or_else(|| "ctx".to_string())
 }
 
@@ -53,18 +55,35 @@ fn autorun_summary(periodic_ingest: bool) -> String {
     }
 }
 
-fn setup_preview_lines(periodic_ingest: bool) -> Vec<String> {
-    vec![
+fn setup_preview_lines(periodic_ingest: bool, beta: bool) -> Vec<String> {
+    let config = if beta {
+        format!(
+            "Create {} and write beta config (evidence-gated Full output autopilot; MCP filtering off)",
+            crate::config::ctx_dir().display()
+        )
+    } else {
         format!(
             "Create {} and write config (MCP filtering off by default)",
             crate::config::ctx_dir().display()
-        ),
+        )
+    };
+    let availability = if beta {
+        "Keep every tool available; output changes still fail closed behind safety and evidence gates"
+            .to_string()
+    } else {
+        "Keep all tools available; profile filtering stays an opt-in (`ctx use <profile>`)"
+            .to_string()
+    };
+    vec![
+        config,
         crate::daemon::dashboard_ingest_summary(DASHBOARD_PORT, periodic_ingest),
         "Merge ctx hooks into ~/.claude/settings.json, with no MCP filter rules (unless --no-install)"
             .to_string(),
         "Index ~/.claude/projects/**/*.jsonl into ~/.ctx/ctx.db so the dashboard and learning have history"
             .to_string(),
-        "Keep all tools available; profile filtering stays an opt-in (`ctx use <profile>`)".to_string(),
+        availability,
+        "Install the CTX Codex plugin when Codex is present (unless --no-install); hook trust remains an explicit Codex review"
+            .to_string(),
     ]
 }
 
@@ -95,7 +114,36 @@ fn maybe_offer_editor_rule(host: &dyn crate::host::HostAdapter) -> Result<()> {
     Ok(())
 }
 
-pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -> Result<()> {
+fn apply_fresh_install_defaults(cfg: &mut crate::config::Config, beta: bool) {
+    cfg.filter_mode = crate::config::FilterMode::Off;
+    cfg.active_profile = Some("all".to_string());
+    cfg.auto_profile_enabled = false;
+    cfg.dashboard_port = Some(DASHBOARD_PORT);
+    cfg.experiment_hooks_enabled = true;
+    if beta {
+        // The beta defaults to full output autopilot, but the evidence gate, bounded burn-in,
+        // deny-set, and Read edit-intent guard still fail closed. MCP filtering remains off:
+        // output control and input-menu pruning are separate bets.
+        cfg.compress_preset = crate::config::CompressPreset::Full;
+        cfg.compress_enabled = true;
+        cfg.compress_shadow_enabled = true;
+        cfg.compress_auto_trial = true;
+        cfg.compress_force_active = false;
+        cfg.compress_trim_all = true;
+        cfg.compress_read_edit_guard = true;
+        cfg.compress_explore_read_rate = 0.20;
+        cfg.pruned_servers.clear();
+    }
+}
+
+pub fn run(
+    no_install: bool,
+    _no_zshrc_prompt: bool,
+    dry_run: bool,
+    yes: bool,
+    beta: bool,
+) -> Result<()> {
+    let config_existed_before = crate::config::ctx_dir().join("config.toml").exists();
     let host = crate::host::detect_primary_host();
     println!("{} Detected: {}", "i".cyan(), host.label());
     if crate::config::claude_desktop_installed() {
@@ -112,7 +160,7 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
     }
     println!();
     println!("{} ctx will:", "i".cyan());
-    for (i, line) in setup_preview_lines(host.needs_periodic_ingest())
+    for (i, line) in setup_preview_lines(host.needs_periodic_ingest(), beta)
         .into_iter()
         .enumerate()
     {
@@ -140,6 +188,14 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
     }
 
     crate::config::ensure_dir()?;
+    if beta {
+        let state = crate::beta::activate_from_environment()?;
+        println!(
+            "{} Beta channel enrolled as {}. Feedback remains preview-and-send only.",
+            "✓".green(),
+            state.participant_id
+        );
+    }
     if crate::experiment_plan::restore_experiment_state_if_missing()? {
         println!(
             "{} Restored experiment plan from persistent backup (survives rm -rf ~/.ctx)",
@@ -165,11 +221,7 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
         let cfg_path = crate::config::ctx_dir().join("config.toml");
         if !cfg_path.exists() {
             let mut cfg = crate::config::Config::load();
-            cfg.filter_mode = crate::config::FilterMode::Off;
-            cfg.active_profile = Some("all".to_string());
-            cfg.auto_profile_enabled = false;
-            cfg.dashboard_port = Some(DASHBOARD_PORT);
-            cfg.experiment_hooks_enabled = true;
+            apply_fresh_install_defaults(&mut cfg, beta && !config_existed_before);
             let _ = cfg.save();
         }
     }
@@ -341,13 +393,22 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
         println!(
             "  Optional MCP filtering requires Claude Code (CLI or IDE). Desktop gets ingest + dashboard."
         );
-        println!("  Install Claude Code and re-run `ctx setup` for hooks (filtering stays opt-in).");
+        println!(
+            "  Install Claude Code and re-run `ctx setup` for hooks (filtering stays opt-in)."
+        );
     }
 
     wire_mcp_server(&*host)?;
 
     if !no_install {
         register_cursor_hook_if_present();
+        match crate::codex_plugin::install_if_present() {
+            Ok(true) => {
+                println!("  Codex:      CTX plugin installed (review and trust its hooks with /hooks in Codex)");
+            }
+            Ok(false) => {}
+            Err(e) => println!("{} Codex plugin installation skipped: {e}", "!".yellow()),
+        }
     }
 
     if !no_install {
@@ -392,6 +453,12 @@ pub fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -
     if host.offer_editor_rules() && stdin().is_terminal() {
         let _ = maybe_offer_editor_rule(&*host);
     }
+
+    crate::beta::record_event(
+        "setup_completed",
+        "cli",
+        Some(if beta { "beta" } else { "standard" }),
+    );
 
     Ok(())
 }
@@ -448,6 +515,12 @@ pub fn uninstall() -> Result<()> {
         ),
     }
 
+    match crate::codex_plugin::uninstall_if_owned() {
+        Ok(true) => println!("{} Removed CTX Codex plugin and marketplace", "✓".green()),
+        Ok(false) => {}
+        Err(e) => println!("{} Codex plugin removal skipped: {e}", "!".yellow()),
+    }
+
     match crate::config::remove_user_ctx_from_cursor_known_mcp_ids() {
         Ok(true) => println!(
             "{} Cleared stale ctx entry from Cursor MCP cache",
@@ -459,6 +532,11 @@ pub fn uninstall() -> Result<()> {
             "!".yellow(),
             e
         ),
+    }
+
+    if crate::beta::state_path().exists() {
+        crate::beta::remove_state()?;
+        println!("{} Removed the stored beta capability", "✓".green());
     }
 
     println!(
@@ -716,3 +794,46 @@ const DEFAULT_PREFIX: &str = r#"# Workspace Standards
 - Flag security issues (injection, auth, secrets in code) before anything else
 - Prefer editing existing files over creating new ones
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn beta_defaults_are_full_but_still_fail_closed() {
+        let mut cfg = crate::config::Config {
+            compress_force_active: true,
+            pruned_servers: vec!["mcp__unused".into()],
+            ..Default::default()
+        };
+
+        apply_fresh_install_defaults(&mut cfg, true);
+
+        assert_eq!(cfg.filter_mode, crate::config::FilterMode::Off);
+        assert_eq!(cfg.compress_preset, crate::config::CompressPreset::Full);
+        assert!(cfg.compress_enabled);
+        assert!(cfg.compress_shadow_enabled);
+        assert!(cfg.compress_auto_trial);
+        assert!(cfg.compress_trim_all);
+        assert!(cfg.compress_read_edit_guard);
+        assert!(!cfg.compress_force_active);
+        assert_eq!(cfg.compress_explore_read_rate, 0.20);
+        assert!(cfg.pruned_servers.is_empty());
+    }
+
+    #[test]
+    fn standard_defaults_do_not_enable_output_autopilot() {
+        let mut cfg = crate::config::Config::default();
+        apply_fresh_install_defaults(&mut cfg, false);
+        assert_eq!(cfg.filter_mode, crate::config::FilterMode::Off);
+        assert_eq!(cfg.compress_preset, crate::config::CompressPreset::Off);
+    }
+
+    #[test]
+    fn beta_preview_describes_the_defaults_that_setup_applies() {
+        let preview = setup_preview_lines(false, true).join("\n");
+        assert!(preview.contains("evidence-gated Full output autopilot"));
+        assert!(preview.contains("MCP filtering off"));
+        assert!(preview.contains("fail closed"));
+    }
+}

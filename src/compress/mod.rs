@@ -2,32 +2,37 @@
 
 pub mod activation;
 pub mod classify;
-pub mod tool_activation;
 mod context;
 mod edit;
 pub mod edit_intent;
 mod generic;
-pub mod path_role;
 mod git;
 mod grep;
 mod hook_io;
 pub mod intent;
 mod mcp;
+pub mod path_role;
 mod read;
 mod retain;
 mod session_dedup;
 pub mod shadow;
 mod test_runner;
+pub mod tool_activation;
 mod types;
 
 pub use context::{build_task_frame_minimal, SgrMode, TaskFrame};
-pub use hook_io::{
-    extract_compressible_text, extract_tool_output, post_tool_use, rewind_id_for, tool_response_value,
-    trim_marker, wrap_updated_tool_output,
-};
 pub(crate) use hook_io::record_shadow_decision;
+pub use hook_io::{
+    extract_compressible_text, extract_tool_output, post_tool_use, rewind_id_for,
+    tool_response_value, trim_marker, wrap_updated_tool_output,
+};
 pub use shadow::{compute_shadow_decision, ShadowDecision};
 pub use types::{CompressKind, CompressResult};
+
+/// Version of the output transform whose evidence may authorize a live trim. Bump this whenever a
+/// material compressor change can alter what the agent sees; old observations then remain useful
+/// history but cannot silently authorize the new transform.
+pub const TRANSFORM_VERSION: &str = "retention-v1";
 
 use crate::config::Config;
 use classify::classify_tool;
@@ -228,9 +233,27 @@ fn is_mutation_tool(name: &str) -> bool {
     ];
     // Mutation verbs: a write/action whose result is consumed once. No re-read, so no harm signal.
     const MUTATION_VERBS: &[&str] = &[
-        "save", "create", "update", "delete", "remove", "add", "set", "patch", "upload", "post",
-        "send", "merge", "close", "archive", "move", "duplicate", "write", "prepare", "cancel",
-        "assign", "comment",
+        "save",
+        "create",
+        "update",
+        "delete",
+        "remove",
+        "add",
+        "set",
+        "patch",
+        "upload",
+        "post",
+        "send",
+        "merge",
+        "close",
+        "archive",
+        "move",
+        "duplicate",
+        "write",
+        "prepare",
+        "cancel",
+        "assign",
+        "comment",
     ];
 
     let n = name.trim();
@@ -244,7 +267,7 @@ fn is_mutation_tool(name: &str) -> bool {
         return false;
     }
     let method = n.rsplit("__").next().unwrap_or(n).to_ascii_lowercase();
-    for tok in method.split(|c| c == '_' || c == '-') {
+    for tok in method.split(['_', '-']) {
         if READ_VERBS.contains(&tok) {
             return false;
         }
@@ -313,12 +336,12 @@ fn tool_allowed(tool_name: &str, cfg: &Config) -> bool {
     // Cursor's "Shell" is Claude's "Bash": the same surface under two names. Treat them as
     // interchangeable so a config that allows one allows the other (matches the classify unification
     // in CTX-41), otherwise the Cursor Shell `ctx run` path can never compress.
-    let aliases: &[&str] = if name.eq_ignore_ascii_case("shell") || name.eq_ignore_ascii_case("bash")
-    {
-        &["shell", "bash"]
-    } else {
-        std::slice::from_ref(&name)
-    };
+    let aliases: &[&str] =
+        if name.eq_ignore_ascii_case("shell") || name.eq_ignore_ascii_case("bash") {
+            &["shell", "bash"]
+        } else {
+            std::slice::from_ref(&name)
+        };
     cfg.compress_tools
         .iter()
         .any(|t| aliases.iter().any(|a| t.eq_ignore_ascii_case(a)))
@@ -371,13 +394,22 @@ mod tests {
             ..test_cfg()
         };
         for t in ["Write", "Edit", "MultiEdit", "Bash", "Read"] {
-            assert!(tool_allowed(t, &cfg), "{t} should be eligible under trim_all");
+            assert!(
+                tool_allowed(t, &cfg),
+                "{t} should be eligible under trim_all"
+            );
         }
         assert!(!tool_allowed("mcp__ctx__ctx_expand", &cfg));
-        assert!(!tool_allowed("mcp__ctx__ctx_status", &cfg), "whole ctx server is denied by prefix");
+        assert!(
+            !tool_allowed("mcp__ctx__ctx_status", &cfg),
+            "whole ctx server is denied by prefix"
+        );
         // Mutation / one-shot tools are held even without an explicit deny entry.
         for t in ["TodoWrite", "Task", "TaskOutput"] {
-            assert!(!tool_allowed(t, &cfg), "{t} is a mutation/one-shot: held under trim_all");
+            assert!(
+                !tool_allowed(t, &cfg),
+                "{t} is a mutation/one-shot: held under trim_all"
+            );
         }
     }
 
@@ -412,7 +444,10 @@ mod tests {
 
     #[test]
     fn trim_all_gate_splits_mcp_reads_from_writes() {
-        let cfg = Config { compress_trim_all: true, ..test_cfg() };
+        let cfg = Config {
+            compress_trim_all: true,
+            ..test_cfg()
+        };
         // Read-shaped MCP and built-in tools are eligible.
         assert!(tool_allowed("mcp__claude_ai_Notion__notion-fetch", &cfg));
         assert!(tool_allowed("mcp__claude_ai_Linear__list_issues", &cfg));
@@ -427,7 +462,10 @@ mod tests {
 
     #[test]
     fn held_reason_matches_eligibility() {
-        let cfg = Config { compress_trim_all: true, ..test_cfg() };
+        let cfg = Config {
+            compress_trim_all: true,
+            ..test_cfg()
+        };
         // ctx recovery server: held, recovery reason.
         assert_eq!(
             held_reason("mcp__ctx__ctx_expand", &cfg).as_deref(),
@@ -437,7 +475,10 @@ mod tests {
         for t in ["mcp__claude_ai_Linear__save_issue", "TaskOutput"] {
             let r = held_reason(t, &cfg);
             assert!(r.is_some(), "{t} should be held");
-            assert!(r.unwrap().starts_with("Measured only."), "{t} gets the measured-only reason");
+            assert!(
+                r.unwrap().starts_with("Measured only."),
+                "{t} gets the measured-only reason"
+            );
         }
         // Read-shaped tools are eligible: no reason.
         for t in [
@@ -456,8 +497,14 @@ mod tests {
         // modes, closing that latent gap.
         let off = test_cfg(); // compress_trim_all defaults false
         assert!(!tool_allowed("mcp__ctx__ctx_expand", &off));
-        assert!(tool_allowed("mcp__claude_ai_Linear__get_issue", &off), "other MCP still allowed off");
-        let on = Config { compress_trim_all: true, ..test_cfg() };
+        assert!(
+            tool_allowed("mcp__claude_ai_Linear__get_issue", &off),
+            "other MCP still allowed off"
+        );
+        let on = Config {
+            compress_trim_all: true,
+            ..test_cfg()
+        };
         assert!(!tool_allowed("mcp__ctx__ctx_expand", &on));
     }
 
@@ -495,7 +542,11 @@ mod tests {
             false,
         )
         .expect("Shell git log must compress");
-        assert!(r.chars_saved() > 1000, "should save a lot, saved {}", r.chars_saved());
+        assert!(
+            r.chars_saved() > 1000,
+            "should save a lot, saved {}",
+            r.chars_saved()
+        );
         assert_eq!(r.strategy, "git-log");
     }
 

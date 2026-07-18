@@ -263,11 +263,11 @@ pub fn format_result(r: &SimulateResult) -> String {
         }
     ));
     let total = r.tools_kept + r.tools_removed;
-    let pct = if total > 0 {
-        r.tools_removed * 100 / total
-    } else {
-        0
-    };
+    let pct = r
+        .tools_removed
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(0);
     out.push_str(&format!(
         "TOOLS         {} kept, {} stripped ({}% cut)\n",
         r.tools_kept, r.tools_removed, pct

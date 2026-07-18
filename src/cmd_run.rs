@@ -22,7 +22,6 @@ use anyhow::Result;
 
 use crate::agent::ToolResult;
 use crate::config::Config;
-use crate::cursor_hook::CURSOR_SURFACE;
 
 /// What `ctx run` decided to do with a command's output, kept separate from any I/O or process exit
 /// so the core is unit-testable.
@@ -38,13 +37,16 @@ struct RunOutcome {
 /// Entry point for `ctx run <command...>`. Runs the command through a shell, optionally compacts the
 /// output, writes the result, and exits with the command's own exit code. Does not return on the
 /// normal path: it calls [`std::process::exit`] so the exit status is faithful.
-pub fn exec(command_parts: Vec<String>) -> Result<()> {
+pub fn exec(command_parts: Vec<String>, surface: &str, session_id: Option<&str>) -> Result<()> {
+    if crate::surface::SurfaceId::parse(surface).is_none() {
+        anyhow::bail!("unknown agent surface `{surface}`; expected claude-code, cursor, or codex");
+    }
     let command = command_parts.join(" ");
     if command.trim().is_empty() {
         std::process::exit(0);
     }
 
-    let outcome = run_command(&command);
+    let outcome = run_command(&command, surface, session_id);
     write_outcome(&outcome);
     std::process::exit(outcome.code);
 }
@@ -52,7 +54,7 @@ pub fn exec(command_parts: Vec<String>) -> Result<()> {
 /// Run `command` through the user's shell and decide whether to compact its output. On any spawn
 /// failure this returns a 127 outcome carrying the error on stderr, matching shell convention for a
 /// command that could not be executed.
-fn run_command(command: &str) -> RunOutcome {
+fn run_command(command: &str, surface: &str, session_id: Option<&str>) -> RunOutcome {
     // Windows has no /bin/sh; earned commands run through cmd.exe there.
     #[cfg(windows)]
     let mut shell_cmd = {
@@ -88,7 +90,7 @@ fn run_command(command: &str) -> RunOutcome {
     let code = output.status.code().unwrap_or(1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let compacted = try_compact(command, &stdout, &stderr);
+    let compacted = try_compact(command, &stdout, &stderr, surface, session_id);
 
     RunOutcome {
         code,
@@ -122,7 +124,13 @@ fn write_outcome(outcome: &RunOutcome) {
 /// Build the canonical tool result for this Shell command, run the shared gate, and compact only
 /// when the gate says apply and the compressor actually shortens the result. Returns the text to
 /// show, or `None` to pass the command through untouched.
-fn try_compact(command: &str, stdout: &str, stderr: &str) -> Option<String> {
+fn try_compact(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    surface: &str,
+    session_id: Option<&str>,
+) -> Option<String> {
     let cfg = Config::load();
     if !cfg.compress_enabled {
         return None;
@@ -141,17 +149,32 @@ fn try_compact(command: &str, stdout: &str, stderr: &str) -> Option<String> {
         raw_output: combined,
         // The preToolUse hook passes Cursor's conversation id through this env var when it rewrites
         // the command; absent that, the decision still runs with less session context.
-        session_id: std::env::var("CTX_CURSOR_CONVERSATION_ID")
-            .ok()
-            .filter(|s| !s.is_empty()),
+        session_id: session_id
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                std::env::var("CTX_CURSOR_CONVERSATION_ID")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            }),
         cwd: std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
         recent_intent_text: None,
     };
 
-    let decision = crate::agent::decide(&cfg, &tr);
+    let decision = crate::agent::decide_for_surface(&cfg, &tr, surface);
+    let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
     if !decision.apply {
+        crate::compress::record_shadow_decision(
+            tr.session_id.as_deref(),
+            &tr.tool_name,
+            &command_or_path,
+            decision.shadow.as_ref(),
+            false,
+            decision.explore_arm,
+            Some(surface),
+        );
         return None;
     }
 
@@ -163,12 +186,32 @@ fn try_compact(command: &str, stdout: &str, stderr: &str) -> Option<String> {
         tr.session_id.as_deref(),
         &tr.cwd,
         false,
-    )?;
+    );
+    let Some(result) = result else {
+        crate::compress::record_shadow_decision(
+            tr.session_id.as_deref(),
+            &tr.tool_name,
+            &command_or_path,
+            decision.shadow.as_ref(),
+            false,
+            decision.explore_arm,
+            Some(surface),
+        );
+        return None;
+    };
     if result.chars_saved() == 0 {
+        crate::compress::record_shadow_decision(
+            tr.session_id.as_deref(),
+            &tr.tool_name,
+            &command_or_path,
+            decision.shadow.as_ref(),
+            false,
+            decision.explore_arm,
+            Some(surface),
+        );
         return None;
     }
 
-    let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
     record_apply(
         tr.session_id.as_deref(),
         &tr.tool_name,
@@ -178,6 +221,15 @@ fn try_compact(command: &str, stdout: &str, stderr: &str) -> Option<String> {
         result.chars_out,
         &cfg,
         &tr.cwd,
+    );
+    crate::compress::record_shadow_decision(
+        tr.session_id.as_deref(),
+        &tr.tool_name,
+        &command_or_path,
+        decision.shadow.as_ref(),
+        true,
+        decision.explore_arm,
+        Some(surface),
     );
 
     Some(result.text)
@@ -227,7 +279,6 @@ fn record_apply(
         cfg.active_profile.as_deref().unwrap_or("all"),
         cwd,
     );
-    let _ = CURSOR_SURFACE;
 }
 
 #[cfg(test)]
@@ -236,20 +287,20 @@ mod tests {
 
     #[test]
     fn preserves_exit_code() {
-        let outcome = run_command("exit 7");
+        let outcome = run_command("exit 7", "cursor", None);
         assert_eq!(outcome.code, 7);
     }
 
     #[test]
     fn preserves_zero_exit_and_stdout() {
-        let outcome = run_command("printf 'hello world'");
+        let outcome = run_command("printf 'hello world'", "cursor", None);
         assert_eq!(outcome.code, 0);
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stdout), "hello world");
     }
 
     #[test]
     fn captures_stderr_separately() {
-        let outcome = run_command("printf 'oops' 1>&2");
+        let outcome = run_command("printf 'oops' 1>&2", "cursor", None);
         assert_eq!(outcome.code, 0);
         assert!(outcome.raw_stdout.is_empty());
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stderr), "oops");
@@ -259,7 +310,7 @@ mod tests {
     fn small_output_passes_through_untouched() {
         // Tiny output is below any compaction budget, so it must pass through (compacted == None),
         // preserving the exact bytes.
-        let outcome = run_command("echo small");
+        let outcome = run_command("echo small", "cursor", None);
         assert!(
             outcome.compacted.is_none(),
             "small output must not be compacted"
@@ -274,16 +325,19 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn nonzero_exit_still_passes_through() {
-        let outcome = run_command("printf 'partial output'; exit 2");
+        let outcome = run_command("printf 'partial output'; exit 2", "cursor", None);
         assert_eq!(outcome.code, 2);
-        assert_eq!(String::from_utf8_lossy(&outcome.raw_stdout), "partial output");
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.raw_stdout),
+            "partial output"
+        );
     }
 
     #[cfg(windows)]
     #[test]
     fn nonzero_exit_still_passes_through() {
         // cmd.exe: `&` chains commands and `exit N` sets the process exit code (no printf, no `;`).
-        let outcome = run_command("echo partial output & exit 2");
+        let outcome = run_command("echo partial output & exit 2", "cursor", None);
         assert_eq!(outcome.code, 2);
         assert_eq!(
             String::from_utf8_lossy(&outcome.raw_stdout).trim_end(),

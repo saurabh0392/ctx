@@ -1,47 +1,48 @@
-# Report intake (AWS)
+# CTX beta report intake
 
-Backs the dashboard "Report an issue" modal. A public Lambda Function URL that alpha users' dashboards
-POST to, so they can file a GitHub issue with screenshots without a GitHub account or repo access. The
-GitHub PAT stays server-side in SSM; images go straight to S3 via presigned POST.
+Capability-authenticated intake for explicit dashboard issue reports and aggregate beta check-ins.
+The Lambda Function URL is public at the network layer, but every action requires a valid unexpired
+`feedback` capability whose participant remains in the encrypted roster.
 
-## Endpoint (deployed to 553239736682 / us-east-1)
+## Actions
 
-- URL: `https://yds5zrqx7pbhf7jcigvsjirepm0twbga.lambda-url.us-east-1.on.aws/`
-- Bucket: `ctxreportintake-images2d38c313-govghgdw8vsa` (images public-read under `images/`, UUID keys,
-  no listing, 90-day expiry)
+- `presign`: up to three PNG/JPEG/WebP/GIF screenshots, 5 MB each.
+- `submit`: creates a private-repository GitHub issue with capped text, reviewed diagnostic JSON, and
+  seven-day signed screenshot links.
+- `checkin`: validates the exact `ctx.beta-checkin.v1` allowlist and stores it privately in S3.
 
-Put the URL into the dashboard modal's `REPORT_ENDPOINT`. Do not bake it into a widely distributed
-build until the abuse hardening below is in place.
+Unknown fields are rejected. Check-ins cannot contain prompts, output, commands, paths, repos, tool
+names, costs, source, or arbitrary JSON. Screenshots are private and expire after 30 days; aggregate
+check-ins expire after 365 days.
 
-## Two actions
+## Required SSM parameters
 
-- `POST { action: "presign", images: [{ name, contentType }] }` returns `{ uploads: [{ key, url, fields }] }`.
-  The browser POSTs each image directly to S3 with those fields.
-- `POST { action: "submit", report: { kind, title, description, example, bundle }, imageKeys: [...] }`
-  creates the GitHub issue, links the images, labels it `alpha-report` plus the kind.
-
-## Setup the account owner still does
-
-1. Store the fine-grained PAT (Issues read/write on the repo) in SSM:
-   ```
-   aws ssm put-parameter --name /ctx/report-intake/github-token --type SecureString --value '<PAT>' --region us-east-1
-   ```
-2. Create the issue labels in the repo so `submit` does not 422: `alpha-report`, `coherence-regression`
-   (`bug` and `enhancement` usually already exist).
+- `/ctx/report-intake/github-token`: fine-grained PAT with Issues read/write on the private repo.
+- `/ctx/dist/alpha-tokens`: the shared beta invite roster.
+- `/ctx/beta/capability-secret`: the same HMAC secret used by `ctx-dist`.
 
 ## Operate
 
+```bash
+cd services/report-intake
+npm ci
+npm run typecheck
+npm run deploy -- -c githubRepo=<owner/private-feedback-repo>
 ```
-cd services/report-intake && npm install
-CDK_DEFAULT_ACCOUNT=553239736682 CDK_DEFAULT_REGION=us-east-1 npx cdk deploy
-npx cdk destroy   # tear it all down
+
+There is intentionally no default repository: deployment must name a private feedback repo. The S3
+bucket is retained if the stack is deleted accidentally; its 30-day screenshot and 365-day check-in
+lifecycle rules continue to govern normal retention.
+
+Create the repository labels `beta-report`, `coherence-regression`, `bug`, and `enhancement` before
+testing issue submission.
+
+To analyze check-ins, sync them to a temporary directory outside the repository and run:
+
+```bash
+aws s3 sync s3://<bucket>/checkins /tmp/ctx-checkins
+node ../../scripts/beta-summary.mjs /tmp/ctx-checkins
 ```
 
-## Guards in place, and what is not
-
-In: per-report caps (25 images, 10 MB each), image-only content type enforced in the presigned POST
-policy, text length caps, untrusted text fenced in a code block, least-privilege IAM (reads only the
-one SSM param, writes only `images/`).
-
-Not yet (Phase 2, before wide distribution): rate limiting and WAF on the Function URL. Until then the
-endpoint is public and unthrottled, so keep the URL out of any broadly shipped build.
+The summary output is aggregate-only. Never commit raw check-ins, screenshots, capabilities, tokens,
+or participant mappings.

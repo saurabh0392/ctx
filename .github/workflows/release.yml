@@ -12,8 +12,42 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Version and changelog coherence
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          test "${GITHUB_REF_NAME}" = "v${VERSION}"
+          grep -Fq "## [${VERSION}]" CHANGELOG.md
+      - name: Claim consistency
+        run: |
+          node scripts/coherence/claims.mjs
+          node --test scripts/coherence/beta-summary.test.mjs
+      - name: Rust quality gates
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Beta service gates
+        run: |
+          for service in ctx-dist report-intake; do
+            npm ci --prefix "services/$service" --no-audit --no-fund
+            npm run --prefix "services/$service" typecheck
+            npm run --prefix "services/$service" synth
+          done
+
   build:
     name: Build ${{ matrix.target }}
+    needs: preflight
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -47,11 +81,11 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Run tests
         # Serial: the suite mutates process-global env (CTX_HOME/HOME) per test; parallel runs race.
-        run: cargo test -- --test-threads=1
+        run: cargo test --all-targets --locked -- --test-threads=1
 
       - name: Package
         shell: bash
@@ -73,22 +107,23 @@ jobs:
   # a release can publish. This is the deterministic gate (exact pass/fail).
   coherence:
     name: Behavioral coherence
+    needs: preflight
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Build binary + fixture seeder
         run: |
-          cargo build --release
-          cargo build --release --example seed_coherence_fixture
+          cargo build --release --locked
+          cargo build --release --locked --example seed_coherence_fixture
       - name: Install coherence deps + chromium
         working-directory: scripts/coherence
         run: |
-          npm i --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npm ci --no-audit --no-fund
+          npx playwright-core install --with-deps chromium
       - name: Seed the CI fixture
         run: |
           mkdir -p "$RUNNER_TEMP/ctx-fixture"
@@ -104,12 +139,13 @@ jobs:
   # secret, and fails loudly if absent so a release never publishes with the gate silently skipped.
   fitcheck:
     name: Fitcheck (design gate)
+    needs: preflight
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Install Claude Code CLI
         run: npm i -g @anthropic-ai/claude-code
       - name: Fitcheck gate
@@ -161,7 +197,7 @@ jobs:
             aws s3 cp "$f" "s3://$BUCKET/$key"
             python3 - "$M" "$t" "$key" "$sha" <<'PY'
           import json,sys
-          m=json.load(open(sys.argv[1])); m["targets"][sys.argv[2]]={"file":sys.argv[3],"sha256":sys.argv[4]}
+          m=json.load(open(sys.argv[1])); m["targets"][sys.argv[2]]={"version":m["version"],"file":sys.argv[3],"sha256":sys.argv[4]}
           json.dump(m,open(sys.argv[1],"w"),indent=2)
           PY
           done

@@ -80,8 +80,7 @@ pub fn transcript_corpus_summary(home: &Path) -> Vec<TranscriptSurfaceStats> {
             }
         }
         stats.projects = projects.len() as i64;
-        stats.last_activity = newest
-            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+        stats.last_activity = newest.map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
         out.push(stats);
     }
     out
@@ -125,16 +124,12 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         let window_end = call_ordinal + CORRECTION_WINDOW_TURNS;
         let in_window = |o: u32| o > call_ordinal && o <= window_end;
 
-        let explicit_in_window = explicit_gate_ordinals(parsed)
-            .iter()
-            .any(|&o| in_window(o));
+        let explicit_in_window = explicit_gate_ordinals(parsed).iter().any(|&o| in_window(o));
         let terse_in_window = terse_ordinals.iter().any(|&o| in_window(o));
         let aborted_in_window = aborted_ordinals.iter().any(|&o| in_window(o));
         let steer_in_window = steer_ordinals.iter().any(|&o| in_window(o));
-        let observed_user_signal = explicit_in_window
-            || terse_in_window
-            || aborted_in_window
-            || steer_in_window;
+        let observed_user_signal =
+            explicit_in_window || terse_in_window || aborted_in_window || steer_in_window;
 
         let window_closed = max_ordinal > window_end;
         let reread = calls.iter().any(|&(o, _)| in_window(o));
@@ -149,7 +144,10 @@ fn join_one(conn: &Connection, parsed: &ParsedTranscript) -> usize {
         let all_calls: Vec<(u32, &str, &str)> = parsed
             .tool_calls
             .iter()
-            .filter_map(|c| c.turn_ordinal.map(|o| (o, c.tool_name.as_str(), c.input_fingerprint.as_str())))
+            .filter_map(|c| {
+                c.turn_ordinal
+                    .map(|o| (o, c.tool_name.as_str(), c.input_fingerprint.as_str()))
+            })
             .collect();
         let compression_workaround = crate::outcome_signals::is_compression_workaround(
             d.applied,
@@ -250,7 +248,9 @@ fn explicit_gate_ordinals(parsed: &ParsedTranscript) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::surface::{CanonicalSession, CanonicalToolResult, CanonicalTurn, SurfaceId, TurnRole};
+    use crate::surface::{
+        CanonicalSession, CanonicalToolResult, CanonicalTurn, SurfaceId, TurnRole,
+    };
 
     fn turn(ordinal: u32, role: TurnRole, flags: Vec<TurnFlag>) -> CanonicalTurn {
         CanonicalTurn {
@@ -280,7 +280,10 @@ mod tests {
         std::fs::write(&file, lines.join("\n")).unwrap();
 
         let out = transcript_corpus_summary(tmp.path());
-        let cursor = out.iter().find(|s| s.surface == "cursor").expect("cursor entry");
+        let cursor = out
+            .iter()
+            .find(|s| s.surface == "cursor")
+            .expect("cursor entry");
         assert_eq!(cursor.sessions, 1);
         assert_eq!(cursor.tool_calls, 1);
         assert_eq!(cursor.corrections, 1);
@@ -294,7 +297,10 @@ mod tests {
         let out = transcript_corpus_summary(tmp.path());
         // Every registered adapter still contributes an entry, so callers can tell "seen zero"
         // (adapter ran, found nothing) from "adapter absent".
-        let cursor = out.iter().find(|s| s.surface == "cursor").expect("cursor entry");
+        let cursor = out
+            .iter()
+            .find(|s| s.surface == "cursor")
+            .expect("cursor entry");
         assert_eq!(cursor.sessions, 0);
         assert!(cursor.last_activity.is_none());
     }
@@ -604,7 +610,11 @@ mod tests {
                 project_label: "p".into(),
                 repo_root: None,
             },
-            turns: vec![turn(1, TurnRole::Assistant, vec![]), narrate, turn(6, TurnRole::User, vec![])],
+            turns: vec![
+                turn(1, TurnRole::Assistant, vec![]),
+                narrate,
+                turn(6, TurnRole::User, vec![]),
+            ],
             tool_calls: vec![
                 call("/atlas.json", "Read", 1),
                 call("python3 -c 'open(\"x.json\")'", "Bash", 2),

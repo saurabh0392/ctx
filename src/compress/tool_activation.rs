@@ -187,16 +187,18 @@ pub fn autopilot_manage_servers(cfg: &Config) -> (Vec<String>, Vec<String>) {
     for o in &outcomes {
         match server_prune_stage(o, &th) {
             // Hiding it clearly cost reaches: reverse the prune to protect the developer.
-            ServerPruneStage::Blocked if is_pruned(&o.prefix) => {
-                if crate::filter_control::unprune_server(&o.prefix).unwrap_or(false) {
-                    unpruned.push(o.server.clone());
-                }
+            ServerPruneStage::Blocked
+                if is_pruned(&o.prefix)
+                    && crate::filter_control::unprune_server(&o.prefix).unwrap_or(false) =>
+            {
+                unpruned.push(o.server.clone());
             }
             // Strongly dead weight with no hidden arm yet: trial-hide to gather the evidence.
-            _ if !is_pruned(&o.prefix) && server_prune_burn_in(o, &th) => {
-                if crate::filter_control::prune_server(&o.prefix).unwrap_or(false) {
-                    pruned.push(o.server.clone());
-                }
+            _ if !is_pruned(&o.prefix)
+                && server_prune_burn_in(o, &th)
+                && crate::filter_control::prune_server(&o.prefix).unwrap_or(false) =>
+            {
+                pruned.push(o.server.clone());
             }
             _ => {}
         }
@@ -280,10 +282,16 @@ mod tests {
     fn burn_in_trial_hides_strong_dead_weight_then_stops() {
         // Never used, enough evidence, no hidden arm yet: trial-hide it.
         let start = outcome(54, 0, 0, 0);
-        assert!(server_prune_burn_in(&start, &ServerPruneThresholds::default()));
+        assert!(server_prune_burn_in(
+            &start,
+            &ServerPruneThresholds::default()
+        ));
         // Once the hidden arm fills, burn-in stops and the causal gate takes over.
         let full = outcome(54, 0, 10, 0);
-        assert!(!server_prune_burn_in(&full, &ServerPruneThresholds::default()));
+        assert!(!server_prune_burn_in(
+            &full,
+            &ServerPruneThresholds::default()
+        ));
         assert!(server_earns_prune(&full, &ServerPruneThresholds::default()));
     }
 

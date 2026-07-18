@@ -21,6 +21,12 @@ pub struct CtxHarness {
     _guard: MutexGuard<'static, ()>,
 }
 
+impl Default for CtxHarness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CtxHarness {
     pub fn new() -> Self {
         let _guard = ctx_env_lock();

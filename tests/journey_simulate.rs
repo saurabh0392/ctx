@@ -69,7 +69,7 @@ adaptive_prefix_enabled = true
         }
     }
 
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     let out = Command::new(bin)
         .args([
             "simulate",
@@ -102,7 +102,7 @@ fn journey_simulate_all_profiles() {
     let h = CtxHarness::new();
     h.write_config("active_profile = \"all\"\nauto_profile_enabled = false\n");
 
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     let out = Command::new(bin)
         .args([
             "simulate",
@@ -138,7 +138,7 @@ fn journey_simulate_replay() {
         h.seed_hook_trace(&format!("replay-{i}"), None, None, 0.03, true);
     }
 
-    let bin = option_env!("CARGO_BIN_EXE_ctx").expect("ctx binary");
+    let bin = env!("CARGO_BIN_EXE_ctx");
     let out = Command::new(bin)
         .args(["simulate", "--replay-last", "3", "--json"])
         .env("CTX_HOME", h.tmp.path())
