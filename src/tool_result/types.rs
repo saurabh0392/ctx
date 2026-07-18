@@ -5,12 +5,12 @@ use serde_json::{Map, Value};
 /// T1 only populates this fully for MCP fixtures. Keeping the exchange contract here prevents the
 /// native-hook and gateway migrations from inventing competing result models later.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalToolExchange {
+pub struct CanonicalToolExchange<R = CanonicalMcpResult> {
     pub identity: ToolIdentity,
     pub transport: ToolTransport,
     pub input: Value,
     pub contract: ToolContract,
-    pub result: CanonicalToolResult,
+    pub result: R,
     pub provenance: ToolProvenance,
 }
 
@@ -73,7 +73,7 @@ impl<T> PreservedField<T> {
 
 /// A lossless MCP `CallToolResult` represented as typed content plus preserved extension fields.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalToolResult {
+pub struct CanonicalMcpResult {
     pub content: Vec<CanonicalContentBlock>,
     pub structured_content: PreservedField<Value>,
     pub is_error: PreservedField<bool>,
@@ -82,7 +82,7 @@ pub struct CanonicalToolResult {
     raw: Value,
 }
 
-impl CanonicalToolResult {
+impl CanonicalMcpResult {
     pub(crate) fn new(
         content: Vec<CanonicalContentBlock>,
         structured_content: PreservedField<Value>,

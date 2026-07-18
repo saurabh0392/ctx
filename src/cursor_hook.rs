@@ -469,7 +469,7 @@ pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
 fn cursor_mcp_result(
     tool_name: &str,
     output: Option<&Value>,
-) -> Option<crate::tool_result::CanonicalToolResult> {
+) -> Option<crate::tool_result::CanonicalMcpResult> {
     if !crate::compress::classify::is_mcp_tool(tool_name) {
         return None;
     }

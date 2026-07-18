@@ -256,7 +256,7 @@ pub fn compute_shadow_decision_with_mcp(
     tool_name: &str,
     tool_input: &Value,
     raw_output: &str,
-    canonical_mcp: Option<&crate::tool_result::CanonicalToolResult>,
+    canonical_mcp: Option<&crate::tool_result::CanonicalMcpResult>,
     cfg: &Config,
     session_id: Option<&str>,
     cwd: &str,

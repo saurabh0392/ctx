@@ -24,7 +24,7 @@ pub struct ToolResult {
     /// Lossless MCP result parsed in shadow mode. The shipping apply path continues to consume
     /// `raw_output`; this copy exists only to prove contract coverage and typed candidates before
     /// adapters are migrated.
-    pub canonical_mcp: Option<crate::tool_result::CanonicalToolResult>,
+    pub canonical_mcp: Option<crate::tool_result::CanonicalMcpResult>,
     pub session_id: Option<String>,
     pub cwd: String,
     /// The agent's most recent readable narration, lifted from the session transcript by the

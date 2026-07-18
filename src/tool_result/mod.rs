@@ -9,6 +9,6 @@ mod types;
 
 pub use mcp::{parse_mcp_result, render_mcp_result_or_original, McpParseError};
 pub use types::{
-    CanonicalContentBlock, CanonicalToolExchange, CanonicalToolResult, McpResultCoverage,
+    CanonicalContentBlock, CanonicalMcpResult, CanonicalToolExchange, McpResultCoverage,
     PreservedField, ToolContract, ToolIdentity, ToolProvenance, ToolTransport,
 };

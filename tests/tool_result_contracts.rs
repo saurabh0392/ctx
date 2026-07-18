@@ -171,6 +171,50 @@ fn a_text_edit_preserves_every_non_text_block_and_top_level_field() {
 }
 
 #[test]
+fn typed_blocks_keep_only_extension_fields_in_their_preserved_maps() {
+    let raw = read_json(&fixture_dir().join("mcp-2025-11-25-mixed-result.json"));
+    let parsed = parse_mcp_result(&raw).expect("parse mixed result");
+
+    for block in &parsed.content {
+        let (preserved, typed_keys): (&Map<String, Value>, &[&str]) = match block {
+            CanonicalContentBlock::Text { preserved, .. } => (preserved, &["type", "text"]),
+            CanonicalContentBlock::Image { preserved, .. }
+            | CanonicalContentBlock::Audio { preserved, .. } => {
+                (preserved, &["type", "data", "mimeType"])
+            }
+            CanonicalContentBlock::ResourceLink { preserved, .. } => {
+                (preserved, &["type", "name", "uri"])
+            }
+            CanonicalContentBlock::EmbeddedTextResource { preserved, .. } => {
+                assert_embedded_payload_is_not_duplicated(preserved, "text");
+                continue;
+            }
+            CanonicalContentBlock::EmbeddedBlobResource { preserved, .. } => {
+                assert_embedded_payload_is_not_duplicated(preserved, "blob");
+                continue;
+            }
+            CanonicalContentBlock::Unknown { .. } => continue,
+        };
+        for key in typed_keys {
+            assert!(
+                !preserved.contains_key(*key),
+                "typed field {key} must not be duplicated in preserved extensions"
+            );
+        }
+    }
+}
+
+fn assert_embedded_payload_is_not_duplicated(preserved: &Map<String, Value>, payload_key: &str) {
+    assert!(!preserved.contains_key("type"));
+    let resource = preserved
+        .get("resource")
+        .and_then(Value::as_object)
+        .expect("preserved embedded-resource extensions");
+    assert!(!resource.contains_key("uri"));
+    assert!(!resource.contains_key(payload_key));
+}
+
+#[test]
 fn native_platform_adapters_capture_the_same_lossless_result_in_shadow() {
     let dir = fixture_dir();
 

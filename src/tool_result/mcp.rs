@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 
-use super::types::{CanonicalContentBlock, CanonicalToolResult, PreservedField};
+use super::types::{CanonicalContentBlock, CanonicalMcpResult, PreservedField};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpParseError {
@@ -24,7 +24,7 @@ impl fmt::Display for McpParseError {
 impl std::error::Error for McpParseError {}
 
 /// Parse a protocol `CallToolResult` without dropping unknown top-level fields or content blocks.
-pub fn parse_mcp_result(value: &Value) -> Result<CanonicalToolResult, McpParseError> {
+pub fn parse_mcp_result(value: &Value) -> Result<CanonicalMcpResult, McpParseError> {
     let source = value.as_object().ok_or(McpParseError::RootNotObject)?;
     let content = source
         .get("content")
@@ -55,7 +55,7 @@ pub fn parse_mcp_result(value: &Value) -> Result<CanonicalToolResult, McpParseEr
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
 
-    Ok(CanonicalToolResult::new(
+    Ok(CanonicalMcpResult::new(
         content,
         structured_content,
         is_error,
@@ -80,7 +80,7 @@ fn parse_content_block(value: &Value) -> CanonicalContentBlock {
         Some("text") => string_field(block, "text")
             .map(|text| CanonicalContentBlock::Text {
                 text,
-                preserved: block.clone(),
+                preserved: preserved_without(block, &["type", "text"]),
             })
             .unwrap_or_else(|| unknown(value)),
         Some("image") => parse_binary_block(block, value, true),
@@ -89,7 +89,7 @@ fn parse_content_block(value: &Value) -> CanonicalContentBlock {
             (Some(name), Some(uri)) => CanonicalContentBlock::ResourceLink {
                 name,
                 uri,
-                preserved: block.clone(),
+                preserved: preserved_without(block, &["type", "name", "uri"]),
             },
             _ => unknown(value),
         },
@@ -107,12 +107,12 @@ fn parse_binary_block(
         (Some(data), Some(mime_type)) if image => CanonicalContentBlock::Image {
             data,
             mime_type,
-            preserved: block.clone(),
+            preserved: preserved_without(block, &["type", "data", "mimeType"]),
         },
         (Some(data), Some(mime_type)) => CanonicalContentBlock::Audio {
             data,
             mime_type,
-            preserved: block.clone(),
+            preserved: preserved_without(block, &["type", "data", "mimeType"]),
         },
         _ => unknown(raw),
     }
@@ -126,17 +126,27 @@ fn parse_embedded_resource(block: &Map<String, Value>, raw: &Value) -> Canonical
         return unknown(raw);
     };
     if let Some(text) = string_field(resource, "text") {
+        let mut preserved = preserved_without(block, &["type", "resource"]);
+        preserved.insert(
+            "resource".into(),
+            Value::Object(preserved_without(resource, &["uri", "text"])),
+        );
         return CanonicalContentBlock::EmbeddedTextResource {
             uri,
             text,
-            preserved: block.clone(),
+            preserved,
         };
     }
     if let Some(blob) = string_field(resource, "blob") {
+        let mut preserved = preserved_without(block, &["type", "resource"]);
+        preserved.insert(
+            "resource".into(),
+            Value::Object(preserved_without(resource, &["uri", "blob"])),
+        );
         return CanonicalContentBlock::EmbeddedBlobResource {
             uri,
             blob,
-            preserved: block.clone(),
+            preserved,
         };
     }
     unknown(raw)
@@ -144,6 +154,13 @@ fn parse_embedded_resource(block: &Map<String, Value>, raw: &Value) -> Canonical
 
 fn string_field(map: &Map<String, Value>, key: &str) -> Option<String> {
     map.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn preserved_without(map: &Map<String, Value>, typed_keys: &[&str]) -> Map<String, Value> {
+    map.iter()
+        .filter(|(key, _)| !typed_keys.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 fn unknown(value: &Value) -> CanonicalContentBlock {

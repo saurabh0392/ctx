@@ -4,7 +4,7 @@ use super::types::{CompressContext, CompressOptions, CompressResult};
 /// Run the shipping MCP text compressor against a losslessly parsed result for shadow evidence.
 /// The returned candidate is never rendered or sent to an agent in T1.
 pub(crate) fn compress_mcp_result_shadow(
-    result: &crate::tool_result::CanonicalToolResult,
+    result: &crate::tool_result::CanonicalMcpResult,
     opts: &CompressOptions,
     ctx: &CompressContext,
 ) -> Option<CompressResult> {
