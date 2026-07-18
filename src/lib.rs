@@ -55,6 +55,7 @@ pub mod socket;
 pub mod stats;
 pub mod surface;
 pub mod test_lock;
+pub mod tool_result;
 pub mod tool_usage_analysis;
 pub mod tuning;
 pub mod updater;

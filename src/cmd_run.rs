@@ -147,6 +147,7 @@ fn try_compact(
         tool_name: "Shell".to_string(),
         tool_input: serde_json::json!({ "command": command }),
         raw_output: combined,
+        canonical_mcp: None,
         // The preToolUse hook passes Cursor's conversation id through this env var when it rewrites
         // the command; absent that, the decision still runs with less session context.
         session_id: session_id

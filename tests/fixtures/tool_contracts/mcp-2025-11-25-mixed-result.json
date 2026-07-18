@@ -1,0 +1,74 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "A typed text block that CTX may evaluate without flattening its siblings.",
+      "annotations": {"audience": ["assistant"], "priority": 0.8},
+      "_meta": {"cacheKey": "text-1"},
+      "vendorTextField": "preserve-me"
+    },
+    {
+      "type": "image",
+      "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+      "mimeType": "image/png",
+      "annotations": {"priority": 0.5},
+      "vendorImageField": 7
+    },
+    {
+      "type": "audio",
+      "data": "UklGRiQAAABXQVZFZm10",
+      "mimeType": "audio/wav",
+      "_meta": {"codec": "pcm"}
+    },
+    {
+      "type": "resource_link",
+      "name": "design-doc",
+      "title": "Design document",
+      "uri": "file:///work/design.md",
+      "description": "A linked resource",
+      "mimeType": "text/markdown",
+      "size": 1234,
+      "annotations": {"audience": ["user", "assistant"]}
+    },
+    {
+      "type": "resource",
+      "resource": {
+        "uri": "file:///work/readme.md",
+        "mimeType": "text/markdown",
+        "text": "# Embedded text\nPreserve this resource separately.",
+        "_meta": {"revision": 3}
+      },
+      "annotations": {"priority": 0.7},
+      "vendorResourceField": true
+    },
+    {
+      "type": "resource",
+      "resource": {
+        "uri": "file:///work/archive.bin",
+        "mimeType": "application/octet-stream",
+        "blob": "AAECAwQFBgcICQ==",
+        "vendorNestedField": "opaque"
+      },
+      "_meta": {"cacheKey": "blob-1"}
+    },
+    {
+      "type": "video",
+      "data": "future-content-type",
+      "mimeType": "video/mp4",
+      "vendorFutureField": {"nested": [1, 2, 3]}
+    }
+  ],
+  "structuredContent": {
+    "items": [{"id": "issue-1", "status": "started"}],
+    "nextCursor": "cursor-2"
+  },
+  "isError": false,
+  "_meta": {
+    "io.modelcontextprotocol/related-task": {"taskId": "task-1"},
+    "serverTrace": "redacted"
+  },
+  "vendorTopLevel": {
+    "extensionVersion": 2,
+    "opaque": true
+  }
+}

@@ -54,7 +54,7 @@ pub fn post_tool_use() -> Result<()> {
     // Claude Code surface adapter. Every agent surface goes through this one extraction
     // path, so the controller below never sees an agent-specific shape. Returns early
     // when there is no compressible tool output (no response value, or empty text).
-    let Some(tr) = ClaudeCodeTransport.extract(&payload) else {
+    let Some(tr) = ClaudeCodeTransport.extract(&payload, cfg.compress_shadow_enabled) else {
         return Ok(());
     };
     // The original native response shape is needed to splice compressed text back into
@@ -93,6 +93,7 @@ pub fn post_tool_use() -> Result<()> {
         tool_name,
         tool_input,
         raw_output: raw,
+        canonical_mcp: _,
         session_id,
         cwd,
         recent_intent_text: _,

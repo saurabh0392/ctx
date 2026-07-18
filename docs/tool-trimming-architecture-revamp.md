@@ -719,6 +719,8 @@ These do not block T0-T2 but must be resolved before their dependent increment:
 
 ## Immediate next slice
 
+Tracking: CTX-71 implements this first increment; ADR 0038 freezes its shadow-only contract.
+
 Start with T0 and T1, not the gateway. The first implementation PR should:
 
 1. add the canonical types and a lossless MCP parser/renderer;

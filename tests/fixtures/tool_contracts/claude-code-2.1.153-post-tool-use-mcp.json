@@ -1,0 +1,23 @@
+{
+  "session_id": "claude-session-redacted",
+  "cwd": "/work/example",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__example__list_items",
+  "tool_input": {"limit": 20},
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[{\"id\":\"item-1\",\"title\":\"First item\"}]",
+        "annotations": {"audience": ["assistant"]}
+      }
+    ],
+    "structuredContent": {
+      "items": [{"id": "item-1", "title": "First item"}]
+    },
+    "isError": false,
+    "_meta": {"requestId": "redacted"},
+    "vendorEnvelopeField": "preserved"
+  },
+  "tool_use_id": "tool-use-redacted"
+}

@@ -10,7 +10,7 @@
 //! says trim, recording a real apply, and stays observe-only for built-in Read/Shell/Grep, which
 //! Cursor will not let a hook rewrite. We never claim parity with Claude here.
 
-use std::io::Read;
+use std::{borrow::Cow, io::Read};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -48,7 +48,7 @@ pub fn post_tool_use() -> Result<()> {
     }
 
     let mut output = json!({});
-    if let Some(tr) = extract_cursor_tool_result(&payload) {
+    if let Some(tr) = extract_cursor_tool_result(&payload, cfg.compress_shadow_enabled) {
         let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
         let decision = crate::agent::decide_for_surface(&cfg, &tr, CURSOR_SURFACE);
 
@@ -423,7 +423,10 @@ fn record_cursor_apply(
 /// `conversation_id` is the stable session id, `workspace_roots[0]` is the cwd, `tool_name` is the
 /// tool type ("Shell", "Read", "Grep", or an MCP tool), and `tool_output` is the result as a
 /// JSON-stringified string.
-pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
+pub fn extract_cursor_tool_result(
+    payload: &Value,
+    capture_canonical_mcp: bool,
+) -> Option<ToolResult> {
     let tool_name = payload
         .get("tool_name")
         .and_then(|v| v.as_str())
@@ -436,7 +439,11 @@ pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
         .get("tool_input")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let raw_output = cursor_tool_output_text(&tool_name, payload.get("tool_output"));
+    let (raw_output, canonical_mcp) = cursor_tool_result_views(
+        &tool_name,
+        payload.get("tool_output"),
+        capture_canonical_mcp,
+    );
     if raw_output.trim().is_empty() {
         return None;
     }
@@ -456,6 +463,7 @@ pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
         tool_name,
         tool_input,
         raw_output,
+        canonical_mcp,
         session_id,
         cwd,
         // Cursor narration is not in the hook payload; the read guard's intent signal stays a
@@ -464,43 +472,49 @@ pub fn extract_cursor_tool_result(payload: &Value) -> Option<ToolResult> {
     })
 }
 
-/// Turn Cursor's JSON-stringified `tool_output` into the text the compressors reason over.
-///
-/// Cursor's Shell results carry their terminal text under an `output` key
-/// (`{"output":"...","exitCode":0}`), which differs from the `stdout`-shaped example in Cursor's
-/// docs and from Claude Code's Bash shape, so we read `output` first. Everything else (Read, Grep,
-/// MCP) reuses the same extraction the Claude path uses.
-fn cursor_tool_output_text(tool_name: &str, out: Option<&Value>) -> String {
-    let out = match out {
-        Some(o) => o,
-        None => return String::new(),
+/// Normalize Cursor's JSON-stringified result once, then share that value between the existing text
+/// extractor and optional canonical MCP capture. Large MCP results must not be decoded twice on the
+/// hot hook path.
+fn cursor_tool_result_views(
+    tool_name: &str,
+    output: Option<&Value>,
+    capture_canonical_mcp: bool,
+) -> (String, Option<crate::tool_result::CanonicalMcpResult>) {
+    let Some(output) = output else {
+        return (String::new(), None);
     };
-    // Parse the JSON-stringified payload; pass plain (non-JSON) strings straight through.
-    let parsed: Value = if let Some(s) = out.as_str() {
+    let parsed = if let Some(s) = output.as_str() {
         let trimmed = s.trim();
         if trimmed.starts_with('{') || trimmed.starts_with('[') {
             match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => return s.to_string(),
+                Ok(value) => Cow::Owned(value),
+                Err(_) => return (s.to_string(), None),
             }
         } else {
-            return s.to_string();
+            return (s.to_string(), None);
         }
     } else {
-        out.clone()
+        Cow::Borrowed(output)
     };
 
     // Cursor Shell/terminal results put the text under "output".
-    if let Some(o) = parsed.get("output").and_then(|x| x.as_str()) {
-        return o.to_string();
-    }
-
-    let extract_name = if tool_name.eq_ignore_ascii_case("shell") {
-        "Bash"
+    let raw_output = if let Some(output) = parsed.get("output").and_then(Value::as_str) {
+        output.to_string()
     } else {
-        tool_name
+        let extract_name = if tool_name.eq_ignore_ascii_case("shell") {
+            "Bash"
+        } else {
+            tool_name
+        };
+        crate::compress::extract_compressible_text(extract_name, parsed.as_ref())
     };
-    crate::compress::extract_compressible_text(extract_name, &parsed)
+    let canonical_mcp =
+        if capture_canonical_mcp && crate::compress::classify::is_mcp_tool(tool_name) {
+            crate::tool_result::parse_mcp_result(parsed.as_ref()).ok()
+        } else {
+            None
+        };
+    (raw_output, canonical_mcp)
 }
 
 #[cfg(test)]
@@ -518,7 +532,7 @@ mod tests {
             "tool_input": {"command": "git status"},
             "tool_output": "{\"exitCode\":0,\"stdout\":\"on branch main\",\"stderr\":\"\"}"
         });
-        let tr = extract_cursor_tool_result(&payload).expect("extract");
+        let tr = extract_cursor_tool_result(&payload, false).expect("extract");
         assert_eq!(tr.tool_name, "Shell");
         assert_eq!(tr.cwd, "/proj");
         assert_eq!(tr.session_id.as_deref(), Some("conv-1"));
@@ -544,7 +558,7 @@ mod tests {
             "cwd": "",
             "tool_output": "{\"output\":\"total 8\\ndrwxr-xr-x  2 me staff\",\"exitCode\":0}"
         });
-        let tr = extract_cursor_tool_result(&payload).expect("extract");
+        let tr = extract_cursor_tool_result(&payload, false).expect("extract");
         assert_eq!(tr.tool_name, "Shell");
         assert_eq!(tr.cwd, "/Users/me/proj");
         assert!(
@@ -567,7 +581,7 @@ mod tests {
             "tool_input": {"path": "a.rs"},
             "tool_output": ""
         });
-        assert!(extract_cursor_tool_result(&payload).is_none());
+        assert!(extract_cursor_tool_result(&payload, false).is_none());
     }
 
     #[test]
@@ -576,7 +590,7 @@ mod tests {
             "conversation_id": "conv-1",
             "tool_output": "something"
         });
-        assert!(extract_cursor_tool_result(&payload).is_none());
+        assert!(extract_cursor_tool_result(&payload, false).is_none());
     }
 
     #[test]
@@ -588,7 +602,7 @@ mod tests {
             "tool_input": {"pattern": "fn main"},
             "tool_output": "src/main.rs:1:fn main() {}"
         });
-        let tr = extract_cursor_tool_result(&payload).expect("extract");
+        let tr = extract_cursor_tool_result(&payload, false).expect("extract");
         assert_eq!(tr.tool_name, "Grep");
         assert!(tr.raw_output.contains("fn main"));
     }
