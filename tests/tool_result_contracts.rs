@@ -204,6 +204,38 @@ fn typed_blocks_keep_only_extension_fields_in_their_preserved_maps() {
     }
 }
 
+#[test]
+fn embedded_resource_renderer_overwrites_an_invalid_preserved_resource_field() {
+    let raw = read_json(&fixture_dir().join("mcp-2025-11-25-mixed-result.json"));
+    let mut parsed = parse_mcp_result(&raw).expect("parse mixed result");
+    let block = parsed
+        .content
+        .iter_mut()
+        .find(|block| matches!(block, CanonicalContentBlock::EmbeddedTextResource { .. }))
+        .expect("embedded text resource fixture");
+    let CanonicalContentBlock::EmbeddedTextResource {
+        uri,
+        text,
+        preserved,
+    } = block
+    else {
+        unreachable!("matching block selected")
+    };
+    let expected_uri = uri.clone();
+    let expected_text = text.clone();
+    preserved.insert("resource".into(), json!("invalid extension value"));
+
+    let rendered = block.render();
+    assert_eq!(
+        rendered.pointer("/resource/uri"),
+        Some(&Value::String(expected_uri))
+    );
+    assert_eq!(
+        rendered.pointer("/resource/text"),
+        Some(&Value::String(expected_text))
+    );
+}
+
 fn assert_embedded_payload_is_not_duplicated(preserved: &Map<String, Value>, payload_key: &str) {
     assert!(!preserved.contains_key("type"));
     let resource = preserved

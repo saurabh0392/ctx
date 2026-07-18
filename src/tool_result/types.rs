@@ -306,13 +306,13 @@ fn render_embedded_resource(
 ) -> Value {
     let mut block = preserved.clone();
     block.insert("type".into(), Value::String("resource".into()));
-    let resource = block
-        .entry("resource")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if let Some(resource) = resource.as_object_mut() {
-        resource.insert("uri".into(), Value::String(uri.into()));
-        resource.insert(payload_key.into(), Value::String(payload.into()));
-    }
+    let mut resource = match block.remove("resource") {
+        Some(Value::Object(resource)) => resource,
+        Some(_) | None => Map::new(),
+    };
+    resource.insert("uri".into(), Value::String(uri.into()));
+    resource.insert(payload_key.into(), Value::String(payload.into()));
+    block.insert("resource".into(), Value::Object(resource));
     Value::Object(block)
 }
 
