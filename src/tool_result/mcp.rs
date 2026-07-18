@@ -47,10 +47,13 @@ pub fn parse_mcp_result(value: &Value) -> Result<CanonicalToolResult, McpParseEr
         }
         Some(value) => PreservedField::Opaque(value.clone()),
     };
-    let mut preserved = source.clone();
-    preserved.remove("content");
-    preserved.remove("structuredContent");
-    preserved.remove("isError");
+    // Collect only extension fields. Cloning the whole object and removing known keys would first
+    // duplicate the potentially huge content array on every shadow parse.
+    let preserved = source
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "content" | "structuredContent" | "isError"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
 
     Ok(CanonicalToolResult::new(
         content,
