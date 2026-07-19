@@ -17,12 +17,15 @@ pub use contract::{
 };
 pub use mcp::{parse_mcp_result, render_mcp_result_or_original, McpParseError};
 pub use schema::{validate_mcp_output_schema, McpOutputSchemaValidation, McpSchemaRejection};
-pub(crate) use strategy::collection_head_tail_indices;
+pub(crate) use strategy::{
+    assess_mcp_search_array_schema, collection_head_tail_indices, search_ranked_prefix_indices,
+};
 pub use strategy::{
     validate_mcp_proposal, validate_mcp_proposal_with_contract, McpPaginatedCollectionEdit,
-    McpProposalRejection, McpStrategyManifest, McpStructuredContentEdit,
+    McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
     McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal,
     ValidatedMcpProposal, MCP_COLLECTION_OMISSION_MARKER_FIELD, MCP_MAX_RETAINED_COLLECTION_ITEMS,
+    MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_SEARCH_OMISSION_MARKER_FIELD,
 };
 pub use types::{
     CanonicalContentBlock, CanonicalMcpResult, CanonicalToolExchange, McpResultCoverage,

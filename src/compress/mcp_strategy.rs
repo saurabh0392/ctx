@@ -1,10 +1,12 @@
 use crate::tool_result::{
-    collection_head_tail_indices, validate_mcp_output_schema, validate_mcp_proposal_with_contract,
-    CanonicalContentBlock, CanonicalMcpResult, McpOutputSchemaValidation,
-    McpPaginatedCollectionEdit, McpProposalRejection, McpStrategyManifest,
-    McpStructuredContentEdit, McpStructuredContentReplacement, McpTextReplacement,
-    McpTransformProposal, PreservedField, ToolContract, ValidatedMcpProposal,
-    MCP_COLLECTION_OMISSION_MARKER_FIELD, MCP_MAX_RETAINED_COLLECTION_ITEMS,
+    assess_mcp_search_array_schema, collection_head_tail_indices, search_ranked_prefix_indices,
+    validate_mcp_output_schema, validate_mcp_proposal_with_contract, CanonicalContentBlock,
+    CanonicalMcpResult, McpOutputSchemaValidation, McpPaginatedCollectionEdit,
+    McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
+    McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal, PreservedField,
+    ToolContract, ValidatedMcpProposal, MCP_COLLECTION_OMISSION_MARKER_FIELD,
+    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS,
+    MCP_SEARCH_OMISSION_MARKER_FIELD,
 };
 use serde_json::{Map, Value};
 
@@ -38,6 +40,23 @@ const PAGINATED_COLLECTION_INVARIANTS: &[&str] = &[
     "result-contract-reparses",
 ];
 
+const SEARCH_RESULTS_INVARIANTS: &[&str] = &[
+    "source-round-trip-identical",
+    "advertised-output-schema-valid-before-and-after",
+    "one-schema-authorized-search-results-array",
+    "stable-result-identity-present",
+    "match-ranking-or-location-evidence-present",
+    "retained-results-value-identical",
+    "retained-results-source-ranked",
+    "ranked-prefix-only",
+    "non-search-siblings-unchanged",
+    "query-count-and-order-fields-unchanged",
+    "text-projection-matches-structured-candidate",
+    "explicit-omitted-count-marker",
+    "error-results-pass-through",
+    "result-contract-reparses",
+];
+
 pub(crate) const MCP_TEXT_BLOCKS_V2: McpStrategyManifest = McpStrategyManifest {
     id: "mcp-text-blocks",
     version: "2",
@@ -51,6 +70,14 @@ pub(crate) const MCP_PAGINATED_COLLECTION_V1: McpStrategyManifest = McpStrategyM
     version: "1",
     eligible_shape: "schema-backed-top-level-paginated-collection",
     invariants: PAGINATED_COLLECTION_INVARIANTS,
+    max_expansion_percent: 100,
+};
+
+pub(crate) const MCP_SEARCH_RESULTS_V1: McpStrategyManifest = McpStrategyManifest {
+    id: "mcp-search-results",
+    version: "1",
+    eligible_shape: "schema-backed-ranked-search-results",
+    invariants: SEARCH_RESULTS_INVARIANTS,
     max_expansion_percent: 100,
 };
 
@@ -90,7 +117,7 @@ enum McpStrategyEligibility {
 enum McpProposalOutcome {
     WithinBudget,
     NoSavings,
-    Proposed(McpTransformProposal),
+    Proposed(Box<McpTransformProposal>),
 }
 
 struct TextBlockStrategy;
@@ -159,13 +186,13 @@ impl McpResultStrategy for TextBlockStrategy {
         if replacements.is_empty() {
             McpProposalOutcome::NoSavings
         } else {
-            McpProposalOutcome::Proposed(McpTransformProposal {
+            McpProposalOutcome::Proposed(Box::new(McpTransformProposal {
                 strategy_id: self.manifest().id,
                 strategy_version: self.manifest().version,
                 max_total_text_chars: total_budget,
                 replacements,
                 structured_content: None,
-            })
+            }))
         }
     }
 }
@@ -203,11 +230,148 @@ impl McpResultStrategy for PaginatedCollectionStrategy {
     }
 }
 
+struct SearchResultsStrategy;
+
+impl McpResultStrategy for SearchResultsStrategy {
+    fn manifest(&self) -> &'static McpStrategyManifest {
+        &MCP_SEARCH_RESULTS_V1
+    }
+
+    fn eligibility(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+    ) -> McpStrategyEligibility {
+        match search_results_shape(result, contract) {
+            Ok(Some(_)) => {
+                McpStrategyEligibility::Eligible("output-schema-stable-identity-and-match-evidence")
+            }
+            Ok(None) => McpStrategyEligibility::NotApplicable,
+            Err(reason) => McpStrategyEligibility::Rejected(reason),
+        }
+    }
+
+    fn propose(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+        opts: &CompressOptions,
+        _ctx: &CompressContext,
+    ) -> McpProposalOutcome {
+        let Ok(Some(shape)) = search_results_shape(result, contract) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        propose_search_results(result, &shape, opts, self.manifest())
+    }
+}
+
 #[derive(Debug)]
 struct PaginatedCollectionShape {
     field: String,
     text_block_index: usize,
     min_items: usize,
+}
+
+#[derive(Debug)]
+struct SearchResultsShape {
+    field: String,
+    identity_field: String,
+    match_evidence_field: String,
+    text_block_index: usize,
+    min_results: usize,
+}
+
+fn search_results_shape(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+) -> Result<Option<SearchResultsShape>, &'static str> {
+    let PreservedField::Value(structured) = &result.structured_content else {
+        return Ok(None);
+    };
+    let Some(structured) = structured.as_object() else {
+        return Ok(None);
+    };
+    let observed_arrays: Vec<_> = structured
+        .iter()
+        .filter(|(_, value)| value.is_array())
+        .map(|(field, _)| field.as_str())
+        .collect();
+    if observed_arrays.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return if observed_arrays
+            .iter()
+            .any(|field| is_search_result_collection_field(field))
+        {
+            Err("search-output-schema-required")
+        } else {
+            Ok(None)
+        };
+    };
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return if observed_arrays
+            .iter()
+            .any(|field| is_search_result_collection_field(field))
+        {
+            Err("search-array-schema-missing")
+        } else {
+            Ok(None)
+        };
+    };
+
+    let mut candidates = Vec::new();
+    let mut named_rejection = None;
+    for field in observed_arrays {
+        let search_named = is_search_result_collection_field(field);
+        match assess_mcp_search_array_schema(schema, field) {
+            Ok(authorization) => candidates.push((field, authorization)),
+            Err(rejection) if search_named => {
+                named_rejection.get_or_insert(rejection.code());
+            }
+            Err(_) => {}
+        }
+    }
+
+    if candidates.len() > 1 {
+        return Err("search-array-ambiguous");
+    }
+    let Some((field, authorization)) = candidates.into_iter().next() else {
+        let schema_declares_pagination = structured
+            .keys()
+            .any(|field| properties.contains_key(field) && is_pagination_field(field.as_str()));
+        if schema_declares_pagination {
+            return Ok(None);
+        }
+        return named_rejection.map_or(Ok(None), Err);
+    };
+    if structured.contains_key(MCP_SEARCH_OMISSION_MARKER_FIELD) {
+        return Err("search-omission-marker-collision");
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 {
+        return Err("search-text-mirror-required");
+    }
+    let parsed_text: Value =
+        serde_json::from_str(text_blocks[0].1).map_err(|_| "search-text-mirror-invalid")?;
+    if parsed_text != Value::Object(structured.clone()) {
+        return Err("search-text-mirror-invalid");
+    }
+
+    Ok(Some(SearchResultsShape {
+        field: field.to_string(),
+        identity_field: authorization.identity_field,
+        match_evidence_field: authorization.match_evidence_field,
+        text_block_index: text_blocks[0].0,
+        min_results: authorization.min_results,
+    }))
 }
 
 fn paginated_collection_shape(
@@ -309,12 +473,23 @@ fn schema_type_includes(schema: &Value, expected: &str) -> bool {
     }
 }
 
-fn is_pagination_field(field: &str) -> bool {
-    let normalized: String = field
+fn normalized_schema_field(field: &str) -> String {
+    field
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
-        .collect();
+        .collect()
+}
+
+fn is_search_result_collection_field(field: &str) -> bool {
+    matches!(
+        normalized_schema_field(field).as_str(),
+        "results" | "searchresults" | "matches" | "hits" | "findings"
+    )
+}
+
+fn is_pagination_field(field: &str) -> bool {
+    let normalized = normalized_schema_field(field);
     matches!(
         normalized.as_str(),
         "nextcursor"
@@ -368,7 +543,7 @@ fn propose_paginated_collection(
     while low <= high {
         let retained = low + (high - low) / 2;
         let indices = collection_head_tail_indices(source_items.len(), retained);
-        let candidate = collection_candidate(source, &shape.field, source_items, &indices);
+        let candidate = structured_array_candidate(source, &shape.field, source_items, &indices);
         let text_projection =
             collection_text_projection(&candidate, &shape.field, source_items.len(), retained);
         let Ok(text_projection) = serde_json::to_string(&text_projection) else {
@@ -389,7 +564,7 @@ fn propose_paginated_collection(
         return McpProposalOutcome::NoSavings;
     };
 
-    McpProposalOutcome::Proposed(McpTransformProposal {
+    McpProposalOutcome::Proposed(Box::new(McpTransformProposal {
         strategy_id: manifest.id,
         strategy_version: manifest.version,
         max_total_text_chars: opts.target_chars.max(1),
@@ -407,10 +582,97 @@ fn propose_paginated_collection(
                 omission_marker_field: MCP_COLLECTION_OMISSION_MARKER_FIELD.to_string(),
             }),
         }),
-    })
+    }))
 }
 
-fn collection_candidate(
+fn propose_search_results(
+    result: &CanonicalMcpResult,
+    shape: &SearchResultsShape,
+    opts: &CompressOptions,
+    manifest: &McpStrategyManifest,
+) -> McpProposalOutcome {
+    let PreservedField::Value(Value::Object(source)) = &result.structured_content else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let Some(source_results) = source.get(&shape.field).and_then(Value::as_array) else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let Some(source_text) = result
+        .content
+        .get(shape.text_block_index)
+        .and_then(CanonicalContentBlock::text)
+    else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let source_chars = source_text.chars().count();
+    if source_chars <= opts.target_chars {
+        return McpProposalOutcome::WithinBudget;
+    }
+    if source_results.len() < 2 {
+        return McpProposalOutcome::NoSavings;
+    }
+
+    let minimum_retained = shape.min_results.max(1);
+    let maximum_retained = (source_results.len() - 1).min(MCP_MAX_RETAINED_SEARCH_RESULTS);
+    if minimum_retained > maximum_retained {
+        return McpProposalOutcome::NoSavings;
+    }
+
+    let mut best = None;
+    let mut low = minimum_retained;
+    let mut high = maximum_retained;
+    while low <= high {
+        let retained = low + (high - low) / 2;
+        let indices = search_ranked_prefix_indices(source_results.len(), retained);
+        let candidate = structured_array_candidate(source, &shape.field, source_results, &indices);
+        let text_projection = search_results_text_projection(
+            &candidate,
+            &shape.field,
+            source_results.len(),
+            retained,
+        );
+        let Ok(text_projection) = serde_json::to_string(&text_projection) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        let chars_out = text_projection.chars().count();
+        if chars_out > opts.target_chars.max(1) || chars_out >= source_chars {
+            if retained == 0 {
+                break;
+            }
+            high = retained - 1;
+            continue;
+        }
+        best = Some((indices, Value::Object(candidate), text_projection));
+        low = retained + 1;
+    }
+    let Some((retained_indices, replacement, text_projection)) = best else {
+        return McpProposalOutcome::NoSavings;
+    };
+
+    McpProposalOutcome::Proposed(Box::new(McpTransformProposal {
+        strategy_id: manifest.id,
+        strategy_version: manifest.version,
+        max_total_text_chars: opts.target_chars.max(1),
+        replacements: vec![McpTextReplacement {
+            block_index: shape.text_block_index,
+            expected_text: source_text.to_string(),
+            replacement: text_projection,
+        }],
+        structured_content: Some(McpStructuredContentReplacement {
+            expected: Value::Object(source.clone()),
+            replacement,
+            edit: McpStructuredContentEdit::SearchResults(McpSearchResultsEdit {
+                field: shape.field.clone(),
+                identity_field: shape.identity_field.clone(),
+                match_evidence_field: shape.match_evidence_field.clone(),
+                retained_indices,
+                omission_marker_field: MCP_SEARCH_OMISSION_MARKER_FIELD.to_string(),
+            }),
+        }),
+    }))
+}
+
+fn structured_array_candidate(
     source: &Map<String, Value>,
     field: &str,
     source_items: &[Value],
@@ -436,6 +698,26 @@ fn collection_candidate(
         .collect()
 }
 
+fn search_results_text_projection(
+    candidate: &Map<String, Value>,
+    field: &str,
+    original_results: usize,
+    retained_results: usize,
+) -> Value {
+    let mut projection = candidate.clone();
+    projection.insert(
+        MCP_SEARCH_OMISSION_MARKER_FIELD.to_string(),
+        serde_json::json!({
+            "field": field,
+            "originalItems": original_results,
+            "retainedItems": retained_results,
+            "omittedItems": original_results - retained_results,
+            "selection": "ranked-prefix"
+        }),
+    );
+    Value::Object(projection)
+}
+
 fn collection_text_projection(
     candidate: &Map<String, Value>,
     field: &str,
@@ -458,8 +740,12 @@ fn collection_text_projection(
 
 static TEXT_BLOCK_STRATEGY: TextBlockStrategy = TextBlockStrategy;
 static PAGINATED_COLLECTION_STRATEGY: PaginatedCollectionStrategy = PaginatedCollectionStrategy;
-static STRATEGIES: [&dyn McpResultStrategy; 2] =
-    [&PAGINATED_COLLECTION_STRATEGY, &TEXT_BLOCK_STRATEGY];
+static SEARCH_RESULTS_STRATEGY: SearchResultsStrategy = SearchResultsStrategy;
+static STRATEGIES: [&dyn McpResultStrategy; 3] = [
+    &SEARCH_RESULTS_STRATEGY,
+    &PAGINATED_COLLECTION_STRATEGY,
+    &TEXT_BLOCK_STRATEGY,
+];
 
 /// Evaluate the deterministic registry in shadow mode. Eligibility is intentionally recorded even
 /// when no proposal is useful, and neither state grants permission to apply a trim.
@@ -676,6 +962,65 @@ mod tests {
         (result, contract)
     }
 
+    fn search_result(result_count: usize) -> (CanonicalMcpResult, ToolContract) {
+        let matches: Vec<_> = (0..result_count)
+            .map(|index| {
+                json!({
+                    "path": format!("src/module-{index}.rs"),
+                    "line": index + 10,
+                    "score": 1_000 - index,
+                    "snippet": format!(
+                        "ranked source match {index} {}",
+                        "relevant surrounding context ".repeat(10)
+                    )
+                })
+            })
+            .collect();
+        let structured = json!({
+            "query": "schema aware trimming",
+            "matches": matches,
+            "totalMatches": result_count + 50,
+            "ranking": "server relevance order"
+        });
+        let text = serde_json::to_string(&structured).expect("serialize fixture");
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+            "isError": false,
+            "_meta": {"request": "search-r1"}
+        }))
+        .expect("search result");
+        let contract = ToolContract {
+            output_schema: PreservedField::Value(json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "matches": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "line": {"type": "integer"},
+                                "score": {"type": "integer"},
+                                "snippet": {"type": "string"}
+                            },
+                            "required": ["path", "line", "score", "snippet"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "totalMatches": {"type": "integer"},
+                    "ranking": {"type": "string"}
+                },
+                "required": ["query", "matches", "totalMatches", "ranking"],
+                "additionalProperties": false
+            })),
+            ..Default::default()
+        };
+        (result, contract)
+    }
+
     #[test]
     fn registry_is_deterministic_and_versioned() {
         let manifests: Vec<_> = STRATEGIES
@@ -684,9 +1029,546 @@ mod tests {
             .collect();
         assert_eq!(
             manifests,
-            vec![&MCP_PAGINATED_COLLECTION_V1, &MCP_TEXT_BLOCKS_V2]
+            vec![
+                &MCP_SEARCH_RESULTS_V1,
+                &MCP_PAGINATED_COLLECTION_V1,
+                &MCP_TEXT_BLOCKS_V2
+            ]
         );
         assert!(!manifests[0].invariants.is_empty());
+    }
+
+    #[test]
+    fn search_proposal_preserves_ranked_prefix_identity_and_siblings() {
+        let (result, contract) = search_result(10);
+        let shape = search_results_shape(&result, Some(&contract))
+            .expect("shape assessment")
+            .expect("search shape");
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_search_results(&result, &shape, &options(900), &MCP_SEARCH_RESULTS_V1)
+        else {
+            panic!("expected search proposal");
+        };
+        let replacement = proposal
+            .structured_content
+            .as_ref()
+            .expect("structured replacement");
+        let source = replacement.expected.as_object().expect("source object");
+        let candidate = replacement
+            .replacement
+            .as_object()
+            .expect("candidate object");
+        assert_eq!(candidate.get("query"), source.get("query"));
+        assert_eq!(candidate.get("totalMatches"), source.get("totalMatches"));
+        assert_eq!(candidate.get("ranking"), source.get("ranking"));
+        let retained = candidate["matches"].as_array().expect("candidate matches");
+        assert!(!retained.is_empty());
+        assert!(retained.len() < 10);
+        for (index, result) in retained.iter().enumerate() {
+            assert_eq!(result, &source["matches"][index]);
+        }
+
+        let projection: Value =
+            serde_json::from_str(&proposal.replacements[0].replacement).expect("JSON projection");
+        assert_eq!(
+            projection.pointer("/_ctxOmission/selection"),
+            Some(&json!("ranked-prefix"))
+        );
+        assert_eq!(
+            projection.pointer("/_ctxOmission/omittedItems"),
+            Some(&json!(10 - retained.len()))
+        );
+        let validated = validate_mcp_proposal_with_contract(
+            &result,
+            Some(&contract),
+            &MCP_SEARCH_RESULTS_V1,
+            &proposal,
+        )
+        .expect("validated search proposal");
+        assert!(validated.output_schema_validated);
+        assert!(validated.structured_content_replaced);
+        assert_eq!(validated.search_results_in, Some(10));
+        assert_eq!(validated.search_results_out, Some(retained.len()));
+        assert_eq!(validated.search_results_omitted, Some(10 - retained.len()));
+        assert_eq!(validated.collection_items_in, None);
+    }
+
+    #[test]
+    fn search_shadow_records_schema_authorization_and_content_free_counts() {
+        let (result, contract) = search_result(10);
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, Some(&MCP_SEARCH_RESULTS_V1));
+        assert_eq!(
+            observation.shape_authorization,
+            Some("output-schema-stable-identity-and-match-evidence")
+        );
+        assert_eq!(
+            observation.source_schema_validation,
+            Some(McpOutputSchemaValidation::Valid)
+        );
+        assert_eq!(
+            observation.candidate_schema_validation,
+            Some(McpOutputSchemaValidation::Valid)
+        );
+        let validated = observation.validated.expect("validated evidence");
+        assert_eq!(validated.search_results_in, Some(10));
+        assert!(validated.search_results_omitted.unwrap() > 0);
+    }
+
+    #[test]
+    fn search_specificity_does_not_block_a_valid_paginated_results_collection() {
+        let (result, mut contract) = paginated_result(10);
+        let mut structured = result.structured_content.value().unwrap().clone();
+        let issues = structured
+            .as_object_mut()
+            .unwrap()
+            .remove("issues")
+            .unwrap();
+        structured
+            .as_object_mut()
+            .unwrap()
+            .insert("results".into(), issues);
+        let text = serde_json::to_string(&structured).unwrap();
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured
+        }))
+        .unwrap();
+        if let PreservedField::Value(schema) = &mut contract.output_schema {
+            let issues = schema["properties"]
+                .as_object_mut()
+                .unwrap()
+                .remove("issues")
+                .unwrap();
+            schema["properties"]
+                .as_object_mut()
+                .unwrap()
+                .insert("results".into(), issues);
+            let required = schema["required"].as_array_mut().unwrap();
+            let position = required.iter().position(|field| field == "issues").unwrap();
+            required[position] = json!("results");
+        }
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(850),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, Some(&MCP_PAGINATED_COLLECTION_V1));
+        assert!(observation.validated.is_some());
+    }
+
+    #[test]
+    fn search_shape_follows_local_refs_and_respects_min_items() {
+        let (result, mut contract) = search_result(10);
+        if let PreservedField::Value(schema) = &mut contract.output_schema {
+            let item_schema = schema["properties"]["matches"]["items"].clone();
+            schema["$defs"] = json!({"searchResult": item_schema});
+            schema["properties"]["matches"]["items"] = json!({"$ref": "#/$defs/searchResult"});
+            schema["properties"]["matches"]["minItems"] = json!(4);
+        }
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(2_400),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, Some(&MCP_SEARCH_RESULTS_V1));
+        let validated = observation.validated.unwrap_or_else(|| {
+            panic!(
+                "validated local-ref proposal: pass-through={:?}, rejection={:?}",
+                observation.pass_through_reason, observation.rejection
+            )
+        });
+        assert!(validated.search_results_out.unwrap() >= 4);
+        assert_eq!(
+            observation.candidate_schema_validation,
+            Some(McpOutputSchemaValidation::Valid)
+        );
+    }
+
+    #[test]
+    fn large_search_results_keep_bounded_ranked_prefix_evidence() {
+        let (result, contract) = search_result(1_000);
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(100_000),
+            &CompressContext::default(),
+        );
+        let validated = observation.validated.expect("bounded large proposal");
+        assert_eq!(validated.search_results_in, Some(1_000));
+        assert!(validated.search_results_out.unwrap() <= MCP_MAX_RETAINED_SEARCH_RESULTS);
+        assert_eq!(
+            validated.search_results_omitted,
+            Some(1_000 - validated.search_results_out.unwrap())
+        );
+    }
+
+    #[test]
+    fn schema_less_ambiguous_and_unproven_search_shapes_fail_open() {
+        let (result, contract) = search_result(10);
+        let schema_less = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            None,
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            schema_less.pass_through_reason,
+            Some("search-output-schema-required")
+        );
+        assert!(schema_less.manifest.is_none());
+
+        let mut missing_identity_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut missing_identity_contract.output_schema {
+            schema["properties"]["matches"]["items"]["required"] =
+                json!(["line", "score", "snippet"]);
+        }
+        let missing_identity = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&missing_identity_contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            missing_identity.pass_through_reason,
+            Some("search-identity-evidence-missing")
+        );
+
+        let mut missing_match_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut missing_match_contract.output_schema {
+            schema["properties"]["matches"]["items"]["required"] = json!(["path"]);
+        }
+        let missing_match = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&missing_match_contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            missing_match.pass_through_reason,
+            Some("search-match-evidence-missing")
+        );
+
+        let mut nullable_identity_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut nullable_identity_contract.output_schema {
+            schema["properties"]["matches"]["items"]["properties"]["path"]["type"] =
+                json!(["string", "null"]);
+        }
+        let nullable_identity = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&nullable_identity_contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            nullable_identity.pass_through_reason,
+            Some("search-identity-evidence-missing")
+        );
+
+        let mut ambiguous_score_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut ambiguous_score_contract.output_schema {
+            schema["properties"]["matches"]["items"]["required"] = json!(["path", "score"]);
+            schema["properties"]["matches"]["items"]["properties"]["score"]["type"] =
+                json!(["integer", "string"]);
+        }
+        let ambiguous_score = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&ambiguous_score_contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            ambiguous_score.pass_through_reason,
+            Some("search-match-evidence-missing")
+        );
+
+        let mut positional_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut positional_contract.output_schema {
+            let item_schema = schema["properties"]["matches"]["items"].clone();
+            schema["properties"]["matches"]["prefixItems"] = json!([item_schema]);
+        }
+        let positional = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&positional_contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            positional.pass_through_reason,
+            Some("search-positional-schema-unsupported")
+        );
+
+        let mut ambiguous_structured = result.structured_content.value().unwrap().clone();
+        let duplicate_results = ambiguous_structured["matches"].clone();
+        ambiguous_structured
+            .as_object_mut()
+            .unwrap()
+            .insert("hits".into(), duplicate_results);
+        let ambiguous_text = serde_json::to_string(&ambiguous_structured).unwrap();
+        let ambiguous = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": ambiguous_text}],
+            "structuredContent": ambiguous_structured
+        }))
+        .unwrap();
+        let mut ambiguous_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut ambiguous_contract.output_schema {
+            schema["properties"]["hits"] = schema["properties"]["matches"].clone();
+            schema["required"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("hits"));
+        }
+        let ambiguous = evaluate_mcp_strategies_shadow_with_contract(
+            &ambiguous,
+            Some(&ambiguous_contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            ambiguous.pass_through_reason,
+            Some("search-array-ambiguous")
+        );
+    }
+
+    #[test]
+    fn stale_or_forged_search_proposals_are_rejected_inside_the_boundary() {
+        let (result, contract) = search_result(10);
+        let shape = search_results_shape(&result, Some(&contract))
+            .unwrap()
+            .unwrap();
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_search_results(&result, &shape, &options(900), &MCP_SEARCH_RESULTS_V1)
+        else {
+            panic!("expected search proposal");
+        };
+
+        let mut stale = proposal.clone();
+        stale.structured_content.as_mut().unwrap().expected["query"] = json!("changed");
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_SEARCH_RESULTS_V1,
+                &stale,
+            ),
+            Err(McpProposalRejection::StaleStructuredContent)
+        );
+
+        let mut forged_authorization = proposal.clone();
+        let McpStructuredContentEdit::SearchResults(edit) = &mut forged_authorization
+            .structured_content
+            .as_mut()
+            .unwrap()
+            .edit
+        else {
+            panic!("expected search edit");
+        };
+        edit.identity_field = "snippet".into();
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_SEARCH_RESULTS_V1,
+                &forged_authorization,
+            ),
+            Err(McpProposalRejection::SearchSchemaAuthorizationInvalid)
+        );
+
+        let mut sibling_change = proposal.clone();
+        sibling_change
+            .structured_content
+            .as_mut()
+            .unwrap()
+            .replacement["totalMatches"] = json!(0);
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_SEARCH_RESULTS_V1,
+                &sibling_change,
+            ),
+            Err(McpProposalRejection::StructuredContentInvariantFailed)
+        );
+
+        let mut skipped_rank = proposal.clone();
+        let McpStructuredContentEdit::SearchResults(edit) =
+            &mut skipped_rank.structured_content.as_mut().unwrap().edit
+        else {
+            panic!("expected search edit");
+        };
+        if edit.retained_indices.len() > 1 {
+            edit.retained_indices[1] += 1;
+        } else {
+            edit.retained_indices[0] = 1;
+        }
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_SEARCH_RESULTS_V1,
+                &skipped_rank,
+            ),
+            Err(McpProposalRejection::SearchSelectionInvalid)
+        );
+
+        let mut forged_marker = proposal.clone();
+        let mut projection: Value =
+            serde_json::from_str(&forged_marker.replacements[0].replacement).unwrap();
+        projection[MCP_SEARCH_OMISSION_MARKER_FIELD]["omittedItems"] = json!(999);
+        forged_marker.replacements[0].replacement = serde_json::to_string(&projection).unwrap();
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_SEARCH_RESULTS_V1,
+                &forged_marker,
+            ),
+            Err(McpProposalRejection::SearchOmissionMarkerInvalid)
+        );
+
+        let mut renamed_marker = proposal.clone();
+        let McpStructuredContentEdit::SearchResults(edit) =
+            &mut renamed_marker.structured_content.as_mut().unwrap().edit
+        else {
+            panic!("expected search edit");
+        };
+        edit.omission_marker_field = "_differentMarker".into();
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_SEARCH_RESULTS_V1,
+                &renamed_marker,
+            ),
+            Err(McpProposalRejection::SearchOmissionMarkerInvalid)
+        );
+    }
+
+    #[test]
+    fn search_marker_collisions_and_nonmirrored_text_fail_open() {
+        let (result, contract) = search_result(10);
+        let nonmirrored = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": "prose search summary"}],
+            "structuredContent": result.structured_content.value().unwrap().clone()
+        }))
+        .unwrap();
+        let nonmirrored = evaluate_mcp_strategies_shadow_with_contract(
+            &nonmirrored,
+            Some(&contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            nonmirrored.pass_through_reason,
+            Some("search-text-mirror-invalid")
+        );
+
+        let mut colliding_structured = result.structured_content.value().unwrap().clone();
+        colliding_structured.as_object_mut().unwrap().insert(
+            MCP_SEARCH_OMISSION_MARKER_FIELD.into(),
+            json!({"server": true}),
+        );
+        let colliding_text = serde_json::to_string(&colliding_structured).unwrap();
+        let colliding = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": colliding_text}],
+            "structuredContent": colliding_structured
+        }))
+        .unwrap();
+        let mut colliding_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut colliding_contract.output_schema {
+            schema["properties"][MCP_SEARCH_OMISSION_MARKER_FIELD] = json!({"type": "object"});
+            schema["required"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(MCP_SEARCH_OMISSION_MARKER_FIELD));
+        }
+        let colliding = evaluate_mcp_strategies_shadow_with_contract(
+            &colliding,
+            Some(&colliding_contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            colliding.pass_through_reason,
+            Some("search-omission-marker-collision")
+        );
+    }
+
+    #[test]
+    fn search_candidate_schema_constraints_fail_open_after_structural_validation() {
+        let (result, mut contract) = search_result(10);
+        if let PreservedField::Value(schema) = &mut contract.output_schema {
+            schema["properties"]["matches"]["contains"] = json!({
+                "type": "object",
+                "properties": {"path": {"const": "src/module-5.rs"}},
+                "required": ["path"]
+            });
+        }
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            observation.rejection,
+            Some(McpProposalRejection::CandidateSchema(
+                crate::tool_result::McpSchemaRejection::InstanceInvalid
+            ))
+        );
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("candidate-structured-content-schema-mismatch")
+        );
+        assert!(observation.validated.is_none());
+    }
+
+    #[test]
+    fn search_within_budget_and_untrimmable_cases_are_distinct() {
+        let (large, contract) = search_result(10);
+        let source_chars = large.content[0].text().unwrap().chars().count();
+        let within = evaluate_mcp_strategies_shadow_with_contract(
+            &large,
+            Some(&contract),
+            &options(source_chars),
+            &CompressContext::default(),
+        );
+        assert_eq!(within.manifest, Some(&MCP_SEARCH_RESULTS_V1));
+        assert!(!within.proposal_attempted);
+        assert_eq!(within.pass_through_reason, Some("within-budget"));
+
+        let (one_result, one_result_contract) = search_result(1);
+        let no_savings = evaluate_mcp_strategies_shadow_with_contract(
+            &one_result,
+            Some(&one_result_contract),
+            &options(1),
+            &CompressContext::default(),
+        );
+        assert_eq!(no_savings.manifest, Some(&MCP_SEARCH_RESULTS_V1));
+        assert!(no_savings.proposal_attempted);
+        assert_eq!(no_savings.pass_through_reason, Some("no-savings"));
+    }
+
+    #[test]
+    fn generated_ranked_prefix_selections_are_deterministic_ordered_and_bounded() {
+        for total in 2_usize..=512 {
+            for retained in 1..=total.saturating_sub(1).min(MCP_MAX_RETAINED_SEARCH_RESULTS) {
+                let first = search_ranked_prefix_indices(total, retained);
+                let second = search_ranked_prefix_indices(total, retained);
+                assert_eq!(first, second);
+                assert_eq!(first.len(), retained);
+                assert_eq!(first.first(), Some(&0));
+                assert_eq!(first.last(), Some(&(retained - 1)));
+                assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
+            }
+        }
     }
 
     #[test]
@@ -988,7 +1870,10 @@ mod tests {
 
         let mut reordered = proposal.clone();
         let McpStructuredContentEdit::PaginatedCollection(edit) =
-            &mut reordered.structured_content.as_mut().unwrap().edit;
+            &mut reordered.structured_content.as_mut().unwrap().edit
+        else {
+            panic!("expected paginated collection edit");
+        };
         edit.retained_indices.reverse();
         assert_eq!(
             validate_mcp_proposal_with_contract(
@@ -1017,7 +1902,10 @@ mod tests {
 
         let mut renamed_marker = proposal.clone();
         let McpStructuredContentEdit::PaginatedCollection(edit) =
-            &mut renamed_marker.structured_content.as_mut().unwrap().edit;
+            &mut renamed_marker.structured_content.as_mut().unwrap().edit
+        else {
+            panic!("expected paginated collection edit");
+        };
         edit.omission_marker_field = "_differentMarker".into();
         assert_eq!(
             validate_mcp_proposal_with_contract(

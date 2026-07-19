@@ -1,0 +1,86 @@
+{
+  "protocolVersion": "2025-11-25",
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string" },
+      "matches": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "$ref": "#/$defs/searchMatch" }
+      },
+      "totalMatches": { "type": "integer" },
+      "ranking": { "type": "string" }
+    },
+    "required": ["query", "matches", "totalMatches", "ranking"],
+    "additionalProperties": false,
+    "$defs": {
+      "searchMatch": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "line": { "type": "integer" },
+          "score": { "type": "number" },
+          "snippet": { "type": "string" }
+        },
+        "required": ["path", "line", "score", "snippet"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"query\":\"schema aware trimming\",\"matches\":[{\"path\":\"src/contracts.rs\",\"line\":41,\"score\":0.99,\"snippet\":\"validate the advertised schema before rebuilding any candidate and preserve the original result\"},{\"path\":\"src/strategy.rs\",\"line\":118,\"score\":0.96,\"snippet\":\"retain the highest ranked source results without changing their server supplied order\"},{\"path\":\"src/shadow.rs\",\"line\":73,\"score\":0.93,\"snippet\":\"record only counts strategy versions and stable rejection reasons in local shadow evidence\"},{\"path\":\"tests/contracts.rs\",\"line\":205,\"score\":0.9,\"snippet\":\"reject stale structured replacements forged omission markers and reordered ranked matches\"},{\"path\":\"docs/architecture.md\",\"line\":88,\"score\":0.86,\"snippet\":\"search transforms preserve paths identifiers match counts query errors and ranking order\"},{\"path\":\"src/schema.rs\",\"line\":167,\"score\":0.82,\"snippet\":\"unsupported references depth limits and invalid instances fail open to the exact original\"}],\"totalMatches\":56,\"ranking\":\"server relevance order\"}"
+      }
+    ],
+    "structuredContent": {
+      "query": "schema aware trimming",
+      "matches": [
+        {
+          "path": "src/contracts.rs",
+          "line": 41,
+          "score": 0.99,
+          "snippet": "validate the advertised schema before rebuilding any candidate and preserve the original result"
+        },
+        {
+          "path": "src/strategy.rs",
+          "line": 118,
+          "score": 0.96,
+          "snippet": "retain the highest ranked source results without changing their server supplied order"
+        },
+        {
+          "path": "src/shadow.rs",
+          "line": 73,
+          "score": 0.93,
+          "snippet": "record only counts strategy versions and stable rejection reasons in local shadow evidence"
+        },
+        {
+          "path": "tests/contracts.rs",
+          "line": 205,
+          "score": 0.9,
+          "snippet": "reject stale structured replacements forged omission markers and reordered ranked matches"
+        },
+        {
+          "path": "docs/architecture.md",
+          "line": 88,
+          "score": 0.86,
+          "snippet": "search transforms preserve paths identifiers match counts query errors and ranking order"
+        },
+        {
+          "path": "src/schema.rs",
+          "line": 167,
+          "score": 0.82,
+          "snippet": "unsupported references depth limits and invalid instances fail open to the exact original"
+        }
+      ],
+      "totalMatches": 56,
+      "ranking": "server relevance order"
+    },
+    "isError": false,
+    "_meta": {
+      "fixture": "sanitized-search-results"
+    }
+  }
+}
