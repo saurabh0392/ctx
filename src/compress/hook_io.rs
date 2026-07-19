@@ -1,6 +1,6 @@
 //! PostToolUse hook I/O: parse Claude Code payload, emit updatedToolOutput.
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -54,7 +54,7 @@ pub fn post_tool_use() -> Result<()> {
     // Claude Code surface adapter. Every agent surface goes through this one extraction
     // path, so the controller below never sees an agent-specific shape. Returns early
     // when there is no compressible tool output (no response value, or empty text).
-    let Some(tr) = ClaudeCodeTransport.extract(&payload, cfg.compress_shadow_enabled) else {
+    let Some(tr) = ClaudeCodeTransport.extract(&payload, true) else {
         return Ok(());
     };
     // The original native response shape is needed to splice compressed text back into
@@ -73,18 +73,35 @@ pub fn post_tool_use() -> Result<()> {
     // recorded in shadow only.
     let decision = crate::agent::decide(&cfg, &tr);
 
-    record_shadow_decision(
-        tr.session_id.as_deref(),
-        &tr.tool_name,
-        &command_or_path,
-        decision.shadow.as_ref(),
-        decision.apply,
-        decision.explore_arm,
-        // Claude Code surface is stamped at outcome-join time, not here (legacy behaviour).
-        None,
-    );
-
     if !decision.apply {
+        record_shadow_decision(
+            tr.session_id.as_deref(),
+            &tr.tool_name,
+            &command_or_path,
+            decision.shadow.as_ref(),
+            false,
+            decision.explore_arm,
+            Some("claude-code"),
+        );
+        return Ok(());
+    }
+
+    // Native MCP results use the same canonical proposal and durable two-phase apply transaction
+    // as the gateway. A contract-less hook can run the plain text strategy; schema-dependent
+    // structured strategies remain gateway-only because the hook never receives `tools/list`.
+    if crate::compress::classify::is_mcp_tool(&tr.tool_name) {
+        let applied = apply_native_mcp(&tr, &cfg, &command_or_path)?;
+        if !applied {
+            record_shadow_decision(
+                tr.session_id.as_deref(),
+                &tr.tool_name,
+                &command_or_path,
+                decision.shadow.as_ref(),
+                false,
+                decision.explore_arm,
+                Some("claude-code"),
+            );
+        }
         return Ok(());
     }
 
@@ -106,6 +123,15 @@ pub fn post_tool_use() -> Result<()> {
     if let Some(ab) = cfg.ab_test.as_ref() {
         let key = crate::ab::request_key(session_id, cwd, tool_name);
         if !ab_assign(ab.compress_pct, "compress", &key) {
+            record_shadow_decision(
+                session_id,
+                tool_name,
+                &command_or_path,
+                decision.shadow.as_ref(),
+                false,
+                decision.explore_arm,
+                Some("claude-code"),
+            );
             return Ok(());
         }
     }
@@ -122,6 +148,15 @@ pub fn post_tool_use() -> Result<()> {
     let Some(result) =
         compress_tool_output(tool_name, &tool_input, &raw, &cfg, session_id, cwd, sgr_arm)
     else {
+        record_shadow_decision(
+            session_id,
+            tool_name,
+            &command_or_path,
+            decision.shadow.as_ref(),
+            false,
+            decision.explore_arm,
+            Some("claude-code"),
+        );
         return Ok(());
     };
 
@@ -136,6 +171,75 @@ pub fn post_tool_use() -> Result<()> {
     let rewind_id = rewind_id_for(&raw);
     let now = chrono::Utc::now().to_rfc3339();
 
+    let note = format!(
+        "ctx compressed this tool output ({} to {} chars). The tool still ran successfully.{}",
+        result.chars_in, result.chars_out, sgr_note
+    );
+    let marked = format!("{}{}", result.text, trim_marker(&rewind_id));
+    if marked.chars().count() >= raw.chars().count() {
+        record_shadow_decision(
+            session_id,
+            tool_name,
+            &command_or_path,
+            decision.shadow.as_ref(),
+            false,
+            decision.explore_arm,
+            Some("claude-code"),
+        );
+        return Ok(());
+    }
+    let recovery_ready = (|| -> Result<()> {
+        let mut conn = crate::db::open_db()?;
+        crate::db::ensure_schema(&conn)?;
+        let transaction = conn.transaction()?;
+        crate::db::insert_rewind_checked(
+            &transaction,
+            &rewind_id,
+            &now,
+            session_id,
+            tool_name,
+            &command_or_path,
+            &raw,
+            &marked,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    if recovery_ready.is_err() {
+        record_shadow_decision(
+            session_id,
+            tool_name,
+            &command_or_path,
+            decision.shadow.as_ref(),
+            false,
+            decision.explore_arm,
+            Some("claude-code"),
+        );
+        return Ok(());
+    }
+    let updated = ClaudeCodeTransport.wrap(tool_name, &response_value, &marked);
+    let out = json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "updatedToolOutput": updated,
+            "additionalContext": note
+        }
+    });
+    let encoded = serde_json::to_vec(&out)?;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(&encoded)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()?;
+
+    record_shadow_decision(
+        session_id,
+        tool_name,
+        &command_or_path,
+        decision.shadow.as_ref(),
+        true,
+        decision.explore_arm,
+        Some("claude-code"),
+    );
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
         let _ = crate::db::insert_compress_event(
@@ -145,43 +249,75 @@ pub fn post_tool_use() -> Result<()> {
             tool_name,
             &result.strategy,
             result.chars_in,
-            result.chars_out,
+            marked.chars().count(),
             &command_or_path,
-        );
-        crate::db::insert_rewind(
-            &conn,
-            &rewind_id,
-            &now,
-            session_id,
-            tool_name,
-            &command_or_path,
-            &raw,
-            &result.text,
         );
         crate::db::link_decision_rewind(&conn, session_id, tool_name, &rewind_id);
     }
-
     analytics::record_compress(
-        result.chars_saved(),
+        result.chars_in.saturating_sub(marked.chars().count()),
         cfg.active_profile.as_deref().unwrap_or("all"),
         cwd,
     );
+    Ok(())
+}
 
-    let note = format!(
-        "ctx compressed this tool output ({} to {} chars). The tool still ran successfully.{}",
-        result.chars_in, result.chars_out, sgr_note
-    );
-    let marked = format!("{}{}", result.text, trim_marker(&rewind_id));
-    let updated = ClaudeCodeTransport.wrap(tool_name, &response_value, &marked);
+fn apply_native_mcp(
+    tr: &crate::agent::ToolResult,
+    cfg: &Config,
+    command_or_path: &str,
+) -> Result<bool> {
+    let Some(canonical) = tr.canonical_mcp.as_ref() else {
+        return Ok(false);
+    };
+    let Ok(candidate) =
+        crate::compress::propose_mcp_apply_candidate(canonical, None, &tr.tool_input, cfg, &tr.cwd)
+    else {
+        return Ok(false);
+    };
+    let server_id = tr
+        .tool_name
+        .split("__")
+        .nth(1)
+        .filter(|part| !part.is_empty())
+        .unwrap_or("claude-native");
+    let request = crate::tool_result::McpApplyRequest {
+        surface: "claude-code",
+        server_id,
+        protocol_version: "claude-native-hook-v1",
+        tool_name: &tr.tool_name,
+        tool_input: &tr.tool_input,
+        session_id: tr.session_id.as_deref(),
+        command_or_path,
+        contract: None,
+        manifest: candidate.manifest,
+        proposal: &candidate.proposal,
+        authorized: true,
+    };
+    let crate::tool_result::McpPrepareOutcome::Ready(prepared) =
+        crate::tool_result::prepare_mcp_trim(canonical, &request)
+    else {
+        return Ok(false);
+    };
     let out = json!({
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
-            "updatedToolOutput": updated,
-            "additionalContext": note
+            "updatedToolOutput": prepared.result,
+            "additionalContext": format!(
+                "ctx shortened this MCP result; exact original id: {}.",
+                prepared.rewind_id
+            )
         }
     });
-    println!("{}", serde_json::to_string(&out)?);
-    Ok(())
+    let encoded = serde_json::to_vec(&out)?;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(&encoded)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()?;
+    if let Err(error) = crate::tool_result::mark_mcp_trim_emitted(&prepared) {
+        eprintln!("ctx Claude hook: emitted trim receipt failed: {error}");
+    }
+    Ok(true)
 }
 
 /// True when this PostToolUse payload came from Cursor, not the Claude Code CLI. Cursor's hook

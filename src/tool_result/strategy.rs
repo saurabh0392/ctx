@@ -286,8 +286,8 @@ impl McpSearchSchemaRejection {
     }
 }
 
-/// A contentful, in-memory proposal. T2 does not expose a renderer or an apply operation from this
-/// type: the proposal exists only to exercise the validator and record content-free shadow proof.
+/// A contentful, in-memory proposal. Shadow callers record only its content-free proof; the T3
+/// boundary may render it only by independently rerunning the same validator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpTransformProposal {
     pub strategy_id: &'static str,
@@ -645,6 +645,50 @@ pub fn validate_mcp_proposal_with_contract_and_input(
         table_rows_out: structured_metrics.and_then(StructuredEditMetrics::table_rows_out),
         table_rows_omitted: structured_metrics.and_then(StructuredEditMetrics::table_rows_omitted),
     })
+}
+
+/// Validate a proposal and return the fully rendered replacement value that passed the same
+/// contract checks. This is the only bridge from a T2 proposal into the T3 apply transaction.
+/// Callers must still persist the exact original before emitting this value.
+pub fn render_validated_mcp_proposal(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
+    manifest: &McpStrategyManifest,
+    proposal: &McpTransformProposal,
+) -> Result<(Value, ValidatedMcpProposal), McpProposalRejection> {
+    let validated = validate_mcp_proposal_with_contract_and_input(
+        result, contract, tool_input, manifest, proposal,
+    )?;
+
+    let mut candidate = result.clone();
+    for replacement in &proposal.replacements {
+        let block = candidate
+            .content
+            .get_mut(replacement.block_index)
+            .ok_or(McpProposalRejection::TargetOutOfBounds)?;
+        let CanonicalContentBlock::Text { text, .. } = block else {
+            return Err(McpProposalRejection::TargetIsNotPlainText);
+        };
+        if text != &replacement.expected_text {
+            return Err(McpProposalRejection::StaleSourceText);
+        }
+        *text = replacement.replacement.clone();
+    }
+    if let Some(structured) = &proposal.structured_content {
+        if candidate.structured_content.value() != Some(&structured.expected) {
+            return Err(McpProposalRejection::StaleStructuredContent);
+        }
+        candidate.structured_content = PreservedField::Value(structured.replacement.clone());
+    }
+
+    let rendered = candidate.render();
+    let reparsed =
+        parse_mcp_result(&rendered).map_err(|_| McpProposalRejection::RenderedContractInvalid)?;
+    if reparsed.render() != rendered {
+        return Err(McpProposalRejection::RenderedContractInvalid);
+    }
+    Ok((rendered, validated))
 }
 
 #[derive(Debug, Clone, Copy)]

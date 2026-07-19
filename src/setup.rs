@@ -226,7 +226,7 @@ pub fn run(
         }
     }
 
-    // ctx is hook-first: no proxy, no MITM. MCP filtering runs through Claude Code permission
+    // Default setup is hook-first with no TLS interception or model-API proxy. MCP filtering runs through Claude Code permission
     // rules (permissions.deny), and everything else happens in hooks.
     // Step 1: create default system_prefix.md if missing
     println!(

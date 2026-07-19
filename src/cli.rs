@@ -104,12 +104,20 @@ pub enum Commands {
         /// Stable agent session id, when the hook provides one.
         #[arg(long)]
         session: Option<String>,
+        /// Shell contract used to execute the command.
+        #[arg(long, value_enum, default_value_t = crate::cmd_run::ShellKind::Auto)]
+        shell: crate::cmd_run::ShellKind,
         /// The command to run, exactly as it would be typed in a shell.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
     /// Run as an MCP server over stdio (JSON-RPC). Exposes ctx data to LLM clients.
     Mcp,
+    /// Manage local MCP servers routed through CTX's protocol-preserving gateway.
+    Gateway {
+        #[command(subcommand)]
+        command: GatewayCommand,
+    },
     /// Dry-run a prompt through the ctx pipeline (no tokens consumed)
     Simulate {
         /// Prompt text (reads from stdin if omitted)
@@ -187,6 +195,69 @@ pub enum Commands {
         /// Export a self-contained HTML report or the versioned JSON schema
         #[arg(long, value_enum, default_value_t = ReportFormat::Html)]
         format: ReportFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GatewayCommand {
+    /// Register an explicitly approved local stdio MCP server.
+    AddStdio {
+        /// Immutable local server identity used in tool names and the contract cache.
+        id: String,
+        /// Server executable. CTX resolves and stores an absolute path.
+        #[arg(long)]
+        command: String,
+        /// Server working directory.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Environment variable names to copy into the isolated child process.
+        #[arg(long = "pass-env", value_delimiter = ',')]
+        pass_env: Vec<String>,
+        /// Arguments passed directly to the executable, without invoking a shell.
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Register an opt-in remote Streamable HTTP MCP destination.
+    AddHttp {
+        id: String,
+        /// Exact approved MCP endpoint. HTTPS is required except for loopback development.
+        #[arg(long)]
+        url: String,
+        /// Environment variable containing a bearer token; its value is never persisted.
+        #[arg(long)]
+        bearer_token_env: Option<String>,
+        /// Acknowledge that remote gateway support remains a security-reviewed beta.
+        #[arg(long)]
+        accept_remote_beta: bool,
+    },
+    /// List registered gateway destinations without printing credentials.
+    List,
+    /// Remove a registered server definition.
+    Remove { id: String },
+    /// Import a Codex MCP server and atomically route it through the CTX gateway.
+    CodexEnable {
+        /// Existing name under `[mcp_servers.<name>]` in ~/.codex/config.toml.
+        name: String,
+        /// Acknowledge remote HTTP gateway beta when importing a URL server.
+        #[arg(long)]
+        accept_remote_beta: bool,
+    },
+    /// Restore the exact pre-gateway Codex MCP server definition.
+    CodexDisable { name: String },
+    /// Complete OAuth authorization for a registered remote MCP server.
+    Login {
+        id: String,
+        /// Accept the discovered authorization destinations without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete CTX's OAuth credential for a remote MCP server from the OS credential store.
+    Logout { id: String },
+    /// Serve one registered MCP destination over stdio for an agent client.
+    Serve {
+        id: String,
+        #[arg(long, default_value = "codex")]
+        surface: String,
     },
 }
 

@@ -2430,7 +2430,7 @@
         const caps = [
           `Shell output: ${s.can_trim_shell ? "can shorten after the safety check" : "observed only"}`,
           `Built-in Read / search: ${s.can_trim_builtin ? "can shorten" : "observed only"}`,
-          `MCP results: ${s.can_trim_mcp ? "can shorten" : "observed only"}`,
+          `MCP results: ${s.can_trim_mcp ? (s.surface === "codex" ? "can shorten for approved gateway servers" : "can shorten") : "observed only"}`,
           `Compaction: ${s.compaction_seen ? "visible" : "not observed yet"}`
         ];
         return `<div class="sv-agent"><div class="sv-agent-top"><span class="sv-agent-name">${esc(name)}</span><span class="sv-agent-pill ${act}">${esc(status)}</span></div><div class="sv-agent-cap">${caps.map(esc).join("<br>")}</div><div class="sv-agent-meta">last seen ${ago}</div></div>`;
@@ -2622,7 +2622,7 @@
   const SURFACE_CAP = {
     "claude-code": "ctx trims MCP results and long tool output here, live, once a tool has earned it.",
     "cursor": "ctx reads Cursor's own session transcripts on this machine, so it can show your Cursor work next to Claude Code. When ctx runs live inside Cursor it trims MCP results once earned; built-in Read and Grep stay observe-only, because Cursor won't let a hook rewrite their output.",
-    "codex": "CTX observes local Codex tool activity through its plugin. It can shorten eligible shell output before Codex reads it; built-in and MCP results remain observation-only because Codex does not expose a clean tool-native replacement path that CTX can safely enable.",
+    "codex": "The plugin watches Codex and can shorten eligible shell output. MCP results can be shortened only for servers you explicitly route through CTX's local gateway; direct MCP servers and built-in Read/search stay unchanged.",
   };
   async function loadSurfaces() {
     let ctx;
@@ -2667,7 +2667,8 @@
       const pill = acting ? `<div class="sf-pill acting">${esc(status)}</div>` : `<div class="sf-pill obs">${esc(status)}</div>`;
       const savedTok = tok(s.chars_saved || 0);
       const saved = savedTok > 0 ? fmtK(savedTok) + " tok" : "none yet";
-      const capabilityRows = `<div class="sf-foot"><b>Shell output:</b> ${s.can_trim_shell ? "can shorten after the safety check" : "observed only"}<br><b>Built-in Read / search:</b> ${s.can_trim_builtin ? "can shorten" : "observed only"}<br><b>MCP results:</b> ${s.can_trim_mcp ? "can shorten" : "observed only"}<br><b>Compaction:</b> ${s.compaction_seen ? "visible" : "not observed yet"}</div>`;
+      const mcpCapability = s.can_trim_mcp ? (s.surface === "codex" ? "can shorten for approved gateway servers" : "can shorten") : "observed only";
+      const capabilityRows = `<div class="sf-foot"><b>Shell output:</b> ${s.can_trim_shell ? "can shorten after the safety check" : "observed only"}<br><b>Built-in Read / search:</b> ${s.can_trim_builtin ? "can shorten" : "observed only"}<br><b>MCP results:</b> ${mcpCapability}<br><b>Compaction:</b> ${s.compaction_seen ? "visible" : "not observed yet"}</div>`;
       return `<div class="sf-card">
         <div class="sf-head"><div class="sf-name">${esc(name)}</div>${pill}</div>
         <div class="sf-cap">${esc(cap)}</div>

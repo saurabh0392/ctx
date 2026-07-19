@@ -10,13 +10,12 @@
 //! says trim, recording a real apply, and stays observe-only for built-in Read/Shell/Grep, which
 //! Cursor will not let a hook rewrite. We never claim parity with Claude here.
 
-use std::{borrow::Cow, io::Read};
+use std::{borrow::Cow, io::Read, io::Write};
 
 use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::agent::ToolResult;
-use crate::compress::CompressResult;
 use crate::config::Config;
 
 /// Stable surface tag stamped on every decision this hook records.
@@ -48,7 +47,7 @@ pub fn post_tool_use() -> Result<()> {
     }
 
     let mut output = json!({});
-    if let Some(tr) = extract_cursor_tool_result(&payload, cfg.compress_shadow_enabled) {
+    if let Some(tr) = extract_cursor_tool_result(&payload, true) {
         let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
         let decision = crate::agent::decide_for_surface(&cfg, &tr, CURSOR_SURFACE);
 
@@ -57,54 +56,105 @@ pub fn post_tool_use() -> Result<()> {
         // 0018). So a trim is applied here only when the gate says apply AND this is an MCP tool AND
         // the compressor actually shortened the result. Anything else stays `applied = false`, so a
         // trim ctx did not perform is never recorded as one (the honesty rule from ADR 0020).
-        let mut applied = false;
+        let mut applied_by_transaction = false;
         if decision.apply && crate::compress::classify::is_mcp_tool(&tr.tool_name) {
-            if let Some(result) = crate::compress::compress_tool_output(
-                &tr.tool_name,
-                &tr.tool_input,
-                &tr.raw_output,
-                &cfg,
-                tr.session_id.as_deref(),
-                &tr.cwd,
-                false,
+            if let (Some(canonical), Ok(candidate)) = (
+                tr.canonical_mcp.as_ref(),
+                tr.canonical_mcp
+                    .as_ref()
+                    .map_or(Err("not-mcp"), |canonical| {
+                        crate::compress::propose_mcp_apply_candidate(
+                            canonical,
+                            None,
+                            &tr.tool_input,
+                            &cfg,
+                            &tr.cwd,
+                        )
+                    }),
             ) {
-                if result.chars_saved() > 0 {
-                    let updated =
-                        cursor_mcp_updated_output(payload.get("tool_output"), &result.text);
-                    record_cursor_apply(
-                        tr.session_id.as_deref(),
-                        &tr.tool_name,
-                        &command_or_path,
-                        &result,
-                        &cfg,
-                        &tr.cwd,
-                    );
+                let server_id = mcp_server_id(&tr.tool_name);
+                let request = crate::tool_result::McpApplyRequest {
+                    surface: CURSOR_SURFACE,
+                    server_id: &server_id,
+                    protocol_version: "cursor-native-hook-v1",
+                    tool_name: &tr.tool_name,
+                    tool_input: &tr.tool_input,
+                    session_id: tr.session_id.as_deref(),
+                    command_or_path: &command_or_path,
+                    contract: None,
+                    manifest: candidate.manifest,
+                    proposal: &candidate.proposal,
+                    authorized: true,
+                };
+                if let crate::tool_result::McpPrepareOutcome::Ready(prepared) =
+                    crate::tool_result::prepare_mcp_trim(canonical, &request)
+                {
                     let note = format!(
-                        "ctx trimmed this MCP result ({} to {} chars) to save context. The tool still ran in full.",
-                        result.chars_in, result.chars_out
+                        "ctx shortened this MCP result from {} to {} characters; the exact original is recoverable as {}.",
+                        prepared.validated.chars_in,
+                        prepared.validated.chars_out,
+                        prepared.rewind_id
                     );
                     output = json!({
-                        "updated_mcp_tool_output": updated,
+                        "updated_mcp_tool_output": prepared.result,
                         "additional_context": note,
                     });
-                    applied = true;
+                    let encoded = serde_json::to_vec(&output)?;
+                    let mut stdout = std::io::stdout().lock();
+                    stdout.write_all(&encoded)?;
+                    stdout.flush()?;
+                    if let Err(error) = crate::tool_result::mark_mcp_trim_emitted(&prepared) {
+                        eprintln!("ctx Cursor hook: emitted trim receipt failed: {error}");
+                    }
+                    applied_by_transaction = true;
                 }
             }
         }
 
-        crate::compress::record_shadow_decision(
-            tr.session_id.as_deref(),
-            &tr.tool_name,
-            &command_or_path,
-            decision.shadow.as_ref(),
-            applied,
-            decision.explore_arm,
-            Some(CURSOR_SURFACE),
-        );
+        if !applied_by_transaction {
+            crate::compress::record_shadow_decision(
+                tr.session_id.as_deref(),
+                &tr.tool_name,
+                &command_or_path,
+                decision.shadow.as_ref(),
+                false,
+                decision.explore_arm,
+                Some(CURSOR_SURFACE),
+            );
+        } else {
+            return Ok(());
+        }
     }
 
     print!("{}", serde_json::to_string(&output)?);
     Ok(())
+}
+
+fn mcp_server_id(tool_name: &str) -> String {
+    tool_name
+        .split("__")
+        .nth(1)
+        .filter(|part| !part.is_empty())
+        .unwrap_or("cursor-native")
+        .to_owned()
+}
+
+#[cfg(test)]
+/// Build Cursor's legacy `updated_mcp_tool_output` from trimmed text while preserving the MCP
+/// envelope. Kept only to verify compatibility with captured Cursor payloads; live MCP replacement
+/// now goes through the canonical two-phase apply path above.
+fn cursor_mcp_updated_output(original_output: Option<&Value>, compressed: &str) -> Value {
+    let mut env = original_output
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    env.insert(
+        "content".into(),
+        json!([{ "type": "text", "text": compressed }]),
+    );
+    env.entry("isError").or_insert(json!(false));
+    Value::Object(env)
 }
 
 /// Cursor `preCompact` command hook (CTX-31 increment 1, ADR 0023). Cursor fires this just before
@@ -264,15 +314,25 @@ pub(crate) fn decide_shell_rewrite_for_surface(
 
     let session = session_id
         .filter(|s| !s.is_empty())
-        .map(|s| format!(" --session {}", shell_single_quote(s)))
+        .map(|s| format!(" --session {}", shell_quote_for_host(s)))
         .unwrap_or_default();
-    Some(format!(
-        "{} run --surface {}{} -- {}",
-        ctx_exe(),
-        shell_single_quote(surface),
+    #[cfg(windows)]
+    let wrapped = format!(
+        "& {} run --surface {}{} -- {}",
+        shell_quote_for_host(&ctx_exe()),
+        shell_quote_for_host(surface),
         session,
-        shell_single_quote(trimmed)
-    ))
+        shell_quote_for_host(trimmed)
+    );
+    #[cfg(not(windows))]
+    let wrapped = format!(
+        "{} run --surface {}{} -- {}",
+        shell_quote_for_host(&ctx_exe()),
+        shell_quote_for_host(surface),
+        session,
+        shell_quote_for_host(trimmed)
+    );
+    Some(wrapped)
 }
 
 /// Resolve the ctx executable path for the rewrite, falling back to bare `ctx` on PATH.
@@ -288,15 +348,22 @@ fn ctx_exe() -> String {
 /// postToolUse hook can recognize and skip it).
 pub(crate) fn is_ctx_run_wrapped(command: &str) -> bool {
     let c = command.trim_start();
-    // Match either bare `ctx run ` or `/abs/path/to/ctx run `.
-    if let Some(first) = c.split_whitespace().next() {
-        let is_ctx_bin = first == "ctx"
-            || std::path::Path::new(first)
+    let mut words = c.split_whitespace();
+    let first = words.next();
+    let executable = if first == Some("&") {
+        words.next()
+    } else {
+        first
+    };
+    if let Some(executable) = executable {
+        let executable = executable.trim_matches(['\'', '"']);
+        let is_ctx_bin = executable == "ctx"
+            || std::path::Path::new(executable)
                 .file_name()
                 .and_then(|n| n.to_str())
-                == Some("ctx");
+                .is_some_and(|name| matches!(name, "ctx" | "ctx.exe"));
         if is_ctx_bin {
-            return c.split_whitespace().nth(1) == Some("run");
+            return words.next() == Some("run");
         }
     }
     false
@@ -307,35 +374,73 @@ pub(crate) fn is_ctx_run_wrapped(command: &str) -> bool {
 /// pagers, REPLs, and prompts (vim, less, git commit, npm init, ssh) are never wrapped. This is a
 /// safety boundary, not a compression heuristic; the gate decides whether compaction actually fires.
 pub(crate) fn is_safe_to_wrap(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase();
+    if [";", "&&", "||", "|", ">", "<", "`", "$("]
+        .iter()
+        .any(|operator| normalized.contains(operator))
+        || normalized.contains(" --interactive")
+        || normalized.contains("tail -f")
+        || normalized.contains("tail --follow")
+        || normalized.trim_end().ends_with('&')
+    {
+        return false;
+    }
     let mut tokens = command.split_whitespace();
-    let Some(first) = tokens.next() else {
+    let Some(first_token) = tokens.next() else {
         return false;
     };
-    // A leading VAR=val assignment or an absolute path confuses simple matching; be conservative and
-    // skip those rather than guess.
-    if first.contains('=') || first.contains('/') {
+    if first_token.contains('=') {
         return false;
     }
-    match first {
-        "git" => matches!(
-            tokens.next(),
-            Some(
-                "status"
-                    | "diff"
-                    | "log"
-                    | "show"
-                    | "branch"
-                    | "ls-files"
-                    | "blame"
-                    | "shortlog"
-                    | "describe"
-                    | "diff-tree"
+    let executable = std::path::Path::new(first_token)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(first_token)
+        .trim_matches(['\'', '"'])
+        .to_ascii_lowercase();
+    match executable.as_str() {
+        "git" | "git.exe" => {
+            let subcommand = tokens.find(|token| !token.starts_with('-'));
+            matches!(
+                subcommand,
+                Some(
+                    "status"
+                        | "diff"
+                        | "log"
+                        | "show"
+                        | "branch"
+                        | "ls-files"
+                        | "blame"
+                        | "shortlog"
+                        | "describe"
+                        | "diff-tree"
+                )
             )
+        }
+        "cargo" | "cargo.exe" => matches!(
+            tokens.next(),
+            Some("test" | "check" | "build" | "clippy" | "fmt" | "metadata" | "tree")
         ),
-        // Read-only inspection tools that commonly produce large, noisy output.
-        "ls" | "grep" | "rg" | "find" | "cat" | "tree" | "head" | "tail" | "wc" | "cargo" => true,
+        // POSIX read-only inspection capabilities.
+        "ls" | "grep" | "rg" | "find" | "cat" | "tree" | "head" | "tail" | "wc" | "pwd" | "du"
+        | "df" | "stat" | "file" | "ps" => true,
+        // PowerShell inspection cmdlets (case-normalized above).
+        "get-childitem" | "get-content" | "select-string" | "get-item" | "get-location"
+        | "get-process" | "get-command" => true,
+        // cmd.exe inspection built-ins and common read-only utilities.
+        "dir" | "type" | "findstr" | "where" | "ver" => true,
         _ => false,
     }
+}
+
+#[cfg(windows)]
+fn shell_quote_for_host(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(not(windows))]
+fn shell_quote_for_host(value: &str) -> String {
+    shell_single_quote(value)
 }
 
 /// POSIX single-quote a command so it survives as one argument to `ctx run` (which re-runs it via
@@ -362,57 +467,6 @@ fn cursor_shell_command(payload: &Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
-}
-
-/// Build Cursor's `updated_mcp_tool_output` from the trimmed text, mirroring the MCP result
-/// envelope Cursor sends in. Verified live against a real Cursor 3.7 postToolUse payload (ADR
-/// 0018): `tool_output` is a JSON-stringified `{"content":[{"type":"text","text":...}],
-/// "isError":false}`. We parse it so sibling fields (e.g. `isError`) survive, and replace only the
-/// text content with the trimmed text, so the model reads the shorter result in the same shape.
-fn cursor_mcp_updated_output(original_output: Option<&Value>, compressed: &str) -> Value {
-    let mut env = original_output
-        .and_then(|v| v.as_str())
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    env.insert(
-        "content".into(),
-        json!([{ "type": "text", "text": compressed }]),
-    );
-    env.entry("isError".to_string()).or_insert(json!(false));
-    Value::Object(env)
-}
-
-/// Record a live Cursor MCP trim as a real apply: a compress_event for the savings feed and the
-/// analytics counter, mirroring the Claude apply path so the cross-surface view shows Cursor's
-/// savings (CTX-33). The decision row's applied flag is set by the caller via
-/// `record_shadow_decision`; this only adds the event and counter.
-fn record_cursor_apply(
-    session_id: Option<&str>,
-    tool_name: &str,
-    command_or_path: &str,
-    result: &CompressResult,
-    cfg: &Config,
-    cwd: &str,
-) {
-    if let Ok(conn) = crate::db::open_db() {
-        let _ = crate::db::ensure_schema(&conn);
-        let _ = crate::db::insert_compress_event(
-            &conn,
-            &chrono::Utc::now().to_rfc3339(),
-            session_id,
-            tool_name,
-            &result.strategy,
-            result.chars_in,
-            result.chars_out,
-            command_or_path,
-        );
-    }
-    crate::analytics::record_compress(
-        result.chars_saved(),
-        cfg.active_profile.as_deref().unwrap_or("all"),
-        cwd,
-    );
 }
 
 /// Lift a Cursor `postToolUse` payload into the canonical tool result. Returns `None` when there
@@ -650,6 +704,9 @@ mod tests {
         assert!(is_safe_to_wrap("grep -rn foo src/"));
         assert!(is_safe_to_wrap("rg pattern"));
         assert!(is_safe_to_wrap("cargo build"));
+        assert!(is_safe_to_wrap("/usr/bin/git status"));
+        assert!(is_safe_to_wrap("Get-ChildItem -Recurse"));
+        assert!(is_safe_to_wrap("findstr /S needle *.txt"));
     }
 
     #[test]
@@ -661,9 +718,10 @@ mod tests {
         assert!(!is_safe_to_wrap("git rebase -i HEAD~3"));
         assert!(!is_safe_to_wrap("npm init"));
         assert!(!is_safe_to_wrap("python"));
-        // Leading env assignment or absolute path: don't guess.
+        // Leading environment mutation remains ambiguous and is held out.
         assert!(!is_safe_to_wrap("FOO=1 git status"));
-        assert!(!is_safe_to_wrap("/usr/bin/git status"));
+        assert!(!is_safe_to_wrap("cargo publish"));
+        assert!(!is_safe_to_wrap("git status && rm -rf build"));
     }
 
     #[test]

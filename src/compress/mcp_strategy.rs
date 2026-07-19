@@ -160,6 +160,9 @@ pub(crate) const MCP_TABLE_ROWS_V1: McpStrategyManifest = McpStrategyManifest {
 
 pub(crate) struct McpStrategyObservation {
     pub manifest: Option<&'static McpStrategyManifest>,
+    /// Contentful and process-local. Shadow callers ignore it; the T3 apply transaction consumes it
+    /// only after the evidence gate grants permission.
+    pub proposal: Option<McpTransformProposal>,
     pub proposal_attempted: bool,
     pub validated: Option<ValidatedMcpProposal>,
     pub rejection: Option<McpProposalRejection>,
@@ -167,6 +170,45 @@ pub(crate) struct McpStrategyObservation {
     pub source_schema_validation: Option<McpOutputSchemaValidation>,
     pub candidate_schema_validation: Option<McpOutputSchemaValidation>,
     pub shape_authorization: Option<&'static str>,
+}
+
+pub(crate) struct McpApplyCandidate {
+    pub manifest: &'static McpStrategyManifest,
+    pub proposal: McpTransformProposal,
+}
+
+/// Contentful adapter entry point. It uses the exact same deterministic registry and validators as
+/// shadow mode; permission remains the controller's separate responsibility.
+pub(crate) fn propose_mcp_apply_candidate(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: &Value,
+    cfg: &crate::config::Config,
+    cwd: &str,
+) -> Result<McpApplyCandidate, &'static str> {
+    let options = CompressOptions {
+        max_input_chars: cfg.compress_max_output_chars,
+        target_chars: cfg.compress_target_chars,
+        redact_secrets: cfg.compress_redact_secrets,
+        preserve_errors: cfg.compress_preserve_errors,
+    };
+    let context = CompressContext {
+        cwd: cwd.to_owned(),
+        prompt_keywords: Vec::new(),
+    };
+    let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+        result,
+        contract,
+        Some(tool_input),
+        &options,
+        &context,
+    );
+    match (observation.manifest, observation.proposal) {
+        (Some(manifest), Some(proposal)) => Ok(McpApplyCandidate { manifest, proposal }),
+        _ => Err(observation
+            .pass_through_reason
+            .unwrap_or("unsupported-shape")),
+    }
 }
 
 trait McpResultStrategy: Sync {
@@ -1496,6 +1538,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
     if pass_through_reason.is_some() {
         return McpStrategyObservation {
             manifest: None,
+            proposal: None,
             proposal_attempted: false,
             validated: None,
             rejection: None,
@@ -1510,6 +1553,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
     if let McpOutputSchemaValidation::Rejected(rejection) = source_schema_validation {
         return McpStrategyObservation {
             manifest: None,
+            proposal: None,
             proposal_attempted: false,
             validated: None,
             rejection: None,
@@ -1526,6 +1570,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
             McpStrategyEligibility::Rejected(reason) => {
                 return McpStrategyObservation {
                     manifest: None,
+                    proposal: None,
                     proposal_attempted: false,
                     validated: None,
                     rejection: None,
@@ -1542,6 +1587,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
             McpProposalOutcome::WithinBudget => {
                 return McpStrategyObservation {
                     manifest: Some(manifest),
+                    proposal: None,
                     proposal_attempted: false,
                     validated: None,
                     rejection: None,
@@ -1554,6 +1600,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
             McpProposalOutcome::NoSavings => {
                 return McpStrategyObservation {
                     manifest: Some(manifest),
+                    proposal: None,
                     proposal_attempted: true,
                     validated: None,
                     rejection: None,
@@ -1570,6 +1617,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
         ) {
             Ok(validated) => McpStrategyObservation {
                 manifest: Some(manifest),
+                proposal: Some(*proposal),
                 proposal_attempted: true,
                 candidate_schema_validation: Some(if validated.output_schema_validated {
                     McpOutputSchemaValidation::Valid
@@ -1591,6 +1639,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
                 };
                 McpStrategyObservation {
                     manifest: Some(manifest),
+                    proposal: None,
                     proposal_attempted: true,
                     validated: None,
                     rejection: Some(rejection),
@@ -1605,6 +1654,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
 
     McpStrategyObservation {
         manifest: None,
+        proposal: None,
         proposal_attempted: false,
         validated: None,
         rejection: None,
