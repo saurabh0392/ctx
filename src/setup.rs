@@ -588,7 +588,7 @@ fn confirm_data_purge(yes: bool) -> Result<()> {
     }
     if !stdin().is_terminal() || !stdout().is_terminal() {
         anyhow::bail!(
-            "Data purge needs confirmation. Re-run with --purge-data --yes in a non-interactive terminal."
+            "Data purge needs confirmation. Re-run with --purge-data --yes to confirm a non-interactive purge."
         );
     }
     println!(
@@ -634,19 +634,16 @@ fn purge_gateway_oauth_credentials(server_ids: Vec<String>) -> Result<()> {
 
 fn purge_owned_data() -> Result<()> {
     let ctx_dir = crate::config::ctx_dir();
-    validate_purge_target(&ctx_dir, "CTX data directory")?;
     if ctx_dir.exists() {
+        validate_ctx_purge_target(&ctx_dir)?;
         std::fs::remove_dir_all(&ctx_dir)?;
     }
-    let experiment_dir = crate::experiment_plan::persistent_experiment_dir();
-    validate_purge_target(&experiment_dir, "CTX experiment backup directory")?;
-    if experiment_dir.exists() {
-        std::fs::remove_dir_all(&experiment_dir)?;
-    }
+    crate::experiment_plan::purge_persistent_experiment_state()?;
     Ok(())
 }
 
-fn validate_purge_target(path: &std::path::Path, label: &str) -> Result<()> {
+fn validate_ctx_purge_target(path: &std::path::Path) -> Result<()> {
+    let label = "CTX data directory";
     if !path.is_absolute() || path.parent().is_none() {
         anyhow::bail!("refusing to purge unsafe {label}: {}", path.display());
     }
@@ -661,6 +658,16 @@ fn validate_purge_target(path: &std::path::Path, label: &str) -> Result<()> {
     let home = dirs::home_dir().and_then(|home| std::fs::canonicalize(home).ok());
     if home.as_deref() == Some(resolved.as_path()) {
         anyhow::bail!("refusing to purge the user home as the {label}");
+    }
+    let default = dirs::home_dir().map(|home| home.join(".ctx"));
+    let default = default.map(|path| std::fs::canonicalize(&path).unwrap_or(path));
+    let is_default = default.as_deref() == Some(resolved.as_path());
+    let has_marker = resolved.join(crate::config::CTX_OWNERSHIP_MARKER).is_file();
+    if !is_default && !has_marker {
+        anyhow::bail!(
+            "refusing to purge unverified custom CTX data directory {} (ownership marker missing)",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -964,16 +971,32 @@ mod tests {
         let backup = tmp.path().join("ctx-backup");
         std::fs::create_dir_all(&data).unwrap();
         std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(
+            data.join(crate::config::CTX_OWNERSHIP_MARKER),
+            "CTX owns this state directory.\n",
+        )
+        .unwrap();
         std::fs::write(data.join("ctx.db"), "old database").unwrap();
         std::fs::write(backup.join("experiment-plan.toml"), "old plan").unwrap();
+        std::fs::write(backup.join("keep-me.txt"), "not owned by CTX").unwrap();
         std::env::set_var("CTX_HOME", &data);
         std::env::set_var("CTX_EXPERIMENT_BACKUP_DIR", &backup);
 
         purge_owned_data().unwrap();
 
         assert!(!data.exists());
-        assert!(!backup.exists());
+        assert!(backup.join("keep-me.txt").is_file());
+        assert!(!backup.join("experiment-plan.toml").exists());
         std::env::remove_var("CTX_HOME");
         std::env::remove_var("CTX_EXPERIMENT_BACKUP_DIR");
+    }
+
+    #[test]
+    fn purge_refuses_an_unmarked_custom_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unrelated = tmp.path().join("unrelated");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        assert!(validate_ctx_purge_target(&unrelated).is_err());
+        assert!(unrelated.exists());
     }
 }

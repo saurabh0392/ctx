@@ -211,3 +211,6 @@ The command requires typing `DELETE CTX DATA`. For automation, add `--yes`. It d
 experiment backup, and CTX OAuth credentials from the operating-system credential store. It does not
 delete the installed binary; remove `~/.local/bin/ctx` (macOS/Linux) or
 `%LOCALAPPDATA%\ctx\ctx.exe` (Windows) after the command succeeds.
+
+Custom `CTX_HOME` directories are removed only when they contain CTX's ownership marker. Experiment
+purge deletes only CTX's named backup files and preserves anything else in that directory.

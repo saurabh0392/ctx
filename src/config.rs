@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub const CTX_OWNERSHIP_MARKER: &str = ".ctx-owned-state";
+
 pub fn ctx_dir() -> PathBuf {
     if let Ok(p) = std::env::var("CTX_HOME") {
         return PathBuf::from(p);
@@ -14,7 +16,12 @@ pub fn ctx_dir() -> PathBuf {
 }
 
 pub fn ensure_dir() -> Result<()> {
-    std::fs::create_dir_all(ctx_dir())?;
+    let directory = ctx_dir();
+    std::fs::create_dir_all(&directory)?;
+    let marker = directory.join(CTX_OWNERSHIP_MARKER);
+    if !marker.exists() {
+        std::fs::write(marker, "CTX owns this state directory.\n")?;
+    }
     Ok(())
 }
 

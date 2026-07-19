@@ -262,6 +262,25 @@ pub fn backup_experiment_state() -> Result<()> {
     Ok(())
 }
 
+/// Delete only the experiment files CTX owns. If the backup directory contains unrelated files,
+/// leave both those files and the directory intact.
+pub fn purge_persistent_experiment_state() -> Result<()> {
+    let directory = persistent_experiment_dir();
+    if !directory.exists() {
+        return Ok(());
+    }
+    for name in PERSISTED_EXPERIMENT_FILES {
+        let path = directory.join(name);
+        if path.is_file() {
+            std::fs::remove_file(path)?;
+        }
+    }
+    if std::fs::read_dir(&directory)?.next().is_none() {
+        std::fs::remove_dir(directory)?;
+    }
+    Ok(())
+}
+
 /// Restore experiment files when ~/.ctx was wiped but a persistent backup exists.
 pub fn restore_experiment_state_if_missing() -> Result<bool> {
     if plan_path().is_file() {

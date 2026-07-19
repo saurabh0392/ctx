@@ -5,6 +5,17 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 const REGISTRY_VERSION: u32 = 1;
+const CODEX_TRANSPORT_KEYS: [&str; 9] = [
+    "command",
+    "args",
+    "cwd",
+    "env",
+    "env_vars",
+    "url",
+    "bearer_token_env_var",
+    "http_headers",
+    "env_http_headers",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayRegistry {
@@ -324,17 +335,7 @@ pub fn codex_enable(name: &str, accept_remote_beta: bool) -> Result<()> {
         .and_then(|servers| servers.get_mut(name))
         .and_then(toml::Value::as_table_mut)
         .context("Codex MCP table disappeared while rewriting")?;
-    for key in [
-        "command",
-        "args",
-        "cwd",
-        "env",
-        "env_vars",
-        "url",
-        "bearer_token_env_var",
-        "http_headers",
-        "env_http_headers",
-    ] {
+    for key in CODEX_TRANSPORT_KEYS {
         current.remove(key);
     }
     current.insert(
@@ -402,7 +403,14 @@ pub fn codex_disable(name: &str) -> Result<()> {
         .get_mut("mcp_servers")
         .and_then(toml::Value::as_table_mut)
         .context("Codex config has no mcp_servers table")?;
-    servers.insert(name.to_owned(), backup.server);
+    let current = servers
+        .get(name)
+        .cloned()
+        .context("Codex MCP server disappeared while restoring it")?;
+    servers.insert(
+        name.to_owned(),
+        restore_direct_transport(&current, &backup.server)?,
+    );
     write_toml_atomic(&path, &config)?;
     registry.codex_backups.remove(name);
     registry.servers.remove(&backup.gateway_id);
@@ -460,7 +468,14 @@ pub fn codex_restore_all() -> Result<CodexRestoreReport> {
             .is_some_and(|table| is_gateway_shape(table, name));
         if still_owned {
             if let Some(servers) = servers.as_deref_mut() {
-                servers.insert(name.clone(), backup.server.clone());
+                let current = servers
+                    .get(name)
+                    .cloned()
+                    .context("Codex MCP server disappeared while restoring it")?;
+                servers.insert(
+                    name.clone(),
+                    restore_direct_transport(&current, &backup.server)?,
+                );
             }
             report.restored.push(name.clone());
         } else if servers
@@ -485,11 +500,10 @@ fn is_gateway_shape(table: &toml::map::Map<String, toml::Value>, name: &str) -> 
     let Some(command) = table.get("command").and_then(toml::Value::as_str) else {
         return false;
     };
-    let executable_name = Path::new(command)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    if !matches!(executable_name, "ctx" | "ctx.exe") {
+    let executable_name = command.rsplit(['/', '\\']).next().unwrap_or_default();
+    if !executable_name.eq_ignore_ascii_case("ctx")
+        && !executable_name.eq_ignore_ascii_case("ctx.exe")
+    {
         return false;
     }
     let Some(args) = table.get("args").and_then(toml::Value::as_array) else {
@@ -501,6 +515,23 @@ fn is_gateway_shape(table: &toml::map::Map<String, toml::Value>, name: &str) -> 
             .iter()
             .zip(expected)
             .all(|(actual, expected)| actual.as_str() == Some(expected))
+}
+
+fn restore_direct_transport(current: &toml::Value, backup: &toml::Value) -> Result<toml::Value> {
+    let mut restored = current
+        .as_table()
+        .cloned()
+        .context("current Codex MCP server is not a table")?;
+    let backup = backup
+        .as_table()
+        .context("backed-up Codex MCP server is not a table")?;
+    for key in CODEX_TRANSPORT_KEYS {
+        restored.remove(key);
+        if let Some(value) = backup.get(key) {
+            restored.insert(key.to_owned(), value.clone());
+        }
+    }
+    Ok(toml::Value::Table(restored))
 }
 
 fn codex_config_path() -> Result<PathBuf> {
@@ -659,6 +690,7 @@ mod tests {
 [mcp_servers.linear]
 command = "/usr/local/bin/ctx"
 args = ["gateway", "serve", "linear", "--surface", "codex"]
+enabled = false
 
 [mcp_servers.user_changed]
 command = "/usr/bin/custom"
@@ -694,6 +726,7 @@ args = ["serve"]
         assert_eq!(restored.preserved, vec!["user_changed"]);
         let config = std::fs::read_to_string(tmp.path().join(".codex/config.toml")).unwrap();
         assert!(config.contains("command = \"/usr/bin/linear\""));
+        assert!(config.contains("enabled = false"));
         assert!(config.contains("command = \"/usr/bin/custom\""));
         let registry = GatewayRegistry::load().unwrap();
         assert!(registry.codex_backups.is_empty());
@@ -701,5 +734,15 @@ args = ["serve"]
 
         std::env::remove_var("CTX_HOME");
         std::env::remove_var("CTX_TEST_HOME");
+    }
+
+    #[test]
+    fn gateway_shape_accepts_windows_executable_casing() {
+        let value: toml::Value = toml::from_str(
+            r#"command = "C:\\Users\\dev\\CTX.EXE"
+args = ["gateway", "serve", "linear", "--surface", "codex"]"#,
+        )
+        .unwrap();
+        assert!(is_gateway_shape(value.as_table().unwrap(), "linear"));
     }
 }
