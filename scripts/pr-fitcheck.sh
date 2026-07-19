@@ -6,9 +6,13 @@ usage() {
   echo "usage: scripts/pr-fitcheck.sh [PR number, URL, or branch]"
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -gt 1 ]]; then
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
+fi
+if [[ $# -gt 1 || "${1:-}" == -* ]]; then
+  usage >&2
+  exit 2
 fi
 
 command -v gh >/dev/null 2>&1 || {
@@ -85,6 +89,7 @@ fi
 
 LATEST_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
 if [[ "$LATEST_HEAD" != "$PR_HEAD" ]]; then
+  post_status error "PR head changed during Local Fitcheck"
   echo "pr-fitcheck: PR head changed during the review; rerun on ${LATEST_HEAD}"
   exit 2
 fi
