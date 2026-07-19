@@ -476,13 +476,7 @@ fn tree_listing_shape(
             Ok(None)
         };
     };
-    let schema_properties = resolve_local_schema(schema, schema)
-        .and_then(|schema| schema.get("properties"))
-        .and_then(Value::as_object);
-    if structured.keys().any(|field| {
-        is_pagination_field(field)
-            && schema_properties.is_some_and(|properties| properties.contains_key(field))
-    }) {
+    if structured.keys().any(|field| is_pagination_field(field)) {
         return Ok(None);
     }
     let authorization = match assess_mcp_tree_listing_schema(schema, structured, tool_input) {
@@ -1905,6 +1899,26 @@ mod tests {
         assert_eq!(
             collection_observation.manifest,
             Some(&MCP_PAGINATED_COLLECTION_V1)
+        );
+
+        let (tree, mut tree_contract, input) = tree_result();
+        let mut raw = tree.raw().clone();
+        raw["structuredContent"]["nextCursor"] = json!("page-2");
+        raw["content"][0]["text"] =
+            json!(serde_json::to_string(&raw["structuredContent"]).unwrap());
+        if let PreservedField::Value(schema) = &mut tree_contract.output_schema {
+            schema["additionalProperties"] = json!(true);
+        }
+        let payload_only_pagination = parse_mcp_result(&raw).unwrap();
+        assert!(
+            tree_listing_shape(
+                &payload_only_pagination,
+                Some(&tree_contract),
+                Some(&input),
+            )
+            .expect("shape assessment")
+            .is_none(),
+            "payload pagination evidence must make the tree strategy yield even when the schema allows it implicitly"
         );
     }
 

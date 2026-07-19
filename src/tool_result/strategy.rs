@@ -1152,18 +1152,16 @@ pub(crate) fn tree_listing_candidate(
             if field != entries_field {
                 return (field.clone(), value.clone());
             }
-            let entries = value
-                .as_array()
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .enumerate()
-                        .filter(|(index, _)| !omitted.contains(index))
-                        .map(|(_, entry)| entry.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            (field.clone(), Value::Array(entries))
+            let Some(entries) = value.as_array() else {
+                return (field.clone(), value.clone());
+            };
+            let retained = entries
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !omitted.contains(index))
+                .map(|(_, entry)| entry.clone())
+                .collect();
+            (field.clone(), Value::Array(retained))
         })
         .collect()
 }
@@ -2517,5 +2515,17 @@ mod tests {
             assess_mcp_tree_listing_schema(&schema, oversized.as_object().unwrap(), None),
             Err(McpTreeSchemaRejection::SourceTooLarge)
         );
+    }
+
+    #[test]
+    fn tree_candidate_preserves_an_unexpected_non_array_entries_field() {
+        let source = json!({
+            "root": "/repo",
+            "entries": "unexpected server value",
+            "order": "path-ascending"
+        });
+        let source = source.as_object().unwrap();
+
+        assert_eq!(tree_listing_candidate(source, "entries", &[0]), *source);
     }
 }
