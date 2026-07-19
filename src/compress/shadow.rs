@@ -50,6 +50,8 @@ pub struct McpContractShadow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eligible_strategy_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape_authorization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_validated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_replacements: Option<usize>,
@@ -63,6 +65,12 @@ pub struct McpContractShadow {
     pub candidate_chars_in: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_chars_out: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_collection_items_in: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_collection_items_out: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_collection_items_omitted: Option<usize>,
 }
 
 impl FlagCounts {
@@ -370,6 +378,7 @@ pub fn compute_shadow_decision_with_mcp_contract(
                     .map(|validation| validation.code().to_string()),
                 eligible_strategy: manifest.map(|manifest| manifest.id.to_string()),
                 eligible_strategy_version: manifest.map(|manifest| manifest.version.to_string()),
+                shape_authorization: observation.shape_authorization.map(str::to_string),
                 proposal_validated: observation
                     .proposal_attempted
                     .then_some(validated.is_some()),
@@ -383,6 +392,12 @@ pub fn compute_shadow_decision_with_mcp_contract(
                     .map(|manifest| manifest.id.to_string()),
                 candidate_chars_in: validated.map(|proposal| proposal.chars_in),
                 candidate_chars_out: validated.map(|proposal| proposal.chars_out),
+                candidate_collection_items_in: validated
+                    .and_then(|proposal| proposal.collection_items_in),
+                candidate_collection_items_out: validated
+                    .and_then(|proposal| proposal.collection_items_out),
+                candidate_collection_items_omitted: validated
+                    .and_then(|proposal| proposal.collection_items_omitted),
             }
         })
     } else {

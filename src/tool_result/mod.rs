@@ -17,9 +17,12 @@ pub use contract::{
 };
 pub use mcp::{parse_mcp_result, render_mcp_result_or_original, McpParseError};
 pub use schema::{validate_mcp_output_schema, McpOutputSchemaValidation, McpSchemaRejection};
+pub(crate) use strategy::collection_head_tail_indices;
 pub use strategy::{
-    validate_mcp_proposal, validate_mcp_proposal_with_contract, McpProposalRejection,
-    McpStrategyManifest, McpTextReplacement, McpTransformProposal, ValidatedMcpProposal,
+    validate_mcp_proposal, validate_mcp_proposal_with_contract, McpPaginatedCollectionEdit,
+    McpProposalRejection, McpStrategyManifest, McpStructuredContentEdit,
+    McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal,
+    ValidatedMcpProposal, MCP_COLLECTION_OMISSION_MARKER_FIELD, MCP_MAX_RETAINED_COLLECTION_ITEMS,
 };
 pub use types::{
     CanonicalContentBlock, CanonicalMcpResult, CanonicalToolExchange, McpResultCoverage,
