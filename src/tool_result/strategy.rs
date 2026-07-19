@@ -3141,6 +3141,9 @@ mod tests {
 
         let array_source = json!({"columns": ["id"], "rows": [["a"]]});
         let array_source = array_source.as_object().unwrap();
-        assert_eq!(table_rows_candidate(array_source, "rows", &[1]), *array_source);
+        assert_eq!(
+            table_rows_candidate(array_source, "rows", &[1]),
+            *array_source
+        );
     }
 }
