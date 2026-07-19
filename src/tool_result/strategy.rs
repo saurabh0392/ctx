@@ -7,9 +7,8 @@ use super::{
     McpOutputSchemaValidation, McpSchemaRejection, PreservedField, ToolContract,
 };
 
-pub const MCP_COLLECTION_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
+pub const MCP_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
 pub const MCP_MAX_RETAINED_COLLECTION_ITEMS: usize = 64;
-pub const MCP_SEARCH_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
 pub const MCP_MAX_RETAINED_SEARCH_RESULTS: usize = 64;
 
 /// Stable, inspectable contract for one result strategy. A version change deliberately creates a
@@ -562,7 +561,7 @@ fn validate_search_results_edit(
     }
     let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
         .map_err(|_| McpProposalRejection::SearchTextMirrorInvalid)?;
-    if edit.omission_marker_field != MCP_SEARCH_OMISSION_MARKER_FIELD {
+    if edit.omission_marker_field != MCP_OMISSION_MARKER_FIELD {
         return Err(McpProposalRejection::SearchOmissionMarkerInvalid);
     }
     let marker = parsed_candidate
@@ -654,7 +653,7 @@ fn validate_collection_edit(
     }
     let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
         .map_err(|_| McpProposalRejection::CollectionTextMirrorInvalid)?;
-    if edit.omission_marker_field != MCP_COLLECTION_OMISSION_MARKER_FIELD {
+    if edit.omission_marker_field != MCP_OMISSION_MARKER_FIELD {
         return Err(McpProposalRejection::CollectionOmissionMarkerInvalid);
     }
     let marker = parsed_candidate
@@ -706,7 +705,7 @@ pub(crate) fn assess_mcp_search_array_schema(
     let property_schema = resolve_search_local_schema(root, property_schema)
         .ok_or(McpSearchSchemaRejection::ArraySchemaUnsupported)?;
     if !search_schema_types_are_subset_of(property_schema, &["array"]) {
-        return Err(McpSearchSchemaRejection::ArraySchemaMissing);
+        return Err(McpSearchSchemaRejection::ArraySchemaUnsupported);
     }
     if property_schema.get("prefixItems").is_some() {
         return Err(McpSearchSchemaRejection::PositionalSchemaUnsupported);
@@ -1010,5 +1009,25 @@ mod tests {
             Err(McpProposalRejection::ErrorResult)
         );
         assert_eq!(error.render(), *error.raw());
+    }
+
+    #[test]
+    fn search_schema_assessment_distinguishes_missing_from_incompatible_arrays() {
+        let incompatible = json!({
+            "type": "object",
+            "properties": {
+                "results": {"type": "object"}
+            }
+        });
+        assert_eq!(
+            assess_mcp_search_array_schema(&incompatible, "results"),
+            Err(McpSearchSchemaRejection::ArraySchemaUnsupported)
+        );
+
+        let missing = json!({"type": "object", "properties": {}});
+        assert_eq!(
+            assess_mcp_search_array_schema(&missing, "results"),
+            Err(McpSearchSchemaRejection::ArraySchemaMissing)
+        );
     }
 }

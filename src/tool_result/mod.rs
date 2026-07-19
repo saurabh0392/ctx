@@ -24,8 +24,8 @@ pub use strategy::{
     validate_mcp_proposal, validate_mcp_proposal_with_contract, McpPaginatedCollectionEdit,
     McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
     McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal,
-    ValidatedMcpProposal, MCP_COLLECTION_OMISSION_MARKER_FIELD, MCP_MAX_RETAINED_COLLECTION_ITEMS,
-    MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_SEARCH_OMISSION_MARKER_FIELD,
+    ValidatedMcpProposal, MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS,
+    MCP_OMISSION_MARKER_FIELD,
 };
 pub use types::{
     CanonicalContentBlock, CanonicalMcpResult, CanonicalToolExchange, McpResultCoverage,

@@ -4,9 +4,8 @@ use crate::tool_result::{
     CanonicalMcpResult, McpOutputSchemaValidation, McpPaginatedCollectionEdit,
     McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
     McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal, PreservedField,
-    ToolContract, ValidatedMcpProposal, MCP_COLLECTION_OMISSION_MARKER_FIELD,
-    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS,
-    MCP_SEARCH_OMISSION_MARKER_FIELD,
+    ToolContract, ValidatedMcpProposal, MCP_MAX_RETAINED_COLLECTION_ITEMS,
+    MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_OMISSION_MARKER_FIELD,
 };
 use serde_json::{Map, Value};
 
@@ -346,7 +345,7 @@ fn search_results_shape(
         }
         return named_rejection.map_or(Ok(None), Err);
     };
-    if structured.contains_key(MCP_SEARCH_OMISSION_MARKER_FIELD) {
+    if structured.contains_key(MCP_OMISSION_MARKER_FIELD) {
         return Err("search-omission-marker-collision");
     }
 
@@ -421,7 +420,7 @@ fn paginated_collection_shape(
     if !has_pagination_evidence {
         return Err("collection-pagination-evidence-missing");
     }
-    if structured.contains_key(MCP_COLLECTION_OMISSION_MARKER_FIELD) {
+    if structured.contains_key(MCP_OMISSION_MARKER_FIELD) {
         return Err("collection-omission-marker-collision");
     }
 
@@ -579,7 +578,7 @@ fn propose_paginated_collection(
             edit: McpStructuredContentEdit::PaginatedCollection(McpPaginatedCollectionEdit {
                 field: shape.field.clone(),
                 retained_indices,
-                omission_marker_field: MCP_COLLECTION_OMISSION_MARKER_FIELD.to_string(),
+                omission_marker_field: MCP_OMISSION_MARKER_FIELD.to_string(),
             }),
         }),
     }))
@@ -666,7 +665,7 @@ fn propose_search_results(
                 identity_field: shape.identity_field.clone(),
                 match_evidence_field: shape.match_evidence_field.clone(),
                 retained_indices,
-                omission_marker_field: MCP_SEARCH_OMISSION_MARKER_FIELD.to_string(),
+                omission_marker_field: MCP_OMISSION_MARKER_FIELD.to_string(),
             }),
         }),
     }))
@@ -706,7 +705,7 @@ fn search_results_text_projection(
 ) -> Value {
     let mut projection = candidate.clone();
     projection.insert(
-        MCP_SEARCH_OMISSION_MARKER_FIELD.to_string(),
+        MCP_OMISSION_MARKER_FIELD.to_string(),
         serde_json::json!({
             "field": field,
             "originalItems": original_results,
@@ -726,7 +725,7 @@ fn collection_text_projection(
 ) -> Value {
     let mut projection = candidate.clone();
     projection.insert(
-        MCP_COLLECTION_OMISSION_MARKER_FIELD.to_string(),
+        MCP_OMISSION_MARKER_FIELD.to_string(),
         serde_json::json!({
             "field": field,
             "originalItems": original_items,
@@ -1421,7 +1420,7 @@ mod tests {
         let mut forged_marker = proposal.clone();
         let mut projection: Value =
             serde_json::from_str(&forged_marker.replacements[0].replacement).unwrap();
-        projection[MCP_SEARCH_OMISSION_MARKER_FIELD]["omittedItems"] = json!(999);
+        projection[MCP_OMISSION_MARKER_FIELD]["omittedItems"] = json!(999);
         forged_marker.replacements[0].replacement = serde_json::to_string(&projection).unwrap();
         assert_eq!(
             validate_mcp_proposal_with_contract(
@@ -1471,10 +1470,10 @@ mod tests {
         );
 
         let mut colliding_structured = result.structured_content.value().unwrap().clone();
-        colliding_structured.as_object_mut().unwrap().insert(
-            MCP_SEARCH_OMISSION_MARKER_FIELD.into(),
-            json!({"server": true}),
-        );
+        colliding_structured
+            .as_object_mut()
+            .unwrap()
+            .insert(MCP_OMISSION_MARKER_FIELD.into(), json!({"server": true}));
         let colliding_text = serde_json::to_string(&colliding_structured).unwrap();
         let colliding = parse_mcp_result(&json!({
             "content": [{"type": "text", "text": colliding_text}],
@@ -1483,11 +1482,11 @@ mod tests {
         .unwrap();
         let mut colliding_contract = contract.clone();
         if let PreservedField::Value(schema) = &mut colliding_contract.output_schema {
-            schema["properties"][MCP_SEARCH_OMISSION_MARKER_FIELD] = json!({"type": "object"});
+            schema["properties"][MCP_OMISSION_MARKER_FIELD] = json!({"type": "object"});
             schema["required"]
                 .as_array_mut()
                 .unwrap()
-                .push(json!(MCP_SEARCH_OMISSION_MARKER_FIELD));
+                .push(json!(MCP_OMISSION_MARKER_FIELD));
         }
         let colliding = evaluate_mcp_strategies_shadow_with_contract(
             &colliding,
@@ -1888,7 +1887,7 @@ mod tests {
         let mut forged_marker = proposal.clone();
         let mut projection: Value =
             serde_json::from_str(&forged_marker.replacements[0].replacement).unwrap();
-        projection[MCP_COLLECTION_OMISSION_MARKER_FIELD]["omittedItems"] = json!(999);
+        projection[MCP_OMISSION_MARKER_FIELD]["omittedItems"] = json!(999);
         forged_marker.replacements[0].replacement = serde_json::to_string(&projection).unwrap();
         assert_eq!(
             validate_mcp_proposal_with_contract(
