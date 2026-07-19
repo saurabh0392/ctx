@@ -3,6 +3,20 @@
 All notable CTX changes are recorded here. Versions follow semantic versioning while the product is
 in beta.
 
+## [0.5.5] - 2026-07-19
+
+### Changed
+
+- Run the model-based Fitcheck locally on the exact PR head instead of spending GitHub Actions
+  credits in PR and release workflows.
+- Publish a required `Local Fitcheck` commit status with `make pr-fitcheck PR=<number>` so GitHub can
+  enforce the local result without running the model.
+
+### Security and privacy
+
+- Restrict local Fitcheck to read-only file tools with MCP, browser, shell, and edit access disabled.
+- Fail closed on setup, authentication, output parsing, worktree mutation, or a changed PR head.
+
 ## [0.5.4] - 2026-07-18
 
 ### Added
