@@ -77,6 +77,12 @@ pub struct McpContractShadow {
     pub candidate_search_results_out: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_search_results_omitted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_entity_fields_in: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_entity_fields_out: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_entity_fields_omitted: Option<usize>,
 }
 
 impl FlagCounts {
@@ -355,12 +361,14 @@ pub fn compute_shadow_decision_with_mcp_contract(
                 cwd: cwd.to_string(),
                 prompt_keywords: frame.prompt_keywords.clone(),
             };
-            let observation = super::mcp_strategy::evaluate_mcp_strategies_shadow_with_contract(
-                result,
-                mcp_tool_contract,
-                &opts,
-                &context,
-            );
+            let observation =
+                super::mcp_strategy::evaluate_mcp_strategies_shadow_with_contract_and_input(
+                    result,
+                    mcp_tool_contract,
+                    Some(tool_input),
+                    &opts,
+                    &context,
+                );
             let manifest = observation.manifest;
             let validated = observation.validated;
             McpContractShadow {
@@ -410,6 +418,12 @@ pub fn compute_shadow_decision_with_mcp_contract(
                     .and_then(|proposal| proposal.search_results_out),
                 candidate_search_results_omitted: validated
                     .and_then(|proposal| proposal.search_results_omitted),
+                candidate_entity_fields_in: validated
+                    .and_then(|proposal| proposal.entity_fields_in),
+                candidate_entity_fields_out: validated
+                    .and_then(|proposal| proposal.entity_fields_out),
+                candidate_entity_fields_omitted: validated
+                    .and_then(|proposal| proposal.entity_fields_omitted),
             }
         })
     } else {

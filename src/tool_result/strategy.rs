@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::{
     parse_mcp_result, validate_mcp_output_schema, CanonicalContentBlock, CanonicalMcpResult,
@@ -12,6 +12,12 @@ pub const MCP_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
 pub const MCP_COLLECTION_OMISSION_MARKER_FIELD: &str = MCP_OMISSION_MARKER_FIELD;
 pub const MCP_MAX_RETAINED_COLLECTION_ITEMS: usize = 64;
 pub const MCP_MAX_RETAINED_SEARCH_RESULTS: usize = 64;
+pub const MCP_MAX_ENTITY_FIELDS: usize = 128;
+pub const MCP_MAX_ENTITY_OMITTED_FIELDS: usize = 64;
+const MCP_MAX_ENTITY_REQUESTED_FIELDS: usize = 64;
+const MCP_MAX_ENTITY_INPUT_NODES: usize = 256;
+const MCP_MAX_ENTITY_INPUT_DEPTH: usize = 8;
+const MCP_MAX_ENTITY_FIELD_NAME_BYTES: usize = 128;
 
 /// Stable, inspectable contract for one result strategy. A version change deliberately creates a
 /// new evidence identity instead of silently inheriting activation from older behavior.
@@ -48,6 +54,7 @@ pub struct McpStructuredContentReplacement {
 pub enum McpStructuredContentEdit {
     PaginatedCollection(McpPaginatedCollectionEdit),
     SearchResults(McpSearchResultsEdit),
+    EntityDetail(McpEntityDetailEdit),
 }
 
 /// Proof inputs for one top-level collection reduction. The validator independently checks every
@@ -70,6 +77,54 @@ pub struct McpSearchResultsEdit {
     pub match_evidence_field: String,
     pub retained_indices: Vec<usize>,
     pub omission_marker_field: String,
+}
+
+/// Proof inputs for one schema-authorized entity/detail reduction. The protected set is
+/// independently derived from the advertised schema and bounded tool input; a proposal records
+/// the requested and omitted fields only so the validator can reject stale or forged context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpEntityDetailEdit {
+    pub identity_field: String,
+    pub requested_fields: Vec<String>,
+    pub omitted_fields: Vec<String>,
+    pub omission_marker_field: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpEntitySchemaAuthorization {
+    pub identity_field: String,
+    pub requested_fields: Vec<String>,
+    pub protected_fields: Vec<String>,
+    pub removable_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpEntitySchemaRejection {
+    SchemaMissing,
+    SchemaUnsupported,
+    SourceTooWide,
+    IdentityEvidenceMissing,
+    IdentityValueMissing,
+    InputTooLarge,
+    InputSelectorAmbiguous,
+    InputSelectorUnsupported,
+    RequestedFieldUnknown,
+}
+
+impl McpEntitySchemaRejection {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::SchemaMissing => "entity-object-schema-missing",
+            Self::SchemaUnsupported => "entity-object-schema-unsupported",
+            Self::SourceTooWide => "entity-object-too-wide",
+            Self::IdentityEvidenceMissing => "entity-identity-evidence-missing",
+            Self::IdentityValueMissing => "entity-identity-value-missing",
+            Self::InputTooLarge => "entity-input-context-too-large",
+            Self::InputSelectorAmbiguous => "entity-field-selector-ambiguous",
+            Self::InputSelectorUnsupported => "entity-field-selector-unsupported",
+            Self::RequestedFieldUnknown => "entity-requested-field-unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +182,9 @@ pub struct ValidatedMcpProposal {
     pub search_results_in: Option<usize>,
     pub search_results_out: Option<usize>,
     pub search_results_omitted: Option<usize>,
+    pub entity_fields_in: Option<usize>,
+    pub entity_fields_out: Option<usize>,
+    pub entity_fields_omitted: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +217,11 @@ pub enum McpProposalRejection {
     SearchSelectionInvalid,
     SearchTextMirrorInvalid,
     SearchOmissionMarkerInvalid,
+    EntityTargetInvalid,
+    EntitySchemaAuthorizationInvalid,
+    EntitySelectionInvalid,
+    EntityTextMirrorInvalid,
+    EntityOmissionMarkerInvalid,
     RenderedContractInvalid,
     SourceSchema(McpSchemaRejection),
     CandidateSchema(McpSchemaRejection),
@@ -195,6 +258,11 @@ impl McpProposalRejection {
             Self::SearchSelectionInvalid => "search-selection-invalid",
             Self::SearchTextMirrorInvalid => "search-text-mirror-invalid",
             Self::SearchOmissionMarkerInvalid => "search-omission-marker-invalid",
+            Self::EntityTargetInvalid => "entity-target-invalid",
+            Self::EntitySchemaAuthorizationInvalid => "entity-schema-authorization-invalid",
+            Self::EntitySelectionInvalid => "entity-selection-invalid",
+            Self::EntityTextMirrorInvalid => "entity-text-mirror-invalid",
+            Self::EntityOmissionMarkerInvalid => "entity-omission-marker-invalid",
             Self::RenderedContractInvalid => "rendered-contract-invalid",
             Self::SourceSchema(rejection) => rejection.code(),
             Self::CandidateSchema(rejection) => candidate_schema_code(rejection),
@@ -229,6 +297,19 @@ pub fn validate_mcp_proposal(
 pub fn validate_mcp_proposal_with_contract(
     result: &CanonicalMcpResult,
     contract: Option<&ToolContract>,
+    manifest: &McpStrategyManifest,
+    proposal: &McpTransformProposal,
+) -> Result<ValidatedMcpProposal, McpProposalRejection> {
+    validate_mcp_proposal_with_contract_and_input(result, contract, None, manifest, proposal)
+}
+
+/// Contract- and input-aware proposal validation. Only strategies whose semantic protections
+/// depend on a bounded portion of tool input need the extra context; existing callers retain the
+/// narrower contract-only API above.
+pub fn validate_mcp_proposal_with_contract_and_input(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
     manifest: &McpStrategyManifest,
     proposal: &McpTransformProposal,
 ) -> Result<ValidatedMcpProposal, McpProposalRejection> {
@@ -290,6 +371,8 @@ pub fn validate_mcp_proposal_with_contract(
             result,
             &mut candidate,
             contract,
+            tool_input,
+            proposal.max_total_text_chars,
             replacement,
             &replacements_by_target,
         )?),
@@ -387,6 +470,10 @@ pub fn validate_mcp_proposal_with_contract(
         search_results_out: structured_metrics.and_then(StructuredEditMetrics::search_results_out),
         search_results_omitted: structured_metrics
             .and_then(StructuredEditMetrics::search_results_omitted),
+        entity_fields_in: structured_metrics.and_then(StructuredEditMetrics::entity_fields_in),
+        entity_fields_out: structured_metrics.and_then(StructuredEditMetrics::entity_fields_out),
+        entity_fields_omitted: structured_metrics
+            .and_then(StructuredEditMetrics::entity_fields_omitted),
     })
 }
 
@@ -401,48 +488,70 @@ struct CollectionMetrics {
 enum StructuredEditMetrics {
     Collection(CollectionMetrics),
     Search(CollectionMetrics),
+    Entity(CollectionMetrics),
 }
 
 impl StructuredEditMetrics {
     fn collection_items_in(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_in),
-            Self::Search(_) => None,
+            Self::Search(_) | Self::Entity(_) => None,
         }
     }
 
     fn collection_items_out(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_out),
-            Self::Search(_) => None,
+            Self::Search(_) | Self::Entity(_) => None,
         }
     }
 
     fn collection_items_omitted(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_omitted),
-            Self::Search(_) => None,
+            Self::Search(_) | Self::Entity(_) => None,
         }
     }
 
     fn search_results_in(self) -> Option<usize> {
         match self {
-            Self::Collection(_) => None,
+            Self::Collection(_) | Self::Entity(_) => None,
             Self::Search(metrics) => Some(metrics.items_in),
         }
     }
 
     fn search_results_out(self) -> Option<usize> {
         match self {
-            Self::Collection(_) => None,
+            Self::Collection(_) | Self::Entity(_) => None,
             Self::Search(metrics) => Some(metrics.items_out),
         }
     }
 
     fn search_results_omitted(self) -> Option<usize> {
         match self {
-            Self::Collection(_) => None,
+            Self::Collection(_) | Self::Entity(_) => None,
             Self::Search(metrics) => Some(metrics.items_omitted),
+        }
+    }
+
+    fn entity_fields_in(self) -> Option<usize> {
+        match self {
+            Self::Collection(_) | Self::Search(_) => None,
+            Self::Entity(metrics) => Some(metrics.items_in),
+        }
+    }
+
+    fn entity_fields_out(self) -> Option<usize> {
+        match self {
+            Self::Collection(_) | Self::Search(_) => None,
+            Self::Entity(metrics) => Some(metrics.items_out),
+        }
+    }
+
+    fn entity_fields_omitted(self) -> Option<usize> {
+        match self {
+            Self::Collection(_) | Self::Search(_) => None,
+            Self::Entity(metrics) => Some(metrics.items_omitted),
         }
     }
 }
@@ -451,6 +560,8 @@ fn validate_and_apply_structured_content(
     result: &CanonicalMcpResult,
     candidate: &mut CanonicalMcpResult,
     contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
+    max_total_text_chars: usize,
     replacement: &McpStructuredContentReplacement,
     text_replacements: &HashMap<usize, &McpTextReplacement>,
 ) -> Result<StructuredEditMetrics, McpProposalRejection> {
@@ -475,6 +586,18 @@ fn validate_and_apply_structured_content(
             StructuredEditMetrics::Search(validate_search_results_edit(
                 result,
                 contract,
+                &replacement.expected,
+                &replacement.replacement,
+                edit,
+                text_replacements,
+            )?)
+        }
+        McpStructuredContentEdit::EntityDetail(edit) => {
+            StructuredEditMetrics::Entity(validate_entity_detail_edit(
+                result,
+                contract,
+                tool_input,
+                max_total_text_chars,
                 &replacement.expected,
                 &replacement.replacement,
                 edit,
@@ -595,6 +718,147 @@ fn validate_search_results_edit(
     })
 }
 
+fn validate_entity_detail_edit(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
+    max_total_text_chars: usize,
+    source: &Value,
+    candidate: &Value,
+    edit: &McpEntityDetailEdit,
+    text_replacements: &HashMap<usize, &McpTextReplacement>,
+) -> Result<CollectionMetrics, McpProposalRejection> {
+    let (Some(source), Some(candidate)) = (source.as_object(), candidate.as_object()) else {
+        return Err(McpProposalRejection::EntityTargetInvalid);
+    };
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return Err(McpProposalRejection::EntitySchemaAuthorizationInvalid);
+    };
+    let authorization = assess_mcp_entity_schema(schema, source, tool_input)
+        .map_err(|_| McpProposalRejection::EntitySchemaAuthorizationInvalid)?;
+    if edit.identity_field != authorization.identity_field
+        || edit.requested_fields != authorization.requested_fields
+        || edit.omitted_fields.is_empty()
+        || edit.omitted_fields.len() > MCP_MAX_ENTITY_OMITTED_FIELDS
+        || edit.omitted_fields.len() > authorization.removable_fields.len()
+        || edit.omitted_fields != authorization.removable_fields[..edit.omitted_fields.len()]
+    {
+        return Err(McpProposalRejection::EntitySelectionInvalid);
+    }
+
+    let rebuilt = entity_detail_candidate(source, &edit.omitted_fields);
+    if candidate != &rebuilt {
+        return Err(McpProposalRejection::EntitySelectionInvalid);
+    }
+    if authorization
+        .protected_fields
+        .iter()
+        .any(|field| candidate.get(field) != source.get(field))
+    {
+        return Err(McpProposalRejection::EntitySelectionInvalid);
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 || text_replacements.len() != 1 {
+        return Err(McpProposalRejection::EntityTextMirrorInvalid);
+    }
+    let (block_index, source_text) = text_blocks[0];
+    let Some(text_replacement) = text_replacements.get(&block_index) else {
+        return Err(McpProposalRejection::EntityTextMirrorInvalid);
+    };
+    let parsed_source: Value = serde_json::from_str(source_text)
+        .map_err(|_| McpProposalRejection::EntityTextMirrorInvalid)?;
+    if parsed_source != Value::Object(source.clone()) {
+        return Err(McpProposalRejection::EntityTextMirrorInvalid);
+    }
+    let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
+        .map_err(|_| McpProposalRejection::EntityTextMirrorInvalid)?;
+    if edit.omission_marker_field != MCP_OMISSION_MARKER_FIELD {
+        return Err(McpProposalRejection::EntityOmissionMarkerInvalid);
+    }
+    let marker = parsed_candidate
+        .as_object_mut()
+        .and_then(|object| object.remove(&edit.omission_marker_field))
+        .ok_or(McpProposalRejection::EntityOmissionMarkerInvalid)?;
+    if parsed_candidate != Value::Object(candidate.clone()) {
+        return Err(McpProposalRejection::EntityTextMirrorInvalid);
+    }
+
+    let fields_in = source.len();
+    let fields_out = candidate.len();
+    let fields_omitted = edit.omitted_fields.len();
+    let expected_marker = serde_json::json!({
+        "originalFields": fields_in,
+        "retainedFields": fields_out,
+        "omittedFields": fields_omitted,
+        "fields": edit.omitted_fields,
+        "selection": "schema-protected-entity-fields"
+    });
+    if marker != expected_marker || fields_in - fields_out != fields_omitted {
+        return Err(McpProposalRejection::EntityOmissionMarkerInvalid);
+    }
+
+    let previous_projection_chars = if edit.omitted_fields.len() == 1 {
+        source_text.chars().count()
+    } else {
+        let previous_omitted = &edit.omitted_fields[..edit.omitted_fields.len() - 1];
+        let previous_candidate = entity_detail_candidate(source, previous_omitted);
+        serde_json::to_string(&entity_detail_text_projection(
+            &previous_candidate,
+            source.len(),
+            previous_omitted,
+        ))
+        .map_err(|_| McpProposalRejection::EntityTextMirrorInvalid)?
+        .chars()
+        .count()
+    };
+    if previous_projection_chars <= max_total_text_chars {
+        return Err(McpProposalRejection::EntitySelectionInvalid);
+    }
+
+    Ok(CollectionMetrics {
+        items_in: fields_in,
+        items_out: fields_out,
+        items_omitted: fields_omitted,
+    })
+}
+
+pub(crate) fn entity_detail_candidate(
+    source: &Map<String, Value>,
+    omitted_fields: &[String],
+) -> Map<String, Value> {
+    let omitted: BTreeSet<_> = omitted_fields.iter().map(String::as_str).collect();
+    source
+        .iter()
+        .filter(|(field, _)| !omitted.contains(field.as_str()))
+        .map(|(field, value)| (field.clone(), value.clone()))
+        .collect()
+}
+
+pub(crate) fn entity_detail_text_projection(
+    candidate: &Map<String, Value>,
+    original_fields: usize,
+    omitted_fields: &[String],
+) -> Value {
+    let mut projection = candidate.clone();
+    projection.insert(
+        MCP_OMISSION_MARKER_FIELD.to_string(),
+        serde_json::json!({
+            "originalFields": original_fields,
+            "retainedFields": candidate.len(),
+            "omittedFields": omitted_fields.len(),
+            "fields": omitted_fields,
+            "selection": "schema-protected-entity-fields"
+        }),
+    );
+    Value::Object(projection)
+}
+
 fn validate_collection_edit(
     result: &CanonicalMcpResult,
     source: &Value,
@@ -691,6 +955,291 @@ pub(crate) fn collection_head_tail_indices(total: usize, retained: usize) -> Vec
     let head = retained.div_ceil(2);
     let tail = retained / 2;
     (0..head).chain((total - tail)..total).collect()
+}
+
+pub(crate) fn assess_mcp_entity_schema(
+    root: &Value,
+    source: &Map<String, Value>,
+    tool_input: Option<&Value>,
+) -> Result<McpEntitySchemaAuthorization, McpEntitySchemaRejection> {
+    if source.len() > MCP_MAX_ENTITY_FIELDS {
+        return Err(McpEntitySchemaRejection::SourceTooWide);
+    }
+    let schema = resolve_search_local_schema(root, root)
+        .ok_or(McpEntitySchemaRejection::SchemaUnsupported)?;
+    if !search_schema_types_are_subset_of(schema, &["object"])
+        || entity_schema_has_removal_dependencies(schema)
+    {
+        return Err(McpEntitySchemaRejection::SchemaUnsupported);
+    }
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(McpEntitySchemaRejection::SchemaMissing)?;
+    if source.keys().any(|field| !properties.contains_key(field)) {
+        return Err(McpEntitySchemaRejection::SchemaUnsupported);
+    }
+
+    let required = match schema.get("required") {
+        None => Vec::new(),
+        Some(Value::Array(fields)) => fields
+            .iter()
+            .map(|field| {
+                field
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or(McpEntitySchemaRejection::SchemaUnsupported)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err(McpEntitySchemaRejection::SchemaUnsupported),
+    };
+    let required: BTreeSet<_> = required.into_iter().collect();
+    let identity_field = required
+        .iter()
+        .find(|field| entity_identity_schema_is_supported(root, properties, field))
+        .cloned()
+        .ok_or(McpEntitySchemaRejection::IdentityEvidenceMissing)?;
+    if source.get(&identity_field).is_none_or(Value::is_null) {
+        return Err(McpEntitySchemaRejection::IdentityValueMissing);
+    }
+
+    let requested_fields = assess_mcp_entity_requested_fields(tool_input)?;
+    if requested_fields
+        .iter()
+        .any(|field| !properties.contains_key(field) || !source.contains_key(field))
+    {
+        return Err(McpEntitySchemaRejection::RequestedFieldUnknown);
+    }
+
+    let mut protected_fields = required;
+    protected_fields.extend(requested_fields.iter().cloned());
+    protected_fields.insert(identity_field.clone());
+    protected_fields.extend(source.keys().filter_map(|field| {
+        let normalized = search_schema_normalized_field(field);
+        (entity_status_field(&normalized) || entity_link_field(&normalized)).then(|| field.clone())
+    }));
+
+    let mut removable_fields: Vec<_> = source
+        .iter()
+        .filter_map(|(field, value)| {
+            if protected_fields.contains(field)
+                || value.is_null()
+                || value.is_array()
+                || value.is_object()
+            {
+                return None;
+            }
+            let normalized = search_schema_normalized_field(field);
+            let verbose = value.is_string() && entity_verbose_field(&normalized);
+            let protected_duplicate = protected_fields.iter().any(|protected| {
+                protected != field && source.get(protected).is_some_and(|other| other == value)
+            });
+            (verbose || protected_duplicate).then(|| {
+                let serialized_chars = serde_json::to_string(value)
+                    .map(|value| value.chars().count())
+                    .unwrap_or(0)
+                    + field.chars().count();
+                (field.clone(), serialized_chars, protected_duplicate)
+            })
+        })
+        .collect();
+    removable_fields.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    Ok(McpEntitySchemaAuthorization {
+        identity_field,
+        requested_fields,
+        protected_fields: protected_fields.into_iter().collect(),
+        removable_fields: removable_fields
+            .into_iter()
+            .map(|(field, _, _)| field)
+            .collect(),
+    })
+}
+
+fn assess_mcp_entity_requested_fields(
+    tool_input: Option<&Value>,
+) -> Result<Vec<String>, McpEntitySchemaRejection> {
+    let Some(tool_input) = tool_input else {
+        return Ok(Vec::new());
+    };
+    if !tool_input.is_object() {
+        return Err(McpEntitySchemaRejection::InputSelectorUnsupported);
+    }
+    let mut nodes = 0usize;
+    let mut selectors = Vec::new();
+    inspect_entity_input(tool_input, 0, &mut nodes, &mut selectors)?;
+    if selectors.len() > 1 {
+        return Err(McpEntitySchemaRejection::InputSelectorAmbiguous);
+    }
+    let Some((_, selector)) = selectors.into_iter().next() else {
+        return Ok(Vec::new());
+    };
+    let raw_fields: Vec<&str> = match selector {
+        Value::String(value) => value.split(',').map(str::trim).collect(),
+        Value::Array(values) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or(McpEntitySchemaRejection::InputSelectorUnsupported)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Err(McpEntitySchemaRejection::InputSelectorUnsupported),
+    };
+    if raw_fields.is_empty() || raw_fields.len() > MCP_MAX_ENTITY_REQUESTED_FIELDS {
+        return Err(McpEntitySchemaRejection::InputSelectorUnsupported);
+    }
+    let mut fields = BTreeSet::new();
+    for field in raw_fields {
+        if field.is_empty()
+            || field.len() > MCP_MAX_ENTITY_FIELD_NAME_BYTES
+            || !field
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(McpEntitySchemaRejection::InputSelectorUnsupported);
+        }
+        fields.insert(field.to_string());
+    }
+    if fields.is_empty() {
+        return Err(McpEntitySchemaRejection::InputSelectorUnsupported);
+    }
+    Ok(fields.into_iter().collect())
+}
+
+fn inspect_entity_input<'a>(
+    value: &'a Value,
+    depth: usize,
+    nodes: &mut usize,
+    selectors: &mut Vec<(&'a str, &'a Value)>,
+) -> Result<(), McpEntitySchemaRejection> {
+    *nodes += 1;
+    if *nodes > MCP_MAX_ENTITY_INPUT_NODES || depth > MCP_MAX_ENTITY_INPUT_DEPTH {
+        return Err(McpEntitySchemaRejection::InputTooLarge);
+    }
+    match value {
+        Value::Object(object) => {
+            for (field, child) in object {
+                let normalized = search_schema_normalized_field(field);
+                if entity_field_selector(&normalized) {
+                    if depth != 0 {
+                        return Err(McpEntitySchemaRejection::InputSelectorUnsupported);
+                    }
+                    selectors.push((field, child));
+                }
+                inspect_entity_input(child, depth + 1, nodes, selectors)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                inspect_entity_input(child, depth + 1, nodes, selectors)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn entity_schema_has_removal_dependencies(schema: &Value) -> bool {
+    [
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+        "dependencies",
+        "minProperties",
+        "patternProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+    ]
+    .iter()
+    .any(|keyword| schema.get(*keyword).is_some())
+}
+
+fn entity_identity_schema_is_supported(
+    root: &Value,
+    properties: &Map<String, Value>,
+    field: &str,
+) -> bool {
+    let normalized = search_schema_normalized_field(field);
+    if !matches!(
+        normalized.as_str(),
+        "id" | "entityid"
+            | "recordid"
+            | "objectid"
+            | "key"
+            | "issuekey"
+            | "slug"
+            | "number"
+            | "uri"
+            | "url"
+    ) {
+        return false;
+    }
+    properties
+        .get(field)
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .is_some_and(|schema| search_schema_types_are_subset_of(schema, &["string", "integer"]))
+}
+
+fn entity_field_selector(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "field"
+            | "fields"
+            | "properties"
+            | "select"
+            | "include"
+            | "columns"
+            | "projection"
+            | "returnfields"
+            | "requestedfields"
+    )
+}
+
+fn entity_status_field(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "status" | "state" | "phase" | "lifecycle" | "condition" | "resolution"
+    )
+}
+
+fn entity_link_field(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "uri" | "url" | "link" | "permalink" | "htmlurl" | "weburl" | "self" | "selflink"
+    )
+}
+
+fn entity_verbose_field(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "description"
+            | "longdescription"
+            | "body"
+            | "content"
+            | "text"
+            | "details"
+            | "notes"
+            | "commentary"
+            | "markdown"
+            | "html"
+            | "rendered"
+            | "rendereddescription"
+            | "renderedbody"
+            | "plaintext"
+    )
 }
 
 pub(crate) fn assess_mcp_search_array_schema(
@@ -1030,6 +1579,83 @@ mod tests {
         assert_eq!(
             assess_mcp_search_array_schema(&missing, "results"),
             Err(McpSearchSchemaRejection::ArraySchemaMissing)
+        );
+    }
+
+    #[test]
+    fn entity_schema_assessment_protects_required_requested_status_and_links() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "title": {"type": "string"},
+                "status": {"type": ["string", "null"]},
+                "url": {"type": "string"},
+                "body": {"type": "string"},
+                "description": {"type": "string"},
+                "copy": {"type": "string"},
+                "nullableCopy": {"type": ["string", "null"]}
+            },
+            "required": ["id", "title"],
+            "additionalProperties": false
+        });
+        let source = json!({
+            "id": "entity-1",
+            "title": "Entity",
+            "status": null,
+            "url": "https://example.invalid/1",
+            "body": "requested body",
+            "description": "long optional prose",
+            "copy": "entity-1",
+            "nullableCopy": null
+        });
+        let authorization = assess_mcp_entity_schema(
+            &schema,
+            source.as_object().unwrap(),
+            Some(&json!({"fields": ["body"]})),
+        )
+        .expect("entity authorization");
+        assert_eq!(authorization.identity_field, "id");
+        assert_eq!(authorization.requested_fields, ["body"]);
+        for protected in ["id", "title", "status", "url", "body"] {
+            assert!(authorization.protected_fields.contains(&protected.into()));
+            assert!(!authorization.removable_fields.contains(&protected.into()));
+        }
+        assert!(authorization
+            .removable_fields
+            .contains(&"description".into()));
+        assert!(authorization.removable_fields.contains(&"copy".into()));
+        assert!(!authorization
+            .removable_fields
+            .contains(&"nullableCopy".into()));
+    }
+
+    #[test]
+    fn entity_input_and_source_bounds_reject_hostile_shapes() {
+        let mut deep = json!({"fields": ["title"]});
+        for _ in 0..=MCP_MAX_ENTITY_INPUT_DEPTH {
+            deep = json!({"nested": deep});
+        }
+        let schema = json!({
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "title": {"type": "string"}},
+            "required": ["id"],
+            "additionalProperties": false
+        });
+        let source = json!({"id": "entity-1", "title": "Entity"});
+        assert_eq!(
+            assess_mcp_entity_schema(&schema, source.as_object().unwrap(), Some(&deep)),
+            Err(McpEntitySchemaRejection::InputTooLarge)
+        );
+
+        let mut wide_source = Map::new();
+        wide_source.insert("id".into(), json!("entity-1"));
+        for index in 0..MCP_MAX_ENTITY_FIELDS {
+            wide_source.insert(format!("field{index}"), json!(index));
+        }
+        assert_eq!(
+            assess_mcp_entity_schema(&schema, &wide_source, None),
+            Err(McpEntitySchemaRejection::SourceTooWide)
         );
     }
 }

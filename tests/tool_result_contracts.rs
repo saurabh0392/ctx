@@ -478,6 +478,74 @@ fn search_results_fixture_produces_ranked_schema_valid_content_free_shadow_evide
 }
 
 #[test]
+fn entity_detail_fixture_preserves_requested_fields_and_emits_content_free_shadow_evidence() {
+    let fixture = read_json(&fixture_dir().join("mcp-2025-11-25-entity-detail.json"));
+    let raw = fixture["result"].clone();
+    let parsed = parse_mcp_result(&raw).expect("entity fixture result");
+    assert_eq!(parsed.render(), raw);
+    let text = parsed.content[0].text().expect("JSON text projection");
+    let text_value: Value = serde_json::from_str(text).expect("text projection is JSON");
+    assert_eq!(
+        parsed.structured_content.value(),
+        Some(&text_value),
+        "source text must be a trustworthy mirror before entity trimming"
+    );
+    let contract = ToolContract {
+        protocol_version: Some(fixture["protocolVersion"].as_str().unwrap().to_string()),
+        output_schema: PreservedField::Value(fixture["outputSchema"].clone()),
+        ..Default::default()
+    };
+    assert_eq!(
+        validate_mcp_output_schema(Some(&contract), &parsed),
+        McpOutputSchemaValidation::Valid
+    );
+
+    let cfg = ctx::config::Config {
+        compress_enabled: true,
+        compress_shadow_enabled: true,
+        compress_target_chars: 800,
+        compress_preset: ctx::config::CompressPreset::Off,
+        ..Default::default()
+    };
+    let decision = ctx::compress::compute_shadow_decision_with_mcp_contract(
+        "mcp__custom__opaque_action",
+        &fixture["input"],
+        text,
+        Some(&parsed),
+        Some(&contract),
+        &cfg,
+        Some("fixture-session"),
+        "/tmp/fixture",
+    )
+    .expect("shadow decision");
+    let evidence = decision
+        .features
+        .mcp_contract
+        .as_ref()
+        .expect("MCP evidence");
+    assert_eq!(
+        evidence.eligible_strategy.as_deref(),
+        Some("mcp-entity-detail")
+    );
+    assert_eq!(evidence.eligible_strategy_version.as_deref(), Some("1"));
+    assert_eq!(
+        evidence.shape_authorization.as_deref(),
+        Some("output-schema-identity-and-protected-field-context")
+    );
+    assert_eq!(evidence.proposal_validated, Some(true));
+    assert_eq!(evidence.candidate_entity_fields_in, Some(10));
+    assert_eq!(evidence.candidate_entity_fields_out, Some(8));
+    assert_eq!(evidence.candidate_entity_fields_omitted, Some(2));
+    assert_eq!(evidence.candidate_collection_items_in, None);
+    assert_eq!(evidence.candidate_search_results_in, None);
+    let serialized = decision.features_json();
+    assert!(!serialized.contains("record-42"));
+    assert!(!serialized.contains("explicitly requested"));
+    assert!(!serialized.contains("canonicalId"));
+    assert!(!serialized.contains("description"));
+}
+
+#[test]
 fn typed_mcp_evidence_reports_a_broken_round_trip() {
     let payload = read_json(&fixture_dir().join("claude-code-2.1.153-post-tool-use-mcp.json"));
     let mut tr = ClaudeCodeTransport

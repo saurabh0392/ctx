@@ -1,11 +1,13 @@
 use crate::tool_result::{
-    assess_mcp_search_array_schema, collection_head_tail_indices, search_ranked_prefix_indices,
-    validate_mcp_output_schema, validate_mcp_proposal_with_contract, CanonicalContentBlock,
-    CanonicalMcpResult, McpOutputSchemaValidation, McpPaginatedCollectionEdit,
-    McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
+    assess_mcp_entity_schema, assess_mcp_search_array_schema, collection_head_tail_indices,
+    entity_detail_candidate, entity_detail_text_projection, search_ranked_prefix_indices,
+    validate_mcp_output_schema, validate_mcp_proposal_with_contract_and_input,
+    CanonicalContentBlock, CanonicalMcpResult, McpEntityDetailEdit, McpEntitySchemaAuthorization,
+    McpOutputSchemaValidation, McpPaginatedCollectionEdit, McpProposalRejection,
+    McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
     McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal, PreservedField,
-    ToolContract, ValidatedMcpProposal, MCP_MAX_RETAINED_COLLECTION_ITEMS,
-    MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_OMISSION_MARKER_FIELD,
+    ToolContract, ValidatedMcpProposal, MCP_MAX_ENTITY_OMITTED_FIELDS,
+    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_OMISSION_MARKER_FIELD,
 };
 use serde_json::{Map, Value};
 
@@ -56,6 +58,22 @@ const SEARCH_RESULTS_INVARIANTS: &[&str] = &[
     "result-contract-reparses",
 ];
 
+const ENTITY_DETAIL_INVARIANTS: &[&str] = &[
+    "source-round-trip-identical",
+    "advertised-output-schema-valid-before-and-after",
+    "one-schema-authorized-entity-object",
+    "stable-entity-identity-present",
+    "required-requested-status-and-link-fields-protected",
+    "retained-field-values-identical",
+    "only-optional-verbose-or-proven-duplicate-fields-removed",
+    "deterministic-minimal-removal-prefix",
+    "nested-values-unchanged",
+    "text-projection-matches-structured-candidate",
+    "explicit-omitted-field-marker",
+    "error-results-pass-through",
+    "result-contract-reparses",
+];
+
 pub(crate) const MCP_TEXT_BLOCKS_V2: McpStrategyManifest = McpStrategyManifest {
     id: "mcp-text-blocks",
     version: "2",
@@ -80,6 +98,14 @@ pub(crate) const MCP_SEARCH_RESULTS_V1: McpStrategyManifest = McpStrategyManifes
     max_expansion_percent: 100,
 };
 
+pub(crate) const MCP_ENTITY_DETAIL_V1: McpStrategyManifest = McpStrategyManifest {
+    id: "mcp-entity-detail",
+    version: "1",
+    eligible_shape: "schema-backed-entity-detail",
+    invariants: ENTITY_DETAIL_INVARIANTS,
+    max_expansion_percent: 100,
+};
+
 pub(crate) struct McpStrategyObservation {
     pub manifest: Option<&'static McpStrategyManifest>,
     pub proposal_attempted: bool,
@@ -97,11 +123,13 @@ trait McpResultStrategy: Sync {
         &self,
         result: &CanonicalMcpResult,
         contract: Option<&ToolContract>,
+        tool_input: Option<&Value>,
     ) -> McpStrategyEligibility;
     fn propose(
         &self,
         result: &CanonicalMcpResult,
         contract: Option<&ToolContract>,
+        tool_input: Option<&Value>,
         opts: &CompressOptions,
         ctx: &CompressContext,
     ) -> McpProposalOutcome;
@@ -113,6 +141,7 @@ enum McpStrategyEligibility {
     Rejected(&'static str),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum McpProposalOutcome {
     WithinBudget,
     NoSavings,
@@ -130,6 +159,7 @@ impl McpResultStrategy for TextBlockStrategy {
         &self,
         result: &CanonicalMcpResult,
         _contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
     ) -> McpStrategyEligibility {
         if result
             .content
@@ -146,6 +176,7 @@ impl McpResultStrategy for TextBlockStrategy {
         &self,
         result: &CanonicalMcpResult,
         _contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
         opts: &CompressOptions,
         ctx: &CompressContext,
     ) -> McpProposalOutcome {
@@ -207,6 +238,7 @@ impl McpResultStrategy for PaginatedCollectionStrategy {
         &self,
         result: &CanonicalMcpResult,
         contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
     ) -> McpStrategyEligibility {
         match paginated_collection_shape(result, contract) {
             Ok(Some(_)) => McpStrategyEligibility::Eligible("output-schema-and-pagination-fields"),
@@ -219,6 +251,7 @@ impl McpResultStrategy for PaginatedCollectionStrategy {
         &self,
         result: &CanonicalMcpResult,
         contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
         opts: &CompressOptions,
         _ctx: &CompressContext,
     ) -> McpProposalOutcome {
@@ -240,6 +273,7 @@ impl McpResultStrategy for SearchResultsStrategy {
         &self,
         result: &CanonicalMcpResult,
         contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
     ) -> McpStrategyEligibility {
         match search_results_shape(result, contract) {
             Ok(Some(_)) => {
@@ -254,6 +288,7 @@ impl McpResultStrategy for SearchResultsStrategy {
         &self,
         result: &CanonicalMcpResult,
         contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
         opts: &CompressOptions,
         _ctx: &CompressContext,
     ) -> McpProposalOutcome {
@@ -261,6 +296,43 @@ impl McpResultStrategy for SearchResultsStrategy {
             return McpProposalOutcome::NoSavings;
         };
         propose_search_results(result, &shape, opts, self.manifest())
+    }
+}
+
+struct EntityDetailStrategy;
+
+impl McpResultStrategy for EntityDetailStrategy {
+    fn manifest(&self) -> &'static McpStrategyManifest {
+        &MCP_ENTITY_DETAIL_V1
+    }
+
+    fn eligibility(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+        tool_input: Option<&Value>,
+    ) -> McpStrategyEligibility {
+        match entity_detail_shape(result, contract, tool_input) {
+            Ok(Some(_)) => McpStrategyEligibility::Eligible(
+                "output-schema-identity-and-protected-field-context",
+            ),
+            Ok(None) => McpStrategyEligibility::NotApplicable,
+            Err(reason) => McpStrategyEligibility::Rejected(reason),
+        }
+    }
+
+    fn propose(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+        tool_input: Option<&Value>,
+        opts: &CompressOptions,
+        _ctx: &CompressContext,
+    ) -> McpProposalOutcome {
+        let Ok(Some(shape)) = entity_detail_shape(result, contract, tool_input) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        propose_entity_detail(result, &shape, opts, self.manifest())
     }
 }
 
@@ -278,6 +350,78 @@ struct SearchResultsShape {
     match_evidence_field: String,
     text_block_index: usize,
     min_results: usize,
+}
+
+#[derive(Debug)]
+struct EntityDetailShape {
+    authorization: McpEntitySchemaAuthorization,
+    text_block_index: usize,
+}
+
+fn entity_detail_shape(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
+) -> Result<Option<EntityDetailShape>, &'static str> {
+    let PreservedField::Value(Value::Object(structured)) = &result.structured_content else {
+        return Ok(None);
+    };
+    if structured.is_empty() {
+        return Ok(None);
+    }
+    let entity_hint = structured.keys().any(|field| {
+        matches!(
+            normalized_entity_field(field).as_str(),
+            "id" | "entityid" | "recordid" | "objectid" | "key" | "issuekey" | "slug" | "number"
+        )
+    });
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return if entity_hint {
+            Err("entity-output-schema-required")
+        } else {
+            Ok(None)
+        };
+    };
+    let authorization = match assess_mcp_entity_schema(schema, structured, tool_input) {
+        Ok(authorization) => authorization,
+        Err(rejection)
+            if !entity_hint && rejection.code() == "entity-identity-evidence-missing" =>
+        {
+            return Ok(None);
+        }
+        Err(rejection) => return Err(rejection.code()),
+    };
+    if structured.contains_key(MCP_OMISSION_MARKER_FIELD) {
+        return Err("entity-omission-marker-collision");
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 {
+        return Err("entity-text-mirror-required");
+    }
+    let parsed_text: Value =
+        serde_json::from_str(text_blocks[0].1).map_err(|_| "entity-text-mirror-invalid")?;
+    if parsed_text != Value::Object(structured.clone()) {
+        return Err("entity-text-mirror-invalid");
+    }
+
+    Ok(Some(EntityDetailShape {
+        authorization,
+        text_block_index: text_blocks[0].0,
+    }))
+}
+
+fn normalized_entity_field(field: &str) -> String {
+    field
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn search_results_shape(
@@ -671,6 +815,75 @@ fn propose_search_results(
     }))
 }
 
+fn propose_entity_detail(
+    result: &CanonicalMcpResult,
+    shape: &EntityDetailShape,
+    opts: &CompressOptions,
+    manifest: &McpStrategyManifest,
+) -> McpProposalOutcome {
+    let PreservedField::Value(Value::Object(source)) = &result.structured_content else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let Some(source_text) = result
+        .content
+        .get(shape.text_block_index)
+        .and_then(CanonicalContentBlock::text)
+    else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let source_chars = source_text.chars().count();
+    if source_chars <= opts.target_chars {
+        return McpProposalOutcome::WithinBudget;
+    }
+    if shape.authorization.removable_fields.is_empty() {
+        return McpProposalOutcome::NoSavings;
+    }
+
+    let maximum_omitted = shape
+        .authorization
+        .removable_fields
+        .len()
+        .min(MCP_MAX_ENTITY_OMITTED_FIELDS);
+    let mut best = None;
+    for omitted_count in 1..=maximum_omitted {
+        let omitted_fields = shape.authorization.removable_fields[..omitted_count].to_vec();
+        let candidate = entity_detail_candidate(source, &omitted_fields);
+        let projection = entity_detail_text_projection(&candidate, source.len(), &omitted_fields);
+        let Ok(text_projection) = serde_json::to_string(&projection) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        let chars_out = text_projection.chars().count();
+        if chars_out <= opts.target_chars.max(1) && chars_out < source_chars {
+            best = Some((omitted_fields, Value::Object(candidate), text_projection));
+            break;
+        }
+    }
+    let Some((omitted_fields, replacement, text_projection)) = best else {
+        return McpProposalOutcome::NoSavings;
+    };
+
+    McpProposalOutcome::Proposed(Box::new(McpTransformProposal {
+        strategy_id: manifest.id,
+        strategy_version: manifest.version,
+        max_total_text_chars: opts.target_chars.max(1),
+        replacements: vec![McpTextReplacement {
+            block_index: shape.text_block_index,
+            expected_text: source_text.to_string(),
+            replacement: text_projection,
+        }],
+        structured_content: Some(McpStructuredContentReplacement {
+            expected: Value::Object(source.clone()),
+            replacement,
+            edit: McpStructuredContentEdit::EntityDetail(McpEntityDetailEdit {
+                identity_field: shape.authorization.identity_field.clone(),
+                requested_fields: shape.authorization.requested_fields.clone(),
+                omitted_fields,
+                omission_marker_field: MCP_OMISSION_MARKER_FIELD.to_string(),
+            }),
+        }),
+    }))
+}
+
 fn structured_array_candidate(
     source: &Map<String, Value>,
     field: &str,
@@ -740,9 +953,11 @@ fn collection_text_projection(
 static TEXT_BLOCK_STRATEGY: TextBlockStrategy = TextBlockStrategy;
 static PAGINATED_COLLECTION_STRATEGY: PaginatedCollectionStrategy = PaginatedCollectionStrategy;
 static SEARCH_RESULTS_STRATEGY: SearchResultsStrategy = SearchResultsStrategy;
-static STRATEGIES: [&dyn McpResultStrategy; 3] = [
+static ENTITY_DETAIL_STRATEGY: EntityDetailStrategy = EntityDetailStrategy;
+static STRATEGIES: [&dyn McpResultStrategy; 4] = [
     &SEARCH_RESULTS_STRATEGY,
     &PAGINATED_COLLECTION_STRATEGY,
+    &ENTITY_DETAIL_STRATEGY,
     &TEXT_BLOCK_STRATEGY,
 ];
 
@@ -757,9 +972,20 @@ pub(crate) fn evaluate_mcp_strategies_shadow(
     evaluate_mcp_strategies_shadow_with_contract(result, None, opts, ctx)
 }
 
+#[cfg(test)]
 pub(crate) fn evaluate_mcp_strategies_shadow_with_contract(
     result: &CanonicalMcpResult,
     contract: Option<&ToolContract>,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> McpStrategyObservation {
+    evaluate_mcp_strategies_shadow_with_contract_and_input(result, contract, None, opts, ctx)
+}
+
+pub(crate) fn evaluate_mcp_strategies_shadow_with_contract_and_input(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
     opts: &CompressOptions,
     ctx: &CompressContext,
 ) -> McpStrategyObservation {
@@ -796,7 +1022,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract(
     }
 
     for strategy in STRATEGIES {
-        let shape_authorization = match strategy.eligibility(result, contract) {
+        let shape_authorization = match strategy.eligibility(result, contract, tool_input) {
             McpStrategyEligibility::NotApplicable => continue,
             McpStrategyEligibility::Rejected(reason) => {
                 return McpStrategyObservation {
@@ -813,7 +1039,7 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract(
             McpStrategyEligibility::Eligible(authorization) => authorization,
         };
         let manifest = strategy.manifest();
-        let proposal = match strategy.propose(result, contract, opts, ctx) {
+        let proposal = match strategy.propose(result, contract, tool_input, opts, ctx) {
             McpProposalOutcome::WithinBudget => {
                 return McpStrategyObservation {
                     manifest: Some(manifest),
@@ -840,7 +1066,9 @@ pub(crate) fn evaluate_mcp_strategies_shadow_with_contract(
             }
             McpProposalOutcome::Proposed(proposal) => proposal,
         };
-        return match validate_mcp_proposal_with_contract(result, contract, manifest, &proposal) {
+        return match validate_mcp_proposal_with_contract_and_input(
+            result, contract, tool_input, manifest, &proposal,
+        ) {
             Ok(validated) => McpStrategyObservation {
                 manifest: Some(manifest),
                 proposal_attempted: true,
@@ -1020,6 +1248,59 @@ mod tests {
         (result, contract)
     }
 
+    fn entity_result() -> (CanonicalMcpResult, ToolContract, Value) {
+        let structured = json!({
+            "id": "entity-42",
+            "title": "Schema-aware entity",
+            "status": "active",
+            "url": "https://example.invalid/entities/42",
+            "body": format!("explicitly requested body {}", "requested context ".repeat(16)),
+            "description": format!("redundant long description {}", "verbose detail ".repeat(40)),
+            "notes": format!("secondary prose {}", "historical note ".repeat(28)),
+            "canonicalId": "entity-42",
+            "summary": "short unknown optional value stays intact",
+            "metadata": {"owner": "team-a", "revision": 7}
+        });
+        let text = serde_json::to_string(&structured).expect("serialize entity fixture");
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+            "isError": false,
+            "_meta": {"request": "entity-r1"}
+        }))
+        .expect("entity result");
+        let contract = ToolContract {
+            output_schema: PreservedField::Value(json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "status": {"type": "string"},
+                    "url": {"type": "string"},
+                    "body": {"type": "string"},
+                    "description": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "canonicalId": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "metadata": {
+                        "type": "object",
+                        "properties": {
+                            "owner": {"type": "string"},
+                            "revision": {"type": "integer"}
+                        },
+                        "required": ["owner", "revision"],
+                        "additionalProperties": false
+                    }
+                },
+                "required": ["id", "title", "status", "url"],
+                "additionalProperties": false
+            })),
+            ..Default::default()
+        };
+        let input = json!({"id": "entity-42", "fields": ["title", "body"]});
+        (result, contract, input)
+    }
+
     #[test]
     fn registry_is_deterministic_and_versioned() {
         let manifests: Vec<_> = STRATEGIES
@@ -1031,10 +1312,415 @@ mod tests {
             vec![
                 &MCP_SEARCH_RESULTS_V1,
                 &MCP_PAGINATED_COLLECTION_V1,
+                &MCP_ENTITY_DETAIL_V1,
                 &MCP_TEXT_BLOCKS_V2
             ]
         );
         assert!(!manifests[0].invariants.is_empty());
+    }
+
+    #[test]
+    fn entity_proposal_preserves_schema_input_and_semantic_protections() {
+        let (result, contract, input) = entity_result();
+        let shape = entity_detail_shape(&result, Some(&contract), Some(&input))
+            .expect("shape assessment")
+            .expect("entity shape");
+        assert_eq!(shape.authorization.identity_field, "id");
+        assert_eq!(shape.authorization.requested_fields, ["body", "title"]);
+        for protected in ["id", "title", "status", "url", "body"] {
+            assert!(
+                shape
+                    .authorization
+                    .protected_fields
+                    .contains(&protected.to_string()),
+                "{protected} should be protected"
+            );
+        }
+
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_entity_detail(&result, &shape, &options(900), &MCP_ENTITY_DETAIL_V1)
+        else {
+            panic!("expected entity proposal");
+        };
+        let replacement = proposal
+            .structured_content
+            .as_ref()
+            .expect("structured replacement");
+        let source = replacement.expected.as_object().expect("source object");
+        let candidate = replacement
+            .replacement
+            .as_object()
+            .expect("candidate object");
+        for protected in ["id", "title", "status", "url", "body"] {
+            assert_eq!(candidate.get(protected), source.get(protected));
+        }
+        assert_eq!(candidate.get("metadata"), source.get("metadata"));
+        assert_eq!(candidate.get("summary"), source.get("summary"));
+
+        let McpStructuredContentEdit::EntityDetail(edit) = &replacement.edit else {
+            panic!("expected entity edit");
+        };
+        assert!(!edit.omitted_fields.is_empty());
+        assert!(edit.omitted_fields.iter().all(|field| {
+            ![
+                "id", "title", "status", "url", "body", "metadata", "summary",
+            ]
+            .contains(&field.as_str())
+        }));
+        let projection: Value =
+            serde_json::from_str(&proposal.replacements[0].replacement).expect("JSON projection");
+        assert_eq!(
+            projection.pointer("/_ctxOmission/selection"),
+            Some(&json!("schema-protected-entity-fields"))
+        );
+        assert_eq!(
+            projection.pointer("/_ctxOmission/fields"),
+            Some(&json!(edit.omitted_fields))
+        );
+
+        let validated = validate_mcp_proposal_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&input),
+            &MCP_ENTITY_DETAIL_V1,
+            &proposal,
+        )
+        .expect("validated entity proposal");
+        assert_eq!(validated.entity_fields_in, Some(source.len()));
+        assert_eq!(validated.entity_fields_out, Some(candidate.len()));
+        assert_eq!(
+            validated.entity_fields_omitted,
+            Some(source.len() - candidate.len())
+        );
+        assert_eq!(validated.collection_items_in, None);
+        assert_eq!(validated.search_results_in, None);
+    }
+
+    #[test]
+    fn entity_input_selectors_are_bounded_and_fail_open_when_ambiguous() {
+        let (result, contract, _) = entity_result();
+        let ambiguous = json!({
+            "fields": ["title"],
+            "select": ["body"]
+        });
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&ambiguous),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, None);
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("entity-field-selector-ambiguous")
+        );
+        assert!(!observation.proposal_attempted);
+
+        let nested = json!({"request": {"fields": ["title"]}});
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&nested),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("entity-field-selector-unsupported")
+        );
+
+        let unknown = json!({"fields": ["secretProjection"]});
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&unknown),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("entity-requested-field-unknown")
+        );
+    }
+
+    #[test]
+    fn stale_or_forged_entity_proposals_are_rejected_inside_the_boundary() {
+        let (result, contract, input) = entity_result();
+        let shape = entity_detail_shape(&result, Some(&contract), Some(&input))
+            .expect("shape assessment")
+            .expect("entity shape");
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_entity_detail(&result, &shape, &options(900), &MCP_ENTITY_DETAIL_V1)
+        else {
+            panic!("expected entity proposal");
+        };
+
+        let mut forged_protected = (*proposal).clone();
+        let McpStructuredContentEdit::EntityDetail(edit) = &mut forged_protected
+            .structured_content
+            .as_mut()
+            .expect("structured replacement")
+            .edit
+        else {
+            panic!("expected entity edit");
+        };
+        edit.omitted_fields = vec!["body".into()];
+        assert_eq!(
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&input),
+                &MCP_ENTITY_DETAIL_V1,
+                &forged_protected,
+            ),
+            Err(McpProposalRejection::EntitySelectionInvalid)
+        );
+
+        let different_input = json!({"fields": ["description"]});
+        assert_eq!(
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&different_input),
+                &MCP_ENTITY_DETAIL_V1,
+                &proposal,
+            ),
+            Err(McpProposalRejection::EntitySelectionInvalid)
+        );
+
+        let mut forged_marker = (*proposal).clone();
+        let projection: &mut Value =
+            &mut serde_json::from_str(&forged_marker.replacements[0].replacement)
+                .expect("projection");
+        projection["_ctxOmission"]["omittedFields"] = json!(999);
+        forged_marker.replacements[0].replacement =
+            serde_json::to_string(projection).expect("serialize projection");
+        assert_eq!(
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&input),
+                &MCP_ENTITY_DETAIL_V1,
+                &forged_marker,
+            ),
+            Err(McpProposalRejection::EntityOmissionMarkerInvalid)
+        );
+
+        let mut changed_identity = (*proposal).clone();
+        changed_identity
+            .structured_content
+            .as_mut()
+            .expect("structured replacement")
+            .replacement["id"] = json!("forged-id");
+        assert_eq!(
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&input),
+                &MCP_ENTITY_DETAIL_V1,
+                &changed_identity,
+            ),
+            Err(McpProposalRejection::EntitySelectionInvalid)
+        );
+    }
+
+    #[test]
+    fn entity_marker_collisions_and_nonmirrored_text_fail_open() {
+        let (result, contract, input) = entity_result();
+        let mut colliding = result.structured_content.value().unwrap().clone();
+        colliding["_ctxOmission"] = json!({"server": "owned"});
+        let colliding_text = serde_json::to_string(&colliding).unwrap();
+        let colliding = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": colliding_text}],
+            "structuredContent": colliding,
+            "isError": false
+        }))
+        .unwrap();
+        let mut colliding_contract = contract.clone();
+        let schema = colliding_contract.output_schema.value().unwrap().clone();
+        let mut schema = schema;
+        schema["properties"]["_ctxOmission"] = json!({"type": "object"});
+        colliding_contract.output_schema = PreservedField::Value(schema);
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &colliding,
+            Some(&colliding_contract),
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("entity-omission-marker-collision")
+        );
+
+        let structured = result.structured_content.value().unwrap().clone();
+        let nonmirrored = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": "not the structured entity"}],
+            "structuredContent": structured,
+            "isError": false
+        }))
+        .unwrap();
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &nonmirrored,
+            Some(&contract),
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("entity-text-mirror-invalid")
+        );
+    }
+
+    #[test]
+    fn generated_entity_budgets_are_deterministic_bounded_and_validated() {
+        let (result, contract, input) = entity_result();
+        let shape = entity_detail_shape(&result, Some(&contract), Some(&input))
+            .expect("shape assessment")
+            .expect("entity shape");
+        let source_chars = result.content[0].text().unwrap().chars().count();
+        for target in (1..source_chars).step_by(37) {
+            let first =
+                propose_entity_detail(&result, &shape, &options(target), &MCP_ENTITY_DETAIL_V1);
+            let second =
+                propose_entity_detail(&result, &shape, &options(target), &MCP_ENTITY_DETAIL_V1);
+            assert_eq!(first, second, "target {target} must be deterministic");
+            let McpProposalOutcome::Proposed(proposal) = first else {
+                continue;
+            };
+            let McpStructuredContentEdit::EntityDetail(edit) = &proposal
+                .structured_content
+                .as_ref()
+                .expect("structured replacement")
+                .edit
+            else {
+                panic!("expected entity edit");
+            };
+            assert!(edit.omitted_fields.len() <= MCP_MAX_ENTITY_OMITTED_FIELDS);
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&input),
+                &MCP_ENTITY_DETAIL_V1,
+                &proposal,
+            )
+            .unwrap_or_else(|error| panic!("target {target} rejected: {error:?}"));
+        }
+    }
+
+    #[test]
+    fn entity_schema_dependencies_and_missing_contracts_fail_open() {
+        let (result, mut contract, input) = entity_result();
+        let schema = contract.output_schema.value().unwrap().clone();
+        let mut dependent_schema = schema;
+        dependent_schema["dependentRequired"] = json!({"description": ["notes"]});
+        contract.output_schema = PreservedField::Value(dependent_schema);
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("entity-object-schema-unsupported")
+        );
+
+        let schema_less = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            None,
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            schema_less.pass_through_reason,
+            Some("entity-output-schema-required")
+        );
+    }
+
+    #[test]
+    fn a_url_alone_does_not_block_the_generic_text_fallback() {
+        let structured = json!({
+            "url": "https://example.invalid/status",
+            "description": "ordinary non-entity payload ".repeat(80)
+        });
+        let text = serde_json::to_string(&structured).unwrap();
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+            "isError": false
+        }))
+        .unwrap();
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            None,
+            Some(&json!({})),
+            &options(400),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V2));
+        assert_ne!(
+            observation.pass_through_reason,
+            Some("entity-output-schema-required")
+        );
+    }
+
+    #[test]
+    fn entity_shape_follows_bounded_local_property_references() {
+        let (result, mut contract, input) = entity_result();
+        let mut schema = contract.output_schema.value().unwrap().clone();
+        schema["properties"]["id"] = json!({"$ref": "#/$defs/stableId"});
+        schema["properties"]["description"] = json!({"$ref": "#/$defs/prose"});
+        schema["$defs"] = json!({
+            "stableId": {"type": "string"},
+            "prose": {"type": "string"}
+        });
+        contract.output_schema = PreservedField::Value(schema);
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.pass_through_reason, None);
+        assert_eq!(observation.manifest, Some(&MCP_ENTITY_DETAIL_V1));
+        assert!(observation.validated.is_some());
+        assert_eq!(
+            observation.candidate_schema_validation,
+            Some(McpOutputSchemaValidation::Valid)
+        );
+    }
+
+    #[test]
+    fn entity_within_budget_and_untrimmable_cases_are_distinct() {
+        let (result, contract, input) = entity_result();
+        let source_chars = result.content[0].text().unwrap().chars().count();
+        let within = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&input),
+            &options(source_chars),
+            &CompressContext::default(),
+        );
+        assert_eq!(within.manifest, Some(&MCP_ENTITY_DETAIL_V1));
+        assert_eq!(within.pass_through_reason, Some("within-budget"));
+        assert!(!within.proposal_attempted);
+
+        let no_savings = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&input),
+            &options(1),
+            &CompressContext::default(),
+        );
+        assert_eq!(no_savings.manifest, Some(&MCP_ENTITY_DETAIL_V1));
+        assert_eq!(no_savings.pass_through_reason, Some("no-savings"));
+        assert!(no_savings.proposal_attempted);
     }
 
     #[test]
@@ -1999,7 +2685,7 @@ mod tests {
         .expect("multi-text result");
         let opts = options(20);
         let McpProposalOutcome::Proposed(proposal) =
-            TEXT_BLOCK_STRATEGY.propose(&result, None, &opts, &CompressContext::default())
+            TEXT_BLOCK_STRATEGY.propose(&result, None, None, &opts, &CompressContext::default())
         else {
             panic!("expected block-aware proposal");
         };
