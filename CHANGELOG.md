@@ -3,6 +3,45 @@
 All notable CTX changes are recorded here. Versions follow semantic versioning while the product is
 in beta.
 
+## [0.6.1] - 2026-07-19
+
+### Added
+
+- Cross-platform compaction receipts that distinguish attempted, confirmed, inferred, mixed, and
+  unknown states: Claude Code and Codex use native pre/post hooks, while Cursor remains honestly
+  attempt-only until its public hook contract exposes completion.
+- Retry-stable compaction event de-duplication plus separate native and historical Claude counts
+  without storing prompts, transcripts, summaries, commands, output, or paths.
+- Versioned per-path capability receipts for shell, built-in, MCP, and compaction behavior on every
+  supported agent surface, including exact evidence counts and platform/setup limitations.
+- Product-proof metrics for model-visible savings, recovery use, corrections and re-touches,
+  gateway coverage, latency, failures, and exact pass-through reasons.
+- Configurable original retention, immediate purge, owner-only storage receipts, exact outbound
+  destination receipts, and an isolated byte-for-byte recovery self-test in the dashboard and MCP.
+
+### Changed
+
+- Keep historical Claude transcript compactions visible after native hooks are installed, while
+  excluding sessions already represented by native events so the combined total is not double-counted.
+- Replace broad agent status labels with evidence-backed capability receipts and show every known
+  agent even before it has produced local activity.
+- Qualify the network promise as no background telemetry: explicit exports, reports, check-ins, and
+  approved remote MCP destinations remain visible user-controlled egress paths.
+
+### Fixed
+
+- Make full uninstall with `--purge-data --yes` remove CTX-owned state only after validating its
+  ownership marker, while preserving unrelated agent configuration.
+- Keep compaction hooks fail-open even when stdin cannot be read, and surface retention/purge API
+  failures instead of falsely reporting success.
+
+### Security and privacy
+
+- Protect the CTX state directory as owner-only and its config/database/marker files as private on
+  Unix, while reporting the effective protection in Settings.
+- Bound retained originals by both entry count and bytes, fail closed before applying a trim whose
+  original cannot remain recoverable, and require exact confirmation before permanent purge.
+
 ## [0.6.0] - 2026-07-19
 
 ### Added
