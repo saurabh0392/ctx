@@ -48,6 +48,9 @@ fn main() -> anyhow::Result<()> {
     // Config: the deny-set (held tools) only holds mutations under trim_all, so the fixture must set it.
     let mut cfg = Config::load();
     cfg.compress_trim_all = true;
+    // A live trial with already-collected treatment rows reproduces CTX-74: after the backend
+    // removes this exact config entry, historical evidence must not keep rendering it as live.
+    cfg.compress_trial_tools = vec!["Edit".into()];
     cfg.save()?;
 
     let conn = db::open_db()?;
@@ -69,7 +72,7 @@ fn main() -> anyhow::Result<()> {
         ),
         // Eligible reads with applied trims: real reclaimed output to reconcile on Home vs See.
         dec("Read", "read", 20, 6000, 2000, true, None),
-        dec("Edit", "edit", 14, 4000, 1500, true, None),
+        dec("Edit", "edit", 14, 4000, 1500, true, Some("treatment")),
         // One clean-test control holdout on an eligible tool (applied=false, explore_arm=control).
         dec("Read", "read", 4, 6000, 2000, false, Some("control")),
         // Eligible tools with enough calls but no trims yet, so they sit in Watching with a trial control.

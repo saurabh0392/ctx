@@ -1314,8 +1314,14 @@
     rows.forEach((r) => {
       const e = expBy[r.tool];
       if (e && e.status === "trimming") r.stage = "earned";
+      // "On trial" is live state, not a synonym for "has treatment history". The config-backed
+      // trial set is the source of truth, and it must outrank an old kept-whole verdict when the
+      // user explicitly runs the test again.
+      else if (explicitTrials.has(r.tool)) r.stage = "trial";
       else if (e && e.status === "kept_whole") r.stage = "off";
-      else if ((e && e.treatment_collected > 0) || explicitTrials.has(r.tool)) r.stage = "trial";
+      // Collected treatment rows survive after a trial stops. They are evidence being evaluated,
+      // not proof that output is still changing now.
+      else if (e && e.treatment_collected > 0) r.stage = "proving";
       else r.stage = "watch";
     });
     rows.sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage]);
@@ -2280,8 +2286,18 @@
       const early = trimRate != null && wholeRate != null
         ? ` Early result: after trimming, the agent re-read ${pct(trimRate)} of the time, compared with ${pct(wholeRate)} when CTX left it unchanged.`
         : "";
-      if (e.status === "trimming") story = `CTX is shortening <b>${esc(r.tool)}</b> output now. Its randomized comparison passed the safety check; the tool still runs in full and only what the agent reads back is shorter.`;
+      if (stage === "trial") {
+        const isRerun = e.status === "kept_whole";
+        const rerun = isRerun
+          ? " Its previous comparison did not pass the safety check; this new live trial is collecting a fresh comparison."
+          : "";
+        story = `CTX is testing <b>${esc(r.tool)}</b>${isRerun ? " again" : ""} on a controlled share of real runs.${rerun}${early} Normal output stays unchanged outside the live trial.`;
+      }
+      else if (e.status === "trimming") story = `CTX is shortening <b>${esc(r.tool)}</b> output now. Its randomized comparison passed the safety check; the tool still runs in full and only what the agent reads back is shorter.`;
       else if (e.status === "kept_whole") story = `CTX is keeping <b>${esc(r.tool)}</b> output unchanged. The randomized comparison did not pass the safety check, so CTX will not trim it.${early}`;
+      else if (stage === "proving" && !autopilot && e.treatment_collected > 0) {
+        story = `The live trial for <b>${esc(r.tool)}</b> is stopped. CTX is keeping its output unchanged while it scores the comparison runs already collected.${early} Put it on trial again if you want to collect the missing trimmed runs faster.`;
+      }
       else {
         const next = e.reason_code === "randomized_result_uncertain"
           ? " The result is still too uncertain, so CTX keeps testing and normal output stays unchanged."
