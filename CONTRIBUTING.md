@@ -18,5 +18,16 @@ cargo test --all-targets --locked -- --test-threads=1
 node scripts/coherence/claims.mjs
 ```
 
-Behavioral coherence and fitcheck are additional required CI gates. Never commit participant tokens,
-capabilities, roster exports, check-in payloads, screenshots, or ID-to-label mappings.
+Behavioral coherence is an additional required CI gate. Fitcheck runs locally immediately before a
+PR can merge:
+
+```bash
+make pr-fitcheck PR=<number>
+```
+
+The command requires a clean worktree at the exact PR head, uses the developer's local Claude Code
+login (or `ANTHROPIC_API_KEY`), and posts the required `Local Fitcheck` commit status. Setup, auth,
+unparseable output, and a `Rework` verdict all fail closed. GitHub Actions never runs the model.
+
+Never commit participant tokens, capabilities, roster exports, check-in payloads, screenshots, or
+ID-to-label mappings.

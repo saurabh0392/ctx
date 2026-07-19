@@ -125,26 +125,3 @@ jobs:
           CTX_FIXTURE: ${{ runner.temp }}/ctx-fixture
           PW_CHANNEL: ""            # empty: use the chromium playwright installed, not branded Chrome
         run: bash scripts/coherence/coherence.sh
-
-  fitcheck:
-    name: Fitcheck (design gate)
-    runs-on: ubuntu-22.04
-    # Hard gate: a required status check. A PR with no ANTHROPIC_API_KEY (fork) still passes because
-    # the step below exits 0 when the key is absent; only a real fitcheck failure blocks the merge.
-    # See scripts/coherence/fitcheck-ci.sh.
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install Claude Code CLI
-        run: npm i -g @anthropic-ai/claude-code
-      - name: Fitcheck
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          if [ -z "${ANTHROPIC_API_KEY}" ]; then
-            echo "No ANTHROPIC_API_KEY available (fork PR or unset). Skipping fitcheck."
-            exit 0
-          fi
-          bash scripts/coherence/fitcheck-ci.sh
