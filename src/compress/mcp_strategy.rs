@@ -445,13 +445,7 @@ fn tree_listing_shape(
     let tree_hint = structured.keys().any(|field| {
         matches!(
             normalized_schema_field(field).as_str(),
-            "root"
-                | "rootpath"
-                | "base"
-                | "basepath"
-                | "cwd"
-                | "directory"
-                | "directorypath"
+            "root" | "rootpath" | "base" | "basepath" | "cwd" | "directory" | "directorypath"
         )
     }) && observed_arrays.iter().any(|(field, entries)| {
         is_tree_entries_field(field)
