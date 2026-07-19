@@ -113,6 +113,7 @@ ctx doctor
 ctx update --check
 ctx gateway list
 ctx setup --uninstall
+ctx setup --uninstall --purge-data --yes
 ```
 
 Codex's current PostToolUse hook cannot cleanly replace built-in or MCP results. For MCP tools, CTX
@@ -197,3 +198,16 @@ ctx setup --uninstall
 ```
 
 This removes CTX-managed services, hooks, MCP registrations, the CTX-owned Codex plugin/marketplace, filter rules, and the stored beta capability. Unrelated Codex configuration is preserved. Indexed local data remains under `~/.ctx` so uninstall is not a destructive data wipe.
+
+To perform a clean beta-user reinstall, permanently delete all CTX-owned state after restoring agent
+configuration:
+
+```bash
+ctx setup --uninstall --purge-data
+```
+
+The command requires typing `DELETE CTX DATA`. For automation, add `--yes`. It deletes `~/.ctx`
+(database, retained originals, configuration, logs, gateway registry, and beta state), CTX's separate
+experiment backup, and CTX OAuth credentials from the operating-system credential store. It does not
+delete the installed binary; remove `~/.local/bin/ctx` (macOS/Linux) or
+`%LOCALAPPDATA%\ctx\ctx.exe` (Windows) after the command succeeds.

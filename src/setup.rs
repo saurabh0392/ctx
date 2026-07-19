@@ -483,14 +483,39 @@ fn register_cursor_hook_if_present() {
     }
 }
 
-pub fn uninstall() -> Result<()> {
-    if let Err(e) = crate::experiment_plan::backup_experiment_state() {
-        println!("{} Experiment backup skipped: {e}", "!".yellow());
-    } else if crate::experiment_plan::plan_path().is_file() {
+pub fn uninstall(purge_data: bool, yes: bool) -> Result<()> {
+    let oauth_server_ids = if purge_data {
+        confirm_data_purge(yes)?;
+        gateway_oauth_server_ids()?
+    } else {
+        if let Err(e) = crate::experiment_plan::backup_experiment_state() {
+            println!("{} Experiment backup skipped: {e}", "!".yellow());
+        } else if crate::experiment_plan::plan_path().is_file() {
+            println!(
+                "{} Experiment plan backed up to {}",
+                "✓".green(),
+                crate::experiment_plan::persistent_experiment_dir().display()
+            );
+        }
+        Vec::new()
+    };
+
+    // Restore Codex MCP definitions before removing the binary/plugin that serves the gateway.
+    // This must fail loudly: leaving an MCP server pointed at a dead CTX executable is worse than
+    // leaving the rest of CTX installed for the user to retry.
+    let restore = crate::mcp_gateway::registry::codex_restore_all()?;
+    for name in restore.restored {
         println!(
-            "{} Experiment plan backed up to {}",
+            "{} Restored direct Codex MCP server {:?}",
             "✓".green(),
-            crate::experiment_plan::persistent_experiment_dir().display()
+            name
+        );
+    }
+    for name in restore.preserved {
+        println!(
+            "{} Preserved user-modified Codex MCP server {:?}",
+            "i".yellow(),
+            name
         );
     }
 
@@ -539,12 +564,104 @@ pub fn uninstall() -> Result<()> {
         println!("{} Removed the stored beta capability", "✓".green());
     }
 
+    if purge_data {
+        purge_gateway_oauth_credentials(oauth_server_ids)?;
+        purge_owned_data()?;
+        println!(
+            "{} Permanently deleted CTX local data and experiment backups",
+            "✓".green()
+        );
+    }
+
     println!(
         "{} ctx uninstalled. {}",
         "✓".green(),
         crate::host::uninstall_reload_hint()
     );
     println!("Apply the reload so removed hooks, filter rules, and MCP server config take effect.");
+    Ok(())
+}
+
+fn confirm_data_purge(yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        anyhow::bail!(
+            "Data purge needs confirmation. Re-run with --purge-data --yes in a non-interactive terminal."
+        );
+    }
+    println!(
+        "{} This permanently deletes {}, including the database, retained originals, settings, logs, gateway registry, and beta state.",
+        "!".red(),
+        crate::config::ctx_dir().display()
+    );
+    println!(
+        "It also deletes CTX's experiment backup at {}. This cannot be undone.",
+        crate::experiment_plan::persistent_experiment_dir().display()
+    );
+    print!("Type DELETE CTX DATA to continue: ");
+    stdout().flush()?;
+    let mut answer = String::new();
+    stdin().read_line(&mut answer)?;
+    if answer.trim() != "DELETE CTX DATA" {
+        anyhow::bail!("Data purge aborted; no uninstall changes were made.");
+    }
+    Ok(())
+}
+
+fn gateway_oauth_server_ids() -> Result<Vec<String>> {
+    let registry = crate::mcp_gateway::registry::GatewayRegistry::load()?;
+    Ok(registry
+        .servers
+        .into_iter()
+        .filter_map(|(id, server)| {
+            matches!(
+                server,
+                crate::mcp_gateway::registry::GatewayServer::StreamableHttp(_)
+            )
+            .then_some(id)
+        })
+        .collect())
+}
+
+fn purge_gateway_oauth_credentials(server_ids: Vec<String>) -> Result<()> {
+    for id in server_ids {
+        crate::mcp_gateway::oauth::logout(&id)?;
+    }
+    Ok(())
+}
+
+fn purge_owned_data() -> Result<()> {
+    let ctx_dir = crate::config::ctx_dir();
+    validate_purge_target(&ctx_dir, "CTX data directory")?;
+    if ctx_dir.exists() {
+        std::fs::remove_dir_all(&ctx_dir)?;
+    }
+    let experiment_dir = crate::experiment_plan::persistent_experiment_dir();
+    validate_purge_target(&experiment_dir, "CTX experiment backup directory")?;
+    if experiment_dir.exists() {
+        std::fs::remove_dir_all(&experiment_dir)?;
+    }
+    Ok(())
+}
+
+fn validate_purge_target(path: &std::path::Path, label: &str) -> Result<()> {
+    if !path.is_absolute() || path.parent().is_none() {
+        anyhow::bail!("refusing to purge unsafe {label}: {}", path.display());
+    }
+    let resolved = if path.exists() {
+        std::fs::canonicalize(path)?
+    } else {
+        path.to_path_buf()
+    };
+    if resolved.parent().is_none() {
+        anyhow::bail!("refusing to purge unsafe {label}: {}", path.display());
+    }
+    let home = dirs::home_dir().and_then(|home| std::fs::canonicalize(home).ok());
+    if home.as_deref() == Some(resolved.as_path()) {
+        anyhow::bail!("refusing to purge the user home as the {label}");
+    }
     Ok(())
 }
 
@@ -835,5 +952,28 @@ mod tests {
         assert!(preview.contains("evidence-gated Full output autopilot"));
         assert!(preview.contains("MCP filtering off"));
         assert!(preview.contains("fail closed"));
+    }
+
+    #[test]
+    fn purge_removes_both_ctx_state_locations() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("ctx-data");
+        let backup = tmp.path().join("ctx-backup");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(data.join("ctx.db"), "old database").unwrap();
+        std::fs::write(backup.join("experiment-plan.toml"), "old plan").unwrap();
+        std::env::set_var("CTX_HOME", &data);
+        std::env::set_var("CTX_EXPERIMENT_BACKUP_DIR", &backup);
+
+        purge_owned_data().unwrap();
+
+        assert!(!data.exists());
+        assert!(!backup.exists());
+        std::env::remove_var("CTX_HOME");
+        std::env::remove_var("CTX_EXPERIMENT_BACKUP_DIR");
     }
 }
