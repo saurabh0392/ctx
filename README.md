@@ -152,9 +152,14 @@ cargo test --all-targets --locked
 
 cd services/ctx-dist && npx tsc --noEmit && npm run synth
 cd services/report-intake && npx tsc --noEmit && npm run synth
+
+# After pushing a PR, run the local persona gate on its exact head.
+make pr-fitcheck PR=<number>
 ```
 
-Release tags, `Cargo.toml`, and the binary version must agree. v0.5 release CI treats formatting, Clippy, all-target tests, coherence checks, and fitcheck as blocking.
+Release tags, `Cargo.toml`, and the binary version must agree. CI treats formatting, Clippy,
+all-target tests, and coherence checks as blocking. Fitcheck is a separate local pre-merge gate: a
+pass posts the required `Local Fitcheck` status without running the model in GitHub Actions.
 
 Architecture and decision history:
 

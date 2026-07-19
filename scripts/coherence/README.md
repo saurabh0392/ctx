@@ -52,3 +52,16 @@ playwright is not installed, so a fresh clone can still push. `scripts/deploy.sh
 codesign and launchd deploy, so a failing invariant never reaches port 8789.
 
 Skip in an emergency with `git push --no-verify` or `SKIP_COHERENCE=1`.
+
+## Fitcheck is a local PR gate
+
+Fitcheck is intentionally not a GitHub Actions job. From a clean checkout at the exact PR head, run:
+
+```bash
+make pr-fitcheck PR=<number>
+```
+
+`scripts/pr-fitcheck.sh` runs `fitcheck-local.sh` with the developer's local Claude Code login (or
+an optional `ANTHROPIC_API_KEY`) and posts a `Local Fitcheck` status on that commit. The main-branch
+ruleset requires that status before merge. A changed PR head has no passing status until Fitcheck is
+rerun, and setup/auth failures fail closed.

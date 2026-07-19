@@ -69,10 +69,12 @@ hand-triaging every one.
   well-scoped bugs are routed on; anything ambiguous is labeled and waits.
 - **Auto-fix agent** on an `agent-fix` label: branch, write the fix, run `cargo test` plus the
   coherence suite in the job, and open a draft PR linked to the issue with the diff and gate results.
-- **QA**: the PR's `ci.yml` runs fmt, tests, coherence, and fitcheck. The draft cannot advance until
-  they pass.
+- **QA**: the PR's `ci.yml` runs fmt, tests, and coherence. Once those deterministic gates pass, the
+  admin runs `make pr-fitcheck PR=<number>` locally on the exact PR head. That command publishes the
+  required `Local Fitcheck` status; the model does not run in GitHub Actions.
 - **Review and deploy**: green CI flips the draft to ready-for-review and assigns the admin. The admin
-  reviews and merges. Merge plus tag triggers `release.yml`, gated on coherence and fitcheck.
+  reviews and merges after Local Fitcheck passes. Merge plus tag triggers `release.yml`, gated on
+  deterministic preflight, platform builds/tests, and behavioral coherence.
 
 ## The diagnostic bundle
 
