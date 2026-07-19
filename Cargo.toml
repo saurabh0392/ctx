@@ -1,6 +1,6 @@
 [package]
 name = "ctx"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 description = "Context truth and safety layer for Claude Code (hook-first, no proxy)"
 
