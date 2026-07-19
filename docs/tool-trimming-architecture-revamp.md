@@ -740,12 +740,17 @@ CTX-78 and ADR 0043 completed the schema-authorized entity/detail boundary: boun
 context, independent protection for required, identity, status, and link fields, and deterministic
 removal of only optional verbose or proven-duplicate scalar fields are on `main`.
 
-CTX-79 and ADR 0044 are the next T2 increment. They add a deliberately narrow rooted flat
-tree/file-listing strategy, bounded requested root/depth context, exact generated/vendor segment and
-directory-anchor proof, and deterministic minimal omission of only complete descendants outside the
-protected depth. The increment remains shadow-only; root values, paths, omitted identities, and
-structured candidates never leave the validation boundary as telemetry or model-visible output.
+CTX-79 and ADR 0044 completed the rooted flat tree/file-listing boundary: bounded requested
+root/depth context, exact generated/vendor segment and directory-anchor proof, and deterministic
+minimal omission of only complete descendants outside the protected depth are on `main`.
 
-After that boundary is merged, T2 can add the table/CSV-like strategy without coupling it to native
-adapters or the gateway. The T3 atomic apply transaction remains the first place a validated
-proposal may become model-visible.
+CTX-80 and ADR 0045 are the next T2 increment. They add a deliberately narrow schema-backed table
+shape with complete unique headers, rectangular scalar rows, deterministic largest-fitting
+first-and-last retention, and table-specific content-free evidence. Raw CSV, TSV, Markdown, object
+rows, nested cells, and positional schemas remain unsupported rather than being guessed. The
+increment stays shadow-only; header names, cells, retained indices, and structured candidates never
+leave the validation boundary as telemetry or model-visible output.
+
+After that boundary is merged, T2 can add the log strategy as another independent evidence identity
+without coupling it to native adapters or the gateway. The T3 atomic apply transaction remains the
+first place a validated proposal may become model-visible.

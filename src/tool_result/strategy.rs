@@ -16,6 +16,9 @@ pub const MCP_MAX_ENTITY_FIELDS: usize = 128;
 pub const MCP_MAX_ENTITY_OMITTED_FIELDS: usize = 64;
 pub const MCP_MAX_TREE_ENTRIES: usize = 2_048;
 pub const MCP_MAX_TREE_OMITTED_ENTRIES: usize = 512;
+pub const MCP_MAX_TABLE_COLUMNS: usize = 128;
+pub const MCP_MAX_TABLE_ROWS: usize = 2_048;
+pub const MCP_MAX_RETAINED_TABLE_ROWS: usize = 64;
 const MCP_MAX_ENTITY_REQUESTED_FIELDS: usize = 64;
 const MCP_MAX_ENTITY_INPUT_NODES: usize = 256;
 const MCP_MAX_ENTITY_INPUT_DEPTH: usize = 8;
@@ -24,6 +27,8 @@ const MCP_MAX_TREE_INPUT_NODES: usize = 256;
 const MCP_MAX_TREE_INPUT_DEPTH: usize = 8;
 const MCP_MAX_TREE_PATH_BYTES: usize = 4_096;
 const MCP_MAX_REQUESTED_TREE_DEPTH: usize = 64;
+const MCP_MAX_TABLE_CELLS: usize = 65_536;
+const MCP_MAX_TABLE_COLUMN_NAME_BYTES: usize = 256;
 
 /// Stable, inspectable contract for one result strategy. A version change deliberately creates a
 /// new evidence identity instead of silently inheriting activation from older behavior.
@@ -62,6 +67,7 @@ pub enum McpStructuredContentEdit {
     SearchResults(McpSearchResultsEdit),
     EntityDetail(McpEntityDetailEdit),
     TreeListing(McpTreeListingEdit),
+    TableRows(McpTableRowsEdit),
 }
 
 /// Proof inputs for one top-level collection reduction. The validator independently checks every
@@ -110,6 +116,54 @@ pub struct McpTreeListingEdit {
     pub requested_depth: Option<usize>,
     pub omitted_indices: Vec<usize>,
     pub omission_marker_field: String,
+}
+
+/// Proof inputs for one schema-authorized rectangular table reduction. Header and cell values stay
+/// in the source/candidate values; the edit carries only field identities and retained source row
+/// indices so the validator can independently reconstruct the exact head-and-tail selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpTableRowsEdit {
+    pub columns_field: String,
+    pub rows_field: String,
+    pub retained_indices: Vec<usize>,
+    pub omission_marker_field: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpTableSchemaAuthorization {
+    pub columns_field: String,
+    pub rows_field: String,
+    pub column_count: usize,
+    pub min_rows: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpTableSchemaRejection {
+    SchemaMissing,
+    SchemaUnsupported,
+    ColumnsEvidenceMissing,
+    ColumnsAmbiguous,
+    ColumnsInvalid,
+    RowsEvidenceMissing,
+    RowsAmbiguous,
+    RowsInvalid,
+    SourceTooLarge,
+}
+
+impl McpTableSchemaRejection {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::SchemaMissing => "table-object-schema-missing",
+            Self::SchemaUnsupported => "table-object-schema-unsupported",
+            Self::ColumnsEvidenceMissing => "table-columns-evidence-missing",
+            Self::ColumnsAmbiguous => "table-columns-ambiguous",
+            Self::ColumnsInvalid => "table-columns-invalid",
+            Self::RowsEvidenceMissing => "table-rows-evidence-missing",
+            Self::RowsAmbiguous => "table-rows-ambiguous",
+            Self::RowsInvalid => "table-rows-invalid",
+            Self::SourceTooLarge => "table-source-too-large",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +319,10 @@ pub struct ValidatedMcpProposal {
     pub tree_entries_omitted: Option<usize>,
     pub tree_requested_root_present: Option<bool>,
     pub tree_requested_depth_present: Option<bool>,
+    pub table_columns: Option<usize>,
+    pub table_rows_in: Option<usize>,
+    pub table_rows_out: Option<usize>,
+    pub table_rows_omitted: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +365,11 @@ pub enum McpProposalRejection {
     TreeSelectionInvalid,
     TreeTextMirrorInvalid,
     TreeOmissionMarkerInvalid,
+    TableTargetInvalid,
+    TableSchemaAuthorizationInvalid,
+    TableSelectionInvalid,
+    TableTextMirrorInvalid,
+    TableOmissionMarkerInvalid,
     RenderedContractInvalid,
     SourceSchema(McpSchemaRejection),
     CandidateSchema(McpSchemaRejection),
@@ -353,6 +416,11 @@ impl McpProposalRejection {
             Self::TreeSelectionInvalid => "tree-selection-invalid",
             Self::TreeTextMirrorInvalid => "tree-text-mirror-invalid",
             Self::TreeOmissionMarkerInvalid => "tree-omission-marker-invalid",
+            Self::TableTargetInvalid => "table-target-invalid",
+            Self::TableSchemaAuthorizationInvalid => "table-schema-authorization-invalid",
+            Self::TableSelectionInvalid => "table-selection-invalid",
+            Self::TableTextMirrorInvalid => "table-text-mirror-invalid",
+            Self::TableOmissionMarkerInvalid => "table-omission-marker-invalid",
             Self::RenderedContractInvalid => "rendered-contract-invalid",
             Self::SourceSchema(rejection) => rejection.code(),
             Self::CandidateSchema(rejection) => candidate_schema_code(rejection),
@@ -572,6 +640,10 @@ pub fn validate_mcp_proposal_with_contract_and_input(
             .and_then(StructuredEditMetrics::tree_requested_root_present),
         tree_requested_depth_present: structured_metrics
             .and_then(StructuredEditMetrics::tree_requested_depth_present),
+        table_columns: structured_metrics.and_then(StructuredEditMetrics::table_columns),
+        table_rows_in: structured_metrics.and_then(StructuredEditMetrics::table_rows_in),
+        table_rows_out: structured_metrics.and_then(StructuredEditMetrics::table_rows_out),
+        table_rows_omitted: structured_metrics.and_then(StructuredEditMetrics::table_rows_omitted),
     })
 }
 
@@ -590,73 +662,80 @@ struct TreeMetrics {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct TableMetrics {
+    columns: usize,
+    rows: CollectionMetrics,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum StructuredEditMetrics {
     Collection(CollectionMetrics),
     Search(CollectionMetrics),
     Entity(CollectionMetrics),
     Tree(TreeMetrics),
+    Table(TableMetrics),
 }
 
 impl StructuredEditMetrics {
     fn collection_items_in(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_in),
-            Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
+            Self::Search(_) | Self::Entity(_) | Self::Tree(_) | Self::Table(_) => None,
         }
     }
 
     fn collection_items_out(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_out),
-            Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
+            Self::Search(_) | Self::Entity(_) | Self::Tree(_) | Self::Table(_) => None,
         }
     }
 
     fn collection_items_omitted(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_omitted),
-            Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
+            Self::Search(_) | Self::Entity(_) | Self::Tree(_) | Self::Table(_) => None,
         }
     }
 
     fn search_results_in(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) => None,
+            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) | Self::Table(_) => None,
             Self::Search(metrics) => Some(metrics.items_in),
         }
     }
 
     fn search_results_out(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) => None,
+            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) | Self::Table(_) => None,
             Self::Search(metrics) => Some(metrics.items_out),
         }
     }
 
     fn search_results_omitted(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) => None,
+            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) | Self::Table(_) => None,
             Self::Search(metrics) => Some(metrics.items_omitted),
         }
     }
 
     fn entity_fields_in(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Search(_) | Self::Tree(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Tree(_) | Self::Table(_) => None,
             Self::Entity(metrics) => Some(metrics.items_in),
         }
     }
 
     fn entity_fields_out(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Search(_) | Self::Tree(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Tree(_) | Self::Table(_) => None,
             Self::Entity(metrics) => Some(metrics.items_out),
         }
     }
 
     fn entity_fields_omitted(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Search(_) | Self::Tree(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Tree(_) | Self::Table(_) => None,
             Self::Entity(metrics) => Some(metrics.items_omitted),
         }
     }
@@ -664,35 +743,63 @@ impl StructuredEditMetrics {
     fn tree_entries_in(self) -> Option<usize> {
         match self {
             Self::Tree(metrics) => Some(metrics.entries.items_in),
-            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Table(_) => None,
         }
     }
 
     fn tree_entries_out(self) -> Option<usize> {
         match self {
             Self::Tree(metrics) => Some(metrics.entries.items_out),
-            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Table(_) => None,
         }
     }
 
     fn tree_entries_omitted(self) -> Option<usize> {
         match self {
             Self::Tree(metrics) => Some(metrics.entries.items_omitted),
-            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Table(_) => None,
         }
     }
 
     fn tree_requested_root_present(self) -> Option<bool> {
         match self {
             Self::Tree(metrics) => Some(metrics.requested_root_present),
-            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Table(_) => None,
         }
     }
 
     fn tree_requested_depth_present(self) -> Option<bool> {
         match self {
             Self::Tree(metrics) => Some(metrics.requested_depth_present),
-            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Table(_) => None,
+        }
+    }
+
+    fn table_columns(self) -> Option<usize> {
+        match self {
+            Self::Table(metrics) => Some(metrics.columns),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
+        }
+    }
+
+    fn table_rows_in(self) -> Option<usize> {
+        match self {
+            Self::Table(metrics) => Some(metrics.rows.items_in),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
+        }
+    }
+
+    fn table_rows_out(self) -> Option<usize> {
+        match self {
+            Self::Table(metrics) => Some(metrics.rows.items_out),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
+        }
+    }
+
+    fn table_rows_omitted(self) -> Option<usize> {
+        match self {
+            Self::Table(metrics) => Some(metrics.rows.items_omitted),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
         }
     }
 }
@@ -750,6 +857,17 @@ fn validate_and_apply_structured_content(
                 result,
                 contract,
                 tool_input,
+                max_total_text_chars,
+                &replacement.expected,
+                &replacement.replacement,
+                edit,
+                text_replacements,
+            )?)
+        }
+        McpStructuredContentEdit::TableRows(edit) => {
+            StructuredEditMetrics::Table(validate_table_rows_edit(
+                result,
+                contract,
                 max_total_text_chars,
                 &replacement.expected,
                 &replacement.replacement,
@@ -1287,6 +1405,360 @@ pub(crate) fn collection_head_tail_indices(total: usize, retained: usize) -> Vec
     let head = retained.div_ceil(2);
     let tail = retained / 2;
     (0..head).chain((total - tail)..total).collect()
+}
+
+fn validate_table_rows_edit(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    max_total_text_chars: usize,
+    source: &Value,
+    candidate: &Value,
+    edit: &McpTableRowsEdit,
+    text_replacements: &HashMap<usize, &McpTextReplacement>,
+) -> Result<TableMetrics, McpProposalRejection> {
+    let (Some(source), Some(candidate)) = (source.as_object(), candidate.as_object()) else {
+        return Err(McpProposalRejection::TableTargetInvalid);
+    };
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return Err(McpProposalRejection::TableSchemaAuthorizationInvalid);
+    };
+    let authorization = assess_mcp_table_schema(schema, source)
+        .map_err(|_| McpProposalRejection::TableSchemaAuthorizationInvalid)?;
+    if edit.columns_field != authorization.columns_field
+        || edit.rows_field != authorization.rows_field
+        || edit.retained_indices.is_empty()
+    {
+        return Err(McpProposalRejection::TableSelectionInvalid);
+    }
+    if !maps_equal_except(source, candidate, &edit.rows_field) {
+        return Err(McpProposalRejection::StructuredContentInvariantFailed);
+    }
+    let (Some(source_rows), Some(candidate_rows)) = (
+        source.get(&edit.rows_field).and_then(Value::as_array),
+        candidate.get(&edit.rows_field).and_then(Value::as_array),
+    ) else {
+        return Err(McpProposalRejection::TableTargetInvalid);
+    };
+    let minimum_retained = authorization.min_rows.max(2);
+    let maximum_retained = source_rows
+        .len()
+        .saturating_sub(1)
+        .min(MCP_MAX_RETAINED_TABLE_ROWS);
+    if source_rows.len() <= candidate_rows.len()
+        || candidate_rows.len() < minimum_retained
+        || candidate_rows.len() > maximum_retained
+        || candidate_rows.len() != edit.retained_indices.len()
+        || edit.retained_indices
+            != collection_head_tail_indices(source_rows.len(), candidate_rows.len())
+    {
+        return Err(McpProposalRejection::TableSelectionInvalid);
+    }
+    let rebuilt = table_rows_candidate(source, &edit.rows_field, &edit.retained_indices);
+    if candidate != &rebuilt {
+        return Err(McpProposalRejection::TableSelectionInvalid);
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 || text_replacements.len() != 1 {
+        return Err(McpProposalRejection::TableTextMirrorInvalid);
+    }
+    let (block_index, source_text) = text_blocks[0];
+    let Some(text_replacement) = text_replacements.get(&block_index) else {
+        return Err(McpProposalRejection::TableTextMirrorInvalid);
+    };
+    let parsed_source: Value = serde_json::from_str(source_text)
+        .map_err(|_| McpProposalRejection::TableTextMirrorInvalid)?;
+    if parsed_source != Value::Object(source.clone()) {
+        return Err(McpProposalRejection::TableTextMirrorInvalid);
+    }
+    if source_text.chars().count() <= max_total_text_chars {
+        return Err(McpProposalRejection::TableSelectionInvalid);
+    }
+    let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
+        .map_err(|_| McpProposalRejection::TableTextMirrorInvalid)?;
+    if edit.omission_marker_field != MCP_OMISSION_MARKER_FIELD {
+        return Err(McpProposalRejection::TableOmissionMarkerInvalid);
+    }
+    let marker = parsed_candidate
+        .as_object_mut()
+        .and_then(|object| object.remove(&edit.omission_marker_field))
+        .ok_or(McpProposalRejection::TableOmissionMarkerInvalid)?;
+    if parsed_candidate != Value::Object(candidate.clone()) {
+        return Err(McpProposalRejection::TableTextMirrorInvalid);
+    }
+
+    let rows_in = source_rows.len();
+    let rows_out = candidate_rows.len();
+    let rows_omitted = rows_in - rows_out;
+    let expected_marker = serde_json::json!({
+        "columnsField": edit.columns_field,
+        "rowsField": edit.rows_field,
+        "columns": authorization.column_count,
+        "originalRows": rows_in,
+        "retainedRows": rows_out,
+        "omittedRows": rows_omitted,
+        "selection": "first-and-last-source-order"
+    });
+    if marker != expected_marker {
+        return Err(McpProposalRejection::TableOmissionMarkerInvalid);
+    }
+
+    if rows_out < maximum_retained {
+        let larger_indices = collection_head_tail_indices(rows_in, rows_out + 1);
+        let larger_candidate = table_rows_candidate(source, &edit.rows_field, &larger_indices);
+        let larger_projection = table_rows_text_projection(
+            &larger_candidate,
+            &edit.columns_field,
+            &edit.rows_field,
+            authorization.column_count,
+            rows_in,
+        );
+        let larger_chars = serde_json::to_string(&larger_projection)
+            .map_err(|_| McpProposalRejection::TableTextMirrorInvalid)?
+            .chars()
+            .count();
+        if larger_chars <= max_total_text_chars {
+            return Err(McpProposalRejection::TableSelectionInvalid);
+        }
+    }
+
+    Ok(TableMetrics {
+        columns: authorization.column_count,
+        rows: CollectionMetrics {
+            items_in: rows_in,
+            items_out: rows_out,
+            items_omitted: rows_omitted,
+        },
+    })
+}
+
+pub(crate) fn table_rows_candidate(
+    source: &Map<String, Value>,
+    rows_field: &str,
+    retained_indices: &[usize],
+) -> Map<String, Value> {
+    source
+        .iter()
+        .map(|(field, value)| {
+            if field != rows_field {
+                return (field.clone(), value.clone());
+            }
+            let Some(rows) = value.as_array() else {
+                return (field.clone(), value.clone());
+            };
+            let Some(retained) = retained_indices
+                .iter()
+                .map(|index| rows.get(*index).cloned())
+                .collect::<Option<Vec<_>>>()
+            else {
+                return (field.clone(), value.clone());
+            };
+            (field.clone(), Value::Array(retained))
+        })
+        .collect()
+}
+
+pub(crate) fn table_rows_text_projection(
+    candidate: &Map<String, Value>,
+    columns_field: &str,
+    rows_field: &str,
+    column_count: usize,
+    original_rows: usize,
+) -> Value {
+    let retained_rows = candidate
+        .get(rows_field)
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let mut projection = candidate.clone();
+    projection.insert(
+        MCP_OMISSION_MARKER_FIELD.to_string(),
+        serde_json::json!({
+            "columnsField": columns_field,
+            "rowsField": rows_field,
+            "columns": column_count,
+            "originalRows": original_rows,
+            "retainedRows": retained_rows,
+            "omittedRows": original_rows - retained_rows,
+            "selection": "first-and-last-source-order"
+        }),
+    );
+    Value::Object(projection)
+}
+
+pub(crate) fn assess_mcp_table_schema(
+    root: &Value,
+    source: &Map<String, Value>,
+) -> Result<McpTableSchemaAuthorization, McpTableSchemaRejection> {
+    let schema = resolve_search_local_schema(root, root)
+        .ok_or(McpTableSchemaRejection::SchemaUnsupported)?;
+    if !search_schema_types_are_subset_of(schema, &["object"])
+        || entity_schema_has_removal_dependencies(schema)
+    {
+        return Err(McpTableSchemaRejection::SchemaUnsupported);
+    }
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(McpTableSchemaRejection::SchemaMissing)?;
+    let required =
+        schema_required_fields(schema).ok_or(McpTableSchemaRejection::SchemaUnsupported)?;
+
+    let column_fields: Vec<_> = source
+        .keys()
+        .filter(|field| table_columns_field(field))
+        .collect();
+    let [columns_field] = column_fields.as_slice() else {
+        return Err(if column_fields.is_empty() {
+            McpTableSchemaRejection::ColumnsEvidenceMissing
+        } else {
+            McpTableSchemaRejection::ColumnsAmbiguous
+        });
+    };
+    if !required.contains(*columns_field) {
+        return Err(McpTableSchemaRejection::ColumnsInvalid);
+    }
+    let columns_schema = properties
+        .get(*columns_field)
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .filter(|schema| {
+            search_schema_types_are_subset_of(schema, &["array"])
+                && !table_array_schema_is_unsupported(schema)
+        })
+        .ok_or(McpTableSchemaRejection::ColumnsInvalid)?;
+    let _column_schema = columns_schema
+        .get("items")
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .filter(|schema| search_schema_types_are_subset_of(schema, &["string"]))
+        .ok_or(McpTableSchemaRejection::ColumnsInvalid)?;
+    let columns = source
+        .get(*columns_field)
+        .and_then(Value::as_array)
+        .ok_or(McpTableSchemaRejection::ColumnsInvalid)?;
+    if columns.is_empty() || columns.len() > MCP_MAX_TABLE_COLUMNS {
+        return Err(McpTableSchemaRejection::ColumnsInvalid);
+    }
+    let mut normalized_columns = BTreeSet::new();
+    for column in columns {
+        let Some(column) = column.as_str() else {
+            return Err(McpTableSchemaRejection::ColumnsInvalid);
+        };
+        if column.is_empty()
+            || column.len() > MCP_MAX_TABLE_COLUMN_NAME_BYTES
+            || column.trim() != column
+            || column.contains('\0')
+            || !normalized_columns.insert(column.to_ascii_lowercase())
+        {
+            return Err(McpTableSchemaRejection::ColumnsInvalid);
+        }
+    }
+
+    let row_fields: Vec<_> = source
+        .keys()
+        .filter(|field| table_rows_field(field))
+        .collect();
+    let [rows_field] = row_fields.as_slice() else {
+        return Err(if row_fields.is_empty() {
+            McpTableSchemaRejection::RowsEvidenceMissing
+        } else {
+            McpTableSchemaRejection::RowsAmbiguous
+        });
+    };
+    if !required.contains(*rows_field) || rows_field == columns_field {
+        return Err(McpTableSchemaRejection::RowsInvalid);
+    }
+    let rows_schema = properties
+        .get(*rows_field)
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .filter(|schema| {
+            search_schema_types_are_subset_of(schema, &["array"])
+                && !table_array_schema_is_unsupported(schema)
+        })
+        .ok_or(McpTableSchemaRejection::RowsInvalid)?;
+    let row_schema = rows_schema
+        .get("items")
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .filter(|schema| {
+            search_schema_types_are_subset_of(schema, &["array"])
+                && !table_array_schema_is_unsupported(schema)
+        })
+        .ok_or(McpTableSchemaRejection::RowsInvalid)?;
+    let _cell_schema = row_schema
+        .get("items")
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .filter(|schema| {
+            search_schema_types_are_subset_of(
+                schema,
+                &["null", "boolean", "number", "integer", "string"],
+            )
+        })
+        .ok_or(McpTableSchemaRejection::RowsInvalid)?;
+    let min_rows = rows_schema
+        .get("minItems")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
+    if min_rows > MCP_MAX_RETAINED_TABLE_ROWS {
+        return Err(McpTableSchemaRejection::SchemaUnsupported);
+    }
+    let rows = source
+        .get(*rows_field)
+        .and_then(Value::as_array)
+        .ok_or(McpTableSchemaRejection::RowsInvalid)?;
+    if rows.len() > MCP_MAX_TABLE_ROWS
+        || rows
+            .len()
+            .checked_mul(columns.len())
+            .is_none_or(|cells| cells > MCP_MAX_TABLE_CELLS)
+    {
+        return Err(McpTableSchemaRejection::SourceTooLarge);
+    }
+    for row in rows {
+        let Some(row) = row.as_array() else {
+            return Err(McpTableSchemaRejection::RowsInvalid);
+        };
+        if row.len() != columns.len() || row.iter().any(|cell| cell.is_array() || cell.is_object())
+        {
+            return Err(McpTableSchemaRejection::RowsInvalid);
+        }
+    }
+
+    Ok(McpTableSchemaAuthorization {
+        columns_field: (*columns_field).clone(),
+        rows_field: (*rows_field).clone(),
+        column_count: columns.len(),
+        min_rows,
+    })
+}
+
+fn table_columns_field(field: &str) -> bool {
+    matches!(
+        search_schema_normalized_field(field).as_str(),
+        "columns" | "headers"
+    )
+}
+
+fn table_rows_field(field: &str) -> bool {
+    matches!(
+        search_schema_normalized_field(field).as_str(),
+        "rows" | "data"
+    )
+}
+
+fn table_array_schema_is_unsupported(schema: &Value) -> bool {
+    [
+        "prefixItems",
+        "contains",
+        "minContains",
+        "maxContains",
+        "unevaluatedItems",
+    ]
+    .iter()
+    .any(|keyword| schema.get(*keyword).is_some())
 }
 
 pub(crate) fn assess_mcp_tree_listing_schema(
@@ -2527,5 +2999,148 @@ mod tests {
         let source = source.as_object().unwrap();
 
         assert_eq!(tree_listing_candidate(source, "entries", &[0]), *source);
+    }
+
+    #[test]
+    fn table_schema_assessment_follows_local_refs_and_proves_rectangular_scalars() {
+        let schema = json!({
+            "type": "object",
+            "$defs": {
+                "columns": {"type": "array", "items": {"type": "string"}},
+                "cell": {"type": ["string", "integer", "null"]},
+                "row": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {"$ref": "#/$defs/cell"}
+                },
+                "rows": {
+                    "type": "array",
+                    "minItems": 2,
+                    "items": {"$ref": "#/$defs/row"}
+                }
+            },
+            "properties": {
+                "headers": {"$ref": "#/$defs/columns"},
+                "data": {"$ref": "#/$defs/rows"},
+                "order": {"type": "string"}
+            },
+            "required": ["headers", "data", "order"],
+            "additionalProperties": false
+        });
+        let source = json!({
+            "headers": ["id", "ordinal", "note"],
+            "data": [
+                ["a", 1, null],
+                ["b", 2, "ready"],
+                ["c", 3, "done"]
+            ],
+            "order": "source-order"
+        });
+        let authorization = assess_mcp_table_schema(&schema, source.as_object().unwrap())
+            .expect("table authorization");
+        assert_eq!(authorization.columns_field, "headers");
+        assert_eq!(authorization.rows_field, "data");
+        assert_eq!(authorization.column_count, 3);
+        assert_eq!(authorization.min_rows, 2);
+    }
+
+    #[test]
+    fn table_schema_assessment_rejects_ambiguous_ragged_nested_and_hostile_sources() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "columns": {"type": "array", "items": {"type": "string"}},
+                "headers": {"type": "array", "items": {"type": "string"}},
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": ["string", "integer"]}
+                    }
+                }
+            },
+            "required": ["columns", "headers", "rows"]
+        });
+        let ambiguous = json!({
+            "columns": ["id"],
+            "headers": ["id"],
+            "rows": [["a"]]
+        });
+        assert_eq!(
+            assess_mcp_table_schema(&schema, ambiguous.as_object().unwrap()),
+            Err(McpTableSchemaRejection::ColumnsAmbiguous)
+        );
+
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "columns": {"type": "array", "items": {"type": "string"}},
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": ["string", "integer"]}
+                    }
+                }
+            },
+            "required": ["columns", "rows"]
+        });
+        for invalid in [
+            json!({"columns": ["id", "ID"], "rows": [["a", "b"]]}),
+            json!({"columns": ["id", "note"], "rows": [["a"]]}),
+            json!({"columns": ["id", "note"], "rows": [["a", {"nested": true}]]}),
+        ] {
+            assert!(matches!(
+                assess_mcp_table_schema(&schema, invalid.as_object().unwrap()),
+                Err(McpTableSchemaRejection::ColumnsInvalid | McpTableSchemaRejection::RowsInvalid)
+            ));
+        }
+
+        let mut positional_schema = schema.clone();
+        positional_schema["properties"]["rows"]["items"]["prefixItems"] =
+            json!([{"type": "string"}]);
+        let rectangular = json!({"columns": ["id"], "rows": [["a"], ["b"]]});
+        assert_eq!(
+            assess_mcp_table_schema(&positional_schema, rectangular.as_object().unwrap()),
+            Err(McpTableSchemaRejection::RowsInvalid)
+        );
+
+        let mut impossible_minimum = schema.clone();
+        impossible_minimum["properties"]["rows"]["minItems"] =
+            json!(MCP_MAX_RETAINED_TABLE_ROWS + 1);
+        let minimum_rows: Vec<_> = (0..=MCP_MAX_RETAINED_TABLE_ROWS)
+            .map(|index| json!([index.to_string()]))
+            .collect();
+        let minimum_source = json!({"columns": ["id"], "rows": minimum_rows});
+        assert_eq!(
+            assess_mcp_table_schema(&impossible_minimum, minimum_source.as_object().unwrap()),
+            Err(McpTableSchemaRejection::SchemaUnsupported)
+        );
+
+        let rows: Vec<_> = (0..=MCP_MAX_TABLE_ROWS)
+            .map(|index| json!([index.to_string()]))
+            .collect();
+        let oversized = json!({"columns": ["id"], "rows": rows});
+        assert_eq!(
+            assess_mcp_table_schema(&schema, oversized.as_object().unwrap()),
+            Err(McpTableSchemaRejection::SourceTooLarge)
+        );
+    }
+
+    #[test]
+    fn table_candidate_preserves_an_unexpected_non_array_rows_field() {
+        let source = json!({
+            "columns": ["id"],
+            "rows": "unexpected server value",
+            "order": "source-order"
+        });
+        let source = source.as_object().unwrap();
+
+        assert_eq!(table_rows_candidate(source, "rows", &[0]), *source);
+
+        let array_source = json!({"columns": ["id"], "rows": [["a"]]});
+        let array_source = array_source.as_object().unwrap();
+        assert_eq!(table_rows_candidate(array_source, "rows", &[1]), *array_source);
     }
 }
