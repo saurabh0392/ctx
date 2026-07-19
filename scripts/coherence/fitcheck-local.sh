@@ -29,13 +29,21 @@ command -v "$CLAUDE_BIN" >/dev/null 2>&1 || {
   exit 2
 }
 
-PROMPT="Run the fitcheck skill in .claude/skills/fitcheck against the target ${TARGET}, scope all, mode brief. \
+PROMPT="Read and follow .claude/skills/fitcheck/SKILL.md against the target ${TARGET}, scope all, mode brief. \
 Do the full persona walkthrough and score every dimension per rubric.md, including the empty state. \
+This is a read-only gate: do not create, edit, delete, or save any file; return the report only in your response. \
 Be honest, this gates a merge. As the very last line of your reply, print exactly one machine line: \
 FITCHECK verdict=<Ship|Iterate|Rework> overall=<number> coherence=<number>"
 
 echo "fitcheck-local: running on ${TARGET} (minimum verdict: ${MIN})…"
-OUT="$(cd "$REPO" && "$CLAUDE_BIN" -p "$PROMPT" --model "$MODEL" --dangerously-skip-permissions 2>&1)"
+OUT="$(cd "$REPO" && "$CLAUDE_BIN" -p "$PROMPT" \
+  --model "$MODEL" \
+  --tools "Read,Grep,Glob" \
+  --permission-mode dontAsk \
+  --strict-mcp-config \
+  --mcp-config '{"mcpServers":{}}' \
+  --no-chrome \
+  --no-session-persistence 2>&1)"
 status=$?
 echo "----- fitcheck output -----"
 echo "$OUT"

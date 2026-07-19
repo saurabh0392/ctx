@@ -76,6 +76,13 @@ if [[ $FITCHECK_CODE -ne 0 ]]; then
   exit "$FITCHECK_CODE"
 fi
 
+if [[ -n "$(git status --porcelain)" ]]; then
+  post_status failure "Local Fitcheck modified the worktree for PR #${PR_NUMBER}"
+  echo "pr-fitcheck: FAILED; Fitcheck must be read-only, but the worktree changed"
+  git status --short
+  exit 2
+fi
+
 LATEST_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
 if [[ "$LATEST_HEAD" != "$PR_HEAD" ]]; then
   echo "pr-fitcheck: PR head changed during the review; rerun on ${LATEST_HEAD}"
