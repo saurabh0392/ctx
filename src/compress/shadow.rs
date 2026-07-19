@@ -71,6 +71,12 @@ pub struct McpContractShadow {
     pub candidate_collection_items_out: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_collection_items_omitted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_search_results_in: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_search_results_out: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_search_results_omitted: Option<usize>,
 }
 
 impl FlagCounts {
@@ -398,6 +404,12 @@ pub fn compute_shadow_decision_with_mcp_contract(
                     .and_then(|proposal| proposal.collection_items_out),
                 candidate_collection_items_omitted: validated
                     .and_then(|proposal| proposal.collection_items_omitted),
+                candidate_search_results_in: validated
+                    .and_then(|proposal| proposal.search_results_in),
+                candidate_search_results_out: validated
+                    .and_then(|proposal| proposal.search_results_out),
+                candidate_search_results_omitted: validated
+                    .and_then(|proposal| proposal.search_results_omitted),
             }
         })
     } else {

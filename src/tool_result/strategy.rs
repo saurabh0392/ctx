@@ -7,8 +7,11 @@ use super::{
     McpOutputSchemaValidation, McpSchemaRejection, PreservedField, ToolContract,
 };
 
-pub const MCP_COLLECTION_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
+pub const MCP_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
+#[deprecated(note = "use MCP_OMISSION_MARKER_FIELD")]
+pub const MCP_COLLECTION_OMISSION_MARKER_FIELD: &str = MCP_OMISSION_MARKER_FIELD;
 pub const MCP_MAX_RETAINED_COLLECTION_ITEMS: usize = 64;
+pub const MCP_MAX_RETAINED_SEARCH_RESULTS: usize = 64;
 
 /// Stable, inspectable contract for one result strategy. A version change deliberately creates a
 /// new evidence identity instead of silently inheriting activation from older behavior.
@@ -44,6 +47,7 @@ pub struct McpStructuredContentReplacement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpStructuredContentEdit {
     PaginatedCollection(McpPaginatedCollectionEdit),
+    SearchResults(McpSearchResultsEdit),
 }
 
 /// Proof inputs for one top-level collection reduction. The validator independently checks every
@@ -54,6 +58,48 @@ pub struct McpPaginatedCollectionEdit {
     pub field: String,
     pub retained_indices: Vec<usize>,
     pub omission_marker_field: String,
+}
+
+/// Proof inputs for one schema-authorized search-result reduction. The server's source ordering is
+/// treated as the ranking contract: strategies may retain only an exact prefix and may never
+/// reorder or synthesize result entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpSearchResultsEdit {
+    pub field: String,
+    pub identity_field: String,
+    pub match_evidence_field: String,
+    pub retained_indices: Vec<usize>,
+    pub omission_marker_field: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpSearchSchemaAuthorization {
+    pub identity_field: String,
+    pub match_evidence_field: String,
+    pub min_results: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpSearchSchemaRejection {
+    ArraySchemaMissing,
+    ArraySchemaUnsupported,
+    PositionalSchemaUnsupported,
+    ItemSchemaUnsupported,
+    IdentityEvidenceMissing,
+    MatchEvidenceMissing,
+}
+
+impl McpSearchSchemaRejection {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::ArraySchemaMissing => "search-array-schema-missing",
+            Self::ArraySchemaUnsupported => "search-array-schema-unsupported",
+            Self::PositionalSchemaUnsupported => "search-positional-schema-unsupported",
+            Self::ItemSchemaUnsupported => "search-item-schema-unsupported",
+            Self::IdentityEvidenceMissing => "search-identity-evidence-missing",
+            Self::MatchEvidenceMissing => "search-match-evidence-missing",
+        }
+    }
 }
 
 /// A contentful, in-memory proposal. T2 does not expose a renderer or an apply operation from this
@@ -78,6 +124,9 @@ pub struct ValidatedMcpProposal {
     pub collection_items_in: Option<usize>,
     pub collection_items_out: Option<usize>,
     pub collection_items_omitted: Option<usize>,
+    pub search_results_in: Option<usize>,
+    pub search_results_out: Option<usize>,
+    pub search_results_omitted: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +154,11 @@ pub enum McpProposalRejection {
     CollectionSelectionInvalid,
     CollectionTextMirrorInvalid,
     CollectionOmissionMarkerInvalid,
+    SearchTargetInvalid,
+    SearchSchemaAuthorizationInvalid,
+    SearchSelectionInvalid,
+    SearchTextMirrorInvalid,
+    SearchOmissionMarkerInvalid,
     RenderedContractInvalid,
     SourceSchema(McpSchemaRejection),
     CandidateSchema(McpSchemaRejection),
@@ -136,6 +190,11 @@ impl McpProposalRejection {
             Self::CollectionSelectionInvalid => "collection-selection-invalid",
             Self::CollectionTextMirrorInvalid => "collection-text-mirror-invalid",
             Self::CollectionOmissionMarkerInvalid => "collection-omission-marker-invalid",
+            Self::SearchTargetInvalid => "search-target-invalid",
+            Self::SearchSchemaAuthorizationInvalid => "search-schema-authorization-invalid",
+            Self::SearchSelectionInvalid => "search-selection-invalid",
+            Self::SearchTextMirrorInvalid => "search-text-mirror-invalid",
+            Self::SearchOmissionMarkerInvalid => "search-omission-marker-invalid",
             Self::RenderedContractInvalid => "rendered-contract-invalid",
             Self::SourceSchema(rejection) => rejection.code(),
             Self::CandidateSchema(rejection) => candidate_schema_code(rejection),
@@ -226,10 +285,11 @@ pub fn validate_mcp_proposal_with_contract(
         }
         *text = replacement.replacement.clone();
     }
-    let collection_metrics = match &proposal.structured_content {
+    let structured_metrics = match &proposal.structured_content {
         Some(replacement) => Some(validate_and_apply_structured_content(
             result,
             &mut candidate,
+            contract,
             replacement,
             &replacements_by_target,
         )?),
@@ -317,9 +377,16 @@ pub fn validate_mcp_proposal_with_contract(
         chars_out,
         output_schema_validated,
         structured_content_replaced: proposal.structured_content.is_some(),
-        collection_items_in: collection_metrics.map(|metrics| metrics.items_in),
-        collection_items_out: collection_metrics.map(|metrics| metrics.items_out),
-        collection_items_omitted: collection_metrics.map(|metrics| metrics.items_omitted),
+        collection_items_in: structured_metrics
+            .and_then(StructuredEditMetrics::collection_items_in),
+        collection_items_out: structured_metrics
+            .and_then(StructuredEditMetrics::collection_items_out),
+        collection_items_omitted: structured_metrics
+            .and_then(StructuredEditMetrics::collection_items_omitted),
+        search_results_in: structured_metrics.and_then(StructuredEditMetrics::search_results_in),
+        search_results_out: structured_metrics.and_then(StructuredEditMetrics::search_results_out),
+        search_results_omitted: structured_metrics
+            .and_then(StructuredEditMetrics::search_results_omitted),
     })
 }
 
@@ -330,12 +397,63 @@ struct CollectionMetrics {
     items_omitted: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum StructuredEditMetrics {
+    Collection(CollectionMetrics),
+    Search(CollectionMetrics),
+}
+
+impl StructuredEditMetrics {
+    fn collection_items_in(self) -> Option<usize> {
+        match self {
+            Self::Collection(metrics) => Some(metrics.items_in),
+            Self::Search(_) => None,
+        }
+    }
+
+    fn collection_items_out(self) -> Option<usize> {
+        match self {
+            Self::Collection(metrics) => Some(metrics.items_out),
+            Self::Search(_) => None,
+        }
+    }
+
+    fn collection_items_omitted(self) -> Option<usize> {
+        match self {
+            Self::Collection(metrics) => Some(metrics.items_omitted),
+            Self::Search(_) => None,
+        }
+    }
+
+    fn search_results_in(self) -> Option<usize> {
+        match self {
+            Self::Collection(_) => None,
+            Self::Search(metrics) => Some(metrics.items_in),
+        }
+    }
+
+    fn search_results_out(self) -> Option<usize> {
+        match self {
+            Self::Collection(_) => None,
+            Self::Search(metrics) => Some(metrics.items_out),
+        }
+    }
+
+    fn search_results_omitted(self) -> Option<usize> {
+        match self {
+            Self::Collection(_) => None,
+            Self::Search(metrics) => Some(metrics.items_omitted),
+        }
+    }
+}
+
 fn validate_and_apply_structured_content(
     result: &CanonicalMcpResult,
     candidate: &mut CanonicalMcpResult,
+    contract: Option<&ToolContract>,
     replacement: &McpStructuredContentReplacement,
     text_replacements: &HashMap<usize, &McpTextReplacement>,
-) -> Result<CollectionMetrics, McpProposalRejection> {
+) -> Result<StructuredEditMetrics, McpProposalRejection> {
     let PreservedField::Value(source) = &result.structured_content else {
         return Err(McpProposalRejection::StaleStructuredContent);
     };
@@ -344,16 +462,137 @@ fn validate_and_apply_structured_content(
     }
 
     let metrics = match &replacement.edit {
-        McpStructuredContentEdit::PaginatedCollection(edit) => validate_collection_edit(
-            result,
-            &replacement.expected,
-            &replacement.replacement,
-            edit,
-            text_replacements,
-        )?,
+        McpStructuredContentEdit::PaginatedCollection(edit) => {
+            StructuredEditMetrics::Collection(validate_collection_edit(
+                result,
+                &replacement.expected,
+                &replacement.replacement,
+                edit,
+                text_replacements,
+            )?)
+        }
+        McpStructuredContentEdit::SearchResults(edit) => {
+            StructuredEditMetrics::Search(validate_search_results_edit(
+                result,
+                contract,
+                &replacement.expected,
+                &replacement.replacement,
+                edit,
+                text_replacements,
+            )?)
+        }
     };
     candidate.structured_content = PreservedField::Value(replacement.replacement.clone());
     Ok(metrics)
+}
+
+fn validate_search_results_edit(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    source: &Value,
+    candidate: &Value,
+    edit: &McpSearchResultsEdit,
+    text_replacements: &HashMap<usize, &McpTextReplacement>,
+) -> Result<CollectionMetrics, McpProposalRejection> {
+    let (Some(source), Some(candidate)) = (source.as_object(), candidate.as_object()) else {
+        return Err(McpProposalRejection::SearchTargetInvalid);
+    };
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return Err(McpProposalRejection::SearchSchemaAuthorizationInvalid);
+    };
+    let Ok(authorization) = assess_mcp_search_array_schema(schema, &edit.field) else {
+        return Err(McpProposalRejection::SearchSchemaAuthorizationInvalid);
+    };
+    if authorization.identity_field != edit.identity_field
+        || authorization.match_evidence_field != edit.match_evidence_field
+    {
+        return Err(McpProposalRejection::SearchSchemaAuthorizationInvalid);
+    }
+    if !maps_equal_except(source, candidate, &edit.field) {
+        return Err(McpProposalRejection::StructuredContentInvariantFailed);
+    }
+    let (Some(source_results), Some(candidate_results)) = (
+        source.get(&edit.field).and_then(Value::as_array),
+        candidate.get(&edit.field).and_then(Value::as_array),
+    ) else {
+        return Err(McpProposalRejection::SearchTargetInvalid);
+    };
+    if source_results.iter().any(|result| {
+        let Some(result) = result.as_object() else {
+            return true;
+        };
+        result.get(&edit.identity_field).is_none_or(Value::is_null)
+            || result
+                .get(&edit.match_evidence_field)
+                .is_none_or(Value::is_null)
+    }) {
+        return Err(McpProposalRejection::SearchSchemaAuthorizationInvalid);
+    }
+    if source_results.len() <= candidate_results.len()
+        || candidate_results.is_empty()
+        || candidate_results.len() > MCP_MAX_RETAINED_SEARCH_RESULTS
+        || candidate_results.len() != edit.retained_indices.len()
+        || edit.retained_indices
+            != search_ranked_prefix_indices(source_results.len(), candidate_results.len())
+    {
+        return Err(McpProposalRejection::SearchSelectionInvalid);
+    }
+    for (candidate_result, index) in candidate_results.iter().zip(&edit.retained_indices) {
+        if source_results.get(*index) != Some(candidate_result) {
+            return Err(McpProposalRejection::SearchSelectionInvalid);
+        }
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 || text_replacements.len() != 1 {
+        return Err(McpProposalRejection::SearchTextMirrorInvalid);
+    }
+    let (block_index, source_text) = text_blocks[0];
+    let Some(text_replacement) = text_replacements.get(&block_index) else {
+        return Err(McpProposalRejection::SearchTextMirrorInvalid);
+    };
+    let parsed_source: Value = serde_json::from_str(source_text)
+        .map_err(|_| McpProposalRejection::SearchTextMirrorInvalid)?;
+    if parsed_source != Value::Object(source.clone()) {
+        return Err(McpProposalRejection::SearchTextMirrorInvalid);
+    }
+    let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
+        .map_err(|_| McpProposalRejection::SearchTextMirrorInvalid)?;
+    if edit.omission_marker_field != MCP_OMISSION_MARKER_FIELD {
+        return Err(McpProposalRejection::SearchOmissionMarkerInvalid);
+    }
+    let marker = parsed_candidate
+        .as_object_mut()
+        .and_then(|object| object.remove(&edit.omission_marker_field))
+        .ok_or(McpProposalRejection::SearchOmissionMarkerInvalid)?;
+    if parsed_candidate != Value::Object(candidate.clone()) {
+        return Err(McpProposalRejection::SearchTextMirrorInvalid);
+    }
+
+    let items_in = source_results.len();
+    let items_out = candidate_results.len();
+    let items_omitted = items_in - items_out;
+    let expected_marker = serde_json::json!({
+        "field": edit.field,
+        "originalItems": items_in,
+        "retainedItems": items_out,
+        "omittedItems": items_omitted,
+        "selection": "ranked-prefix"
+    });
+    if marker != expected_marker {
+        return Err(McpProposalRejection::SearchOmissionMarkerInvalid);
+    }
+
+    Ok(CollectionMetrics {
+        items_in,
+        items_out,
+        items_omitted,
+    })
 }
 
 fn validate_collection_edit(
@@ -416,7 +655,7 @@ fn validate_collection_edit(
     }
     let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
         .map_err(|_| McpProposalRejection::CollectionTextMirrorInvalid)?;
-    if edit.omission_marker_field != MCP_COLLECTION_OMISSION_MARKER_FIELD {
+    if edit.omission_marker_field != MCP_OMISSION_MARKER_FIELD {
         return Err(McpProposalRejection::CollectionOmissionMarkerInvalid);
     }
     let marker = parsed_candidate
@@ -452,6 +691,157 @@ pub(crate) fn collection_head_tail_indices(total: usize, retained: usize) -> Vec
     let head = retained.div_ceil(2);
     let tail = retained / 2;
     (0..head).chain((total - tail)..total).collect()
+}
+
+pub(crate) fn assess_mcp_search_array_schema(
+    root: &Value,
+    field: &str,
+) -> Result<McpSearchSchemaAuthorization, McpSearchSchemaRejection> {
+    let properties = root
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(McpSearchSchemaRejection::ArraySchemaMissing)?;
+    let property_schema = properties
+        .get(field)
+        .ok_or(McpSearchSchemaRejection::ArraySchemaMissing)?;
+    let property_schema = resolve_search_local_schema(root, property_schema)
+        .ok_or(McpSearchSchemaRejection::ArraySchemaUnsupported)?;
+    if !search_schema_types_are_subset_of(property_schema, &["array"]) {
+        return Err(McpSearchSchemaRejection::ArraySchemaUnsupported);
+    }
+    if property_schema.get("prefixItems").is_some() {
+        return Err(McpSearchSchemaRejection::PositionalSchemaUnsupported);
+    }
+    let item_schema = property_schema
+        .get("items")
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .ok_or(McpSearchSchemaRejection::ItemSchemaUnsupported)?;
+    if !search_schema_types_are_subset_of(item_schema, &["object"]) {
+        return Err(McpSearchSchemaRejection::ItemSchemaUnsupported);
+    }
+    let item_properties = item_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(McpSearchSchemaRejection::ItemSchemaUnsupported)?;
+    let mut required: Vec<_> = item_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    required.sort_unstable();
+    let identity_field = required
+        .iter()
+        .find(|field| search_identity_schema_is_supported(root, item_properties, field))
+        .ok_or(McpSearchSchemaRejection::IdentityEvidenceMissing)?;
+    let match_evidence_field = required
+        .iter()
+        .find(|field| search_match_schema_is_supported(root, item_properties, field))
+        .ok_or(McpSearchSchemaRejection::MatchEvidenceMissing)?;
+    let min_results = property_schema
+        .get("minItems")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
+
+    Ok(McpSearchSchemaAuthorization {
+        identity_field: (*identity_field).to_string(),
+        match_evidence_field: (*match_evidence_field).to_string(),
+        min_results,
+    })
+}
+
+fn resolve_search_local_schema<'a>(root: &'a Value, mut schema: &'a Value) -> Option<&'a Value> {
+    for _ in 0..16 {
+        let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
+            return Some(schema);
+        };
+        if !reference.starts_with('#') {
+            return None;
+        }
+        schema = root.pointer(&reference[1..])?;
+    }
+    None
+}
+
+fn search_schema_normalized_field(field: &str) -> String {
+    field
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn search_identity_schema_is_supported(
+    root: &Value,
+    properties: &serde_json::Map<String, Value>,
+    field: &str,
+) -> bool {
+    let normalized = search_schema_normalized_field(field);
+    if !matches!(
+        normalized.as_str(),
+        "id" | "resultid"
+            | "documentid"
+            | "entityid"
+            | "uri"
+            | "url"
+            | "path"
+            | "filepath"
+            | "filename"
+            | "key"
+            | "reference"
+    ) {
+        return false;
+    }
+    let Some(schema) = properties
+        .get(field)
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+    else {
+        return false;
+    };
+    match normalized.as_str() {
+        "uri" | "url" | "path" | "filepath" | "filename" => {
+            search_schema_types_are_subset_of(schema, &["string"])
+        }
+        _ => search_schema_types_are_subset_of(schema, &["string", "integer"]),
+    }
+}
+
+fn search_match_schema_is_supported(
+    root: &Value,
+    properties: &serde_json::Map<String, Value>,
+    field: &str,
+) -> bool {
+    let normalized = search_schema_normalized_field(field);
+    let allowed: &[&str] = match normalized.as_str() {
+        "rank" | "score" | "relevance" | "relevancescore" | "similarity" | "distance" => {
+            &["number", "integer"]
+        }
+        "line" | "linenumber" | "startline" | "endline" | "offset" => &["integer"],
+        "snippet" | "match" | "matchedtext" | "highlight" => &["string"],
+        "matches" | "highlights" => &["array"],
+        "location" | "range" => &["object", "string"],
+        _ => return false,
+    };
+    properties
+        .get(field)
+        .and_then(|schema| resolve_search_local_schema(root, schema))
+        .is_some_and(|schema| search_schema_types_are_subset_of(schema, allowed))
+}
+
+fn search_schema_types_are_subset_of(schema: &Value, allowed: &[&str]) -> bool {
+    match schema.get("type") {
+        Some(Value::String(value)) => allowed.contains(&value.as_str()),
+        Some(Value::Array(values)) if !values.is_empty() => values
+            .iter()
+            .all(|value| value.as_str().is_some_and(|value| allowed.contains(&value))),
+        _ => false,
+    }
+}
+
+pub(crate) fn search_ranked_prefix_indices(total: usize, retained: usize) -> Vec<usize> {
+    (0..retained.min(total)).collect()
 }
 
 fn same_text_block_envelope(before: &Value, after: &Value, replacement: &str) -> bool {
@@ -621,5 +1011,25 @@ mod tests {
             Err(McpProposalRejection::ErrorResult)
         );
         assert_eq!(error.render(), *error.raw());
+    }
+
+    #[test]
+    fn search_schema_assessment_distinguishes_missing_from_incompatible_arrays() {
+        let incompatible = json!({
+            "type": "object",
+            "properties": {
+                "results": {"type": "object"}
+            }
+        });
+        assert_eq!(
+            assess_mcp_search_array_schema(&incompatible, "results"),
+            Err(McpSearchSchemaRejection::ArraySchemaUnsupported)
+        );
+
+        let missing = json!({"type": "object", "properties": {}});
+        assert_eq!(
+            assess_mcp_search_array_schema(&missing, "results"),
+            Err(McpSearchSchemaRejection::ArraySchemaMissing)
+        );
     }
 }

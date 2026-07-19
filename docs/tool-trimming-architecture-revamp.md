@@ -728,11 +728,15 @@ CTX-75 and ADR 0040 completed the contract boundary: lossless `tools/list` captu
 server/protocol/tool-isolated cache, and local-only output-schema validation before and after an
 in-memory proposal are on `main`.
 
-CTX-76 and ADR 0041 are the next T2 increment. They add the first schema-aware paginated collection
-proposal, a typed structured-edit validator, deterministic head-and-tail retention, and an explicit
-omitted-count marker in a verified text projection. The increment remains shadow-only; structured
-candidates never leave the validation boundary.
+CTX-76 and ADR 0041 completed the first schema-aware structured strategy: paginated collection
+proposals, a typed structured-edit validator, deterministic head-and-tail retention, and an explicit
+omitted-count marker in a verified text projection are on `main`.
 
-After that boundary is merged, T2 can add search and entity strategies without coupling them to
-the native adapters or gateway. The T3 atomic apply transaction remains the first place a validated
+CTX-77 and ADR 0042 are the next T2 increment. They add schema-authorized search-result proposals,
+required stable-identity and match-evidence checks, deterministic ranked-prefix retention, and
+search-specific content-free evidence. The increment remains shadow-only; structured candidates
+never leave the validation boundary.
+
+After that boundary is merged, T2 can add the entity/detail strategy without coupling it to native
+adapters or the gateway. The T3 atomic apply transaction remains the first place a validated
 proposal may become model-visible.
