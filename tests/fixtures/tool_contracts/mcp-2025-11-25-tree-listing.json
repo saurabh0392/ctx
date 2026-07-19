@@ -1,0 +1,77 @@
+{
+  "protocolVersion": "2025-11-25",
+  "input": {
+    "root": "/workspace/sample"
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "root": { "type": "string" },
+      "entries": {
+        "type": "array",
+        "minItems": 3,
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "kind": { "type": "string", "enum": ["file", "directory"] },
+            "bytes": { "type": "integer", "minimum": 0 },
+            "detail": { "type": "string" }
+          },
+          "required": ["path", "kind", "bytes"],
+          "additionalProperties": false
+        }
+      },
+      "order": { "type": "string" }
+    },
+    "required": ["root", "entries", "order"],
+    "additionalProperties": false
+  },
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"root\":\"/workspace/sample\",\"entries\":[{\"path\":\"src\",\"kind\":\"directory\",\"bytes\":0},{\"path\":\"src/lib.rs\",\"kind\":\"file\",\"bytes\":420},{\"path\":\"node_modules\",\"kind\":\"directory\",\"bytes\":0},{\"path\":\"node_modules/example-package\",\"kind\":\"directory\",\"bytes\":0,\"detail\":\"Sanitized dependency metadata repeats package resolution, cache, integrity, and compatibility information that is generated and not part of the product source tree.\"},{\"path\":\"node_modules/example-package/index.js\",\"kind\":\"file\",\"bytes\":9000,\"detail\":\"Sanitized generated dependency source repeats implementation details, bundled comments, compatibility branches, and distribution scaffolding so the fixture exercises complete-entry omission without exposing real source code.\"},{\"path\":\"target\",\"kind\":\"directory\",\"bytes\":0},{\"path\":\"target/debug\",\"kind\":\"directory\",\"bytes\":0,\"detail\":\"Sanitized compiler artifact metadata repeats build hashes, dependency fingerprints, and incremental cache descriptions that remain outside the authored source tree.\"},{\"path\":\"target/debug/sample\",\"kind\":\"file\",\"bytes\":5000000,\"detail\":\"Sanitized compiled artifact detail repeats linker, symbol, and build-cache context solely to make a deterministic budgeted shadow proposal useful.\"},{\"path\":\"README.md\",\"kind\":\"file\",\"bytes\":1200}],\"order\":\"path-ascending\"}"
+      }
+    ],
+    "structuredContent": {
+      "root": "/workspace/sample",
+      "entries": [
+        { "path": "src", "kind": "directory", "bytes": 0 },
+        { "path": "src/lib.rs", "kind": "file", "bytes": 420 },
+        { "path": "node_modules", "kind": "directory", "bytes": 0 },
+        {
+          "path": "node_modules/example-package",
+          "kind": "directory",
+          "bytes": 0,
+          "detail": "Sanitized dependency metadata repeats package resolution, cache, integrity, and compatibility information that is generated and not part of the product source tree."
+        },
+        {
+          "path": "node_modules/example-package/index.js",
+          "kind": "file",
+          "bytes": 9000,
+          "detail": "Sanitized generated dependency source repeats implementation details, bundled comments, compatibility branches, and distribution scaffolding so the fixture exercises complete-entry omission without exposing real source code."
+        },
+        { "path": "target", "kind": "directory", "bytes": 0 },
+        {
+          "path": "target/debug",
+          "kind": "directory",
+          "bytes": 0,
+          "detail": "Sanitized compiler artifact metadata repeats build hashes, dependency fingerprints, and incremental cache descriptions that remain outside the authored source tree."
+        },
+        {
+          "path": "target/debug/sample",
+          "kind": "file",
+          "bytes": 5000000,
+          "detail": "Sanitized compiled artifact detail repeats linker, symbol, and build-cache context solely to make a deterministic budgeted shadow proposal useful."
+        },
+        { "path": "README.md", "kind": "file", "bytes": 1200 }
+      ],
+      "order": "path-ascending"
+    },
+    "isError": false,
+    "_meta": {
+      "fixture": "sanitized-tree-listing"
+    }
+  }
+}

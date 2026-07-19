@@ -1,13 +1,15 @@
 use crate::tool_result::{
-    assess_mcp_entity_schema, assess_mcp_search_array_schema, collection_head_tail_indices,
-    entity_detail_candidate, entity_detail_text_projection, search_ranked_prefix_indices,
+    assess_mcp_entity_schema, assess_mcp_search_array_schema, assess_mcp_tree_listing_schema,
+    collection_head_tail_indices, entity_detail_candidate, entity_detail_text_projection,
+    search_ranked_prefix_indices, tree_listing_candidate, tree_listing_text_projection,
     validate_mcp_output_schema, validate_mcp_proposal_with_contract_and_input,
     CanonicalContentBlock, CanonicalMcpResult, McpEntityDetailEdit, McpEntitySchemaAuthorization,
     McpOutputSchemaValidation, McpPaginatedCollectionEdit, McpProposalRejection,
     McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
-    McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal, PreservedField,
-    ToolContract, ValidatedMcpProposal, MCP_MAX_ENTITY_OMITTED_FIELDS,
-    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_OMISSION_MARKER_FIELD,
+    McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal, McpTreeListingEdit,
+    McpTreeSchemaAuthorization, PreservedField, ToolContract, ValidatedMcpProposal,
+    MCP_MAX_ENTITY_OMITTED_FIELDS, MCP_MAX_RETAINED_COLLECTION_ITEMS,
+    MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_MAX_TREE_OMITTED_ENTRIES, MCP_OMISSION_MARKER_FIELD,
 };
 use serde_json::{Map, Value};
 
@@ -74,6 +76,22 @@ const ENTITY_DETAIL_INVARIANTS: &[&str] = &[
     "result-contract-reparses",
 ];
 
+const TREE_LISTING_INVARIANTS: &[&str] = &[
+    "source-round-trip-identical",
+    "advertised-output-schema-valid-before-and-after",
+    "one-schema-authorized-rooted-flat-listing",
+    "stable-root-path-and-entry-kind-present",
+    "requested-root-and-depth-context-rederived",
+    "normal-source-entries-protected",
+    "only-generated-vendor-descendants-outside-requested-depth-removed",
+    "retained-entries-value-identical-and-source-ordered",
+    "deterministic-minimal-removal-prefix",
+    "text-projection-matches-structured-candidate",
+    "explicit-content-free-omitted-entry-marker",
+    "error-results-pass-through",
+    "result-contract-reparses",
+];
+
 pub(crate) const MCP_TEXT_BLOCKS_V2: McpStrategyManifest = McpStrategyManifest {
     id: "mcp-text-blocks",
     version: "2",
@@ -103,6 +121,14 @@ pub(crate) const MCP_ENTITY_DETAIL_V1: McpStrategyManifest = McpStrategyManifest
     version: "1",
     eligible_shape: "schema-backed-entity-detail",
     invariants: ENTITY_DETAIL_INVARIANTS,
+    max_expansion_percent: 100,
+};
+
+pub(crate) const MCP_TREE_LISTING_V1: McpStrategyManifest = McpStrategyManifest {
+    id: "mcp-tree-listing",
+    version: "1",
+    eligible_shape: "schema-backed-rooted-flat-tree-listing",
+    invariants: TREE_LISTING_INVARIANTS,
     max_expansion_percent: 100,
 };
 
@@ -336,6 +362,43 @@ impl McpResultStrategy for EntityDetailStrategy {
     }
 }
 
+struct TreeListingStrategy;
+
+impl McpResultStrategy for TreeListingStrategy {
+    fn manifest(&self) -> &'static McpStrategyManifest {
+        &MCP_TREE_LISTING_V1
+    }
+
+    fn eligibility(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+        tool_input: Option<&Value>,
+    ) -> McpStrategyEligibility {
+        match tree_listing_shape(result, contract, tool_input) {
+            Ok(Some(_)) => McpStrategyEligibility::Eligible(
+                "output-schema-root-path-kind-and-bounded-request-context",
+            ),
+            Ok(None) => McpStrategyEligibility::NotApplicable,
+            Err(reason) => McpStrategyEligibility::Rejected(reason),
+        }
+    }
+
+    fn propose(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+        tool_input: Option<&Value>,
+        opts: &CompressOptions,
+        _ctx: &CompressContext,
+    ) -> McpProposalOutcome {
+        let Ok(Some(shape)) = tree_listing_shape(result, contract, tool_input) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        propose_tree_listing(result, &shape, opts, self.manifest())
+    }
+}
+
 #[derive(Debug)]
 struct PaginatedCollectionShape {
     field: String,
@@ -356,6 +419,114 @@ struct SearchResultsShape {
 struct EntityDetailShape {
     authorization: McpEntitySchemaAuthorization,
     text_block_index: usize,
+}
+
+#[derive(Debug)]
+struct TreeListingShape {
+    authorization: McpTreeSchemaAuthorization,
+    text_block_index: usize,
+}
+
+fn tree_listing_shape(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
+) -> Result<Option<TreeListingShape>, &'static str> {
+    let PreservedField::Value(Value::Object(structured)) = &result.structured_content else {
+        return Ok(None);
+    };
+    let observed_arrays: Vec<_> = structured
+        .iter()
+        .filter(|(_, value)| value.is_array())
+        .collect();
+    if observed_arrays.is_empty() {
+        return Ok(None);
+    }
+    let tree_hint = structured.keys().any(|field| {
+        matches!(
+            normalized_schema_field(field).as_str(),
+            "root"
+                | "rootpath"
+                | "base"
+                | "basepath"
+                | "cwd"
+                | "directory"
+                | "directorypath"
+        )
+    }) && observed_arrays.iter().any(|(field, entries)| {
+        is_tree_entries_field(field)
+            || entries
+                .as_array()
+                .and_then(|entries| entries.first())
+                .and_then(Value::as_object)
+                .is_some_and(|entry| {
+                    let has_path = entry.keys().any(|field| {
+                        matches!(
+                            normalized_schema_field(field).as_str(),
+                            "path" | "relativepath" | "filepath" | "name"
+                        )
+                    });
+                    let has_kind = entry.keys().any(|field| {
+                        matches!(
+                            normalized_schema_field(field).as_str(),
+                            "kind" | "type" | "entrytype" | "filetype"
+                        )
+                    });
+                    has_path && has_kind
+                })
+    });
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return if tree_hint {
+            Err("tree-output-schema-required")
+        } else {
+            Ok(None)
+        };
+    };
+    let schema_properties = resolve_local_schema(schema, schema)
+        .and_then(|schema| schema.get("properties"))
+        .and_then(Value::as_object);
+    if structured.keys().any(|field| {
+        is_pagination_field(field)
+            && schema_properties.is_some_and(|properties| properties.contains_key(field))
+    }) {
+        return Ok(None);
+    }
+    let authorization = match assess_mcp_tree_listing_schema(schema, structured, tool_input) {
+        Ok(authorization) => authorization,
+        Err(rejection)
+            if !tree_hint
+                && matches!(
+                    rejection.code(),
+                    "tree-root-evidence-missing" | "tree-entries-evidence-missing"
+                ) =>
+        {
+            return Ok(None);
+        }
+        Err(rejection) => return Err(rejection.code()),
+    };
+    if structured.contains_key(MCP_OMISSION_MARKER_FIELD) {
+        return Err("tree-omission-marker-collision");
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 {
+        return Err("tree-text-mirror-required");
+    }
+    let parsed_text: Value =
+        serde_json::from_str(text_blocks[0].1).map_err(|_| "tree-text-mirror-invalid")?;
+    if parsed_text != Value::Object(structured.clone()) {
+        return Err("tree-text-mirror-invalid");
+    }
+
+    Ok(Some(TreeListingShape {
+        authorization,
+        text_block_index: text_blocks[0].0,
+    }))
 }
 
 fn entity_detail_shape(
@@ -631,6 +802,13 @@ fn is_search_result_collection_field(field: &str) -> bool {
     )
 }
 
+fn is_tree_entries_field(field: &str) -> bool {
+    matches!(
+        normalized_schema_field(field).as_str(),
+        "entries" | "files" | "nodes" | "paths" | "children" | "tree"
+    )
+}
+
 fn is_pagination_field(field: &str) -> bool {
     let normalized = normalized_schema_field(field);
     matches!(
@@ -884,6 +1062,95 @@ fn propose_entity_detail(
     }))
 }
 
+fn propose_tree_listing(
+    result: &CanonicalMcpResult,
+    shape: &TreeListingShape,
+    opts: &CompressOptions,
+    manifest: &McpStrategyManifest,
+) -> McpProposalOutcome {
+    let PreservedField::Value(Value::Object(source)) = &result.structured_content else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let Some(source_entries) = source
+        .get(&shape.authorization.entries_field)
+        .and_then(Value::as_array)
+    else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let Some(source_text) = result
+        .content
+        .get(shape.text_block_index)
+        .and_then(CanonicalContentBlock::text)
+    else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let source_chars = source_text.chars().count();
+    if source_chars <= opts.target_chars {
+        return McpProposalOutcome::WithinBudget;
+    }
+    if shape.authorization.removable_indices.is_empty() {
+        return McpProposalOutcome::NoSavings;
+    }
+
+    let maximum_by_schema = source_entries
+        .len()
+        .saturating_sub(shape.authorization.min_entries);
+    let maximum_omitted = shape
+        .authorization
+        .removable_indices
+        .len()
+        .min(maximum_by_schema)
+        .min(MCP_MAX_TREE_OMITTED_ENTRIES);
+    let mut best = None;
+    for omitted_count in 1..=maximum_omitted {
+        let omitted_indices = shape.authorization.removable_indices[..omitted_count].to_vec();
+        let candidate =
+            tree_listing_candidate(source, &shape.authorization.entries_field, &omitted_indices);
+        let projection = tree_listing_text_projection(
+            &candidate,
+            &shape.authorization.entries_field,
+            source_entries.len(),
+            shape.authorization.requested_depth,
+        );
+        let Ok(text_projection) = serde_json::to_string(&projection) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        let chars_out = text_projection.chars().count();
+        if chars_out <= opts.target_chars.max(1) && chars_out < source_chars {
+            best = Some((omitted_indices, Value::Object(candidate), text_projection));
+            break;
+        }
+    }
+    let Some((omitted_indices, replacement, text_projection)) = best else {
+        return McpProposalOutcome::NoSavings;
+    };
+
+    McpProposalOutcome::Proposed(Box::new(McpTransformProposal {
+        strategy_id: manifest.id,
+        strategy_version: manifest.version,
+        max_total_text_chars: opts.target_chars.max(1),
+        replacements: vec![McpTextReplacement {
+            block_index: shape.text_block_index,
+            expected_text: source_text.to_string(),
+            replacement: text_projection,
+        }],
+        structured_content: Some(McpStructuredContentReplacement {
+            expected: Value::Object(source.clone()),
+            replacement,
+            edit: McpStructuredContentEdit::TreeListing(McpTreeListingEdit {
+                entries_field: shape.authorization.entries_field.clone(),
+                root_field: shape.authorization.root_field.clone(),
+                path_field: shape.authorization.path_field.clone(),
+                kind_field: shape.authorization.kind_field.clone(),
+                requested_root: shape.authorization.requested_root.clone(),
+                requested_depth: shape.authorization.requested_depth,
+                omitted_indices,
+                omission_marker_field: MCP_OMISSION_MARKER_FIELD.to_string(),
+            }),
+        }),
+    }))
+}
+
 fn structured_array_candidate(
     source: &Map<String, Value>,
     field: &str,
@@ -954,8 +1221,10 @@ static TEXT_BLOCK_STRATEGY: TextBlockStrategy = TextBlockStrategy;
 static PAGINATED_COLLECTION_STRATEGY: PaginatedCollectionStrategy = PaginatedCollectionStrategy;
 static SEARCH_RESULTS_STRATEGY: SearchResultsStrategy = SearchResultsStrategy;
 static ENTITY_DETAIL_STRATEGY: EntityDetailStrategy = EntityDetailStrategy;
-static STRATEGIES: [&dyn McpResultStrategy; 4] = [
+static TREE_LISTING_STRATEGY: TreeListingStrategy = TreeListingStrategy;
+static STRATEGIES: [&dyn McpResultStrategy; 5] = [
     &SEARCH_RESULTS_STRATEGY,
+    &TREE_LISTING_STRATEGY,
     &PAGINATED_COLLECTION_STRATEGY,
     &ENTITY_DETAIL_STRATEGY,
     &TEXT_BLOCK_STRATEGY,
@@ -1301,6 +1570,64 @@ mod tests {
         (result, contract, input)
     }
 
+    fn tree_result() -> (CanonicalMcpResult, ToolContract, Value) {
+        let entries = json!([
+            {"path": "src", "kind": "directory", "bytes": 0},
+            {"path": "src/lib.rs", "kind": "file", "bytes": 420},
+            {"path": "node_modules", "kind": "directory", "bytes": 0},
+            {"path": "node_modules/pkg-a", "kind": "directory", "bytes": 0, "detail": "package metadata ".repeat(18)},
+            {"path": "node_modules/pkg-a/index.js", "kind": "file", "bytes": 9000, "detail": "generated dependency source ".repeat(24)},
+            {"path": "node_modules/pkg-b", "kind": "directory", "bytes": 0, "detail": "package metadata ".repeat(18)},
+            {"path": "node_modules/pkg-b/index.js", "kind": "file", "bytes": 8000, "detail": "generated dependency source ".repeat(24)},
+            {"path": "target", "kind": "directory", "bytes": 0},
+            {"path": "target/debug", "kind": "directory", "bytes": 0, "detail": "compiler artifact metadata ".repeat(18)},
+            {"path": "target/debug/ctx", "kind": "file", "bytes": 5000000, "detail": "compiled binary artifact ".repeat(24)},
+            {"path": "README.md", "kind": "file", "bytes": 1200}
+        ]);
+        let structured = json!({
+            "root": "/workspace/project",
+            "entries": entries,
+            "order": "path-ascending"
+        });
+        let text = serde_json::to_string(&structured).expect("serialize tree fixture");
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+            "isError": false,
+            "_meta": {"request": "tree-r1"}
+        }))
+        .expect("tree result");
+        let contract = ToolContract {
+            output_schema: PreservedField::Value(json!({
+                "type": "object",
+                "properties": {
+                    "root": {"type": "string"},
+                    "entries": {
+                        "type": "array",
+                        "minItems": 3,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "kind": {"type": "string", "enum": ["file", "directory"]},
+                                "bytes": {"type": "integer", "minimum": 0},
+                                "detail": {"type": "string"}
+                            },
+                            "required": ["path", "kind", "bytes"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "order": {"type": "string"}
+                },
+                "required": ["root", "entries", "order"],
+                "additionalProperties": false
+            })),
+            ..Default::default()
+        };
+        let input = json!({"root": "/workspace/project"});
+        (result, contract, input)
+    }
+
     #[test]
     fn registry_is_deterministic_and_versioned() {
         let manifests: Vec<_> = STRATEGIES
@@ -1311,12 +1638,360 @@ mod tests {
             manifests,
             vec![
                 &MCP_SEARCH_RESULTS_V1,
+                &MCP_TREE_LISTING_V1,
                 &MCP_PAGINATED_COLLECTION_V1,
                 &MCP_ENTITY_DETAIL_V1,
                 &MCP_TEXT_BLOCKS_V2
             ]
         );
         assert!(!manifests[0].invariants.is_empty());
+    }
+
+    #[test]
+    fn tree_proposal_omits_only_generated_descendants_and_preserves_order() {
+        let (result, contract, input) = tree_result();
+        let shape = tree_listing_shape(&result, Some(&contract), Some(&input))
+            .expect("shape assessment")
+            .expect("tree shape");
+        assert_eq!(shape.authorization.entries_field, "entries");
+        assert_eq!(shape.authorization.root_field, "root");
+        assert_eq!(shape.authorization.path_field, "path");
+        assert_eq!(shape.authorization.kind_field, "kind");
+        assert_eq!(
+            shape.authorization.requested_root.as_deref(),
+            Some("/workspace/project")
+        );
+        assert_eq!(shape.authorization.requested_depth, None);
+        assert_eq!(shape.authorization.removable_indices, [4, 6, 9, 3, 5, 8]);
+
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_tree_listing(&result, &shape, &options(900), &MCP_TREE_LISTING_V1)
+        else {
+            panic!("expected tree proposal");
+        };
+        let replacement = proposal
+            .structured_content
+            .as_ref()
+            .expect("structured replacement");
+        let McpStructuredContentEdit::TreeListing(edit) = &replacement.edit else {
+            panic!("expected tree edit");
+        };
+        assert!(!edit.omitted_indices.is_empty());
+        assert!(edit
+            .omitted_indices
+            .iter()
+            .all(|index| [3, 4, 5, 6, 8, 9].contains(index)));
+
+        let source_entries = replacement.expected["entries"].as_array().unwrap();
+        let candidate_entries = replacement.replacement["entries"].as_array().unwrap();
+        let omitted: std::collections::BTreeSet<_> = edit.omitted_indices.iter().copied().collect();
+        let expected_retained: Vec<_> = source_entries
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !omitted.contains(index))
+            .map(|(_, entry)| entry.clone())
+            .collect();
+        assert_eq!(candidate_entries, &expected_retained);
+        for protected in ["src", "src/lib.rs", "node_modules", "target", "README.md"] {
+            assert!(candidate_entries
+                .iter()
+                .any(|entry| entry["path"] == protected));
+        }
+
+        let projection: Value =
+            serde_json::from_str(&proposal.replacements[0].replacement).expect("JSON projection");
+        assert_eq!(
+            projection.pointer("/_ctxOmission/selection"),
+            Some(&json!(
+                "generated-vendor-descendants-outside-requested-depth"
+            ))
+        );
+        assert_eq!(
+            projection.pointer("/_ctxOmission/omittedEntries"),
+            Some(&json!(edit.omitted_indices.len()))
+        );
+        let projection_text = &proposal.replacements[0].replacement;
+        for omitted_path in [
+            "node_modules/pkg-a/index.js",
+            "node_modules/pkg-b/index.js",
+            "target/debug/ctx",
+        ] {
+            assert!(!projection_text.contains(omitted_path));
+        }
+
+        let validated = validate_mcp_proposal_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&input),
+            &MCP_TREE_LISTING_V1,
+            &proposal,
+        )
+        .expect("validated tree proposal");
+        assert_eq!(validated.tree_entries_in, Some(source_entries.len()));
+        assert_eq!(validated.tree_entries_out, Some(candidate_entries.len()));
+        assert_eq!(
+            validated.tree_entries_omitted,
+            Some(edit.omitted_indices.len())
+        );
+        assert_eq!(validated.tree_requested_root_present, Some(true));
+        assert_eq!(validated.tree_requested_depth_present, Some(false));
+        assert_eq!(validated.collection_items_in, None);
+        assert_eq!(validated.search_results_in, None);
+        assert_eq!(validated.entity_fields_in, None);
+    }
+
+    #[test]
+    fn tree_requested_depth_and_input_context_fail_open_conservatively() {
+        let (result, contract, input) = tree_result();
+        let depth_protected = json!({"root": "/workspace/project", "maxDepth": 3});
+        let shape = tree_listing_shape(&result, Some(&contract), Some(&depth_protected))
+            .expect("shape assessment")
+            .expect("tree shape");
+        assert!(shape.authorization.removable_indices.is_empty());
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&depth_protected),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, Some(&MCP_TREE_LISTING_V1));
+        assert_eq!(observation.pass_through_reason, Some("no-savings"));
+
+        for (hostile_input, reason) in [
+            (
+                json!({"root": "/different/project"}),
+                "tree-requested-root-mismatch",
+            ),
+            (
+                json!({"root": "/workspace/project", "path": "/workspace/project"}),
+                "tree-input-selector-ambiguous",
+            ),
+            (
+                json!({"request": {"depth": 1}}),
+                "tree-input-selector-unsupported",
+            ),
+            (
+                json!({"root": "/workspace/project", "depth": 65}),
+                "tree-input-selector-unsupported",
+            ),
+        ] {
+            let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&hostile_input),
+                &options(900),
+                &CompressContext::default(),
+            );
+            assert_eq!(observation.manifest, None);
+            assert_eq!(observation.pass_through_reason, Some(reason));
+            assert!(!observation.proposal_attempted);
+        }
+
+        let schema_less = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            None,
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            schema_less.pass_through_reason,
+            Some("tree-output-schema-required")
+        );
+    }
+
+    #[test]
+    fn stale_forged_and_overtrimmed_tree_proposals_are_rejected() {
+        let (result, contract, input) = tree_result();
+        let shape = tree_listing_shape(&result, Some(&contract), Some(&input))
+            .unwrap()
+            .unwrap();
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_tree_listing(&result, &shape, &options(900), &MCP_TREE_LISTING_V1)
+        else {
+            panic!("expected tree proposal");
+        };
+
+        let mut forged_selection = (*proposal).clone();
+        let McpStructuredContentEdit::TreeListing(edit) =
+            &mut forged_selection.structured_content.as_mut().unwrap().edit
+        else {
+            panic!("expected tree edit");
+        };
+        edit.omitted_indices = vec![1];
+        assert_eq!(
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&input),
+                &MCP_TREE_LISTING_V1,
+                &forged_selection,
+            ),
+            Err(McpProposalRejection::TreeSelectionInvalid)
+        );
+
+        let mut forged_marker = (*proposal).clone();
+        let mut projection: Value =
+            serde_json::from_str(&forged_marker.replacements[0].replacement).unwrap();
+        projection["_ctxOmission"]["omittedEntries"] = json!(999);
+        forged_marker.replacements[0].replacement = serde_json::to_string(&projection).unwrap();
+        assert_eq!(
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&input),
+                &MCP_TREE_LISTING_V1,
+                &forged_marker,
+            ),
+            Err(McpProposalRejection::TreeOmissionMarkerInvalid)
+        );
+
+        let different_input = json!({"root": "/workspace/project", "depth": 3});
+        assert_eq!(
+            validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&different_input),
+                &MCP_TREE_LISTING_V1,
+                &proposal,
+            ),
+            Err(McpProposalRejection::TreeSelectionInvalid)
+        );
+
+        let mut overtrimmed = (*proposal).clone();
+        let replacement = overtrimmed.structured_content.as_mut().unwrap();
+        let McpStructuredContentEdit::TreeListing(edit) = &mut replacement.edit else {
+            panic!("expected tree edit");
+        };
+        if edit.omitted_indices.len() < shape.authorization.removable_indices.len() {
+            edit.omitted_indices = shape.authorization.removable_indices.clone();
+            let source = replacement.expected.as_object().unwrap();
+            let candidate = tree_listing_candidate(source, "entries", &edit.omitted_indices);
+            replacement.replacement = Value::Object(candidate.clone());
+            overtrimmed.replacements[0].replacement =
+                serde_json::to_string(&tree_listing_text_projection(
+                    &candidate,
+                    "entries",
+                    source["entries"].as_array().unwrap().len(),
+                    None,
+                ))
+                .unwrap();
+            assert_eq!(
+                validate_mcp_proposal_with_contract_and_input(
+                    &result,
+                    Some(&contract),
+                    Some(&input),
+                    &MCP_TREE_LISTING_V1,
+                    &overtrimmed,
+                ),
+                Err(McpProposalRejection::TreeSelectionInvalid)
+            );
+        }
+    }
+
+    #[test]
+    fn tree_strategy_does_not_steal_search_or_paginated_shapes() {
+        let (search, search_contract) = search_result(8);
+        let search_observation = evaluate_mcp_strategies_shadow_with_contract(
+            &search,
+            Some(&search_contract),
+            &options(700),
+            &CompressContext::default(),
+        );
+        assert_eq!(search_observation.manifest, Some(&MCP_SEARCH_RESULTS_V1));
+
+        let (collection, collection_contract) = paginated_result(8);
+        let collection_observation = evaluate_mcp_strategies_shadow_with_contract(
+            &collection,
+            Some(&collection_contract),
+            &options(700),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            collection_observation.manifest,
+            Some(&MCP_PAGINATED_COLLECTION_V1)
+        );
+    }
+
+    #[test]
+    fn tree_generated_budgets_are_deterministic_and_within_budget_is_distinct() {
+        let (result, contract, input) = tree_result();
+        let shape = tree_listing_shape(&result, Some(&contract), Some(&input))
+            .unwrap()
+            .unwrap();
+        let source_chars = result.content[0].text().unwrap().chars().count();
+        let within = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            Some(&contract),
+            Some(&input),
+            &options(source_chars),
+            &CompressContext::default(),
+        );
+        assert_eq!(within.manifest, Some(&MCP_TREE_LISTING_V1));
+        assert!(!within.proposal_attempted);
+        assert_eq!(within.pass_through_reason, Some("within-budget"));
+
+        let mut validated_budgets = 0;
+        for target in (500..source_chars).step_by(100) {
+            let first =
+                propose_tree_listing(&result, &shape, &options(target), &MCP_TREE_LISTING_V1);
+            let second =
+                propose_tree_listing(&result, &shape, &options(target), &MCP_TREE_LISTING_V1);
+            assert_eq!(first, second);
+            let McpProposalOutcome::Proposed(proposal) = first else {
+                continue;
+            };
+            let validated = validate_mcp_proposal_with_contract_and_input(
+                &result,
+                Some(&contract),
+                Some(&input),
+                &MCP_TREE_LISTING_V1,
+                &proposal,
+            )
+            .expect("generated budget proposal validates");
+            assert!(validated.chars_out <= target);
+            validated_budgets += 1;
+        }
+        assert!(validated_budgets >= 3);
+    }
+
+    #[test]
+    fn tree_marker_collisions_and_error_results_fail_before_proposal() {
+        let (result, mut contract, input) = tree_result();
+        let mut raw = result.raw().clone();
+        let structured = raw["structuredContent"].as_object_mut().unwrap();
+        structured.insert(MCP_OMISSION_MARKER_FIELD.into(), json!({"server": true}));
+        raw["content"][0]["text"] = json!(serde_json::to_string(structured).unwrap());
+        if let PreservedField::Value(schema) = &mut contract.output_schema {
+            schema["properties"][MCP_OMISSION_MARKER_FIELD] = json!({"type": "object"});
+        }
+        let collision = parse_mcp_result(&raw).unwrap();
+        let collision_observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &collision,
+            Some(&contract),
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            collision_observation.pass_through_reason,
+            Some("tree-omission-marker-collision")
+        );
+        assert!(!collision_observation.proposal_attempted);
+
+        raw["isError"] = json!(true);
+        let error = parse_mcp_result(&raw).unwrap();
+        let error_observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &error,
+            Some(&contract),
+            Some(&input),
+            &options(900),
+            &CompressContext::default(),
+        );
+        assert_eq!(error_observation.pass_through_reason, Some("error-result"));
+        assert!(error_observation.manifest.is_none());
+        assert!(!error_observation.proposal_attempted);
     }
 
     #[test]

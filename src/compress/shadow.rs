@@ -83,6 +83,16 @@ pub struct McpContractShadow {
     pub candidate_entity_fields_out: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_entity_fields_omitted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_tree_entries_in: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_tree_entries_out: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_tree_entries_omitted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_tree_requested_root_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_tree_requested_depth_present: Option<bool>,
 }
 
 impl FlagCounts {
@@ -424,6 +434,15 @@ pub fn compute_shadow_decision_with_mcp_contract(
                     .and_then(|proposal| proposal.entity_fields_out),
                 candidate_entity_fields_omitted: validated
                     .and_then(|proposal| proposal.entity_fields_omitted),
+                candidate_tree_entries_in: validated.and_then(|proposal| proposal.tree_entries_in),
+                candidate_tree_entries_out: validated
+                    .and_then(|proposal| proposal.tree_entries_out),
+                candidate_tree_entries_omitted: validated
+                    .and_then(|proposal| proposal.tree_entries_omitted),
+                candidate_tree_requested_root_present: validated
+                    .and_then(|proposal| proposal.tree_requested_root_present),
+                candidate_tree_requested_depth_present: validated
+                    .and_then(|proposal| proposal.tree_requested_depth_present),
             }
         })
     } else {

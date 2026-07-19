@@ -736,12 +736,16 @@ CTX-77 and ADR 0042 completed the ranked-result boundary: schema-authorized sear
 required stable-identity and match-evidence checks, deterministic ranked-prefix retention, and
 search-specific content-free evidence are on `main`.
 
-CTX-78 and ADR 0043 are the next T2 increment. They add schema-authorized entity/detail proposals,
-bounded requested-field context, independent protection for required, identity, status, and link
-fields, and deterministic removal of only optional verbose or proven-duplicate scalar fields. The
-increment remains shadow-only; field names and structured candidates never leave the validation
-boundary as telemetry or model-visible output.
+CTX-78 and ADR 0043 completed the schema-authorized entity/detail boundary: bounded requested-field
+context, independent protection for required, identity, status, and link fields, and deterministic
+removal of only optional verbose or proven-duplicate scalar fields are on `main`.
 
-After that boundary is merged, T2 can add the tree/file-listing strategy without coupling it to
-native adapters or the gateway. The T3 atomic apply transaction remains the first place a validated
+CTX-79 and ADR 0044 are the next T2 increment. They add a deliberately narrow rooted flat
+tree/file-listing strategy, bounded requested root/depth context, exact generated/vendor segment and
+directory-anchor proof, and deterministic minimal omission of only complete descendants outside the
+protected depth. The increment remains shadow-only; root values, paths, omitted identities, and
+structured candidates never leave the validation boundary as telemetry or model-visible output.
+
+After that boundary is merged, T2 can add the table/CSV-like strategy without coupling it to native
+adapters or the gateway. The T3 atomic apply transaction remains the first place a validated
 proposal may become model-visible.
