@@ -732,11 +732,16 @@ CTX-76 and ADR 0041 completed the first schema-aware structured strategy: pagina
 proposals, a typed structured-edit validator, deterministic head-and-tail retention, and an explicit
 omitted-count marker in a verified text projection are on `main`.
 
-CTX-77 and ADR 0042 are the next T2 increment. They add schema-authorized search-result proposals,
+CTX-77 and ADR 0042 completed the ranked-result boundary: schema-authorized search proposals,
 required stable-identity and match-evidence checks, deterministic ranked-prefix retention, and
-search-specific content-free evidence. The increment remains shadow-only; structured candidates
-never leave the validation boundary.
+search-specific content-free evidence are on `main`.
 
-After that boundary is merged, T2 can add the entity/detail strategy without coupling it to native
-adapters or the gateway. The T3 atomic apply transaction remains the first place a validated
+CTX-78 and ADR 0043 are the next T2 increment. They add schema-authorized entity/detail proposals,
+bounded requested-field context, independent protection for required, identity, status, and link
+fields, and deterministic removal of only optional verbose or proven-duplicate scalar fields. The
+increment remains shadow-only; field names and structured candidates never leave the validation
+boundary as telemetry or model-visible output.
+
+After that boundary is merged, T2 can add the tree/file-listing strategy without coupling it to
+native adapters or the gateway. The T3 atomic apply transaction remains the first place a validated
 proposal may become model-visible.

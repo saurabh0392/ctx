@@ -1,0 +1,59 @@
+{
+  "protocolVersion": "2025-11-25",
+  "input": {
+    "id": "record-42",
+    "fields": ["title", "body"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "id": { "type": "string" },
+      "title": { "type": "string" },
+      "status": { "type": "string" },
+      "url": { "type": "string" },
+      "body": { "type": "string" },
+      "description": { "type": "string" },
+      "notes": { "type": "string" },
+      "canonicalId": { "type": "string" },
+      "summary": { "type": "string" },
+      "metadata": {
+        "type": "object",
+        "properties": {
+          "owner": { "type": "string" },
+          "revision": { "type": "integer" }
+        },
+        "required": ["owner", "revision"],
+        "additionalProperties": false
+      }
+    },
+    "required": ["id", "title", "status", "url"],
+    "additionalProperties": false
+  },
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"record-42\",\"title\":\"Schema-aware entity boundary\",\"status\":\"active\",\"url\":\"https://example.invalid/records/42\",\"body\":\"This body was explicitly requested by the caller and must remain byte-for-byte identical even when it is long enough that removing it would make the budget easier to satisfy.\",\"description\":\"This optional description repeats extensive background that was not requested. It explains the same migration boundary in deliberately verbose terms so the fixture proves that CTX can remove a large optional prose field without changing the entity identifier, current status, requested body, link, nested metadata, or any retained value. The proposal remains transient and is discarded after validation, because this increment collects safety evidence and does not authorize model-visible trimming.\",\"notes\":\"Historical notes contain additional unrequested prose about earlier experiments, rollout observations, compatibility checks, and recovery rehearsals. They are intentionally long enough to require deterministic pruning after the description while all protected fields remain untouched.\",\"canonicalId\":\"record-42\",\"summary\":\"Unknown optional fields remain intact.\",\"metadata\":{\"owner\":\"team-alpha\",\"revision\":7}}"
+      }
+    ],
+    "structuredContent": {
+      "id": "record-42",
+      "title": "Schema-aware entity boundary",
+      "status": "active",
+      "url": "https://example.invalid/records/42",
+      "body": "This body was explicitly requested by the caller and must remain byte-for-byte identical even when it is long enough that removing it would make the budget easier to satisfy.",
+      "description": "This optional description repeats extensive background that was not requested. It explains the same migration boundary in deliberately verbose terms so the fixture proves that CTX can remove a large optional prose field without changing the entity identifier, current status, requested body, link, nested metadata, or any retained value. The proposal remains transient and is discarded after validation, because this increment collects safety evidence and does not authorize model-visible trimming.",
+      "notes": "Historical notes contain additional unrequested prose about earlier experiments, rollout observations, compatibility checks, and recovery rehearsals. They are intentionally long enough to require deterministic pruning after the description while all protected fields remain untouched.",
+      "canonicalId": "record-42",
+      "summary": "Unknown optional fields remain intact.",
+      "metadata": {
+        "owner": "team-alpha",
+        "revision": 7
+      }
+    },
+    "isError": false,
+    "_meta": {
+      "fixture": "sanitized-entity-detail"
+    }
+  }
+}

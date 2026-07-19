@@ -20,14 +20,17 @@ pub use schema::{validate_mcp_output_schema, McpOutputSchemaValidation, McpSchem
 #[allow(deprecated)]
 pub use strategy::MCP_COLLECTION_OMISSION_MARKER_FIELD;
 pub(crate) use strategy::{
-    assess_mcp_search_array_schema, collection_head_tail_indices, search_ranked_prefix_indices,
+    assess_mcp_entity_schema, assess_mcp_search_array_schema, collection_head_tail_indices,
+    entity_detail_candidate, entity_detail_text_projection, search_ranked_prefix_indices,
+    McpEntitySchemaAuthorization,
 };
 pub use strategy::{
-    validate_mcp_proposal, validate_mcp_proposal_with_contract, McpPaginatedCollectionEdit,
+    validate_mcp_proposal, validate_mcp_proposal_with_contract,
+    validate_mcp_proposal_with_contract_and_input, McpEntityDetailEdit, McpPaginatedCollectionEdit,
     McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
     McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal,
-    ValidatedMcpProposal, MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS,
-    MCP_OMISSION_MARKER_FIELD,
+    ValidatedMcpProposal, MCP_MAX_ENTITY_FIELDS, MCP_MAX_ENTITY_OMITTED_FIELDS,
+    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_OMISSION_MARKER_FIELD,
 };
 pub use types::{
     CanonicalContentBlock, CanonicalMcpResult, CanonicalToolExchange, McpResultCoverage,
