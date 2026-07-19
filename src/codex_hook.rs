@@ -93,7 +93,7 @@ pub fn post_tool_use() -> Result<()> {
     // `ctx run` owns both the applied decision and the output accounting. The resulting Bash tool
     // event is only an envelope around that already-recorded wrapper execution.
     if shell_command(&payload)
-        .map(crate::cursor_hook::is_ctx_run_wrapped)
+        .map(|(_, command)| crate::cursor_hook::is_ctx_run_wrapped(command))
         .unwrap_or(false)
     {
         return emit(&json!({}));
@@ -225,7 +225,7 @@ fn decide_pre_tool_use(cfg: &Config, payload: &Value) -> Option<Value> {
     if normalize_tool_name(native_name) != "Shell" {
         return None;
     }
-    let command = shell_command(payload)?;
+    let (command_key, command) = shell_command(payload)?;
     let session_id = string_field(payload, &["session_id", "sessionId"]);
     let wrapped = crate::cursor_hook::decide_shell_rewrite_for_surface(
         cfg,
@@ -239,7 +239,7 @@ fn decide_pre_tool_use(cfg: &Config, payload: &Value) -> Option<Value> {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    updated.insert("command".into(), json!(wrapped));
+    updated.insert(command_key.into(), json!(wrapped));
     Some(json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -249,13 +249,18 @@ fn decide_pre_tool_use(cfg: &Config, payload: &Value) -> Option<Value> {
     }))
 }
 
-fn shell_command(payload: &Value) -> Option<&str> {
-    payload
+fn shell_command(payload: &Value) -> Option<(&'static str, &str)> {
+    let input = payload
         .get("tool_input")
         .or_else(|| payload.get("toolInput"))
-        .and_then(|v| v.get("command"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
+        .and_then(Value::as_object)?;
+    ["command", "cmd"].into_iter().find_map(|key| {
+        input
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(|command| (key, command))
+    })
 }
 
 fn string_field<'a>(payload: &'a Value, names: &[&str]) -> Option<&'a str> {
@@ -374,6 +379,24 @@ mod tests {
             out["hookSpecificOutput"]["updatedInput"]["timeout"],
             json!(1000)
         );
+    }
+
+    #[test]
+    fn emits_live_unified_exec_cmd_rewrite_shape() {
+        let payload = json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-1",
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "rg -n TODO src", "workdir": "/work/repo"}
+        });
+        let out = decide_pre_tool_use(&trial_cfg(), &payload).expect("rewrite");
+        let updated = &out["hookSpecificOutput"]["updatedInput"];
+        assert!(updated["cmd"]
+            .as_str()
+            .unwrap()
+            .contains("--surface 'codex'"));
+        assert_eq!(updated["workdir"], json!("/work/repo"));
+        assert!(updated.get("command").is_none());
     }
 
     #[test]
