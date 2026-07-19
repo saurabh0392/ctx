@@ -13,7 +13,7 @@ The dashboard never converts an attempt into a completed compaction.
 
 | Platform | Start signal | Completion signal | CTX label | Correction follow-up |
 |---|---|---|---|---|
-| Claude Code | Native `PreCompact`, matcher `manual|auto` | Native `PostCompact`, matcher `manual|auto` | `confirmed` for current native post events; `inferred` for historical `compactMetadata` transcript markers | Available for transcript-inferred history; pending for native-hook-only events |
+| Claude Code | Native `PreCompact`, matcher `manual|auto` | Native `PostCompact`, matcher `manual|auto` | `confirmed` for native-only data; `inferred` for transcript-only history; `mixed` when both are present, with separate source counts | Available for transcript-inferred history; pending for native-hook-only events |
 | Cursor | Native `preCompact` | No public post-compaction hook | `attempt_only`; completion count is `null`, never zero | Unavailable until Cursor exposes completion or a stable transcript marker |
 | Codex | Native `PreCompact`, matcher `manual|auto` | Native `PostCompact`, matcher `manual|auto` | `confirmed` | Pending until native events are joined to a stable turn timeline |
 
@@ -55,6 +55,10 @@ The event meaning is identical on macOS, Linux, and Windows. Only command launch
 Fixture coverage must include manual/auto triggers, pre/post phases, duplicate retries, missing
 optional IDs, two compactions in one session, and Cursor's attempt-only behavior. A pre/post pair is
 one attempt plus one completion—not two completed compactions.
+
+When Claude transcript ingestion later sees a session already represented by a native hook event,
+CTX excludes that session's transcript markers from the inferred count. Transcript-only historical
+sessions remain visible after native hooks are installed.
 
 ## Known limits
 

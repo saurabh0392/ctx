@@ -1188,6 +1188,10 @@
   const signedPts = (x) => x == null ? "n/a" : ((x.diff != null ? x.diff : x) * 100 >= 0 ? "+" : "") + ((x.diff != null ? x.diff : x) * 100).toFixed(1) + " pts";
   async function getJSON(u) { const r = await fetch(u); if (!r.ok) throw new Error(u + " " + r.status); return r.json(); }
   async function post(u, body) { return fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); }
+  async function responseError(response) {
+    const detail = (await response.text()).trim();
+    return detail || `request failed (${response.status})`;
+  }
 
   // ── router ──
   // Merges: bill + toolbill -> See (pass 2); loop + compaction + surfaces -> Save (pass 3);
@@ -2543,6 +2547,7 @@
       user_disabled: "kept whole by your setting",
       attempt_only: "attempt visible; completion not visible",
       confirmed: "completion confirmed",
+      mixed: "native completion plus inferred history",
       inferred: "completion inferred from transcript",
       unknown: "not observed yet",
     };
@@ -2571,13 +2576,18 @@
     } else {
       const n = claude.completed_events || 0, sess = claude.sessions_with_compaction || 0;
       const per = sess > 0 ? (n / sess) : 0;
-      lead = `<div class="cf-lead"><div class="cf-big">Compacted <b>${num(n)}</b> time${n === 1 ? "" : "s"}</div><div class="cf-cap">${claude.confidence === "confirmed" ? "Confirmed by Claude Code's PostCompact hook" : "Inferred from Claude Code transcript completion markers"}${sess ? ` across ${num(sess)} session${sess === 1 ? "" : "s"}` : ""}${per >= 2 ? `, about ${per.toFixed(1)} per affected session` : ""}. Fewer is healthier.</div></div>`;
+      const source = claude.confidence === "confirmed"
+        ? "Confirmed by Claude Code's PostCompact hook"
+        : claude.confidence === "mixed"
+          ? `${num(claude.confirmed_completed_events || 0)} confirmed by PostCompact plus ${num(claude.inferred_completed_events || 0)} older transcript-inferred`
+          : "Inferred from Claude Code transcript completion markers";
+      lead = `<div class="cf-lead"><div class="cf-big">Compacted <b>${num(n)}</b> time${n === 1 ? "" : "s"}</div><div class="cf-cap">${source}${sess ? ` across ${num(sess)} session${sess === 1 ? "" : "s"}` : ""}${per >= 2 ? `, about ${per.toFixed(1)} per affected session` : ""}. Fewer is healthier.</div></div>`;
     }
 
     // Next action, the point of the page. Concrete levers, one anchored to the real top sink so it
     // is your data, not generic advice.
     let action = "";
-    const compacted = claude && ["confirmed", "inferred"].includes(claude.confidence) && (claude.completed_events || 0) > 0;
+    const compacted = claude && ["confirmed", "mixed", "inferred"].includes(claude.confidence) && (claude.completed_events || 0) > 0;
     if (compacted) {
       const top = bill && bill.tools && bill.tools.length ? bill.tools[0] : null;
       const sinkLine = top
@@ -2604,7 +2614,7 @@
       const body = n === 0
         ? `<div class="cf-num">none</div><div class="cf-note">No completed compaction observed.</div>`
         : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} across ${sessLbl}.</div>`;
-      const badge = s.confidence === "confirmed" ? "completion confirmed" : "inferred from transcript";
+      const badge = s.confidence === "confirmed" ? "completion confirmed" : s.confidence === "mixed" ? `${num(s.confirmed_completed_events || 0)} confirmed · ${num(s.inferred_completed_events || 0)} inferred` : "inferred from transcript";
       return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf observed">${badge}</div>${body}</div>`;
     };
 
@@ -2846,11 +2856,21 @@
     flashSaved("saved-budget");
   }
   async function saveRetention() {
-    const entries = parseInt($("set-rewind-entries").value, 10);
-    const bytes = parseInt($("set-rewind-mb").value, 10) * 1048576;
-    await post("/api/settings", { rewind_retention_entries: entries, rewind_retention_bytes: bytes });
-    flashSaved("saved-recovery");
-    loadSettings();
+    const entries = Number($("set-rewind-entries").value);
+    const megabytes = Number($("set-rewind-mb").value);
+    const box = $("recovery-result");
+    if (!Number.isInteger(entries) || entries < 1 || entries > 10000 || !Number.isInteger(megabytes) || megabytes < 1 || megabytes > 10240) {
+      box.innerHTML = `<span class="dot off"></span><span><b>Retention not saved.</b> Originals must be 1–10,000 entries and the storage cap must be 1–10,240 MiB.</span>`;
+      return;
+    }
+    try {
+      const response = await post("/api/settings", { rewind_retention_entries: entries, rewind_retention_bytes: megabytes * 1048576 });
+      if (!response.ok) throw new Error(await responseError(response));
+      await loadSettings();
+      flashSaved("saved-recovery");
+    } catch (error) {
+      box.innerHTML = `<span class="dot off"></span><span><b>Retention not saved.</b> ${esc(String(error))}</span>`;
+    }
   }
   async function recoveryCheck() {
     const box = $("recovery-result");
@@ -2866,8 +2886,17 @@
   async function purgeOriginals() {
     const confirmation = prompt("This removes every retained verbatim original. Existing trim markers will no longer be recoverable. Type PURGE STORED ORIGINALS to continue.");
     if (confirmation !== "PURGE STORED ORIGINALS") return;
-    await post("/api/settings/purge-originals", { confirmation });
-    loadSettings();
+    const box = $("recovery-result");
+    try {
+      const response = await post("/api/settings/purge-originals", { confirmation });
+      if (!response.ok) throw new Error(await responseError(response));
+      const result = await response.json();
+      await loadSettings();
+      const refreshed = $("recovery-result");
+      refreshed.innerHTML = `<span class="dot on"></span><span><b>Stored originals purged.</b> ${num(result.removed || 0)} recovery ${result.removed === 1 ? "entry" : "entries"} removed.</span>`;
+    } catch (error) {
+      box.innerHTML = `<span class="dot off"></span><span><b>Purge failed.</b> ${esc(String(error))}</span>`;
+    }
   }
   function exportDb() { window.location = "/api/settings/export"; }
   async function purgePrompts() { if (!confirm("Remove stored prompt text from the local database?")) return; await post("/api/settings/purge-prompts", {}); flashSaved("saved-privacy"); }

@@ -547,10 +547,10 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     );
 }
 
-/// Cursor compaction events captured live from the `preCompact` hook (CTX-31, ADR 0023).
-/// Cursor's transcript carries no compaction marker, so unlike Claude Code (whose compactions
-/// are read from the `turns` table) Cursor's are recorded here as they happen. `message_count`
-/// is the conversation position Cursor reports, kept for the later correction-followup join.
+/// Cursor compaction attempts captured live from the `preCompact` hook (ADR 0047). Cursor's
+/// transcript carries no public completion marker, so CTX retains these as attempts only.
+/// `message_count` is the conversation position Cursor reports, kept for a possible future
+/// completion/correction join.
 fn migrate_cursor_compactions_table(conn: &Connection) {
     let _ = conn.execute_batch(
         r#"
@@ -913,7 +913,7 @@ pub fn latest_surface_hook_event(conn: &Connection, surface: &str) -> Option<(St
     .flatten()
 }
 
-/// A Cursor compaction event from the `preCompact` hook, ready to persist.
+/// A Cursor compaction attempt from the `preCompact` hook, ready to persist.
 #[derive(Debug, Clone, Default)]
 pub struct CursorCompaction {
     pub ts: String,
@@ -927,7 +927,7 @@ pub struct CursorCompaction {
     pub is_first_compaction: Option<bool>,
 }
 
-/// Record one live Cursor compaction. Best-effort: the hook never fails the Cursor session.
+/// Record one live Cursor pre-compaction attempt. Best-effort: the hook never fails the session.
 pub fn insert_cursor_compaction(conn: &Connection, c: &CursorCompaction) -> Result<()> {
     conn.execute(
         r#"INSERT INTO cursor_compactions
@@ -3082,6 +3082,11 @@ fn compaction_receipt(conn: &Connection, surface: &str) -> CapabilityReceipt {
         "confirmed" => format!(
             "{completions} completion(s) confirmed by PostCompact; {attempts} start(s) observed"
         ),
+        "mixed" => format!(
+            "{} completion(s) confirmed by PostCompact; {} older completion(s) inferred from transcript markers; {attempts} start(s) observed",
+            state.confirmed_completed_events.unwrap_or(0),
+            state.inferred_completed_events.unwrap_or(0)
+        ),
         "attempt_only" => format!(
             "{attempts} pre-compaction attempt(s) observed; this platform exposes no completion hook"
         ),
@@ -3973,14 +3978,19 @@ pub const COMPACTION_FOLLOWUP_WINDOW_TURNS: i64 = 5;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CompactionFollowups {
     pub surface: String,
-    /// How completion is known: `native_post`, `native_pre_only`, `transcript_inference`, or `none`.
+    /// How completion is known: `native_post`, `native_post+transcript_inference`,
+    /// `native_pre_only`, `transcript_inference`, or `none`.
     pub detection: String,
-    /// `confirmed`, `attempt_only`, `inferred`, or `unknown`.
+    /// `confirmed`, `mixed`, `attempt_only`, `inferred`, or `unknown`.
     pub confidence: String,
     /// Pre-compaction hook deliveries after retry de-duplication.
     pub attempted_events: Option<i64>,
     /// Completed compactions. `None` when the platform exposes only a pre hook.
     pub completed_events: Option<i64>,
+    /// Completed compactions proved by a native post hook.
+    pub confirmed_completed_events: Option<i64>,
+    /// Completed compactions recovered from structural transcript markers.
+    pub inferred_completed_events: Option<i64>,
     /// Compatibility alias for completed events. This never counts pre-hook attempts.
     pub compaction_events: Option<i64>,
     /// Compaction events with at least one correction within the window after them. `None` when
@@ -4061,6 +4071,8 @@ fn native_compaction_followups(
         .into(),
         attempted_events: Some(attempted),
         completed_events: completion_visible.then_some(completed),
+        confirmed_completed_events: completion_visible.then_some(completed),
+        inferred_completed_events: completion_visible.then_some(0),
         compaction_events: completion_visible.then_some(completed),
         followed_by_correction: None,
         sessions_with_compaction: completion_visible.then_some(sessions),
@@ -4104,6 +4116,8 @@ fn cursor_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
         confidence: "attempt_only".to_string(),
         attempted_events: Some(attempts),
         completed_events: None,
+        confirmed_completed_events: None,
+        inferred_completed_events: None,
         compaction_events: None,
         followed_by_correction: None,
         sessions_with_compaction: None,
@@ -4118,6 +4132,8 @@ fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
         confidence: "unknown".to_string(),
         attempted_events: None,
         completed_events: None,
+        confirmed_completed_events: None,
+        inferred_completed_events: None,
         compaction_events: None,
         followed_by_correction: None,
         sessions_with_compaction: None,
@@ -4125,56 +4141,61 @@ fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
     }
 }
 
-/// Claude Code arm of [`compaction_followups`]. Walks the persisted `turns` timeline per
-/// session and counts, for each `pre_compact` turn, whether a `correction` turn lands within
-/// `window` turns after it. When no Claude turns are persisted at all the surface is
-/// `unknown` (we have not seen sessions), distinct from "observed, zero compactions".
-fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFollowups {
-    migrate_surface_hook_tables(conn);
-    let native_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM native_compactions WHERE surface='claude-code'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    if native_count > 0 {
-        return native_compaction_followups(conn, "claude-code", window, true);
-    }
-    // (session_id, turn_index, flags) for every turn, in timeline order. flags is the stored
-    // JSON-array string (e.g. ["pre_compact","correction"]) or a legacy bare string; a
-    // substring test matches both shapes, same as the existing outcome joins.
-    let rows: Vec<(i64, i64, String)> = match conn.prepare(
-        "SELECT session_id, turn_index, COALESCE(flags, '')
-         FROM turns
-         ORDER BY session_id, turn_index",
-    ) {
-        Ok(mut stmt) => match stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        }) {
-            Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
-            Err(_) => return unknown_surface("claude-code", window),
-        },
-        Err(_) => return unknown_surface("claude-code", window),
+#[derive(Default)]
+struct InferredClaudeCompactions {
+    has_turns: bool,
+    events: i64,
+    followed: i64,
+    sessions: i64,
+}
+
+/// Walk transcript-only Claude sessions. Sessions already represented by a native hook event are
+/// excluded so current compactions are not counted twice when the next ingest sees the same
+/// session. Historical sessions remain available after native hooks are installed.
+fn inferred_claude_compactions(
+    conn: &Connection,
+    window: i64,
+) -> Option<InferredClaudeCompactions> {
+    // flags is a stored JSON-array string (for example ["pre_compact","correction"]) or a
+    // legacy bare string. The substring test deliberately matches both historical shapes.
+    let rows: Vec<(i64, i64, String, String)> = {
+        let mut statement = conn
+            .prepare(
+                "SELECT t.session_id, t.turn_index, COALESCE(t.flags, ''), s.external_key
+                 FROM turns t
+                 JOIN sessions s ON s.id=t.session_id
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM native_compactions n
+                   WHERE n.surface='claude-code' AND n.session_id=s.external_key
+                 )
+                 ORDER BY t.session_id, t.turn_index",
+            )
+            .ok()?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .ok()?;
+        mapped.filter_map(|row| row.ok()).collect()
     };
 
-    if rows.is_empty() {
-        return unknown_surface("claude-code", window);
-    }
+    let mut stats = InferredClaudeCompactions {
+        has_turns: !rows.is_empty(),
+        ..Default::default()
+    };
+    let mut sessions_with = std::collections::HashSet::new();
 
-    let mut events = 0i64;
-    let mut followed = 0i64;
-    let mut sessions_with: std::collections::HashSet<i64> = std::collections::HashSet::new();
-
-    // Walk each session's turns once. Within a session, a compaction at turn index `pc` is
-    // "followed by a correction" when some correction turn has index in (pc, pc + window].
+    // Walk each session once. A compaction at turn `pc` is followed by a correction when a
+    // correction turn lands in (pc, pc + window].
     let mut i = 0usize;
     while i < rows.len() {
         let sid = rows[i].0;
+        let external_key = rows[i].3.clone();
         let mut j = i;
         while j < rows.len() && rows[j].0 == sid {
             j += 1;
@@ -4182,31 +4203,108 @@ fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
         let session = &rows[i..j];
         let corrections: Vec<i64> = session
             .iter()
-            .filter(|(_, _, f)| f.contains("correction"))
-            .map(|(_, idx, _)| *idx)
+            .filter(|(_, _, flags, _)| flags.contains("correction"))
+            .map(|(_, index, _, _)| *index)
             .collect();
-        for (_, idx, flags) in session {
+        for (_, index, flags, _) in session {
             if flags.contains("pre_compact") {
-                events += 1;
-                sessions_with.insert(sid);
-                let hit = corrections.iter().any(|&c| c > *idx && c <= *idx + window);
-                if hit {
-                    followed += 1;
+                stats.events += 1;
+                sessions_with.insert(external_key.clone());
+                if corrections
+                    .iter()
+                    .any(|&correction| correction > *index && correction <= *index + window)
+                {
+                    stats.followed += 1;
                 }
             }
         }
         i = j;
     }
+    stats.sessions = sessions_with.len() as i64;
+    Some(stats)
+}
+
+/// Claude Code arm of [`compaction_followups`]. Native post hooks prove current completions while
+/// structural transcript markers retain older history. The sources remain split in the response;
+/// their sum is the compatibility completion total.
+fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFollowups {
+    migrate_surface_hook_tables(conn);
+    let attempted = conn
+        .query_row(
+            "SELECT COUNT(*) FROM native_compactions
+             WHERE surface='claude-code' AND phase='attempted'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let confirmed = conn
+        .query_row(
+            "SELECT COUNT(*) FROM native_compactions
+             WHERE surface='claude-code' AND phase='completed'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let native_sessions = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM native_compactions
+             WHERE surface='claude-code' AND phase='completed' AND session_id IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let native_seen = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM surface_hook_events WHERE surface='claude-code')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value == 1)
+        .unwrap_or(false)
+        || attempted > 0
+        || confirmed > 0;
+    let inferred = inferred_claude_compactions(conn, window).unwrap_or_default();
+
+    if !native_seen && !inferred.has_turns {
+        return unknown_surface("claude-code", window);
+    }
+
+    if native_seen {
+        let mixed = inferred.events > 0;
+        let completed = confirmed + inferred.events;
+        return CompactionFollowups {
+            surface: "claude-code".into(),
+            detection: if mixed {
+                "native_post+transcript_inference"
+            } else {
+                "native_post"
+            }
+            .into(),
+            confidence: if mixed { "mixed" } else { "confirmed" }.into(),
+            attempted_events: Some(attempted),
+            completed_events: Some(completed),
+            confirmed_completed_events: Some(confirmed),
+            inferred_completed_events: Some(inferred.events),
+            compaction_events: Some(completed),
+            // Native events do not yet have a stable turn join. Avoid presenting the historical
+            // subset's correction count as if it covered the combined denominator.
+            followed_by_correction: (confirmed == 0).then_some(inferred.followed),
+            sessions_with_compaction: Some(native_sessions + inferred.sessions),
+            window_turns: window,
+        };
+    }
 
     CompactionFollowups {
-        surface: "claude-code".to_string(),
-        detection: "transcript_inference".to_string(),
-        confidence: "inferred".to_string(),
+        surface: "claude-code".into(),
+        detection: "transcript_inference".into(),
+        confidence: "inferred".into(),
         attempted_events: None,
-        completed_events: Some(events),
-        compaction_events: Some(events),
-        followed_by_correction: Some(followed),
-        sessions_with_compaction: Some(sessions_with.len() as i64),
+        completed_events: Some(inferred.events),
+        confirmed_completed_events: Some(0),
+        inferred_completed_events: Some(inferred.events),
+        compaction_events: Some(inferred.events),
+        followed_by_correction: Some(inferred.followed),
+        sessions_with_compaction: Some(inferred.sessions),
         window_turns: window,
     }
 }
@@ -7877,6 +7975,59 @@ mod compress_decision_tests {
         );
         assert_eq!(claude.sessions_with_compaction, Some(2));
         assert_eq!(claude.window_turns, COMPACTION_FOLLOWUP_WINDOW_TURNS);
+    }
+
+    #[test]
+    fn native_claude_events_retain_historical_inference_without_double_counting() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let historical = seed_session(&conn, "sess-historical");
+        seed_turn(&conn, historical, 0, r#"["pre_compact"]"#);
+
+        // The current session is present in both the transcript and native hook ledgers. Its
+        // transcript marker must be excluded so the completion appears exactly once.
+        let current = seed_session(&conn, "sess-native");
+        seed_turn(&conn, current, 0, r#"["pre_compact"]"#);
+        insert_native_compaction(
+            &conn,
+            "native-pre",
+            "claude-code",
+            "attempted",
+            Some("sess-native"),
+            Some("turn-1"),
+            Some("auto"),
+        )
+        .unwrap();
+        insert_native_compaction(
+            &conn,
+            "native-post",
+            "claude-code",
+            "completed",
+            Some("sess-native"),
+            Some("turn-1"),
+            Some("auto"),
+        )
+        .unwrap();
+
+        let out = compaction_followups(&conn);
+        let claude = out
+            .iter()
+            .find(|entry| entry.surface == "claude-code")
+            .unwrap();
+        assert_eq!(claude.confidence, "mixed");
+        assert_eq!(claude.detection, "native_post+transcript_inference");
+        assert_eq!(claude.attempted_events, Some(1));
+        assert_eq!(claude.confirmed_completed_events, Some(1));
+        assert_eq!(claude.inferred_completed_events, Some(1));
+        assert_eq!(claude.completed_events, Some(2));
+        assert_eq!(claude.sessions_with_compaction, Some(2));
+        assert_eq!(claude.followed_by_correction, None);
     }
 
     #[test]

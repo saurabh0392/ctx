@@ -20,9 +20,11 @@ public contract exposes only `preCompact`.
 1. Normalize native events into `attempted` and `completed` phases.
 2. Count only `completed` as a completed compaction.
 3. Report detection and confidence separately: `native_post/confirmed`,
-   `native_pre_only/attempt_only`, `transcript_inference/inferred`, or `none/unknown`.
+   `native_post+transcript_inference/mixed`, `native_pre_only/attempt_only`,
+   `transcript_inference/inferred`, or `none/unknown`.
 4. Prefer native Claude completion events after the new hook is installed, while retaining
-   transcript inference for older sessions.
+   transcript inference for older sessions. Exclude transcript markers from sessions that already
+   have native events so the combined total is not double-counted.
 5. Derive retry-stable SHA-256 delivery keys and persist metadata only.
 6. Keep correction follow-ups nullable unless CTX has a stable turn timeline to join.
 
@@ -30,6 +32,7 @@ public contract exposes only `preCompact`.
 
 - Cursor may show attempts but never a fabricated completion count.
 - Claude and Codex can prove current completion with `PostCompact`.
-- Historical Claude data remains useful but visibly inferred.
-- API clients receive explicit attempted/completed fields; `compaction_events` remains temporarily as
-  a compatibility alias for completed events only.
+- Historical Claude data remains useful but visibly inferred; mixed datasets expose confirmed and
+  inferred completion subtotals.
+- API clients receive explicit attempted/completed and confirmed/inferred fields;
+  `compaction_events` remains temporarily as a compatibility alias for total completed events only.

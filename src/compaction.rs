@@ -36,8 +36,7 @@ impl CompactionPhase {
 /// Command-hook entry point. Invalid JSON and unavailable local storage both fail open, because a
 /// metrics hook must never interrupt the agent's own compaction.
 pub fn record_stdin(surface: &str, phase: CompactionPhase) -> Result<()> {
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
+    let input = read_to_string_fail_open(std::io::stdin());
     let payload = serde_json::from_str(input.trim()).unwrap_or_else(|_| json!({}));
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
@@ -45,6 +44,17 @@ pub fn record_stdin(surface: &str, phase: CompactionPhase) -> Result<()> {
     }
     print!("{{}}");
     Ok(())
+}
+
+/// Read a command-hook payload without allowing a broken or prematurely closed stdin stream to
+/// block the host operation. A partial read is intentionally discarded: malformed input becomes
+/// an empty payload and the hook still emits its fail-open response.
+pub(crate) fn read_to_string_fail_open(mut reader: impl Read) -> String {
+    let mut input = String::new();
+    if reader.read_to_string(&mut input).is_err() {
+        input.clear();
+    }
+    input
 }
 
 /// Persist a normalized metadata-only event. `false` means an identical hook delivery was already
@@ -153,6 +163,20 @@ pub(crate) fn event_key(surface: &str, phase: CompactionPhase, payload: &Value) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+
+    struct BrokenReader;
+
+    impl Read for BrokenReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("fixture read failure"))
+        }
+    }
+
+    #[test]
+    fn stdin_read_failure_becomes_empty_payload() {
+        assert!(read_to_string_fail_open(BrokenReader).is_empty());
+    }
 
     #[test]
     fn retries_have_the_same_key_but_phases_do_not() {

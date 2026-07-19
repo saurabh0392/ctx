@@ -162,8 +162,7 @@ fn cursor_mcp_updated_output(original_output: Option<&Value>, compressed: &str) 
 /// it does not prove completion because Cursor exposes no public `postCompact` hook. Purely
 /// observational: CTX never blocks or alters compaction and always emits `{}`.
 pub fn pre_compact() -> Result<()> {
-    let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
+    let buf = crate::compaction::read_to_string_fail_open(std::io::stdin());
     let payload: Value = serde_json::from_str(buf.trim()).unwrap_or(json!({}));
 
     let event = parse_cursor_compaction(&payload);
