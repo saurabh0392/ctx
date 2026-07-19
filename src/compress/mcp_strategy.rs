@@ -652,13 +652,20 @@ fn raw_delimited_table_hint(result: &CanonicalMcpResult) -> bool {
     if text_blocks.next().is_some() {
         return false;
     }
-    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
-    let (Some(first), Some(second)) = (lines.next(), lines.next()) else {
+    let lines: Vec<_> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(8)
+        .collect();
+    if lines.len() < 3 {
         return false;
-    };
+    }
     [',', '\t'].iter().any(|delimiter| {
-        let first_count = first.matches(*delimiter).count();
-        first_count > 0 && second.matches(*delimiter).count() == first_count
+        let first_count = lines[0].matches(*delimiter).count();
+        first_count > 0
+            && lines[1..]
+                .iter()
+                .all(|line| line.matches(*delimiter).count() == first_count)
     })
 }
 
@@ -2114,6 +2121,18 @@ mod tests {
                 Some("table-raw-delimited-text-unsupported")
             );
             assert!(!observation.proposal_attempted);
+        }
+        for two_line_text in [
+            "event,first\nevent,second\n",
+            "event\tfirst\nevent\tsecond\n",
+        ] {
+            let result = parse_mcp_result(&json!({
+                "content": [{"type": "text", "text": two_line_text}],
+                "isError": false
+            }))
+            .unwrap();
+            assert!(!raw_delimited_table_hint(&result));
+            assert!(table_rows_shape(&result, None).unwrap().is_none());
         }
 
         let (table, mut contract) = table_result(8);

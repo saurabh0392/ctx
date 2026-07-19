@@ -75,9 +75,11 @@ records column names, cells, rows, tool input, or the candidate. No adapter, gat
 recovery path, or apply path receives the proposal; T3 remains the first phase allowed to make a
 validated candidate model-visible.
 
-An obvious multi-line comma- or tab-delimited text block without the structured contract is detected
-only to fail closed with `table-raw-delimited-text-unsupported`. CTX does not parse, normalize, or
-compress that block through the generic fallback.
+An obvious comma- or tab-delimited text block without the structured contract is detected only when
+at least three non-empty lines have one consistent delimiter count across a bounded eight-line
+sample, then fails closed with `table-raw-delimited-text-unsupported`. Two-line text is too weak a
+signal and continues through the registry. CTX does not parse, normalize, or compress a detected
+raw table through the generic fallback.
 
 ## Rejected alternatives
 
