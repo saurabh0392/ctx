@@ -18,9 +18,29 @@ pub fn ctx_dir() -> PathBuf {
 pub fn ensure_dir() -> Result<()> {
     let directory = ctx_dir();
     std::fs::create_dir_all(&directory)?;
+    protect_private_directory(&directory)?;
     let marker = directory.join(CTX_OWNERSHIP_MARKER);
     if !marker.exists() {
-        std::fs::write(marker, "CTX owns this state directory.\n")?;
+        std::fs::write(&marker, "CTX owns this state directory.\n")?;
+    }
+    protect_private_file(&marker)?;
+    Ok(())
+}
+
+pub fn protect_private_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+pub fn protect_private_file(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    if path.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
@@ -700,6 +720,12 @@ pub struct Config {
     /// configurable extension and its default spells out that recovery surface as a safety net.
     #[serde(default = "default_compress_deny_tools")]
     pub compress_deny_tools: Vec<String>,
+    /// Maximum number of verbatim originals retained for one-command recovery.
+    #[serde(default = "default_rewind_retention_entries")]
+    pub rewind_retention_entries: usize,
+    /// Maximum combined bytes of verbatim original/trimmed text retained locally.
+    #[serde(default = "default_rewind_retention_bytes")]
+    pub rewind_retention_bytes: u64,
 }
 
 /// Thresholds for automatic profile generation from MCP usage history.
@@ -829,6 +855,14 @@ fn default_compress_deny_tools() -> Vec<String> {
         "mcp__ctx__ctx_status".into(),
         "mcp__ctx__ctx_waste".into(),
     ]
+}
+
+fn default_rewind_retention_entries() -> usize {
+    500
+}
+
+fn default_rewind_retention_bytes() -> u64 {
+    100 * 1024 * 1024
 }
 
 fn default_true() -> bool {
@@ -977,12 +1011,20 @@ impl Config {
             self.compress_redact_secrets = true;
             self.compress_preserve_errors = true;
         }
+        if self.rewind_retention_entries == 0 {
+            self.rewind_retention_entries = default_rewind_retention_entries();
+        }
+        if self.rewind_retention_bytes == 0 {
+            self.rewind_retention_bytes = default_rewind_retention_bytes();
+        }
     }
 
     pub fn save(&self) -> Result<()> {
         ensure_dir()?;
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(ctx_dir().join("config.toml"), content)?;
+        let path = ctx_dir().join("config.toml");
+        std::fs::write(&path, content)?;
+        protect_private_file(&path)?;
         Ok(())
     }
 }

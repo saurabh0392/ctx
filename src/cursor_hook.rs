@@ -85,6 +85,7 @@ pub fn post_tool_use() -> Result<()> {
                     manifest: candidate.manifest,
                     proposal: &candidate.proposal,
                     authorized: true,
+                    transport_latency_ms: None,
                 };
                 if let crate::tool_result::McpPrepareOutcome::Ready(prepared) =
                     crate::tool_result::prepare_mcp_trim(canonical, &request)
@@ -157,41 +158,28 @@ fn cursor_mcp_updated_output(original_output: Option<&Value>, compressed: &str) 
     Value::Object(env)
 }
 
-/// Cursor `preCompact` command hook (CTX-31 increment 1, ADR 0023). Cursor fires this just before
-/// it compacts a conversation. Cursor's transcript carries no compaction marker, so this live event
-/// is the only honest signal that a Cursor compaction happened. We persist it (best-effort) so the
-/// compaction-harm view can show a real, lower-confidence count for Cursor instead of "not visible
-/// yet". Purely observational: we never block or alter the compaction, and always emit `{}`.
+/// Cursor `preCompact` command hook. This proves that Cursor reached the pre-compaction boundary;
+/// it does not prove completion because Cursor exposes no public `postCompact` hook. Purely
+/// observational: CTX never blocks or alters compaction and always emits `{}`.
 pub fn pre_compact() -> Result<()> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
     let payload: Value = serde_json::from_str(buf.trim()).unwrap_or(json!({}));
 
-    let cfg = Config::load();
-    if !cfg.compress_enabled {
-        print!("{{}}");
-        return Ok(());
-    }
-
     let event = parse_cursor_compaction(&payload);
     if let Ok(conn) = crate::db::open_db() {
         let _ = crate::db::ensure_schema(&conn);
-        let _ = crate::db::insert_cursor_compaction(&conn, &event);
-        let key = format!(
-            "cursor-compact-{}-{}-{}",
-            event.session_id.as_deref().unwrap_or("unknown"),
-            event.trigger.as_deref().unwrap_or("unknown"),
-            event.ts
-        );
-        let _ = crate::db::insert_native_compaction(
+        let claimed = crate::compaction::record_payload(
             &conn,
-            &key,
             CURSOR_SURFACE,
-            "pre",
-            event.session_id.as_deref(),
-            None,
-            event.trigger.as_deref(),
-        );
+            crate::compaction::CompactionPhase::Attempted,
+            &payload,
+        )
+        .unwrap_or(false);
+        // Keep the legacy pressure-metric table populated, but only once per normalized event.
+        if claimed {
+            let _ = crate::db::insert_cursor_compaction(&conn, &event);
+        }
     }
 
     print!("{{}}");

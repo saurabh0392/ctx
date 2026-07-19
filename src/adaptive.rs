@@ -357,6 +357,9 @@ mod tests {
 
     #[test]
     fn max_chars_hook_haiku() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         std::env::remove_var("CTX_HOME");
         // default config file may exist on dev machine; test logic only
         let m = max_chars_for_hook_input(Some("claude-3-5-haiku"));

@@ -484,6 +484,10 @@ pub enum HookCommand {
     CursorPreToolUse,
     /// Cursor preCompact: record a live Cursor compaction event (ADR 0023 / CTX-31)
     CursorPreCompact,
+    /// Claude Code native compaction start observer.
+    ClaudePreCompact,
+    /// Claude Code native compaction completion observer.
+    ClaudePostCompact,
     /// Codex plugin lifecycle heartbeat.
     CodexSessionStart,
     /// Codex user turn and correction-signal observer.

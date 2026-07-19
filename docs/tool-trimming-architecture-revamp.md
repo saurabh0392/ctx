@@ -708,7 +708,8 @@ disable or uninstall. A gateway failure must not strand an MCP server behind a d
 
 These do not block T0-T2 but must be resolved before their dependent increment:
 
-1. Default recovery retention window and storage cap.
+1. **Resolved in T7:** retain the 500 most recent originals subject to a 100 MiB combined cap;
+   expose both controls and immediate purge in the dashboard.
 2. Whether commercial release fails closed when an OS credential/encryption facility is unavailable
    or ships with a clearly labeled owner-permissions fallback.
 3. Which MCP SDK/protocol implementation minimizes custom transport and OAuth code in Rust.
@@ -732,8 +733,15 @@ independent security review; implementation completion is not a production-secur
 keeps shell streams/status distinct, bypasses capture for interactive or ambiguous commands, and
 defines POSIX, PowerShell, cmd.exe, and WSL contracts under Linux, macOS, and Windows CI.
 
-The next slice is T7 product proof and T8 external hardening: real-server breadth, latency and
-failure thresholds, signed artifacts, SBOM/audit output, and an independent gateway review.
+T7 adds versioned, per-path runtime capability receipts; attempted/completed/inferred compaction
+semantics across Claude Code, Cursor, and Codex; exact pass-through reasons; a synthetic
+write/read/delete recovery test in the dashboard and MCP server; owner-only storage receipts;
+configurable original retention and immediate purge; exact local/remote destination receipts; and
+local product-proof counters for model-visible savings, recovery, corrections/re-touch, gateway
+latency, failures, and result coverage.
+
+The next slice is T8 external hardening: real-server breadth, signed artifacts, SBOM/audit output,
+failure thresholds, and an independent gateway review.
 
 CTX-71 and ADR 0038 completed the T0/T1 foundation: lossless canonical MCP results, a versioned
 fixture ledger, cross-platform adapter capture, and shadow-only typed evidence are on `main`.

@@ -20,6 +20,7 @@ pub mod cmd_run;
 pub mod coach;
 pub mod codex_hook;
 pub mod codex_plugin;
+pub mod compaction;
 pub mod compress;
 pub mod config;
 pub mod context_ctl;
@@ -135,6 +136,12 @@ pub async fn run() -> Result<()> {
             HookCommand::CursorPostToolUse => cursor_hook::post_tool_use()?,
             HookCommand::CursorPreToolUse => cursor_hook::pre_tool_use()?,
             HookCommand::CursorPreCompact => cursor_hook::pre_compact()?,
+            HookCommand::ClaudePreCompact => {
+                compaction::record_stdin("claude-code", compaction::CompactionPhase::Attempted)?
+            }
+            HookCommand::ClaudePostCompact => {
+                compaction::record_stdin("claude-code", compaction::CompactionPhase::Completed)?
+            }
             HookCommand::CodexSessionStart => codex_hook::session_start()?,
             HookCommand::CodexUserPromptSubmit => codex_hook::user_prompt_submit()?,
             HookCommand::CodexPreToolUse => codex_hook::pre_tool_use()?,

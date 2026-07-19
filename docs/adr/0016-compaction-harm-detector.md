@@ -1,10 +1,14 @@
 # 0016. Compaction-harm detector: reuse the transcript compaction signal, Claude-first, Cursor honest-unknown
 
-- Status: accepted
+- Status: superseded in part by ADR 0047
 - Date: 2026-06-14
 - Deciders: Saurabh Sharan, ctx CTO partner
 - Ticket: CTX-25 (compaction-harm detector, lead wedge)
 - Extends: ADR 0014 (re-sequenced this feature to the front), ADR 0013 (position on surfaces and proof)
+
+> Historical note: ADR 0047 adds native Claude/Codex post hooks and separates attempted,
+> confirmed-completed, and transcript-inferred compaction. This ADR remains the origin of the
+> non-causal correction-follow-up window only.
 
 ## Context
 

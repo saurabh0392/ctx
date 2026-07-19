@@ -2420,20 +2420,17 @@
     $("save-tools").innerHTML = body;
 
     // Where CTX acts: capability comes from the API, not a browser-side platform guess.
-    const seen = (ctx.surfaces || []).filter((s) => s.seen);
+    const seen = ctx.surfaces || [];
     if (seen.length) {
       const cards = seen.map((s) => {
         const name = SURFACE_NAME[s.surface] || s.surface;
-        const act = (s.status === "active" || s.status === "partially_active") ? "acting" : "observing";
-        const status = (s.status || "observing").replaceAll("_", " ");
+        const receipts = s.capabilities || [];
+        const activePaths = receipts.filter((r) => r.mode === "active").length;
+        const act = activePaths > 0 ? "acting" : "observing";
+        const status = activePaths > 0 ? `${activePaths} path${activePaths === 1 ? "" : "s"} active` : (s.seen ? "observing" : "not exercised");
         const ago = s.last_seen ? timeAgo(s.last_seen) : "n/a";
-        const caps = [
-          `Shell output: ${s.can_trim_shell ? "can shorten after the safety check" : "observed only"}`,
-          `Built-in Read / search: ${s.can_trim_builtin ? "can shorten" : "observed only"}`,
-          `MCP results: ${s.can_trim_mcp ? (s.surface === "codex" ? "can shorten for approved gateway servers" : "can shorten") : "observed only"}`,
-          `Compaction: ${s.compaction_seen ? "visible" : "not observed yet"}`
-        ];
-        return `<div class="sv-agent"><div class="sv-agent-top"><span class="sv-agent-name">${esc(name)}</span><span class="sv-agent-pill ${act}">${esc(status)}</span></div><div class="sv-agent-cap">${caps.map(esc).join("<br>")}</div><div class="sv-agent-meta">last seen ${ago}</div></div>`;
+        const caps = receipts.map((r) => `<b>${esc(r.label)}:</b> ${esc(capabilityMode(r))}<br><span style="color:var(--faint)">${esc(r.proof)}${r.limitation ? " · " + esc(r.limitation) : ""}</span>`).join("<br>");
+        return `<div class="sv-agent"><div class="sv-agent-top"><span class="sv-agent-name">${esc(name)}</span><span class="sv-agent-pill ${act}">${esc(status)}</span></div><div class="sv-agent-cap">${caps || "No capability receipt"}</div><div class="sv-agent-meta">receipt v${num(s.capability_contract_version || 0)} · last seen ${ago}</div></div>`;
       }).join("");
       $("save-agents").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Where ctx acts</div><h2 class="sv-sec-h">One honest layer under every agent.</h2><p class="sv-note">No agent vendor measures the others. This is the only place they sit together, on your own work.</p><div class="sv-agents">${cards}</div></section>`;
     } else { $("save-agents").innerHTML = ""; }
@@ -2441,10 +2438,10 @@
     // Context pressure: the health read plus the one lever. No by-agent grid, no correlation footnote.
     const comp = (ctx.compaction || []).find((s) => s.surface === "claude-code");
     let compCard;
-    if (comp && comp.confidence === "observed" && (comp.compaction_events || 0) > 0) {
-      const n = comp.compaction_events || 0, sess = comp.sessions_with_compaction || 0;
+    if (comp && ["confirmed", "inferred"].includes(comp.confidence) && (comp.completed_events || 0) > 0) {
+      const n = comp.completed_events || 0, sess = comp.sessions_with_compaction || 0;
       compCard = `<div class="sv-comp"><div class="sv-comp-h">Compacted ${num(n)} time${n === 1 ? "" : "s"} across ${num(sess)} session${sess === 1 ? "" : "s"}.</div><div class="sv-comp-cap">Each one means the agent ran out of room and summarized older detail away for the rest of that session. The lever that reduces it: split the session once the task shifts, so a fresh window starts empty. The <span onclick="go('see')" style="color:var(--accent-ink);cursor:pointer">See</span> page shows what is filling the window.</div></div>`;
-    } else if (comp && comp.confidence === "observed") {
+    } else if (comp && ["confirmed", "inferred"].includes(comp.confidence)) {
       compCard = `<div class="sv-comp good"><div class="sv-comp-h">Your sessions stay under the limit.</div><div class="sv-comp-cap">Across the Claude Code sessions ctx has seen, your agent has not had to compact once. No mid-session detail was summarized away. If a session ever does compact, it shows up here with the one lever that reduces it: split the session once the task shifts.</div></div>`;
     } else {
       compCard = `<div class="sv-comp"><div class="sv-comp-h">Nothing to read yet.</div><div class="sv-comp-cap">ctx has not indexed Claude Code sessions on this machine yet. Once you run a few, this shows how often your agent hits its context limit.</div></div>`;
@@ -2537,6 +2534,25 @@
 
   // ════ COMPACTION ════
   const SURFACE_NAME = { "claude-code": "Claude Code", "cursor": "Cursor", "codex": "Codex" };
+  function capabilityMode(receipt) {
+    const label = {
+      active: "shortening live",
+      available: "can shorten after the safety check",
+      observe_only: "observed only; cannot replace this result",
+      requires_setup: "needs explicit setup",
+      user_disabled: "kept whole by your setting",
+      attempt_only: "attempt visible; completion not visible",
+      confirmed: "completion confirmed",
+      inferred: "completion inferred from transcript",
+      unknown: "not observed yet",
+    };
+    return label[receipt.mode] || String(receipt.mode || "unknown").replaceAll("_", " ");
+  }
+  function capabilityReceiptHtml(surface) {
+    const receipts = surface.capabilities || [];
+    if (!receipts.length) return `<div class="sf-foot">No capability receipt available.</div>`;
+    return `<div class="sf-foot">${receipts.map((r) => `<b>${esc(r.label)}:</b> ${esc(capabilityMode(r))} <span style="color:var(--faint)">· ${esc(r.proof)}${r.limitation ? " · " + esc(r.limitation) : ""}</span>`).join("<br>")}<br><span style="color:var(--faint)">Capability receipt v${num(surface.capability_contract_version || 0)}</span></div>`;
+  }
   async function loadCompaction() {
     let ctx, bill;
     try { [ctx, bill] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/bill").catch(() => null)]); setHealth(true); }
@@ -2545,23 +2561,23 @@
     const claude = surfaces.find((s) => s.surface === "claude-code");
     const w = (claude && claude.window_turns) || 5;
 
-    // Health read leads: how often the agent compacted, keyed off the one surface we measure fully
-    // (Claude Code). The correction follow-up is background further down, never the headline.
+    // Health read leads from completion events only. A pre hook is never promoted into a completed
+    // compaction; the confidence label says whether completion is native or transcript-inferred.
     let lead;
-    if (!claude || claude.confidence !== "observed") {
+    if (!claude || claude.confidence === "unknown") {
       lead = `<div class="cf-lead"><div class="cf-big">Nothing to read yet</div><div class="cf-cap">ctx hasn't indexed any Claude Code sessions on this machine yet. Once you run a few, this shows how often your agent hits its context limit. Run <code>ctx ingest</code> if you have used Claude Code and still see nothing.</div></div>`;
-    } else if ((claude.compaction_events || 0) === 0) {
-      lead = `<div class="cf-lead good"><div class="cf-big">Your sessions stay under the limit</div><div class="cf-cap">Across the Claude Code sessions ctx has seen, your agent hasn't had to compact once. That is the healthy read: no mid-session detail was summarized away. If a session ever does compact, it shows up here with what to do about it.</div></div>`;
+    } else if ((claude.completed_events || 0) === 0) {
+      lead = `<div class="cf-lead good"><div class="cf-big">No completed compaction observed</div><div class="cf-cap">${claude.confidence === "confirmed" ? "Claude Code's completion hook has not reported one." : "No completion marker appears in the Claude Code transcripts ctx indexed."} This is evidence about completed compaction, not a guess from a pre-hook attempt.</div></div>`;
     } else {
-      const n = claude.compaction_events || 0, sess = claude.sessions_with_compaction || 0;
+      const n = claude.completed_events || 0, sess = claude.sessions_with_compaction || 0;
       const per = sess > 0 ? (n / sess) : 0;
-      lead = `<div class="cf-lead"><div class="cf-big">Compacted <b>${num(n)}</b> time${n === 1 ? "" : "s"}</div><div class="cf-cap">across ${num(sess)} Claude Code session${sess === 1 ? "" : "s"} ctx has seen${per >= 2 ? `, about ${per.toFixed(1)} per affected session` : ""}. Each one means the agent ran out of room and summarized older detail away for the rest of that session. Fewer is healthier.</div></div>`;
+      lead = `<div class="cf-lead"><div class="cf-big">Compacted <b>${num(n)}</b> time${n === 1 ? "" : "s"}</div><div class="cf-cap">${claude.confidence === "confirmed" ? "Confirmed by Claude Code's PostCompact hook" : "Inferred from Claude Code transcript completion markers"}${sess ? ` across ${num(sess)} session${sess === 1 ? "" : "s"}` : ""}${per >= 2 ? `, about ${per.toFixed(1)} per affected session` : ""}. Fewer is healthier.</div></div>`;
     }
 
     // Next action, the point of the page. Concrete levers, one anchored to the real top sink so it
     // is your data, not generic advice.
     let action = "";
-    const compacted = claude && claude.confidence === "observed" && (claude.compaction_events || 0) > 0;
+    const compacted = claude && ["confirmed", "inferred"].includes(claude.confidence) && (claude.completed_events || 0) > 0;
     if (compacted) {
       const top = bill && bill.tools && bill.tools.length ? bill.tools[0] : null;
       const sinkLine = top
@@ -2574,22 +2590,22 @@
       const name = SURFACE_NAME[s.surface] || s.surface;
       const sess = s.sessions_with_compaction || 0;
       const sessLbl = `${num(sess)} session${sess === 1 ? "" : "s"}`;
-      // Surfaces ctx can't see at all (e.g. Codex today): show nothing, not a zero.
       if (s.confidence === "unknown") {
         return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf unknown">not visible yet</div><div class="cf-num">&mdash;</div><div class="cf-note">ctx hasn't recorded a compaction from ${esc(name)} yet, so there's nothing to show. We'd rather show nothing than guess.</div></div>`;
       }
-      if (s.confidence === "observed_low") {
-        const n = s.compaction_events || 0;
+      if (s.confidence === "attempt_only") {
+        const n = s.attempted_events || 0;
         const body = n === 0
-          ? `<div class="cf-num">none yet</div><div class="cf-note">ctx is watching ${esc(name)}'s compactions live. None recorded yet.</div>`
-          : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} recorded live across ${sessLbl}.</div>`;
-        return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf low">watching live</div>${body}</div>`;
+          ? `<div class="cf-num">none yet</div><div class="cf-note">No pre-compaction attempt recorded yet. Completion is not visible on this platform.</div>`
+          : `<div class="cf-num">${num(n)} attempt${n === 1 ? "" : "s"}</div><div class="cf-note">Seen at preCompact. This is deliberately not counted as ${n === 1 ? "a completed compaction" : "completed compactions"}.</div>`;
+        return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf low">attempt only</div>${body}</div>`;
       }
-      const n = s.compaction_events || 0;
+      const n = s.completed_events || 0;
       const body = n === 0
-        ? `<div class="cf-num">none</div><div class="cf-note">No compaction across ${sessLbl}. The healthy case.</div>`
+        ? `<div class="cf-num">none</div><div class="cf-note">No completed compaction observed.</div>`
         : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} across ${sessLbl}.</div>`;
-      return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf observed">observed here</div>${body}</div>`;
+      const badge = s.confidence === "confirmed" ? "completion confirmed" : "inferred from transcript";
+      return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf observed">${badge}</div>${body}</div>`;
     };
 
     const order = ["claude-code", "cursor", "codex"];
@@ -2603,14 +2619,14 @@
     // headline. Shown only when there is a real count to report.
     let followup = "";
     if (compacted && claude.followed_by_correction != null) {
-      const n = claude.compaction_events || 0, m = claude.followed_by_correction || 0;
+      const n = claude.completed_events || 0, m = claude.followed_by_correction || 0;
       followup = `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">For context: what tended to follow</div><p class="sec-note">${num(m)} of ${num(n)} Claude Code compactions had you correct the agent within ${w} turns. This is background, not a cause: a correction can follow a compaction for reasons unrelated to it, and the branch where the session had more room is in no log. Treat it as a loose hint that compaction-heavy sessions get bumpier, not as a verdict.</p></div>`;
     }
 
     $("compaction-body").innerHTML =
       lead +
       action +
-      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">ctx can only measure an agent whose sessions it sees. Claude Code exposes its compaction in the transcript, so its count is full. Cursor reports each compaction live as it happens. Anything ctx can't see yet shows as not visible, never as a zero.</p><div class="cf-grid">${cards}</div></div>` +
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Claude Code and Codex expose both pre- and post-compaction hooks, so current installs can confirm completion. Historical Claude data falls back to transcript inference. Cursor exposes only preCompact, so CTX shows attempts and refuses to call them completed. Anything unseen stays unknown, never zero.</p><div class="cf-grid">${cards}</div></div>` +
       followup;
   }
 
@@ -2659,16 +2675,17 @@
             <div><div class="sf-k">Corrections seen</div><div class="sf-v">${num(s.transcript_corrections)}</div></div>
             <div><div class="sf-k">Trims applied</div><div class="sf-v">none yet</div></div>
           </div>
+          ${capabilityReceiptHtml(s)}
           <div class="sf-foot">Read from ${esc(name)}'s own transcripts on this machine, not live. ctx never trimmed anything here. Last transcript ${esc(ago)}.</div>
         </div>`;
       }
-      const acting = s.status === "active" || s.status === "partially_active";
-      const status = (s.status || (acting ? "active" : "observing")).replaceAll("_", " ");
+      const activePaths = (s.capabilities || []).filter((r) => r.mode === "active").length;
+      const acting = activePaths > 0;
+      const status = acting ? `${activePaths} path${activePaths === 1 ? "" : "s"} active` : (s.seen ? "observing" : "not exercised");
       const pill = acting ? `<div class="sf-pill acting">${esc(status)}</div>` : `<div class="sf-pill obs">${esc(status)}</div>`;
       const savedTok = tok(s.chars_saved || 0);
       const saved = savedTok > 0 ? fmtK(savedTok) + " tok" : "none yet";
-      const mcpCapability = s.can_trim_mcp ? (s.surface === "codex" ? "can shorten for approved gateway servers" : "can shorten") : "observed only";
-      const capabilityRows = `<div class="sf-foot"><b>Shell output:</b> ${s.can_trim_shell ? "can shorten after the safety check" : "observed only"}<br><b>Built-in Read / search:</b> ${s.can_trim_builtin ? "can shorten" : "observed only"}<br><b>MCP results:</b> ${mcpCapability}<br><b>Compaction:</b> ${s.compaction_seen ? "visible" : "not observed yet"}</div>`;
+      const capabilityRows = capabilityReceiptHtml(s);
       return `<div class="sf-card">
         <div class="sf-head"><div class="sf-name">${esc(name)}</div>${pill}</div>
         <div class="sf-cap">${esc(cap)}</div>
@@ -2713,6 +2730,12 @@
     const on = (ctx.preset || "off") !== "off";
     const tgl = (id, checked, t, d) => `<div class="st-toggle"><div class="st-toggle-main"><div class="st-toggle-t">${t}</div><div class="st-toggle-d">${d}</div></div><label class="st-switch"><input type="checkbox" id="${id}" ${checked ? "checked" : ""} onchange="saveToggle('${id}')"><span class="st-switch-ui"></span></label></div>`;
     const rc = s.row_counts || {};
+    const rw = s.rewind_store || {};
+    const pp = ctx.product_proof || {}, gw = pp.gateway || {};
+    const destinations = s.outbound_destinations || [];
+    const destinationRows = destinations.length
+      ? destinations.map((d) => `<div class="st-statusline"><span class="dot ${d.remote ? "off" : "on"}"></span><span><b>${esc(d.id)}</b> · ${d.remote ? "remote" : "local process"}<br><span style="color:var(--muted)">${esc(d.destination)} · ${esc(d.credential_source)}${d.approved_at ? " · approved " + esc(String(d.approved_at).slice(0, 10)) : ""}</span></span></div>`).join("")
+      : `<div class="st-statusline"><span class="dot on"></span><span><b>No remote destinations registered.</b> CTX has no gateway destination it can contact.</span></div>`;
 
     // Settings panel. Profiles card removed in pass 4: tool-menu management is now per-server on See.
     $("st-panel-settings").innerHTML = `
@@ -2726,13 +2749,37 @@
       </div>
       <div class="st-card">
         <div class="st-card-h">Privacy and data</div>
-        <div class="st-card-sub">Control what ctx keeps locally. Nothing leaves unless you explicitly export or send a previewed report/check-in.</div>
+        <div class="st-card-sub">Control what CTX keeps locally. CTX has no background telemetry. The only egress is an explicit export/report/check-in or a remote MCP destination you approved and can inspect below.</div>
         <div class="st-card-body">
           ${tgl("set-store-prompt", !!s.store_prompt_text, "Store prompt text", "Keeps the start of each message in SQLite for Activity and similarity. Turn off for metrics only.")}
           ${tgl("set-embed", !!s.embeddings_enabled, "Session embeddings", "Builds local vector fingerprints of sessions for auto-profile and adaptive prefix.")}
           ${tgl("set-compress", s.compress_enabled !== false, "Output compression pipeline", "The master switch for trimming. With it off, ctx never trims even when a tool has earned it.")}
+          <div class="st-field"><label for="set-rewind-entries">Retained originals (most recent)</label><input class="st-input" type="number" min="1" max="10000" id="set-rewind-entries" value="${rw.max_entries || 500}"></div>
+          <div class="st-field"><label for="set-rewind-mb">Original storage cap (MiB)</label><input class="st-input" type="number" min="1" max="10240" id="set-rewind-mb" value="${Math.max(1, Math.round((rw.max_bytes || 104857600) / 1048576))}"></div>
+          <div class="st-statusline"><span class="dot ${rw.directory_protection === "owner-only" || rw.directory_protection === "os-account-managed" ? "on" : "off"}"></span><span><b>${num(rw.entries || 0)} originals · ${fmtBytes(rw.bytes || 0)}</b><br>State directory: ${esc(rw.directory_protection || "unknown")}; database: ${esc(rw.database_protection || "unknown")}.</span></div>
+          <div class="st-actions"><button class="st-cta ghost" onclick="saveRetention()">Save retention</button><button class="st-cta ghost" onclick="recoveryCheck()">Test restore</button><button class="st-cta danger" onclick="purgeOriginals()">Purge originals</button><span class="st-saved" id="saved-recovery">saved</span></div>
+          <div class="st-statusline" id="recovery-result"><span>The restore test uses synthetic text, verifies the exact durable recovery path, then deletes the probe.</span></div>
           <div class="st-actions"><button class="st-cta ghost" onclick="exportDb()">Export ctx.db</button><button class="st-cta ghost" onclick="purgePrompts()">Purge prompt text</button><button class="st-cta danger" onclick="deleteData()">Delete all indexed data</button><span class="st-saved" id="saved-privacy">saved</span></div>
         </div>
+      </div>
+      <div class="st-card">
+        <div class="st-card-h">Network destinations</div>
+        <div class="st-card-sub">CTX itself has no telemetry. A remote MCP server is contacted only when you explicitly register it and route an agent through the gateway. This is the exact current destination ledger; credentials are never shown.</div>
+        <div class="st-card-body">${destinationRows}</div>
+      </div>
+      <div class="st-card">
+        <div class="st-card-h">Product proof</div>
+        <div class="st-card-sub">Local receipts for what reached the model, what was recovered, what needed another touch, and what the MCP gateway cost. Output tokens are explicitly a character-based estimate; menu tokens are exact.</div>
+        <div class="st-card-body"><div class="st-meta">
+          <div><div class="st-mk">Output saved (est.)</div><div class="st-mv">${fmtK(pp.output_tokens_saved_estimate || 0)} tok</div></div>
+          <div><div class="st-mk">Input menu saved</div><div class="st-mv">${fmtK(pp.input_tokens_saved || 0)} tok</div></div>
+          <div><div class="st-mk">Applied / observed</div><div class="st-mv">${num(pp.applied_trims || 0)} / ${num(pp.observed_results || 0)}</div></div>
+          <div><div class="st-mk">Recoveries</div><div class="st-mv">${num(pp.recoveries || 0)}</div></div>
+          <div><div class="st-mk">Corrections after trim</div><div class="st-mv">${num(pp.corrections_after_applied || 0)} / ${num(pp.scored_applied_trims || 0)}</div></div>
+          <div><div class="st-mk">Re-touch after trim</div><div class="st-mv">${num(pp.retouches_after_applied || 0)}</div></div>
+          <div><div class="st-mk">Gateway latency</div><div class="st-mv">${gw.average_latency_ms == null ? "not measured" : Math.round(gw.average_latency_ms) + " ms avg"}</div></div>
+          <div><div class="st-mk">Gateway failures</div><div class="st-mv">${num(gw.failures || 0)} / ${num(gw.calls || 0)}</div></div>
+        </div>${(gw.recent_pass_through_reasons || []).length ? `<div class="st-statusline"><span><b>Recent exact pass-through reasons</b><br>${gw.recent_pass_through_reasons.map(esc).join("<br>")}</span></div>` : ""}</div>
       </div>
       <div class="st-card">
         <div class="st-card-h">Spend cap</div>
@@ -2770,7 +2817,11 @@
         else if (r.applied) { what = `Trimmed <span class="drop">${drop} lines</span>, kept <span class="keep">${r.lines_keep || 0}</span>. The tool still ran in full.`; tag = "trimmed"; }
         else if (r.explore_arm === "control") { what = `Kept <span class="keep">all ${total} lines</span> unchanged for a fair comparison. This tool may trim other randomly selected runs.`; tag = "comparison"; }
         else { what = `Would set aside <span class="drop">${drop} lines</span>, keep <span class="keep">${r.lines_keep || 0}</span>. Still only watching this tool.`; tag = "watching"; }
-        const sub = r.command_or_path ? `<div class="st-act-sub">${esc(String(r.command_or_path).slice(0, 70))}</div>` : "";
+        const source = r.command_or_path ? esc(String(r.command_or_path).slice(0, 70)) : "";
+        const why = !r.applied && r.pass_through_reason
+          ? `${esc(r.pass_through_category || "kept whole")}: ${esc(r.pass_through_reason)}`
+          : "";
+        const sub = (source || why) ? `<div class="st-act-sub">${source}${source && why ? " · " : ""}${why}</div>` : "";
         return `<div class="st-act"><span class="st-act-time">${esc(timeAgo(r.ts))}</span><span class="st-act-name">${esc(label)}</span><span><div class="st-act-what">${what}</div>${sub}</span><span class="st-act-tag ${tag}">${tag}</span></div>`;
       }).join("");
       $("st-panel-activity").innerHTML = `<div class="st-card"><div class="st-card-h">Recent activity</div><div class="st-card-sub">The running record behind every verdict. Watched means nothing changed. Trimmed means a tool that earned it; the tool still ran in full, ctx only shortened what the agent read back.</div><div class="st-card-body">${rows}</div></div>`;
@@ -2793,6 +2844,30 @@
     const v = $("set-budget").value;
     await post("/api/settings", { monthly_budget_usd: v === "" ? null : parseFloat(v) });
     flashSaved("saved-budget");
+  }
+  async function saveRetention() {
+    const entries = parseInt($("set-rewind-entries").value, 10);
+    const bytes = parseInt($("set-rewind-mb").value, 10) * 1048576;
+    await post("/api/settings", { rewind_retention_entries: entries, rewind_retention_bytes: bytes });
+    flashSaved("saved-recovery");
+    loadSettings();
+  }
+  async function recoveryCheck() {
+    const box = $("recovery-result");
+    box.textContent = "Testing the local recovery path...";
+    try {
+      const response = await post("/api/context/recovery-check", {});
+      const result = await response.json();
+      box.innerHTML = result.ok
+        ? `<span class="dot on"></span><span><b>Restore passed.</b> ${esc(result.detail)}.</span>`
+        : `<span class="dot off"></span><span><b>Restore failed.</b> ${esc(result.error || result.detail || "unknown error")}</span>`;
+    } catch (e) { box.innerHTML = `<span class="dot off"></span><span><b>Restore failed.</b> ${esc(String(e))}</span>`; }
+  }
+  async function purgeOriginals() {
+    const confirmation = prompt("This removes every retained verbatim original. Existing trim markers will no longer be recoverable. Type PURGE STORED ORIGINALS to continue.");
+    if (confirmation !== "PURGE STORED ORIGINALS") return;
+    await post("/api/settings/purge-originals", { confirmation });
+    loadSettings();
   }
   function exportDb() { window.location = "/api/settings/export"; }
   async function purgePrompts() { if (!confirm("Remove stored prompt text from the local database?")) return; await post("/api/settings/purge-prompts", {}); flashSaved("saved-privacy"); }

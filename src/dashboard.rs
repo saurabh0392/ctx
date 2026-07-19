@@ -112,6 +112,10 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route("/api/context/tool-bill", get(api_context_tool_bill))
         .route("/api/context/prune-server", post(api_context_prune_server))
         .route("/api/context/rewind", post(api_context_rewind))
+        .route(
+            "/api/context/recovery-check",
+            post(api_context_recovery_check),
+        )
         .route("/api/onboarding", get(api_onboarding))
         .route("/api/product-event", post(api_product_event))
         .route("/api/beta/snapshot", get(api_beta_snapshot))
@@ -130,6 +134,10 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         .route(
             "/api/settings/purge-prompts",
             post(api_settings_purge_prompts),
+        )
+        .route(
+            "/api/settings/purge-originals",
+            post(api_settings_purge_originals),
         )
         .route("/api/settings/delete-data", post(api_settings_delete_data))
         .route("/api/settings/export", get(api_settings_export))
@@ -499,6 +507,9 @@ struct ContextView {
     /// Insight-actions (CTX-63 / L4): behavior changes ctx can see, recoveries and MCP prunes. The
     /// education-engagement KPI, counted only from locally logged actions.
     insight_actions: crate::db::InsightActions,
+    /// T7 product-proof receipts: model-visible savings, recovery, harm, latency, failures, and
+    /// coverage from the same local ledger that authorizes live changes.
+    product_proof: crate::db::ProductProofMetrics,
 }
 
 /// POST /api/context/rewind: return the verbatim original ctx trimmed, by rewind id (CTX-57).
@@ -516,6 +527,17 @@ async fn api_context_rewind(Json(body): Json<serde_json::Value>) -> Json<serde_j
             }))
         }
         None => Json(serde_json::json!({ "error": "not found" })),
+    }
+}
+
+async fn api_context_recovery_check() -> impl IntoResponse {
+    match crate::db::recovery_self_test() {
+        Ok(result) => Json(serde_json::to_value(result).unwrap_or_default()).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": error.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -615,111 +637,124 @@ async fn api_context() -> Json<ContextView> {
     use crate::compress::activation::{causal_clears_bar, tool_stage, CausalThresholds};
     let cfg = crate::config::Config::load();
     let th = CausalThresholds::default();
-    let (stats, tools, feed, compaction, loop_health, surfaces, attribution, wnad, insight_actions) =
-        match open_ctx_db() {
-            Some(conn) => {
-                let stats = crate::db::compress_decision_stats(&conn);
-                let progress = crate::db::compress_tool_progress(&conn);
-                let randomized = selected_randomized_outcomes(&conn);
-                let tools = progress
-                    .into_iter()
-                    .map(|p| {
-                        // Earned means causal: trimming is not measurably worse than leaving the
-                        // tool alone. Fails closed until a trial collects the trimmed arm, so the
-                        // badge never claims "ready" on baseline volume alone.
-                        let earned = randomized
-                            .iter()
-                            .find(|(_, o)| o.tool_name == p.tool_name)
-                            .map(|(_, o)| causal_clears_bar(o, &th))
-                            .unwrap_or(false);
-                        let held = crate::compress::held_reason(&p.tool_name, &cfg);
-                        ContextToolView {
-                            tool: p.tool_name,
-                            decisions: p.decisions,
-                            joined: p.joined,
-                            clean_runs: p.clean_runs,
-                            corrections: p.corrections,
-                            rereads: p.rereads,
-                            active: p.active,
-                            earned,
-                            need: th.min_baseline,
-                            trim_eligible: held.is_none(),
-                            held_reason: held,
-                        }
-                    })
-                    .collect();
-                let feed = crate::db::compress_decision_feed(&conn, 12);
-                let compaction = crate::db::compaction_followups(&conn);
-                let by_day = crate::db::decisions_by_day(&conn, 14);
-                // Only place tools that have actually started accruing trim-eligible evidence on the
-                // path. A tool with zero baseline and zero trimmed runs has nothing to show yet, and a
-                // wall of identical "0 of 30" rows buries the tools that are really moving. They count
-                // toward the totals above; they just aren't on the path until there is something to
-                // measure.
-                let lh_tools = randomized
-                    .iter()
-                    .filter(|(_, o)| o.baseline_n > 0 || o.trimmed_n > 0 || o.trimmed_collected > 0)
-                    .map(|(surface, o)| LoopHealthToolView {
-                        surface: surface.clone(),
-                        stage: tool_stage(o, &th),
-                        outcome: o.clone(),
-                    })
-                    .collect();
-                let joined_pct = if stats.total > 0 {
-                    Some(stats.joined as f64 / stats.total as f64)
-                } else {
-                    None
-                };
-                let loop_health = LoopHealthView {
-                    total: stats.total,
-                    joined: stats.joined,
-                    joined_pct,
-                    today: stats.today,
-                    autopilot: cfg.compress_auto_trial,
-                    min_baseline: th.min_baseline,
-                    min_trimmed: th.min_trimmed,
-                    by_day,
-                    tools: lh_tools,
-                };
-                let home = crate::config::home_dir_for_paths().unwrap_or_default();
-                let surfaces = crate::db::surface_summary_full(&conn, &home);
-                let attribution = crate::db::tool_attribution(&conn);
-                let wnad = crate::db::weekly_net_ahead(&conn);
-                let insight_actions = crate::db::insight_actions(&conn);
-                (
-                    stats,
-                    tools,
-                    feed,
-                    compaction,
-                    loop_health,
-                    surfaces,
-                    attribution,
-                    wnad,
-                    insight_actions,
-                )
-            }
-            None => (
-                Default::default(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                LoopHealthView {
-                    total: 0,
-                    joined: 0,
-                    joined_pct: None,
-                    today: 0,
-                    autopilot: cfg.compress_auto_trial,
-                    min_baseline: th.min_baseline,
-                    min_trimmed: th.min_trimmed,
-                    by_day: Vec::new(),
-                    tools: Vec::new(),
-                },
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Default::default(),
-            ),
-        };
+    let (
+        stats,
+        tools,
+        feed,
+        compaction,
+        loop_health,
+        surfaces,
+        attribution,
+        wnad,
+        insight_actions,
+        product_proof,
+    ) = match open_ctx_db() {
+        Some(conn) => {
+            let stats = crate::db::compress_decision_stats(&conn);
+            let progress = crate::db::compress_tool_progress(&conn);
+            let randomized = selected_randomized_outcomes(&conn);
+            let tools = progress
+                .into_iter()
+                .map(|p| {
+                    // Earned means causal: trimming is not measurably worse than leaving the
+                    // tool alone. Fails closed until a trial collects the trimmed arm, so the
+                    // badge never claims "ready" on baseline volume alone.
+                    let earned = randomized
+                        .iter()
+                        .find(|(_, o)| o.tool_name == p.tool_name)
+                        .map(|(_, o)| causal_clears_bar(o, &th))
+                        .unwrap_or(false);
+                    let held = crate::compress::held_reason(&p.tool_name, &cfg);
+                    ContextToolView {
+                        tool: p.tool_name,
+                        decisions: p.decisions,
+                        joined: p.joined,
+                        clean_runs: p.clean_runs,
+                        corrections: p.corrections,
+                        rereads: p.rereads,
+                        active: p.active,
+                        earned,
+                        need: th.min_baseline,
+                        trim_eligible: held.is_none(),
+                        held_reason: held,
+                    }
+                })
+                .collect();
+            let feed = crate::db::compress_decision_feed(&conn, 12);
+            let compaction = crate::db::compaction_followups(&conn);
+            let by_day = crate::db::decisions_by_day(&conn, 14);
+            // Only place tools that have actually started accruing trim-eligible evidence on the
+            // path. A tool with zero baseline and zero trimmed runs has nothing to show yet, and a
+            // wall of identical "0 of 30" rows buries the tools that are really moving. They count
+            // toward the totals above; they just aren't on the path until there is something to
+            // measure.
+            let lh_tools = randomized
+                .iter()
+                .filter(|(_, o)| o.baseline_n > 0 || o.trimmed_n > 0 || o.trimmed_collected > 0)
+                .map(|(surface, o)| LoopHealthToolView {
+                    surface: surface.clone(),
+                    stage: tool_stage(o, &th),
+                    outcome: o.clone(),
+                })
+                .collect();
+            let joined_pct = if stats.total > 0 {
+                Some(stats.joined as f64 / stats.total as f64)
+            } else {
+                None
+            };
+            let loop_health = LoopHealthView {
+                total: stats.total,
+                joined: stats.joined,
+                joined_pct,
+                today: stats.today,
+                autopilot: cfg.compress_auto_trial,
+                min_baseline: th.min_baseline,
+                min_trimmed: th.min_trimmed,
+                by_day,
+                tools: lh_tools,
+            };
+            let home = crate::config::home_dir_for_paths().unwrap_or_default();
+            let surfaces = crate::db::surface_summary_full(&conn, &home);
+            let attribution = crate::db::tool_attribution(&conn);
+            let wnad = crate::db::weekly_net_ahead(&conn);
+            let insight_actions = crate::db::insight_actions(&conn);
+            let product_proof = crate::db::product_proof_metrics(&conn);
+            (
+                stats,
+                tools,
+                feed,
+                compaction,
+                loop_health,
+                surfaces,
+                attribution,
+                wnad,
+                insight_actions,
+                product_proof,
+            )
+        }
+        None => (
+            Default::default(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            LoopHealthView {
+                total: 0,
+                joined: 0,
+                joined_pct: None,
+                today: 0,
+                autopilot: cfg.compress_auto_trial,
+                min_baseline: th.min_baseline,
+                min_trimmed: th.min_trimmed,
+                by_day: Vec::new(),
+                tools: Vec::new(),
+            },
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+            Default::default(),
+        ),
+    };
 
     let model = crate::learn::load_model().map(|m| {
         let history = read_model_history(40);
@@ -753,6 +788,7 @@ async fn api_context() -> Json<ContextView> {
         attribution,
         wnad,
         insight_actions,
+        product_proof,
     })
 }
 
@@ -1374,6 +1410,8 @@ struct SettingsGetResponse {
     row_counts: SettingsRowCounts,
     last_ingest_at: Option<String>,
     files_under_ctx: Vec<SettingsFileEntry>,
+    rewind_store: crate::db::RewindStoreStatus,
+    outbound_destinations: Vec<crate::mcp_gateway::registry::GatewayDestinationReceipt>,
 }
 
 fn count_table(conn: &rusqlite::Connection, table: &str) -> i64 {
@@ -1481,6 +1519,8 @@ async fn api_settings_get() -> impl IntoResponse {
         row_counts,
         last_ingest_at,
         files_under_ctx: list_ctx_dir_files(),
+        rewind_store: crate::db::rewind_store_status(&conn),
+        outbound_destinations: crate::mcp_gateway::registry::destination_receipts(),
     };
     Json(body).into_response()
 }
@@ -1504,9 +1544,13 @@ struct SettingsPostBody {
     ab_test: Option<crate::config::AbTestConfig>,
     auto_apply_recommendations: Option<bool>,
     system_prefix: Option<String>,
+    rewind_retention_entries: Option<usize>,
+    rewind_retention_bytes: Option<u64>,
 }
 
 async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoResponse {
+    let retention_changed =
+        body.rewind_retention_entries.is_some() || body.rewind_retention_bytes.is_some();
     if let Some(prefix) = &body.system_prefix {
         if let Err(e) = (|| -> anyhow::Result<()> {
             crate::config::ensure_dir()?;
@@ -1577,8 +1621,36 @@ async fn api_settings_post(Json(body): Json<SettingsPostBody>) -> impl IntoRespo
     if let Some(v) = body.auto_apply_recommendations {
         cfg.auto_apply_recommendations = v;
     }
+    if let Some(value) = body.rewind_retention_entries {
+        if !(1..=10_000).contains(&value) {
+            return (
+                StatusCode::BAD_REQUEST,
+                "original retention must be between 1 and 10,000 entries".to_string(),
+            )
+                .into_response();
+        }
+        cfg.rewind_retention_entries = value;
+    }
+    if let Some(value) = body.rewind_retention_bytes {
+        if !(1024 * 1024..=10 * 1024 * 1024 * 1024).contains(&value) {
+            return (
+                StatusCode::BAD_REQUEST,
+                "original storage cap must be between 1 MiB and 10 GiB".to_string(),
+            )
+                .into_response();
+        }
+        cfg.rewind_retention_bytes = value;
+    }
     if let Err(e) = cfg.save() {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    if retention_changed {
+        if let Ok(conn) = crate::db::open_db() {
+            let _ = crate::db::ensure_schema(&conn);
+            if let Err(error) = crate::db::enforce_rewind_retention(&conn) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+            }
+        }
     }
     let _ = crate::filter_hook::sync_filter_config_from_active_config();
     Json(serde_json::json!({ "ok": true })).into_response()
@@ -1594,6 +1666,30 @@ async fn api_settings_purge_prompts() -> impl IntoResponse {
     match res {
         Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PurgeOriginalsBody {
+    confirmation: String,
+}
+
+async fn api_settings_purge_originals(Json(body): Json<PurgeOriginalsBody>) -> impl IntoResponse {
+    if body.confirmation != "PURGE STORED ORIGINALS" {
+        return (
+            StatusCode::BAD_REQUEST,
+            "type PURGE STORED ORIGINALS exactly".to_string(),
+        )
+            .into_response();
+    }
+    let result: Result<usize, anyhow::Error> = (|| {
+        let conn = crate::db::open_db()?;
+        crate::db::ensure_schema(&conn)?;
+        crate::db::purge_rewind_store(&conn)
+    })();
+    match result {
+        Ok(removed) => Json(serde_json::json!({ "ok": true, "removed": removed })).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
 }
 

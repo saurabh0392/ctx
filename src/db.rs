@@ -5,9 +5,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-// Bumped to 10 for surface/transform-isolated action evidence and live plugin event storage. The
+// Bumped to 11 for normalized compaction semantics, gateway runtime proof, and T7 recovery status. The
 // CREATE TABLE batch is version-gated, so a new table only lands on existing installs when this rises.
-pub(crate) const SCHEMA_VERSION: i32 = 10;
+pub(crate) const SCHEMA_VERSION: i32 = 11;
 
 /// Product events are local-only evidence for the beta scorecard. This allowlist is deliberately
 /// closed: callers cannot turn the table into a generic analytics sink containing prompts, paths,
@@ -154,9 +154,7 @@ mod product_event_tests {
 
 pub fn open_db() -> Result<Connection> {
     let path = crate::config::db_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    crate::config::ensure_dir()?;
     let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
@@ -164,6 +162,9 @@ pub fn open_db() -> Result<Connection> {
          PRAGMA busy_timeout=150;
          PRAGMA synchronous=NORMAL;",
     )?;
+    crate::config::protect_private_file(&path)?;
+    crate::config::protect_private_file(&path.with_extension("db-wal"))?;
+    crate::config::protect_private_file(&path.with_extension("db-shm"))?;
     Ok(conn)
 }
 
@@ -600,8 +601,209 @@ fn migrate_surface_hook_tables(conn: &Connection) {
         );
         CREATE INDEX IF NOT EXISTS idx_native_compactions_surface_ts
             ON native_compactions(surface, ts);
+
+        CREATE TABLE IF NOT EXISTS gateway_runtime_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            surface TEXT NOT NULL,
+            server_id TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            latency_ms INTEGER,
+            reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_gateway_runtime_ts
+            ON gateway_runtime_events(ts);
         "#,
     );
+    // v10 stored `pre`/`post`. Normalize in place so every reader uses the product-level meaning
+    // rather than a platform hook name.
+    let _ = conn.execute(
+        "UPDATE native_compactions SET phase='attempted' WHERE phase='pre'",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE native_compactions SET phase='completed' WHERE phase='post'",
+        [],
+    );
+}
+
+pub fn record_gateway_runtime_event(
+    conn: &Connection,
+    surface: &str,
+    server_id: &str,
+    outcome: &str,
+    latency_ms: Option<u64>,
+    reason: Option<&str>,
+) -> Result<()> {
+    migrate_surface_hook_tables(conn);
+    let clean = |value: &str, max: usize| {
+        value
+            .chars()
+            .filter(|ch| !matches!(ch, '\r' | '\n' | '\0'))
+            .take(max)
+            .collect::<String>()
+    };
+    let outcome = match outcome {
+        "applied" | "pass_through" | "failure" => outcome,
+        _ => "failure",
+    };
+    conn.execute(
+        "INSERT INTO gateway_runtime_events
+         (ts,surface,server_id,outcome,latency_ms,reason) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![
+            chrono::Utc::now().to_rfc3339(),
+            clean(surface, 32),
+            clean(server_id, 96),
+            outcome,
+            latency_ms.map(|value| value.min(i64::MAX as u64) as i64),
+            reason.map(|value| clean(value, 160)),
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM gateway_runtime_events WHERE id NOT IN
+         (SELECT id FROM gateway_runtime_events ORDER BY id DESC LIMIT 10000)",
+        [],
+    )?;
+    Ok(())
+}
+
+pub fn record_gateway_runtime_event_best_effort(
+    surface: &str,
+    server_id: &str,
+    outcome: &str,
+    latency_ms: Option<u64>,
+    reason: Option<&str>,
+) {
+    if let Ok(conn) = open_db() {
+        let _ =
+            record_gateway_runtime_event(&conn, surface, server_id, outcome, latency_ms, reason);
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct GatewayRuntimeSummary {
+    pub calls: i64,
+    pub applied: i64,
+    pub pass_through: i64,
+    pub failures: i64,
+    pub average_latency_ms: Option<f64>,
+    pub max_latency_ms: Option<i64>,
+    pub recent_pass_through_reasons: Vec<String>,
+}
+
+pub fn gateway_runtime_summary(conn: &Connection) -> GatewayRuntimeSummary {
+    migrate_surface_hook_tables(conn);
+    let mut summary = conn
+        .query_row(
+            "SELECT COUNT(*),
+                    SUM(outcome='applied'),
+                    SUM(outcome='pass_through'),
+                    SUM(outcome='failure'),
+                    AVG(latency_ms),
+                    MAX(latency_ms)
+             FROM gateway_runtime_events",
+            [],
+            |row| {
+                Ok(GatewayRuntimeSummary {
+                    calls: row.get(0)?,
+                    applied: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    pass_through: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    failures: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    average_latency_ms: row.get(4)?,
+                    max_latency_ms: row.get(5)?,
+                    recent_pass_through_reasons: Vec::new(),
+                })
+            },
+        )
+        .unwrap_or_default();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT reason FROM gateway_runtime_events
+         WHERE outcome='pass_through' AND reason IS NOT NULL
+         ORDER BY id DESC LIMIT 8",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+            summary.recent_pass_through_reasons = rows.filter_map(|row| row.ok()).collect();
+        }
+    }
+    summary
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ProductProofMetrics {
+    /// Character-derived estimate; kept explicitly separate from exact input-menu token receipts.
+    pub output_tokens_saved_estimate: i64,
+    pub input_tokens_saved: i64,
+    pub applied_trims: i64,
+    pub scored_applied_trims: i64,
+    pub recoveries: i64,
+    pub corrections_after_applied: i64,
+    pub retouches_after_applied: i64,
+    pub observed_results: i64,
+    pub compressible_results: i64,
+    pub gateway: GatewayRuntimeSummary,
+}
+
+pub fn product_proof_metrics(conn: &Connection) -> ProductProofMetrics {
+    let (
+        saved_chars,
+        applied,
+        scored,
+        corrections,
+        retouches,
+        observed,
+        compressible,
+    ) = conn
+        .query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN applied=1 THEN MAX(chars_in-would_chars_out,0) ELSE 0 END),0),
+                COALESCE(SUM(applied=1),0),
+                COALESCE(SUM(applied=1 AND outcome_joined=1),0),
+                COALESCE(SUM(applied=1 AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1),0),
+                COALESCE(SUM(applied=1 AND outcome_joined=1 AND
+                    (COALESCE(outcome_reread,0)=1 OR COALESCE(outcome_edit_follow,0)=1)),0),
+                COUNT(*),
+                COALESCE(SUM(lines_drop>0),0)
+             FROM compress_decisions",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .unwrap_or((0, 0, 0, 0, 0, 0, 0));
+    let input_tokens_saved = conn
+        .query_row(
+            "SELECT COALESCE(SUM(tokens_saved),0) FROM requests",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let recoveries = conn
+        .query_row(
+            "SELECT COUNT(*) FROM rewind_store WHERE expanded_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    ProductProofMetrics {
+        output_tokens_saved_estimate: saved_chars / 4,
+        input_tokens_saved,
+        applied_trims: applied,
+        scored_applied_trims: scored,
+        recoveries,
+        corrections_after_applied: corrections,
+        retouches_after_applied: retouches,
+        observed_results: observed,
+        compressible_results: compressible,
+        gateway: gateway_runtime_summary(conn),
+    }
 }
 
 /// Claim a live hook delivery. `false` means the exact event was already handled.
@@ -1122,12 +1324,7 @@ pub fn insert_rewind(
             trimmed
         ],
     );
-    // Keep only the most recent entries so verbatim blobs do not accumulate forever.
-    let _ = conn.execute(
-        "DELETE FROM rewind_store WHERE id NOT IN
-         (SELECT id FROM rewind_store ORDER BY ts DESC LIMIT 500)",
-        [],
-    );
+    let _ = prune_rewind_store(conn);
 }
 
 /// Fallible variant used by the central apply transaction. Live adapters must not emit a
@@ -1158,12 +1355,307 @@ pub fn insert_rewind_checked(
             trimmed
         ],
     )?;
-    conn.execute(
-        "DELETE FROM rewind_store WHERE id NOT IN
-         (SELECT id FROM rewind_store ORDER BY ts DESC LIMIT 500)",
-        [],
+    prune_rewind_store(conn)?;
+    let retained: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM rewind_store WHERE id=?1)",
+        params![id],
+        |row| row.get(0),
     )?;
+    if retained != 1 {
+        anyhow::bail!(
+            "original exceeds the configured recovery retention cap; output must pass through"
+        );
+    }
     Ok(())
+}
+
+fn prune_rewind_store(conn: &Connection) -> Result<()> {
+    let cfg = crate::config::Config::load();
+    let max_entries = cfg.rewind_retention_entries.max(1);
+    let max_bytes = cfg.rewind_retention_bytes.max(1);
+    let mut stmt = conn.prepare(
+        "SELECT id,
+                length(CAST(original AS BLOB)) + length(CAST(COALESCE(trimmed,'') AS BLOB))
+         FROM rewind_store ORDER BY ts DESC, id DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+    })?;
+    let mut used = 0u64;
+    let mut remove = Vec::new();
+    for (index, row) in rows.filter_map(|row| row.ok()).enumerate() {
+        let (id, bytes) = row;
+        let fits = index < max_entries && used.saturating_add(bytes) <= max_bytes;
+        if fits {
+            used = used.saturating_add(bytes);
+        } else {
+            remove.push(id);
+        }
+    }
+    drop(stmt);
+    for id in remove {
+        conn.execute("DELETE FROM rewind_store WHERE id=?1", params![id])?;
+    }
+    Ok(())
+}
+
+pub fn enforce_rewind_retention(conn: &Connection) -> Result<()> {
+    prune_rewind_store(conn)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RewindStoreStatus {
+    pub entries: i64,
+    pub bytes: i64,
+    pub max_entries: usize,
+    pub max_bytes: u64,
+    pub directory_protection: String,
+    pub database_protection: String,
+}
+
+pub fn rewind_store_status(conn: &Connection) -> RewindStoreStatus {
+    let cfg = crate::config::Config::load();
+    let (entries, bytes) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(original AS BLOB)) +
+                    length(CAST(COALESCE(trimmed,'') AS BLOB))),0) FROM rewind_store",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+    RewindStoreStatus {
+        entries,
+        bytes,
+        max_entries: cfg.rewind_retention_entries,
+        max_bytes: cfg.rewind_retention_bytes,
+        directory_protection: private_path_status(&crate::config::ctx_dir(), true),
+        database_protection: private_path_status(&crate::config::db_path(), false),
+    }
+}
+
+fn private_path_status(path: &std::path::Path, _directory: bool) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.permissions().mode() & 0o077 == 0 => "owner-only".into(),
+            Ok(_) => "permissions-too-broad".into(),
+            Err(_) => "not-created".into(),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, _directory);
+        "os-account-managed".into()
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecoveryCheck {
+    pub ok: bool,
+    pub tested_at: String,
+    pub detail: String,
+    pub storage: RewindStoreStatus,
+}
+
+/// Exercise the exact durable recovery path with a synthetic value, verify it byte-for-byte, then
+/// remove it. The response contains metadata only and never returns a user's retained original.
+pub fn recovery_self_test() -> Result<RecoveryCheck> {
+    crate::config::ensure_dir()?;
+    let tested_at = chrono::Utc::now().to_rfc3339();
+    let id = format!(
+        "ctx-recovery-self-test-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let original = "CTX recovery self-test: exact bytes ✓\nsecond line";
+    let trimmed = "CTX recovery self-test [trimmed]";
+    // Use an isolated on-disk SQLite file. A self-test must never evict a user's oldest retained
+    // original when their real store is already at its count/byte cap.
+    let probe_path = crate::config::ctx_dir().join(format!(".{id}.sqlite"));
+    let outcome = (|| -> Result<bool> {
+        let mut probe = Connection::open(&probe_path)?;
+        probe.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")?;
+        crate::config::protect_private_file(&probe_path)?;
+        ensure_schema(&probe)?;
+        let transaction = probe.transaction()?;
+        insert_rewind_checked(
+            &transaction,
+            &id,
+            &tested_at,
+            None,
+            "ctx_recovery_check",
+            "synthetic self-test",
+            original,
+            trimmed,
+        )?;
+        transaction.commit()?;
+        drop(probe);
+
+        let reopened = Connection::open(&probe_path)?;
+        let restored = get_rewind(&reopened, &id).context("read recovery self-test value")?;
+        Ok(restored.original.as_bytes() == original.as_bytes()
+            && restored.trimmed.as_bytes() == trimmed.as_bytes()
+            && restored.chars == original.chars().count() as i64)
+    })();
+    for path in [
+        probe_path.clone(),
+        probe_path.with_extension("sqlite-journal"),
+        probe_path.with_extension("sqlite-wal"),
+        probe_path.with_extension("sqlite-shm"),
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+    let ok = outcome?;
+    let conn = open_db()?;
+    ensure_schema(&conn)?;
+    let storage = rewind_store_status(&conn);
+    Ok(RecoveryCheck {
+        ok,
+        tested_at,
+        detail: if ok {
+            "Synthetic original was committed to an isolated local store, reopened, restored byte-for-byte, and removed; user originals were unchanged".into()
+        } else {
+            "Synthetic original did not round-trip exactly".into()
+        },
+        storage,
+    })
+}
+
+pub fn purge_rewind_store(conn: &Connection) -> Result<usize> {
+    let changed = conn.execute("DELETE FROM rewind_store", [])?;
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod recovery_store_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_self_test_round_trips_and_removes_probe() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", temp.path());
+        let result = recovery_self_test().unwrap();
+        assert!(result.ok);
+        let conn = open_db().unwrap();
+        let probes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM rewind_store WHERE id LIKE 'ctx-recovery-self-test-%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(probes, 0);
+        #[cfg(unix)]
+        {
+            assert_eq!(result.storage.directory_protection, "owner-only");
+            assert_eq!(result.storage.database_protection, "owner-only");
+        }
+    }
+
+    #[test]
+    fn purge_removes_only_retained_originals() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", temp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+        insert_rewind_checked(
+            &conn,
+            "r1",
+            "2026-07-19T00:00:00Z",
+            None,
+            "Read",
+            "fixture",
+            "original",
+            "trimmed",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO product_events (ts,event_name,source) VALUES
+             ('2026-07-19T00:00:00Z','dashboard_opened','test')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(purge_rewind_store(&conn).unwrap(), 1);
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM product_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn gateway_runtime_receipts_measure_latency_failures_and_exact_reasons() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        record_gateway_runtime_event(
+            &conn,
+            "codex",
+            "linear",
+            "pass_through",
+            Some(20),
+            Some("unsupported-shape"),
+        )
+        .unwrap();
+        record_gateway_runtime_event(&conn, "codex", "linear", "applied", Some(40), None).unwrap();
+        record_gateway_runtime_event(
+            &conn,
+            "codex",
+            "linear",
+            "failure",
+            Some(60),
+            Some("remote-request-failed"),
+        )
+        .unwrap();
+        let summary = gateway_runtime_summary(&conn);
+        assert_eq!(summary.calls, 3);
+        assert_eq!(summary.applied, 1);
+        assert_eq!(summary.pass_through, 1);
+        assert_eq!(summary.failures, 1);
+        assert_eq!(summary.average_latency_ms, Some(40.0));
+        assert_eq!(summary.max_latency_ms, Some(60));
+        assert_eq!(
+            summary.recent_pass_through_reasons,
+            vec!["unsupported-shape"]
+        );
+    }
+
+    #[test]
+    fn recovery_cap_fails_closed_when_one_original_cannot_fit() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", temp.path());
+        let mut cfg = crate::config::Config::load();
+        cfg.rewind_retention_bytes = 1024 * 1024;
+        cfg.save().unwrap();
+        let mut conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+        let transaction = conn.transaction().unwrap();
+        let huge = "x".repeat(1024 * 1024 + 1);
+        assert!(insert_rewind_checked(
+            &transaction,
+            "too-large",
+            "2026-07-19T00:00:00Z",
+            None,
+            "Read",
+            "fixture",
+            &huge,
+            "trimmed",
+        )
+        .is_err());
+        transaction.rollback().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rewind_store", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
 }
 
 /// Mark a stored trim as recovered when the agent re-expands it (CTX-51 L2). A recovery is a
@@ -1743,6 +2235,31 @@ pub struct CompressDecisionFeedRow {
     /// earned tool apart from a genuine "still only watching" shadow run, which look identical on
     /// `applied` alone.
     pub explore_arm: Option<String>,
+    /// Exact machine-readable reason the original passed through unchanged, when known.
+    pub pass_through_reason: Option<String>,
+    /// Plain category used by the dashboard: safety testing, schema failure, unsupported shape,
+    /// safety guard, or no change needed.
+    pub pass_through_category: Option<String>,
+}
+
+fn pass_through_category(reason: &str) -> &'static str {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("schema") || lower.contains("proposal-rejected") {
+        "schema failure"
+    } else if lower.contains("unsupported")
+        || lower.contains("ambiguous")
+        || lower.contains("missing")
+        || lower.contains("error-result")
+        || lower.contains("opaque")
+    {
+        "unsupported shape"
+    } else if lower.contains("within-budget") || lower.contains("no-savings") {
+        "no change needed"
+    } else if lower.contains("protect") || lower.contains("guard") {
+        "safety guard"
+    } else {
+        "safety testing"
+    }
 }
 
 pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDecisionFeedRow> {
@@ -1760,6 +2277,32 @@ pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDe
             .ok()
             .and_then(|v| v.get("read_protected").and_then(|p| p.as_bool()))
             .unwrap_or(false);
+        let features = serde_json::from_str::<serde_json::Value>(&features_json).ok();
+        let mcp_reason = features
+            .as_ref()
+            .and_then(|value| value.pointer("/mcp_contract/pass_through_reason"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let applied = r.get::<_, i64>(10)? == 1;
+        let explore_arm = r.get::<_, Option<String>>(12)?;
+        let lines_drop = r.get::<_, i64>(6)?;
+        let pass_through_reason = if applied {
+            None
+        } else if protected {
+            Some("read-protection-guard".into())
+        } else if explore_arm.as_deref() == Some("control") {
+            Some("randomized-safety-test-control".into())
+        } else if let Some(reason) = mcp_reason {
+            Some(reason)
+        } else if lines_drop > 0 {
+            Some("safety-evidence-not-earned".into())
+        } else {
+            Some("within-budget-or-no-savings".into())
+        };
+        let pass_through_category = pass_through_reason
+            .as_deref()
+            .map(pass_through_category)
+            .map(str::to_string);
         Ok(CompressDecisionFeedRow {
             ts: r.get(0)?,
             tool_name: r.get(1)?,
@@ -1767,13 +2310,15 @@ pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDe
             task_mode: r.get(3)?,
             lines_total: r.get(4)?,
             lines_keep: r.get(5)?,
-            lines_drop: r.get(6)?,
+            lines_drop,
             chars_in: r.get(7)?,
             would_chars_out: r.get(8)?,
             command_or_path: r.get(9)?,
-            applied: r.get::<_, i64>(10)? == 1,
+            applied,
             protected,
-            explore_arm: r.get::<_, Option<String>>(12)?,
+            explore_arm,
+            pass_through_reason,
+            pass_through_category,
         })
     });
     match rows {
@@ -2338,7 +2883,22 @@ pub fn signal_audit_rows(
 /// say "not yet" instead of presenting zeros as a measured result. All counts are real rows;
 /// none are fabricated for an unseen surface.
 #[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CapabilityReceipt {
+    /// Stable machine path: `shell`, `builtin`, `mcp`, or `compaction`.
+    pub path: String,
+    pub label: String,
+    /// `active`, `available`, `observe_only`, `requires_setup`, `user_disabled`, `attempt_only`,
+    /// `confirmed`, `inferred`, or `unknown`.
+    pub mode: String,
+    pub observed_results: i64,
+    pub applied_results: i64,
+    pub proof: String,
+    pub limitation: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SurfaceSummary {
+    pub capability_contract_version: u32,
     pub surface: String,
     pub seen: bool,
     /// Tool results ctx recorded a decision for on this surface.
@@ -2377,6 +2937,9 @@ pub struct SurfaceSummary {
     pub can_observe_compaction: bool,
     pub compaction_seen: bool,
     pub limitations: Vec<String>,
+    /// Path-level, data-backed runtime receipts. Broad booleans above remain for API compatibility;
+    /// new UI must render these receipts instead of inferring platform-wide support.
+    pub capabilities: Vec<CapabilityReceipt>,
 }
 
 /// Per-surface activity for the cross-surface view (CTX-34). Always returns Claude Code and
@@ -2405,6 +2968,7 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
             let acted: i64 = r.get(2)?;
             Ok(SurfaceSummary {
                 surface: r.get(0)?,
+                capability_contract_version: 1,
                 seen: decisions > 0,
                 decisions,
                 acted,
@@ -2432,6 +2996,7 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
                 can_observe_compaction: false,
                 compaction_seen: false,
                 limitations: Vec::new(),
+                capabilities: Vec::new(),
             })
         });
         if let Ok(it) = rows {
@@ -2448,15 +3013,105 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
                 seen: false,
                 ..Default::default()
             });
-            apply_surface_capabilities(&mut summary);
+            apply_surface_capabilities(conn, &mut summary);
             summary
         })
         .collect()
 }
 
-fn apply_surface_capabilities(summary: &mut SurfaceSummary) {
+fn path_counts(conn: &Connection, surface: &str, path: &str) -> (i64, i64) {
+    let predicate = match path {
+        "shell" => "LOWER(tool_name) IN ('shell','bash')",
+        "mcp" => "(kind='mcp' OR server_prefix IS NOT NULL OR tool_name LIKE 'mcp__%')",
+        _ => "LOWER(tool_name) NOT IN ('shell','bash') AND kind!='mcp' AND server_prefix IS NULL AND tool_name NOT LIKE 'mcp__%'",
+    };
+    let sql = format!(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN applied=1 THEN 1 ELSE 0 END),0)
+         FROM compress_decisions
+         WHERE COALESCE(surface,'claude-code')=?1 AND {predicate}"
+    );
+    conn.query_row(&sql, params![surface], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap_or((0, 0))
+}
+
+fn result_receipt(
+    path: &str,
+    label: &str,
+    supported: bool,
+    requires_setup: bool,
+    counts: (i64, i64),
+    limitation: Option<String>,
+) -> CapabilityReceipt {
+    let mode = if !supported && requires_setup {
+        "requires_setup"
+    } else if !supported {
+        "observe_only"
+    } else if counts.1 > 0 {
+        "active"
+    } else {
+        "available"
+    };
+    CapabilityReceipt {
+        path: path.into(),
+        label: label.into(),
+        mode: mode.into(),
+        observed_results: counts.0,
+        applied_results: counts.1,
+        proof: if counts.1 > 0 {
+            format!(
+                "{} result(s) were shortened in the model-visible transport",
+                counts.1
+            )
+        } else if counts.0 > 0 {
+            format!("{} result(s) observed; none claimed as changed", counts.0)
+        } else {
+            "No result has exercised this path yet".into()
+        },
+        limitation,
+    }
+}
+
+fn compaction_receipt(conn: &Connection, surface: &str) -> CapabilityReceipt {
+    let state = compaction_followups(conn)
+        .into_iter()
+        .find(|entry| entry.surface == surface)
+        .unwrap_or_else(|| unknown_surface(surface, COMPACTION_FOLLOWUP_WINDOW_TURNS));
+    let attempts = state.attempted_events.unwrap_or(0);
+    let completions = state.completed_events.unwrap_or(0);
+    let proof = match state.confidence.as_str() {
+        "confirmed" => format!(
+            "{completions} completion(s) confirmed by PostCompact; {attempts} start(s) observed"
+        ),
+        "attempt_only" => format!(
+            "{attempts} pre-compaction attempt(s) observed; this platform exposes no completion hook"
+        ),
+        "inferred" => format!(
+            "{completions} completion(s) inferred from persisted transcript markers"
+        ),
+        _ => "No compaction signal has been observed yet".into(),
+    };
+    CapabilityReceipt {
+        path: "compaction".into(),
+        label: "Compaction".into(),
+        mode: state.confidence,
+        observed_results: attempts.max(completions),
+        applied_results: 0,
+        proof,
+        limitation: if state.detection == "native_pre_only" {
+            Some("Completion is not visible; CTX will not label an attempt as a completed compaction".into())
+        } else {
+            None
+        },
+    }
+}
+
+fn apply_surface_capabilities(conn: &Connection, summary: &mut SurfaceSummary) {
+    summary.capability_contract_version = 1;
     summary.can_observe = true;
     summary.can_observe_compaction = true;
+    let shell = path_counts(conn, &summary.surface, "shell");
+    let builtin = path_counts(conn, &summary.surface, "builtin");
+    let mcp = path_counts(conn, &summary.surface, "mcp");
     match summary.surface.as_str() {
         "claude-code" => {
             summary.integration = "hooks".into();
@@ -2471,6 +3126,19 @@ fn apply_surface_capabilities(summary: &mut SurfaceSummary) {
                 "not_seen"
             }
             .into();
+            summary.capabilities = vec![
+                result_receipt("shell", "Shell output", true, false, shell, None),
+                result_receipt(
+                    "builtin",
+                    "Built-in Read / search",
+                    true,
+                    false,
+                    builtin,
+                    None,
+                ),
+                result_receipt("mcp", "MCP results", true, false, mcp, None),
+                compaction_receipt(conn, &summary.surface),
+            ];
         }
         "cursor" => {
             summary.integration = "hooks".into();
@@ -2485,6 +3153,22 @@ fn apply_surface_capabilities(summary: &mut SurfaceSummary) {
             summary
                 .limitations
                 .push("Built-in Read and search results are observed only".into());
+            summary.capabilities = vec![
+                result_receipt("shell", "Shell output", true, false, shell, None),
+                result_receipt(
+                    "builtin",
+                    "Built-in Read / search",
+                    false,
+                    false,
+                    builtin,
+                    Some(
+                        "platform limitation: Cursor hooks do not expose a clean built-in result replacement"
+                            .into(),
+                    ),
+                ),
+                result_receipt("mcp", "MCP results", true, false, mcp, None),
+                compaction_receipt(conn, &summary.surface),
+            ];
         }
         "codex" => {
             let gateway_servers = crate::mcp_gateway::registry::codex_gateway_server_count();
@@ -2515,8 +3199,45 @@ fn apply_surface_capabilities(summary: &mut SurfaceSummary) {
                     "MCP trimming applies only to {gateway_servers} explicitly approved gateway server(s)"
                 ));
             }
+            summary.capabilities = vec![
+                result_receipt("shell", "Shell output", true, false, shell, None),
+                result_receipt(
+                    "builtin",
+                    "Built-in Read / search",
+                    false,
+                    false,
+                    builtin,
+                    Some(
+                        "platform limitation: Codex PostToolUse does not expose clean built-in result replacement"
+                            .into(),
+                    ),
+                ),
+                result_receipt(
+                    "mcp",
+                    "MCP results",
+                    gateway_servers > 0,
+                    gateway_servers == 0,
+                    mcp,
+                    (gateway_servers == 0).then(|| {
+                        "gateway disabled: route an explicitly approved MCP server through the local CTX gateway"
+                            .into()
+                    }),
+                ),
+                compaction_receipt(conn, &summary.surface),
+            ];
         }
         _ => {}
+    }
+    if !crate::config::Config::load().compress_enabled {
+        for receipt in &mut summary.capabilities {
+            if receipt.path != "compaction"
+                && matches!(receipt.mode.as_str(), "active" | "available")
+            {
+                receipt.mode = "user_disabled".into();
+                receipt.limitation =
+                    Some("user choice: the output compression pipeline is turned off".into());
+            }
+        }
     }
 }
 
@@ -2573,7 +3294,7 @@ pub fn surface_summary_full(conn: &Connection, home: &std::path::Path) -> Vec<Su
             )
             .unwrap_or(0)
             == 1;
-        apply_surface_capabilities(codex);
+        apply_surface_capabilities(conn, codex);
     }
     if let Some(cursor) = base.iter_mut().find(|s| s.surface == "cursor") {
         cursor.compaction_seen = conn
@@ -2584,7 +3305,7 @@ pub fn surface_summary_full(conn: &Connection, home: &std::path::Path) -> Vec<Su
             )
             .unwrap_or(0)
             == 1;
-        apply_surface_capabilities(cursor);
+        apply_surface_capabilities(conn, cursor);
     }
     base
 }
@@ -3252,12 +3973,15 @@ pub const COMPACTION_FOLLOWUP_WINDOW_TURNS: i64 = 5;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CompactionFollowups {
     pub surface: String,
-    /// "observed" when this surface has the full signal (compaction events and the correction
-    /// follow-up, like Claude Code). "observed_low" when we count real compaction events live but
-    /// can't yet compute the follow-up (Cursor, captured from the `preCompact` hook; the
-    /// correction join is a named follow-up). "unknown" when the surface has no signal at all.
+    /// How completion is known: `native_post`, `native_pre_only`, `transcript_inference`, or `none`.
+    pub detection: String,
+    /// `confirmed`, `attempt_only`, `inferred`, or `unknown`.
     pub confidence: String,
-    /// Compaction events observed. `None` for an unknown surface.
+    /// Pre-compaction hook deliveries after retry de-duplication.
+    pub attempted_events: Option<i64>,
+    /// Completed compactions. `None` when the platform exposes only a pre hook.
+    pub completed_events: Option<i64>,
+    /// Compatibility alias for completed events. This never counts pre-hook attempts.
     pub compaction_events: Option<i64>,
     /// Compaction events with at least one correction within the window after them. `None` when
     /// we count compactions but don't compute the follow-up yet (an "observed_low" surface).
@@ -3268,18 +3992,15 @@ pub struct CompactionFollowups {
     pub window_turns: i64,
 }
 
-/// Per-surface count of corrections that followed a native compaction within
-/// `COMPACTION_FOLLOWUP_WINDOW_TURNS`. Read-only. Claude Code is computed from the persisted
-/// `turns` table (compaction = a `pre_compact` flagged turn, the exchange right before a
-/// `compactMetadata` system row). Cursor is computed from `cursor_compactions`, captured live
-/// from the `preCompact` hook, at lower confidence (no correction follow-up yet). Codex uses the
-/// plugin's native pre/post compaction ledger at the same honest lower confidence.
+/// Per-surface compaction visibility. Claude Code and Codex prefer native post hooks; Claude falls
+/// back to transcript inference for history created before those hooks were installed. Cursor's
+/// public contract exposes only a pre hook, so it reports attempts and never fabricates completions.
 pub fn compaction_followups(conn: &Connection) -> Vec<CompactionFollowups> {
     let window = COMPACTION_FOLLOWUP_WINDOW_TURNS;
     vec![
         claude_compaction_followups(conn, window),
         cursor_compaction_followups(conn, window),
-        native_compaction_followups(conn, "codex", window),
+        native_compaction_followups(conn, "codex", window, true),
     ]
 }
 
@@ -3287,10 +4008,19 @@ fn native_compaction_followups(
     conn: &Connection,
     surface: &str,
     window: i64,
+    post_supported: bool,
 ) -> CompactionFollowups {
-    let events = conn
+    migrate_surface_hook_tables(conn);
+    let attempted = conn
         .query_row(
-            "SELECT COUNT(*) FROM native_compactions WHERE surface=?1 AND phase='pre'",
+            "SELECT COUNT(*) FROM native_compactions WHERE surface=?1 AND phase='attempted'",
+            params![surface],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let completed = conn
+        .query_row(
+            "SELECT COUNT(*) FROM native_compactions WHERE surface=?1 AND phase='completed'",
             params![surface],
             |r| r.get::<_, i64>(0),
         )
@@ -3298,7 +4028,7 @@ fn native_compaction_followups(
     let sessions = conn
         .query_row(
             "SELECT COUNT(DISTINCT session_id) FROM native_compactions
-             WHERE surface=?1 AND phase='pre' AND session_id IS NOT NULL",
+             WHERE surface=?1 AND phase='completed' AND session_id IS NOT NULL",
             params![surface],
             |r| r.get::<_, i64>(0),
         )
@@ -3311,37 +4041,48 @@ fn native_compaction_followups(
         )
         .unwrap_or(0)
         == 1;
-    if events == 0 && !seen {
+    if attempted == 0 && completed == 0 && !seen {
         return unknown_surface(surface, window);
     }
+    let completion_visible = post_supported;
     CompactionFollowups {
         surface: surface.into(),
-        confidence: "observed_low".into(),
-        compaction_events: Some(events),
+        detection: if completion_visible {
+            "native_post"
+        } else {
+            "native_pre_only"
+        }
+        .into(),
+        confidence: if completion_visible {
+            "confirmed"
+        } else {
+            "attempt_only"
+        }
+        .into(),
+        attempted_events: Some(attempted),
+        completed_events: completion_visible.then_some(completed),
+        compaction_events: completion_visible.then_some(completed),
         followed_by_correction: None,
-        sessions_with_compaction: Some(sessions),
+        sessions_with_compaction: completion_visible.then_some(sessions),
         window_turns: window,
     }
 }
 
-/// Cursor arm of [`compaction_followups`] (CTX-31 increment 1, ADR 0023). Cursor compactions are
-/// captured live from the `preCompact` hook into `cursor_compactions` (its transcript has no
-/// compaction marker). We report a real count at `observed_low` confidence: we see the events, but
-/// the correction follow-up isn't computed yet, so `followed_by_correction` is `None`. A surface
-/// is `unknown` only when we've seen no Cursor activity at all; once ctx has observed any live
-/// Cursor tool decision, zero compactions is a real "none seen yet" (parallel to Claude), not an
-/// honest-unknown.
+/// Cursor exposes a pre-compaction hook but no public completion hook. Report attempts only.
 fn cursor_compaction_followups(conn: &Connection, window: i64) -> CompactionFollowups {
-    let events: i64 = conn
-        .query_row("SELECT COUNT(*) FROM cursor_compactions", [], |r| r.get(0))
-        .unwrap_or(0);
-    let sessions: i64 = conn
+    migrate_surface_hook_tables(conn);
+    let native_attempts: i64 = conn
         .query_row(
-            "SELECT COUNT(DISTINCT session_id) FROM cursor_compactions WHERE session_id IS NOT NULL",
+            "SELECT COUNT(*) FROM native_compactions WHERE surface='cursor' AND phase='attempted'",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0);
+    // A pre-v2 database may contain only the old pressure table. Preserve that history as attempts.
+    let legacy_attempts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cursor_compactions", [], |r| r.get(0))
+        .unwrap_or(0);
+    let attempts = native_attempts.max(legacy_attempts);
     // Have we ever observed Cursor live? A cursor-surface decision row means yes, even with zero
     // compactions, which lets us show an honest "none yet" instead of "not visible yet".
     let seen_cursor: bool = conn
@@ -3353,17 +4094,19 @@ fn cursor_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
         .map(|n| n == 1)
         .unwrap_or(false);
 
-    if events == 0 && !seen_cursor {
+    if attempts == 0 && !seen_cursor {
         return unknown_surface("cursor", window);
     }
 
     CompactionFollowups {
         surface: "cursor".to_string(),
-        confidence: "observed_low".to_string(),
-        compaction_events: Some(events),
-        // Increment 2 (the correction follow-up join) isn't built yet; be explicit, not a fake 0.
+        detection: "native_pre_only".to_string(),
+        confidence: "attempt_only".to_string(),
+        attempted_events: Some(attempts),
+        completed_events: None,
+        compaction_events: None,
         followed_by_correction: None,
-        sessions_with_compaction: Some(sessions),
+        sessions_with_compaction: None,
         window_turns: window,
     }
 }
@@ -3371,7 +4114,10 @@ fn cursor_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
 fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
     CompactionFollowups {
         surface: surface.to_string(),
+        detection: "none".to_string(),
         confidence: "unknown".to_string(),
+        attempted_events: None,
+        completed_events: None,
         compaction_events: None,
         followed_by_correction: None,
         sessions_with_compaction: None,
@@ -3384,6 +4130,17 @@ fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
 /// `window` turns after it. When no Claude turns are persisted at all the surface is
 /// `unknown` (we have not seen sessions), distinct from "observed, zero compactions".
 fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFollowups {
+    migrate_surface_hook_tables(conn);
+    let native_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM native_compactions WHERE surface='claude-code'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if native_count > 0 {
+        return native_compaction_followups(conn, "claude-code", window, true);
+    }
     // (session_id, turn_index, flags) for every turn, in timeline order. flags is the stored
     // JSON-array string (e.g. ["pre_compact","correction"]) or a legacy bare string; a
     // substring test matches both shapes, same as the existing outcome joins.
@@ -3443,7 +4200,10 @@ fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
 
     CompactionFollowups {
         surface: "claude-code".to_string(),
-        confidence: "observed".to_string(),
+        detection: "transcript_inference".to_string(),
+        confidence: "inferred".to_string(),
+        attempted_events: None,
+        completed_events: Some(events),
         compaction_events: Some(events),
         followed_by_correction: Some(followed),
         sessions_with_compaction: Some(sessions_with.len() as i64),
@@ -7041,6 +7801,40 @@ mod compress_decision_tests {
     }
 
     #[test]
+    fn feed_exposes_exact_mcp_pass_through_reason_and_plain_category() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        let row = CompressDecision {
+            ts: "2026-07-19T00:00:00Z",
+            session_id: Some("s1"),
+            tool_name: "mcp__fixture__list",
+            server_prefix: Some("fixture"),
+            kind: "mcp",
+            task_mode: "all",
+            lines_total: 100,
+            lines_keep: 100,
+            lines_drop: 0,
+            chars_in: 1000,
+            would_chars_out: 1000,
+            features_json: r#"{"mcp_contract":{"pass_through_reason":"candidate-output-schema-invalid"}}"#,
+            command_or_path: "fixture/list",
+            applied: false,
+            explore_arm: None,
+            surface: Some("codex"),
+        };
+        insert_compress_decision(&conn, &row).unwrap();
+        let feed = compress_decision_feed(&conn, 1);
+        assert_eq!(
+            feed[0].pass_through_reason.as_deref(),
+            Some("candidate-output-schema-invalid")
+        );
+        assert_eq!(
+            feed[0].pass_through_category.as_deref(),
+            Some("schema failure")
+        );
+    }
+
+    #[test]
     fn compaction_counts_correction_inside_window_only() {
         let _guard = crate::test_lock::CTX_ENV_LOCK
             .lock()
@@ -7069,7 +7863,8 @@ mod compress_decision_tests {
 
         let out = compaction_followups(&conn);
         let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
-        assert_eq!(claude.confidence, "observed");
+        assert_eq!(claude.confidence, "inferred");
+        assert_eq!(claude.detection, "transcript_inference");
         assert_eq!(
             claude.compaction_events,
             Some(2),
@@ -7102,7 +7897,7 @@ mod compress_decision_tests {
 
         let out = compaction_followups(&conn);
         let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
-        assert_eq!(claude.confidence, "observed");
+        assert_eq!(claude.confidence, "inferred");
         assert_eq!(claude.compaction_events, Some(0));
         assert_eq!(claude.followed_by_correction, Some(0));
         assert_eq!(claude.sessions_with_compaction, Some(0));
@@ -7133,12 +7928,14 @@ mod compress_decision_tests {
 
         let out = compaction_followups(&conn);
         let cursor = out.iter().find(|s| s.surface == "cursor").unwrap();
-        // We saw the compaction live, so it's a real count, but lower confidence: the correction
-        // follow-up isn't computed yet, so it must be None (not a fake 0), never "observed".
-        assert_eq!(cursor.confidence, "observed_low");
-        assert_eq!(cursor.compaction_events, Some(1));
+        // Cursor's pre hook proves an attempt, never completion.
+        assert_eq!(cursor.confidence, "attempt_only");
+        assert_eq!(cursor.detection, "native_pre_only");
+        assert_eq!(cursor.attempted_events, Some(1));
+        assert_eq!(cursor.completed_events, None);
+        assert_eq!(cursor.compaction_events, None);
         assert_eq!(cursor.followed_by_correction, None);
-        assert_eq!(cursor.sessions_with_compaction, Some(1));
+        assert_eq!(cursor.sessions_with_compaction, None);
     }
 
     #[test]
@@ -7178,8 +7975,10 @@ mod compress_decision_tests {
 
         let out = compaction_followups(&conn);
         let cursor = out.iter().find(|s| s.surface == "cursor").unwrap();
-        assert_eq!(cursor.confidence, "observed_low");
-        assert_eq!(cursor.compaction_events, Some(0));
+        assert_eq!(cursor.confidence, "attempt_only");
+        assert_eq!(cursor.attempted_events, Some(0));
+        assert_eq!(cursor.completed_events, None);
+        assert_eq!(cursor.compaction_events, None);
         assert_eq!(cursor.followed_by_correction, None);
     }
 
@@ -7210,6 +8009,14 @@ mod compress_decision_tests {
         assert_eq!(cc.decisions, 1);
         assert_eq!(cc.acted, 1);
         assert_eq!(cc.chars_saved, 3000);
+        assert_eq!(cc.capability_contract_version, 1);
+        let builtin = cc
+            .capabilities
+            .iter()
+            .find(|receipt| receipt.path == "builtin")
+            .unwrap();
+        assert_eq!(builtin.mode, "active");
+        assert_eq!(builtin.applied_results, 1);
 
         let cu = out.iter().find(|s| s.surface == "cursor").unwrap();
         assert!(cu.seen);

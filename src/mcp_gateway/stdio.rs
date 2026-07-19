@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -20,7 +21,11 @@ const MAX_PENDING_REQUESTS: usize = 1_024;
 enum PendingRequest {
     Initialize,
     ToolsList,
-    ToolCall { name: String, input: Value },
+    ToolCall {
+        name: String,
+        input: Value,
+        started_at: Instant,
+    },
     Other,
 }
 
@@ -140,6 +145,13 @@ pub async fn serve(server_id: &str, surface: &str, server: &StdioServer) -> Resu
         }
     };
     if !status.success() {
+        crate::db::record_gateway_runtime_event_best_effort(
+            surface,
+            server_id,
+            "failure",
+            None,
+            Some("stdio-server-exited-unsuccessfully"),
+        );
         anyhow::bail!("MCP server exited with {status}");
     }
     Ok(())
@@ -208,6 +220,7 @@ pub(super) fn observe_client_frame(state: &mut RelayState, frame: &[u8]) -> Resu
                     .pointer("/params/arguments")
                     .cloned()
                     .unwrap_or_else(|| Value::Object(Default::default())),
+                started_at: Instant::now(),
             }
         }
         _ => PendingRequest::Other,
@@ -249,11 +262,30 @@ pub(super) fn transform_server_frame(
                 }
             }
         }
-        PendingRequest::ToolCall { name, input } => {
+        PendingRequest::ToolCall {
+            name,
+            input,
+            started_at,
+        } => {
+            let latency_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
             let Some(result_value) = message.get("result").cloned() else {
+                crate::db::record_gateway_runtime_event_best_effort(
+                    &state.surface,
+                    &state.server_id,
+                    "pass_through",
+                    Some(latency_ms),
+                    Some("unsupported-shape: missing result"),
+                );
                 return (frame.to_vec(), None);
             };
             let Ok(canonical) = parse_mcp_result(&result_value) else {
+                crate::db::record_gateway_runtime_event_best_effort(
+                    &state.surface,
+                    &state.server_id,
+                    "pass_through",
+                    Some(latency_ms),
+                    Some("schema-failure: invalid MCP result envelope"),
+                );
                 return (frame.to_vec(), None);
             };
             let contract = state
@@ -265,14 +297,25 @@ pub(super) fn transform_server_frame(
                 ))
                 .cloned();
             let cfg = crate::config::Config::load();
-            let Ok(candidate) = crate::compress::propose_mcp_apply_candidate(
+            let candidate = crate::compress::propose_mcp_apply_candidate(
                 &canonical,
                 contract.as_ref(),
                 &input,
                 &cfg,
                 &state.cwd,
-            ) else {
-                return (frame.to_vec(), None);
+            );
+            let candidate = match candidate {
+                Ok(candidate) => candidate,
+                Err(reason) => {
+                    crate::db::record_gateway_runtime_event_best_effort(
+                        &state.surface,
+                        &state.server_id,
+                        "pass_through",
+                        Some(latency_ms),
+                        Some(reason),
+                    );
+                    return (frame.to_vec(), None);
+                }
             };
             let tool_name = format!("mcp__{}__{}", state.server_id, name);
             let decision = crate::agent::decide_for_surface(
@@ -301,6 +344,7 @@ pub(super) fn transform_server_frame(
                 manifest: candidate.manifest,
                 proposal: &candidate.proposal,
                 authorized: decision.apply,
+                transport_latency_ms: Some(latency_ms),
             };
             if let McpPrepareOutcome::Ready(prepared) =
                 crate::tool_result::prepare_mcp_trim(&canonical, &request)

@@ -7,6 +7,8 @@ use crate::config::FilterMode;
 
 pub const CTX_USER_PROMPT_SUBCOMMAND: &str = "hook user-prompt-submit";
 pub const CTX_POST_TOOL_SUBCOMMAND: &str = "hook post-tool-use";
+pub const CTX_CLAUDE_PRE_COMPACT_SUBCOMMAND: &str = "hook claude-pre-compact";
+pub const CTX_CLAUDE_POST_COMPACT_SUBCOMMAND: &str = "hook claude-post-compact";
 pub const CTX_HOOK_EVENT_PATH: &str = "/api/hook/event";
 
 fn hook_commands_from_entry(entry: &Value) -> Vec<String> {
@@ -57,6 +59,13 @@ pub fn entry_is_ctx_post_tool_hook(entry: &Value) -> bool {
         .any(|c| c.contains(CTX_POST_TOOL_SUBCOMMAND))
 }
 
+fn entry_is_ctx_compaction_hook(entry: &Value) -> bool {
+    hook_commands_from_entry(entry).iter().any(|command| {
+        command.contains(CTX_CLAUDE_PRE_COMPACT_SUBCOMMAND)
+            || command.contains(CTX_CLAUDE_POST_COMPACT_SUBCOMMAND)
+    })
+}
+
 /// Remove ctx v2 native hook entries from `settings["hooks"]`. Returns true if modified.
 pub fn strip_ctx_native_hooks_from_settings(settings: &mut Value) -> bool {
     let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
@@ -66,6 +75,8 @@ pub fn strip_ctx_native_hooks_from_settings(settings: &mut Value) -> bool {
     for key in [
         "UserPromptSubmit",
         "PostToolUse",
+        "PreCompact",
+        "PostCompact",
         "SessionStart",
         "SessionEnd",
         "Stop",
@@ -77,6 +88,8 @@ pub fn strip_ctx_native_hooks_from_settings(settings: &mut Value) -> bool {
                     !entry_is_ctx_user_prompt_hook(entry)
                 } else if key == "PostToolUse" {
                     !entry_is_ctx_post_tool_hook(entry) && !entry_is_ctx_hook_http_endpoint(entry)
+                } else if key == "PreCompact" || key == "PostCompact" {
+                    !entry_is_ctx_compaction_hook(entry)
                 } else {
                     !entry_is_ctx_hook_http_endpoint(entry)
                 }
@@ -223,6 +236,26 @@ pub fn merge_ctx_native_hooks(settings: &mut Value, dashboard_port: u16) -> Resu
         .as_array_mut()
         .context("hooks.PostToolUse must be array")?
         .push(post_tool_entry);
+
+    for (event, subcommand) in [
+        ("PreCompact", CTX_CLAUDE_PRE_COMPACT_SUBCOMMAND),
+        ("PostCompact", CTX_CLAUDE_POST_COMPACT_SUBCOMMAND),
+    ] {
+        let entry = json!({
+            "matcher": "manual|auto",
+            "hooks": [{
+                "type": "command",
+                "command": resolve_ctx_subcommand(subcommand),
+                "timeout": 3
+            }]
+        });
+        hooks
+            .entry(event.to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("hooks.{event} must be array"))?
+            .push(entry);
+    }
 
     for ev in ["SessionStart", "SessionEnd", "Stop"] {
         hooks
@@ -722,11 +755,19 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+        for event in ["PreCompact", "PostCompact"] {
+            let entries = doc["hooks"][event].as_array().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["matcher"], "manual|auto");
+            assert!(entry_is_ctx_compaction_hook(&entries[0]));
+        }
         assert!(strip_ctx_native_hooks_from_settings(&mut doc));
         assert_eq!(
             doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
             0
         );
+        assert!(doc["hooks"]["PreCompact"].as_array().unwrap().is_empty());
+        assert!(doc["hooks"]["PostCompact"].as_array().unwrap().is_empty());
         merge_ctx_native_hooks(&mut doc, 8789).unwrap();
         assert!(!doc["hooks"]["Stop"].as_array().unwrap().is_empty());
     }
