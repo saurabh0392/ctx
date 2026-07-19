@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use serde_json::Value;
 
@@ -112,10 +112,13 @@ pub fn validate_mcp_proposal(
         return Err(McpProposalRejection::EmptyProposal);
     }
 
-    let mut targets = HashSet::with_capacity(proposal.replacements.len());
+    let mut replacements_by_target = HashMap::with_capacity(proposal.replacements.len());
     let mut candidate = result.clone();
     for replacement in &proposal.replacements {
-        if !targets.insert(replacement.block_index) {
+        if replacements_by_target
+            .insert(replacement.block_index, replacement)
+            .is_some()
+        {
             return Err(McpProposalRejection::DuplicateTarget);
         }
         let block = candidate
@@ -184,17 +187,12 @@ pub fn validate_mcp_proposal(
         .zip(rendered_content.iter())
         .enumerate()
     {
-        if !targets.contains(&index) {
+        let Some(replacement) = replacements_by_target.get(&index) else {
             if before != after {
                 return Err(McpProposalRejection::NonTargetBlockChanged);
             }
             continue;
-        }
-        let replacement = proposal
-            .replacements
-            .iter()
-            .find(|replacement| replacement.block_index == index)
-            .expect("validated target has one replacement");
+        };
         if !same_text_block_envelope(before, after, &replacement.replacement) {
             return Err(McpProposalRejection::TargetEnvelopeChanged);
         }

@@ -41,7 +41,13 @@ trait McpResultStrategy: Sync {
         result: &CanonicalMcpResult,
         opts: &CompressOptions,
         ctx: &CompressContext,
-    ) -> Option<McpTransformProposal>;
+    ) -> McpProposalOutcome;
+}
+
+enum McpProposalOutcome {
+    WithinBudget,
+    NoSavings,
+    Proposed(McpTransformProposal),
 }
 
 struct TextBlockStrategy;
@@ -63,7 +69,7 @@ impl McpResultStrategy for TextBlockStrategy {
         result: &CanonicalMcpResult,
         opts: &CompressOptions,
         ctx: &CompressContext,
-    ) -> Option<McpTransformProposal> {
+    ) -> McpProposalOutcome {
         let total_chars: usize = result
             .content
             .iter()
@@ -71,7 +77,7 @@ impl McpResultStrategy for TextBlockStrategy {
             .map(|text| text.chars().count())
             .sum();
         if total_chars == 0 || total_chars <= opts.target_chars {
-            return None;
+            return McpProposalOutcome::WithinBudget;
         }
 
         let total_budget = opts.target_chars.max(1);
@@ -97,12 +103,16 @@ impl McpResultStrategy for TextBlockStrategy {
                 replacement: compressed.text,
             });
         }
-        (!replacements.is_empty()).then_some(McpTransformProposal {
-            strategy_id: self.manifest().id,
-            strategy_version: self.manifest().version,
-            max_total_text_chars: total_budget,
-            replacements,
-        })
+        if replacements.is_empty() {
+            McpProposalOutcome::NoSavings
+        } else {
+            McpProposalOutcome::Proposed(McpTransformProposal {
+                strategy_id: self.manifest().id,
+                strategy_version: self.manifest().version,
+                max_total_text_chars: total_budget,
+                replacements,
+            })
+        }
     }
 }
 
@@ -136,14 +146,26 @@ pub(crate) fn evaluate_mcp_strategies_shadow(
             continue;
         }
         let manifest = strategy.manifest();
-        let Some(proposal) = strategy.propose(result, opts, ctx) else {
-            return McpStrategyObservation {
-                manifest: Some(manifest),
-                proposal_attempted: false,
-                validated: None,
-                rejection: None,
-                pass_through_reason: Some("within-budget"),
-            };
+        let proposal = match strategy.propose(result, opts, ctx) {
+            McpProposalOutcome::WithinBudget => {
+                return McpStrategyObservation {
+                    manifest: Some(manifest),
+                    proposal_attempted: false,
+                    validated: None,
+                    rejection: None,
+                    pass_through_reason: Some("within-budget"),
+                };
+            }
+            McpProposalOutcome::NoSavings => {
+                return McpStrategyObservation {
+                    manifest: Some(manifest),
+                    proposal_attempted: true,
+                    validated: None,
+                    rejection: None,
+                    pass_through_reason: Some(McpProposalRejection::NoSavings.code()),
+                };
+            }
+            McpProposalOutcome::Proposed(proposal) => proposal,
         };
         return match validate_mcp_proposal(result, manifest, &proposal) {
             Ok(validated) => McpStrategyObservation {
@@ -230,9 +252,11 @@ mod tests {
         }))
         .expect("multi-text result");
         let opts = options(20);
-        let proposal = TEXT_BLOCK_STRATEGY
-            .propose(&result, &opts, &CompressContext::default())
-            .expect("block-aware proposal");
+        let McpProposalOutcome::Proposed(proposal) =
+            TEXT_BLOCK_STRATEGY.propose(&result, &opts, &CompressContext::default())
+        else {
+            panic!("expected block-aware proposal");
+        };
         let targets: Vec<_> = proposal
             .replacements
             .iter()
@@ -283,5 +307,20 @@ mod tests {
         assert!(!observation.proposal_attempted);
         assert!(observation.validated.is_none());
         assert_eq!(observation.pass_through_reason, Some("within-budget"));
+    }
+
+    #[test]
+    fn over_budget_result_without_savings_is_not_labeled_within_budget() {
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": "x"}]
+        }))
+        .expect("one-character result");
+        let observation =
+            evaluate_mcp_strategies_shadow(&result, &options(0), &CompressContext::default());
+        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V1));
+        assert!(observation.proposal_attempted);
+        assert!(observation.validated.is_none());
+        assert!(observation.rejection.is_none());
+        assert_eq!(observation.pass_through_reason, Some("no-savings"));
     }
 }
