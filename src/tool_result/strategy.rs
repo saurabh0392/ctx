@@ -14,10 +14,16 @@ pub const MCP_MAX_RETAINED_COLLECTION_ITEMS: usize = 64;
 pub const MCP_MAX_RETAINED_SEARCH_RESULTS: usize = 64;
 pub const MCP_MAX_ENTITY_FIELDS: usize = 128;
 pub const MCP_MAX_ENTITY_OMITTED_FIELDS: usize = 64;
+pub const MCP_MAX_TREE_ENTRIES: usize = 2_048;
+pub const MCP_MAX_TREE_OMITTED_ENTRIES: usize = 512;
 const MCP_MAX_ENTITY_REQUESTED_FIELDS: usize = 64;
 const MCP_MAX_ENTITY_INPUT_NODES: usize = 256;
 const MCP_MAX_ENTITY_INPUT_DEPTH: usize = 8;
 const MCP_MAX_ENTITY_FIELD_NAME_BYTES: usize = 128;
+const MCP_MAX_TREE_INPUT_NODES: usize = 256;
+const MCP_MAX_TREE_INPUT_DEPTH: usize = 8;
+const MCP_MAX_TREE_PATH_BYTES: usize = 4_096;
+const MCP_MAX_REQUESTED_TREE_DEPTH: usize = 64;
 
 /// Stable, inspectable contract for one result strategy. A version change deliberately creates a
 /// new evidence identity instead of silently inheriting activation from older behavior.
@@ -55,6 +61,7 @@ pub enum McpStructuredContentEdit {
     PaginatedCollection(McpPaginatedCollectionEdit),
     SearchResults(McpSearchResultsEdit),
     EntityDetail(McpEntityDetailEdit),
+    TreeListing(McpTreeListingEdit),
 }
 
 /// Proof inputs for one top-level collection reduction. The validator independently checks every
@@ -88,6 +95,74 @@ pub struct McpEntityDetailEdit {
     pub requested_fields: Vec<String>,
     pub omitted_fields: Vec<String>,
     pub omission_marker_field: String,
+}
+
+/// Proof inputs for one schema-authorized rooted tree/file-listing reduction. Omitted entry
+/// identities remain transient here; the validator independently re-derives the exact eligible
+/// prefix from the source schema and bounded tool input before accepting the candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpTreeListingEdit {
+    pub entries_field: String,
+    pub root_field: String,
+    pub path_field: String,
+    pub kind_field: String,
+    pub requested_root: Option<String>,
+    pub requested_depth: Option<usize>,
+    pub omitted_indices: Vec<usize>,
+    pub omission_marker_field: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpTreeSchemaAuthorization {
+    pub entries_field: String,
+    pub root_field: String,
+    pub path_field: String,
+    pub kind_field: String,
+    pub requested_root: Option<String>,
+    pub requested_depth: Option<usize>,
+    pub min_entries: usize,
+    pub removable_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpTreeSchemaRejection {
+    SchemaMissing,
+    SchemaUnsupported,
+    SourceTooLarge,
+    RootEvidenceMissing,
+    RootValueInvalid,
+    EntriesEvidenceMissing,
+    EntriesAmbiguous,
+    EntryIdentityMissing,
+    EntryKindMissing,
+    EntryValueInvalid,
+    EntryIdentityDuplicate,
+    InputTooLarge,
+    InputSelectorAmbiguous,
+    InputSelectorUnsupported,
+    RequestedRootMismatch,
+}
+
+impl McpTreeSchemaRejection {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::SchemaMissing => "tree-object-schema-missing",
+            Self::SchemaUnsupported => "tree-object-schema-unsupported",
+            Self::SourceTooLarge => "tree-source-too-large",
+            Self::RootEvidenceMissing => "tree-root-evidence-missing",
+            Self::RootValueInvalid => "tree-root-value-invalid",
+            Self::EntriesEvidenceMissing => "tree-entries-evidence-missing",
+            Self::EntriesAmbiguous => "tree-entries-ambiguous",
+            Self::EntryIdentityMissing => "tree-entry-identity-missing",
+            Self::EntryKindMissing => "tree-entry-kind-missing",
+            Self::EntryValueInvalid => "tree-entry-value-invalid",
+            Self::EntryIdentityDuplicate => "tree-entry-identity-duplicate",
+            Self::InputTooLarge => "tree-input-context-too-large",
+            Self::InputSelectorAmbiguous => "tree-input-selector-ambiguous",
+            Self::InputSelectorUnsupported => "tree-input-selector-unsupported",
+            Self::RequestedRootMismatch => "tree-requested-root-mismatch",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +260,11 @@ pub struct ValidatedMcpProposal {
     pub entity_fields_in: Option<usize>,
     pub entity_fields_out: Option<usize>,
     pub entity_fields_omitted: Option<usize>,
+    pub tree_entries_in: Option<usize>,
+    pub tree_entries_out: Option<usize>,
+    pub tree_entries_omitted: Option<usize>,
+    pub tree_requested_root_present: Option<bool>,
+    pub tree_requested_depth_present: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +302,11 @@ pub enum McpProposalRejection {
     EntitySelectionInvalid,
     EntityTextMirrorInvalid,
     EntityOmissionMarkerInvalid,
+    TreeTargetInvalid,
+    TreeSchemaAuthorizationInvalid,
+    TreeSelectionInvalid,
+    TreeTextMirrorInvalid,
+    TreeOmissionMarkerInvalid,
     RenderedContractInvalid,
     SourceSchema(McpSchemaRejection),
     CandidateSchema(McpSchemaRejection),
@@ -263,6 +348,11 @@ impl McpProposalRejection {
             Self::EntitySelectionInvalid => "entity-selection-invalid",
             Self::EntityTextMirrorInvalid => "entity-text-mirror-invalid",
             Self::EntityOmissionMarkerInvalid => "entity-omission-marker-invalid",
+            Self::TreeTargetInvalid => "tree-target-invalid",
+            Self::TreeSchemaAuthorizationInvalid => "tree-schema-authorization-invalid",
+            Self::TreeSelectionInvalid => "tree-selection-invalid",
+            Self::TreeTextMirrorInvalid => "tree-text-mirror-invalid",
+            Self::TreeOmissionMarkerInvalid => "tree-omission-marker-invalid",
             Self::RenderedContractInvalid => "rendered-contract-invalid",
             Self::SourceSchema(rejection) => rejection.code(),
             Self::CandidateSchema(rejection) => candidate_schema_code(rejection),
@@ -474,6 +564,14 @@ pub fn validate_mcp_proposal_with_contract_and_input(
         entity_fields_out: structured_metrics.and_then(StructuredEditMetrics::entity_fields_out),
         entity_fields_omitted: structured_metrics
             .and_then(StructuredEditMetrics::entity_fields_omitted),
+        tree_entries_in: structured_metrics.and_then(StructuredEditMetrics::tree_entries_in),
+        tree_entries_out: structured_metrics.and_then(StructuredEditMetrics::tree_entries_out),
+        tree_entries_omitted: structured_metrics
+            .and_then(StructuredEditMetrics::tree_entries_omitted),
+        tree_requested_root_present: structured_metrics
+            .and_then(StructuredEditMetrics::tree_requested_root_present),
+        tree_requested_depth_present: structured_metrics
+            .and_then(StructuredEditMetrics::tree_requested_depth_present),
     })
 }
 
@@ -485,73 +583,116 @@ struct CollectionMetrics {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct TreeMetrics {
+    entries: CollectionMetrics,
+    requested_root_present: bool,
+    requested_depth_present: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum StructuredEditMetrics {
     Collection(CollectionMetrics),
     Search(CollectionMetrics),
     Entity(CollectionMetrics),
+    Tree(TreeMetrics),
 }
 
 impl StructuredEditMetrics {
     fn collection_items_in(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_in),
-            Self::Search(_) | Self::Entity(_) => None,
+            Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
         }
     }
 
     fn collection_items_out(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_out),
-            Self::Search(_) | Self::Entity(_) => None,
+            Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
         }
     }
 
     fn collection_items_omitted(self) -> Option<usize> {
         match self {
             Self::Collection(metrics) => Some(metrics.items_omitted),
-            Self::Search(_) | Self::Entity(_) => None,
+            Self::Search(_) | Self::Entity(_) | Self::Tree(_) => None,
         }
     }
 
     fn search_results_in(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) => None,
             Self::Search(metrics) => Some(metrics.items_in),
         }
     }
 
     fn search_results_out(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) => None,
             Self::Search(metrics) => Some(metrics.items_out),
         }
     }
 
     fn search_results_omitted(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Entity(_) => None,
+            Self::Collection(_) | Self::Entity(_) | Self::Tree(_) => None,
             Self::Search(metrics) => Some(metrics.items_omitted),
         }
     }
 
     fn entity_fields_in(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Search(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Tree(_) => None,
             Self::Entity(metrics) => Some(metrics.items_in),
         }
     }
 
     fn entity_fields_out(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Search(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Tree(_) => None,
             Self::Entity(metrics) => Some(metrics.items_out),
         }
     }
 
     fn entity_fields_omitted(self) -> Option<usize> {
         match self {
-            Self::Collection(_) | Self::Search(_) => None,
+            Self::Collection(_) | Self::Search(_) | Self::Tree(_) => None,
             Self::Entity(metrics) => Some(metrics.items_omitted),
+        }
+    }
+
+    fn tree_entries_in(self) -> Option<usize> {
+        match self {
+            Self::Tree(metrics) => Some(metrics.entries.items_in),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+        }
+    }
+
+    fn tree_entries_out(self) -> Option<usize> {
+        match self {
+            Self::Tree(metrics) => Some(metrics.entries.items_out),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+        }
+    }
+
+    fn tree_entries_omitted(self) -> Option<usize> {
+        match self {
+            Self::Tree(metrics) => Some(metrics.entries.items_omitted),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+        }
+    }
+
+    fn tree_requested_root_present(self) -> Option<bool> {
+        match self {
+            Self::Tree(metrics) => Some(metrics.requested_root_present),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
+        }
+    }
+
+    fn tree_requested_depth_present(self) -> Option<bool> {
+        match self {
+            Self::Tree(metrics) => Some(metrics.requested_depth_present),
+            Self::Collection(_) | Self::Search(_) | Self::Entity(_) => None,
         }
     }
 }
@@ -594,6 +735,18 @@ fn validate_and_apply_structured_content(
         }
         McpStructuredContentEdit::EntityDetail(edit) => {
             StructuredEditMetrics::Entity(validate_entity_detail_edit(
+                result,
+                contract,
+                tool_input,
+                max_total_text_chars,
+                &replacement.expected,
+                &replacement.replacement,
+                edit,
+                text_replacements,
+            )?)
+        }
+        McpStructuredContentEdit::TreeListing(edit) => {
+            StructuredEditMetrics::Tree(validate_tree_listing_edit(
                 result,
                 contract,
                 tool_input,
@@ -859,6 +1012,185 @@ pub(crate) fn entity_detail_text_projection(
     Value::Object(projection)
 }
 
+fn validate_tree_listing_edit(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+    tool_input: Option<&Value>,
+    max_total_text_chars: usize,
+    source: &Value,
+    candidate: &Value,
+    edit: &McpTreeListingEdit,
+    text_replacements: &HashMap<usize, &McpTextReplacement>,
+) -> Result<TreeMetrics, McpProposalRejection> {
+    let (Some(source), Some(candidate)) = (source.as_object(), candidate.as_object()) else {
+        return Err(McpProposalRejection::TreeTargetInvalid);
+    };
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return Err(McpProposalRejection::TreeSchemaAuthorizationInvalid);
+    };
+    let authorization = assess_mcp_tree_listing_schema(schema, source, tool_input)
+        .map_err(|_| McpProposalRejection::TreeSchemaAuthorizationInvalid)?;
+    if edit.entries_field != authorization.entries_field
+        || edit.root_field != authorization.root_field
+        || edit.path_field != authorization.path_field
+        || edit.kind_field != authorization.kind_field
+        || edit.requested_root != authorization.requested_root
+        || edit.requested_depth != authorization.requested_depth
+        || edit.omitted_indices.is_empty()
+        || edit.omitted_indices.len() > MCP_MAX_TREE_OMITTED_ENTRIES
+        || edit.omitted_indices.len() > authorization.removable_indices.len()
+        || edit.omitted_indices != authorization.removable_indices[..edit.omitted_indices.len()]
+    {
+        return Err(McpProposalRejection::TreeSelectionInvalid);
+    }
+    if !maps_equal_except(source, candidate, &edit.entries_field) {
+        return Err(McpProposalRejection::StructuredContentInvariantFailed);
+    }
+    let (Some(source_entries), Some(candidate_entries)) = (
+        source.get(&edit.entries_field).and_then(Value::as_array),
+        candidate.get(&edit.entries_field).and_then(Value::as_array),
+    ) else {
+        return Err(McpProposalRejection::TreeTargetInvalid);
+    };
+    if source_entries.len() <= candidate_entries.len()
+        || candidate_entries.len() < authorization.min_entries
+        || source_entries.len() - candidate_entries.len() != edit.omitted_indices.len()
+    {
+        return Err(McpProposalRejection::TreeSelectionInvalid);
+    }
+    let rebuilt = tree_listing_candidate(source, &edit.entries_field, &edit.omitted_indices);
+    if candidate != &rebuilt {
+        return Err(McpProposalRejection::TreeSelectionInvalid);
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 || text_replacements.len() != 1 {
+        return Err(McpProposalRejection::TreeTextMirrorInvalid);
+    }
+    let (block_index, source_text) = text_blocks[0];
+    let Some(text_replacement) = text_replacements.get(&block_index) else {
+        return Err(McpProposalRejection::TreeTextMirrorInvalid);
+    };
+    let parsed_source: Value = serde_json::from_str(source_text)
+        .map_err(|_| McpProposalRejection::TreeTextMirrorInvalid)?;
+    if parsed_source != Value::Object(source.clone()) {
+        return Err(McpProposalRejection::TreeTextMirrorInvalid);
+    }
+    let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
+        .map_err(|_| McpProposalRejection::TreeTextMirrorInvalid)?;
+    if edit.omission_marker_field != MCP_OMISSION_MARKER_FIELD {
+        return Err(McpProposalRejection::TreeOmissionMarkerInvalid);
+    }
+    let marker = parsed_candidate
+        .as_object_mut()
+        .and_then(|object| object.remove(&edit.omission_marker_field))
+        .ok_or(McpProposalRejection::TreeOmissionMarkerInvalid)?;
+    if parsed_candidate != Value::Object(candidate.clone()) {
+        return Err(McpProposalRejection::TreeTextMirrorInvalid);
+    }
+
+    let entries_in = source_entries.len();
+    let entries_out = candidate_entries.len();
+    let entries_omitted = edit.omitted_indices.len();
+    let expected_marker = serde_json::json!({
+        "field": edit.entries_field,
+        "originalEntries": entries_in,
+        "retainedEntries": entries_out,
+        "omittedEntries": entries_omitted,
+        "requestedDepth": edit.requested_depth,
+        "selection": "generated-vendor-descendants-outside-requested-depth"
+    });
+    if marker != expected_marker {
+        return Err(McpProposalRejection::TreeOmissionMarkerInvalid);
+    }
+
+    let previous_projection_chars = if edit.omitted_indices.len() == 1 {
+        source_text.chars().count()
+    } else {
+        let previous_omitted = &edit.omitted_indices[..edit.omitted_indices.len() - 1];
+        let previous_candidate =
+            tree_listing_candidate(source, &edit.entries_field, previous_omitted);
+        serde_json::to_string(&tree_listing_text_projection(
+            &previous_candidate,
+            &edit.entries_field,
+            source_entries.len(),
+            edit.requested_depth,
+        ))
+        .map_err(|_| McpProposalRejection::TreeTextMirrorInvalid)?
+        .chars()
+        .count()
+    };
+    if previous_projection_chars <= max_total_text_chars {
+        return Err(McpProposalRejection::TreeSelectionInvalid);
+    }
+
+    Ok(TreeMetrics {
+        entries: CollectionMetrics {
+            items_in: entries_in,
+            items_out: entries_out,
+            items_omitted: entries_omitted,
+        },
+        requested_root_present: edit.requested_root.is_some(),
+        requested_depth_present: edit.requested_depth.is_some(),
+    })
+}
+
+pub(crate) fn tree_listing_candidate(
+    source: &Map<String, Value>,
+    entries_field: &str,
+    omitted_indices: &[usize],
+) -> Map<String, Value> {
+    let omitted: BTreeSet<_> = omitted_indices.iter().copied().collect();
+    source
+        .iter()
+        .map(|(field, value)| {
+            if field != entries_field {
+                return (field.clone(), value.clone());
+            }
+            let Some(entries) = value.as_array() else {
+                return (field.clone(), value.clone());
+            };
+            let retained = entries
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !omitted.contains(index))
+                .map(|(_, entry)| entry.clone())
+                .collect();
+            (field.clone(), Value::Array(retained))
+        })
+        .collect()
+}
+
+pub(crate) fn tree_listing_text_projection(
+    candidate: &Map<String, Value>,
+    entries_field: &str,
+    original_entries: usize,
+    requested_depth: Option<usize>,
+) -> Value {
+    let retained_entries = candidate
+        .get(entries_field)
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let mut projection = candidate.clone();
+    projection.insert(
+        MCP_OMISSION_MARKER_FIELD.to_string(),
+        serde_json::json!({
+            "field": entries_field,
+            "originalEntries": original_entries,
+            "retainedEntries": retained_entries,
+            "omittedEntries": original_entries - retained_entries,
+            "requestedDepth": requested_depth,
+            "selection": "generated-vendor-descendants-outside-requested-depth"
+        }),
+    );
+    Value::Object(projection)
+}
+
 fn validate_collection_edit(
     result: &CanonicalMcpResult,
     source: &Value,
@@ -955,6 +1287,429 @@ pub(crate) fn collection_head_tail_indices(total: usize, retained: usize) -> Vec
     let head = retained.div_ceil(2);
     let tail = retained / 2;
     (0..head).chain((total - tail)..total).collect()
+}
+
+pub(crate) fn assess_mcp_tree_listing_schema(
+    root: &Value,
+    source: &Map<String, Value>,
+    tool_input: Option<&Value>,
+) -> Result<McpTreeSchemaAuthorization, McpTreeSchemaRejection> {
+    let schema =
+        resolve_search_local_schema(root, root).ok_or(McpTreeSchemaRejection::SchemaUnsupported)?;
+    if !search_schema_types_are_subset_of(schema, &["object"])
+        || entity_schema_has_removal_dependencies(schema)
+    {
+        return Err(McpTreeSchemaRejection::SchemaUnsupported);
+    }
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(McpTreeSchemaRejection::SchemaMissing)?;
+    let required =
+        schema_required_fields(schema).ok_or(McpTreeSchemaRejection::SchemaUnsupported)?;
+
+    let root_candidates: Vec<_> = required
+        .iter()
+        .filter(|field| tree_root_field(field))
+        .filter(|field| {
+            properties
+                .get(*field)
+                .and_then(|schema| resolve_search_local_schema(root, schema))
+                .is_some_and(|schema| search_schema_types_are_subset_of(schema, &["string"]))
+        })
+        .cloned()
+        .collect();
+    let [root_field] = root_candidates.as_slice() else {
+        return Err(McpTreeSchemaRejection::RootEvidenceMissing);
+    };
+    let source_root = source
+        .get(root_field)
+        .and_then(Value::as_str)
+        .and_then(normalize_tree_root)
+        .ok_or(McpTreeSchemaRejection::RootValueInvalid)?;
+
+    let mut candidates = Vec::new();
+    for (entries_field, entries) in source.iter().filter(|(_, value)| value.is_array()) {
+        let Some(property_schema) = properties
+            .get(entries_field)
+            .and_then(|schema| resolve_search_local_schema(root, schema))
+        else {
+            continue;
+        };
+        if !search_schema_types_are_subset_of(property_schema, &["array"])
+            || tree_array_schema_is_unsupported(property_schema)
+        {
+            continue;
+        }
+        let Some(item_schema) = property_schema
+            .get("items")
+            .and_then(|schema| resolve_search_local_schema(root, schema))
+        else {
+            continue;
+        };
+        if !search_schema_types_are_subset_of(item_schema, &["object"])
+            || entity_schema_has_removal_dependencies(item_schema)
+        {
+            continue;
+        }
+        let Some(item_properties) = item_schema.get("properties").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(item_required) = schema_required_fields(item_schema) else {
+            continue;
+        };
+        let path_candidates: Vec<_> = item_required
+            .iter()
+            .filter(|field| tree_entry_path_field(field))
+            .filter(|field| {
+                item_properties
+                    .get(*field)
+                    .and_then(|schema| resolve_search_local_schema(root, schema))
+                    .is_some_and(|schema| search_schema_types_are_subset_of(schema, &["string"]))
+            })
+            .cloned()
+            .collect();
+        let kind_candidates: Vec<_> = item_required
+            .iter()
+            .filter(|field| tree_entry_kind_field(field))
+            .filter(|field| {
+                item_properties
+                    .get(*field)
+                    .and_then(|schema| resolve_search_local_schema(root, schema))
+                    .is_some_and(tree_kind_schema_is_supported)
+            })
+            .cloned()
+            .collect();
+        let ([path_field], [kind_field]) = (path_candidates.as_slice(), kind_candidates.as_slice())
+        else {
+            continue;
+        };
+        let min_entries = property_schema
+            .get("minItems")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        candidates.push((
+            entries_field.clone(),
+            path_field.clone(),
+            kind_field.clone(),
+            min_entries,
+            entries.as_array().expect("filtered array"),
+        ));
+    }
+    if candidates.len() > 1 {
+        return Err(McpTreeSchemaRejection::EntriesAmbiguous);
+    }
+    let Some((entries_field, path_field, kind_field, min_entries, entries)) =
+        candidates.into_iter().next()
+    else {
+        return Err(McpTreeSchemaRejection::EntriesEvidenceMissing);
+    };
+    if entries.len() > MCP_MAX_TREE_ENTRIES {
+        return Err(McpTreeSchemaRejection::SourceTooLarge);
+    }
+
+    let (requested_root, requested_depth) = assess_mcp_tree_input(tool_input)?;
+    if requested_root
+        .as_deref()
+        .is_some_and(|requested| requested != source_root)
+    {
+        return Err(McpTreeSchemaRejection::RequestedRootMismatch);
+    }
+
+    let mut paths = HashMap::with_capacity(entries.len());
+    let mut entry_facts = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let entry = entry
+            .as_object()
+            .ok_or(McpTreeSchemaRejection::EntryValueInvalid)?;
+        let raw_path = entry
+            .get(&path_field)
+            .and_then(Value::as_str)
+            .ok_or(McpTreeSchemaRejection::EntryIdentityMissing)?;
+        let (path, segments) =
+            normalize_tree_entry_path(raw_path).ok_or(McpTreeSchemaRejection::EntryValueInvalid)?;
+        let raw_kind = entry
+            .get(&kind_field)
+            .and_then(Value::as_str)
+            .ok_or(McpTreeSchemaRejection::EntryKindMissing)?;
+        let is_directory =
+            tree_kind_is_directory(raw_kind).ok_or(McpTreeSchemaRejection::EntryValueInvalid)?;
+        if paths.insert(path.clone(), (index, is_directory)).is_some() {
+            return Err(McpTreeSchemaRejection::EntryIdentityDuplicate);
+        }
+        entry_facts.push((index, path, segments, is_directory));
+    }
+
+    let protected_depth = requested_depth.unwrap_or(1);
+    let mut removable = Vec::new();
+    for (index, path, segments, _) in &entry_facts {
+        if *segments <= protected_depth {
+            continue;
+        }
+        let path_segments: Vec<_> = path.split('/').collect();
+        let Some(generated_index) = path_segments
+            .iter()
+            .position(|segment| tree_generated_vendor_segment(segment))
+        else {
+            continue;
+        };
+        if generated_index + 1 >= path_segments.len() {
+            continue;
+        }
+        let anchor = path_segments[..=generated_index].join("/");
+        if !paths
+            .get(&anchor)
+            .is_some_and(|(_, is_directory)| *is_directory)
+        {
+            continue;
+        }
+        removable.push((*index, *segments, path.clone()));
+    }
+    removable.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    Ok(McpTreeSchemaAuthorization {
+        entries_field,
+        root_field: root_field.clone(),
+        path_field,
+        kind_field,
+        requested_root,
+        requested_depth,
+        min_entries,
+        removable_indices: removable.into_iter().map(|(index, _, _)| index).collect(),
+    })
+}
+
+fn schema_required_fields(schema: &Value) -> Option<BTreeSet<String>> {
+    match schema.get("required") {
+        None => Some(BTreeSet::new()),
+        Some(Value::Array(fields)) => fields
+            .iter()
+            .map(|field| field.as_str().map(str::to_string))
+            .collect(),
+        Some(_) => None,
+    }
+}
+
+fn tree_array_schema_is_unsupported(schema: &Value) -> bool {
+    [
+        "prefixItems",
+        "contains",
+        "minContains",
+        "maxContains",
+        "unevaluatedItems",
+    ]
+    .iter()
+    .any(|keyword| schema.get(*keyword).is_some())
+}
+
+fn tree_root_field(field: &str) -> bool {
+    matches!(
+        search_schema_normalized_field(field).as_str(),
+        "root" | "rootpath" | "base" | "basepath" | "cwd" | "directory" | "directorypath"
+    )
+}
+
+fn tree_entry_path_field(field: &str) -> bool {
+    matches!(
+        search_schema_normalized_field(field).as_str(),
+        "path" | "relativepath" | "filepath" | "name"
+    )
+}
+
+fn tree_entry_kind_field(field: &str) -> bool {
+    matches!(
+        search_schema_normalized_field(field).as_str(),
+        "kind" | "type" | "entrytype" | "filetype"
+    )
+}
+
+fn tree_kind_schema_is_supported(schema: &Value) -> bool {
+    if !search_schema_types_are_subset_of(schema, &["string"]) {
+        return false;
+    }
+    let Some(values) = schema.get("enum").and_then(Value::as_array) else {
+        return false;
+    };
+    if values.is_empty() {
+        return false;
+    }
+    let normalized: Option<Vec<_>> = values
+        .iter()
+        .map(|value| value.as_str().map(search_schema_normalized_field))
+        .collect();
+    let Some(normalized) = normalized else {
+        return false;
+    };
+    normalized
+        .iter()
+        .all(|value| matches!(value.as_str(), "file" | "directory" | "dir"))
+        && normalized.iter().any(|value| value == "file")
+        && normalized
+            .iter()
+            .any(|value| matches!(value.as_str(), "directory" | "dir"))
+}
+
+fn tree_kind_is_directory(kind: &str) -> Option<bool> {
+    match search_schema_normalized_field(kind).as_str() {
+        "file" => Some(false),
+        "directory" | "dir" => Some(true),
+        _ => None,
+    }
+}
+
+fn normalize_tree_entry_path(path: &str) -> Option<(String, usize)> {
+    if path.is_empty()
+        || path.len() > MCP_MAX_TREE_PATH_BYTES
+        || path.contains('\0')
+        || path.starts_with('/')
+        || path.starts_with('\\')
+        || path.as_bytes().get(1) == Some(&b':')
+    {
+        return None;
+    }
+    let segments: Vec<_> = path.split(&['/', '\\'][..]).collect();
+    if segments.is_empty()
+        || segments
+            .iter()
+            .any(|segment| segment.is_empty() || matches!(*segment, "." | ".."))
+    {
+        return None;
+    }
+    Some((segments.join("/").to_ascii_lowercase(), segments.len()))
+}
+
+fn normalize_tree_root(root: &str) -> Option<String> {
+    if root.is_empty() || root.len() > MCP_MAX_TREE_PATH_BYTES || root.contains('\0') {
+        return None;
+    }
+    let normalized = root.replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/');
+    Some(if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    })
+}
+
+fn tree_generated_vendor_segment(segment: &str) -> bool {
+    matches!(
+        segment.to_ascii_lowercase().as_str(),
+        "node_modules"
+            | "vendor"
+            | "target"
+            | ".next"
+            | ".nuxt"
+            | ".svelte-kit"
+            | ".cache"
+            | "__pycache__"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".ruff_cache"
+            | ".gradle"
+            | "coverage"
+    )
+}
+
+fn assess_mcp_tree_input(
+    tool_input: Option<&Value>,
+) -> Result<(Option<String>, Option<usize>), McpTreeSchemaRejection> {
+    let Some(tool_input) = tool_input else {
+        return Ok((None, None));
+    };
+    if !tool_input.is_object() {
+        return Err(McpTreeSchemaRejection::InputSelectorUnsupported);
+    }
+    let mut nodes = 0usize;
+    let mut root_selectors = Vec::new();
+    let mut depth_selectors = Vec::new();
+    inspect_tree_input(
+        tool_input,
+        0,
+        &mut nodes,
+        &mut root_selectors,
+        &mut depth_selectors,
+    )?;
+    if root_selectors.len() > 1 || depth_selectors.len() > 1 {
+        return Err(McpTreeSchemaRejection::InputSelectorAmbiguous);
+    }
+    let requested_root = root_selectors
+        .into_iter()
+        .next()
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(normalize_tree_root)
+                .ok_or(McpTreeSchemaRejection::InputSelectorUnsupported)
+        })
+        .transpose()?;
+    let requested_depth = depth_selectors
+        .into_iter()
+        .next()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value <= MCP_MAX_REQUESTED_TREE_DEPTH)
+                .ok_or(McpTreeSchemaRejection::InputSelectorUnsupported)
+        })
+        .transpose()?;
+    Ok((requested_root, requested_depth))
+}
+
+fn inspect_tree_input<'a>(
+    value: &'a Value,
+    depth: usize,
+    nodes: &mut usize,
+    root_selectors: &mut Vec<&'a Value>,
+    depth_selectors: &mut Vec<&'a Value>,
+) -> Result<(), McpTreeSchemaRejection> {
+    *nodes += 1;
+    if *nodes > MCP_MAX_TREE_INPUT_NODES || depth > MCP_MAX_TREE_INPUT_DEPTH {
+        return Err(McpTreeSchemaRejection::InputTooLarge);
+    }
+    match value {
+        Value::Object(object) => {
+            for (field, child) in object {
+                let normalized = search_schema_normalized_field(field);
+                if tree_input_root_selector(&normalized) || tree_input_depth_selector(&normalized) {
+                    if depth != 0 {
+                        return Err(McpTreeSchemaRejection::InputSelectorUnsupported);
+                    }
+                    if tree_input_root_selector(&normalized) {
+                        root_selectors.push(child);
+                    } else {
+                        depth_selectors.push(child);
+                    }
+                }
+                inspect_tree_input(child, depth + 1, nodes, root_selectors, depth_selectors)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                inspect_tree_input(child, depth + 1, nodes, root_selectors, depth_selectors)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn tree_input_root_selector(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "root" | "rootpath" | "base" | "basepath" | "cwd" | "directory" | "directorypath" | "path"
+    )
+}
+
+fn tree_input_depth_selector(normalized: &str) -> bool {
+    matches!(normalized, "depth" | "maxdepth" | "levels" | "maxlevels")
 }
 
 pub(crate) fn assess_mcp_entity_schema(
@@ -1657,5 +2412,120 @@ mod tests {
             assess_mcp_entity_schema(&schema, &wide_source, None),
             Err(McpEntitySchemaRejection::SourceTooWide)
         );
+    }
+
+    #[test]
+    fn tree_schema_assessment_requires_anchors_and_exact_generated_segments() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "root": {"type": "string"},
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "kind": {"type": "string", "enum": ["file", "directory"]}
+                        },
+                        "required": ["path", "kind"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["root", "entries"],
+            "additionalProperties": false
+        });
+        let source = json!({
+            "root": "/repo",
+            "entries": [
+                {"path": "node_modules", "kind": "directory"},
+                {"path": "node_modules/pkg", "kind": "directory"},
+                {"path": "node_modules/pkg/index.js", "kind": "file"},
+                {"path": "src", "kind": "directory"},
+                {"path": "src/vendor.rs", "kind": "file"},
+                {"path": "vendorized", "kind": "directory"},
+                {"path": "vendorized/pkg.rs", "kind": "file"},
+                {"path": "orphan/target/file.o", "kind": "file"}
+            ]
+        });
+        let authorization = assess_mcp_tree_listing_schema(
+            &schema,
+            source.as_object().unwrap(),
+            Some(&json!({"root": "/repo", "depth": 2})),
+        )
+        .expect("tree authorization");
+        assert_eq!(authorization.requested_depth, Some(2));
+        assert_eq!(authorization.removable_indices, [2]);
+        assert!(!authorization.removable_indices.contains(&4));
+        assert!(!authorization.removable_indices.contains(&6));
+        assert!(!authorization.removable_indices.contains(&7));
+    }
+
+    #[test]
+    fn tree_schema_assessment_rejects_duplicate_paths_and_hostile_bounds() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "root": {"type": "string"},
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "kind": {"type": "string", "enum": ["file", "directory"]}
+                        },
+                        "required": ["path", "kind"]
+                    }
+                }
+            },
+            "required": ["root", "entries"]
+        });
+        let duplicate = json!({
+            "root": "C:\\repo",
+            "entries": [
+                {"path": "target\\debug", "kind": "directory"},
+                {"path": "target/debug", "kind": "directory"}
+            ]
+        });
+        assert_eq!(
+            assess_mcp_tree_listing_schema(&schema, duplicate.as_object().unwrap(), None),
+            Err(McpTreeSchemaRejection::EntryIdentityDuplicate)
+        );
+
+        let mut deep = json!({"value": true});
+        for _ in 0..=MCP_MAX_TREE_INPUT_DEPTH {
+            deep = json!({"nested": deep});
+        }
+        let source = json!({
+            "root": "/repo",
+            "entries": [{"path": "src", "kind": "directory"}]
+        });
+        assert_eq!(
+            assess_mcp_tree_listing_schema(&schema, source.as_object().unwrap(), Some(&deep)),
+            Err(McpTreeSchemaRejection::InputTooLarge)
+        );
+
+        let entries: Vec<_> = (0..=MCP_MAX_TREE_ENTRIES)
+            .map(|index| json!({"path": format!("file-{index}"), "kind": "file"}))
+            .collect();
+        let oversized = json!({"root": "/repo", "entries": entries});
+        assert_eq!(
+            assess_mcp_tree_listing_schema(&schema, oversized.as_object().unwrap(), None),
+            Err(McpTreeSchemaRejection::SourceTooLarge)
+        );
+    }
+
+    #[test]
+    fn tree_candidate_preserves_an_unexpected_non_array_entries_field() {
+        let source = json!({
+            "root": "/repo",
+            "entries": "unexpected server value",
+            "order": "path-ascending"
+        });
+        let source = source.as_object().unwrap();
+
+        assert_eq!(tree_listing_candidate(source, "entries", &[0]), *source);
     }
 }
