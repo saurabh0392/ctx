@@ -17,6 +17,8 @@ pub use contract::{
 };
 pub use mcp::{parse_mcp_result, render_mcp_result_or_original, McpParseError};
 pub use schema::{validate_mcp_output_schema, McpOutputSchemaValidation, McpSchemaRejection};
+#[allow(deprecated)]
+pub use strategy::MCP_COLLECTION_OMISSION_MARKER_FIELD;
 pub(crate) use strategy::{
     assess_mcp_search_array_schema, collection_head_tail_indices, search_ranked_prefix_indices,
 };

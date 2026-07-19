@@ -8,6 +8,8 @@ use super::{
 };
 
 pub const MCP_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
+#[deprecated(note = "use MCP_OMISSION_MARKER_FIELD")]
+pub const MCP_COLLECTION_OMISSION_MARKER_FIELD: &str = MCP_OMISSION_MARKER_FIELD;
 pub const MCP_MAX_RETAINED_COLLECTION_ITEMS: usize = 64;
 pub const MCP_MAX_RETAINED_SEARCH_RESULTS: usize = 64;
 
