@@ -3,6 +3,20 @@
 All notable CTX changes are recorded here. Versions follow semantic versioning while the product is
 in beta.
 
+## [0.5.6] - 2026-07-19
+
+### Fixed
+
+- Read and rewrite Codex's live unified shell input field (`cmd`) as well as the legacy
+  Claude-style field (`command`), preserving sibling tool input fields.
+- Let the trusted Codex pre-tool hook route eligible safe shell commands through the existing
+  evidence-gated CTX wrapper instead of remaining permanently observation-only.
+
+### Security and privacy
+
+- Keep the conservative read-only command allowlist, surface-isolated evidence gate, exact command
+  exit status, fail-open passthrough, and local-only processing unchanged.
+
 ## [0.5.5] - 2026-07-19
 
 ### Changed
