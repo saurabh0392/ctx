@@ -1022,7 +1022,11 @@ pub(crate) fn assess_mcp_entity_schema(
     let mut removable_fields: Vec<_> = source
         .iter()
         .filter_map(|(field, value)| {
-            if protected_fields.contains(field) || value.is_array() || value.is_object() {
+            if protected_fields.contains(field)
+                || value.is_null()
+                || value.is_array()
+                || value.is_object()
+            {
                 return None;
             }
             let normalized = search_schema_normalized_field(field);
@@ -1585,11 +1589,12 @@ mod tests {
             "properties": {
                 "id": {"type": "string"},
                 "title": {"type": "string"},
-                "status": {"type": "string"},
+                "status": {"type": ["string", "null"]},
                 "url": {"type": "string"},
                 "body": {"type": "string"},
                 "description": {"type": "string"},
-                "copy": {"type": "string"}
+                "copy": {"type": "string"},
+                "nullableCopy": {"type": ["string", "null"]}
             },
             "required": ["id", "title"],
             "additionalProperties": false
@@ -1597,11 +1602,12 @@ mod tests {
         let source = json!({
             "id": "entity-1",
             "title": "Entity",
-            "status": "open",
+            "status": null,
             "url": "https://example.invalid/1",
             "body": "requested body",
             "description": "long optional prose",
-            "copy": "entity-1"
+            "copy": "entity-1",
+            "nullableCopy": null
         });
         let authorization = assess_mcp_entity_schema(
             &schema,
@@ -1619,6 +1625,9 @@ mod tests {
             .removable_fields
             .contains(&"description".into()));
         assert!(authorization.removable_fields.contains(&"copy".into()));
+        assert!(!authorization
+            .removable_fields
+            .contains(&"nullableCopy".into()));
     }
 
     #[test]
