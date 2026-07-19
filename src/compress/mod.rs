@@ -11,6 +11,7 @@ mod grep;
 mod hook_io;
 pub mod intent;
 mod mcp;
+mod mcp_strategy;
 pub mod path_role;
 mod read;
 mod retain;

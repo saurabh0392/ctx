@@ -717,17 +717,22 @@ These do not block T0-T2 but must be resolved before their dependent increment:
 6. Which platform/OS combinations CTX will sell as supported versus experimental.
 7. Whether error-result trimming should ever graduate from whole-result preservation.
 
-## Immediate next slice
+## Delivery status and immediate next slice
 
-Tracking: CTX-71 implements this first increment; ADR 0038 freezes its shadow-only contract.
+CTX-71 and ADR 0038 completed the T0/T1 foundation: lossless canonical MCP results, a versioned
+fixture ledger, cross-platform adapter capture, and shadow-only typed evidence are on `main`.
 
-Start with T0 and T1, not the gateway. The first implementation PR should:
+The next T2 increment is the block-aware strategy boundary in ADR 0039, tracked by CTX-72. The
+increment must:
 
-1. add the canonical types and a lossless MCP parser/renderer;
-2. import the protocol corpus and current live platform fixtures;
-3. prove parse/render identity, opaque block preservation, and fail-open behavior;
-4. adapt the existing MCP text compressor behind the new typed interface in shadow mode; and
-5. produce a coverage report without changing any live result.
+1. register strategies with stable IDs, versions, eligible shapes, and invariant manifests;
+2. emit target-specific proposals instead of concatenating MCP text blocks;
+3. preserve all protocol error results before strategy selection;
+4. validate source freshness, target uniqueness, expansion limits, envelope equality, non-target
+   identity, and result reparsing;
+5. record eligibility separately from proposal validity and permission to apply; and
+6. remain shadow-only, returning content-free evidence rather than an apply-ready result.
 
-That slice reduces current correctness risk immediately and creates the foundation on which both
-native hooks and the local gateway can safely converge.
+After that boundary is merged, T2 can add schema capture and individual collection/search/entity
+strategies without coupling them to the native adapters or the gateway. The T3 atomic apply
+transaction remains the first place a validated proposal may become model-visible.

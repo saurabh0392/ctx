@@ -324,6 +324,14 @@ fn typed_mcp_compressor_is_observation_only() {
         .expect("typed MCP evidence");
     assert!(contract.round_trip_identical);
     assert_eq!(contract.text_blocks, 1);
+    assert_eq!(
+        contract.eligible_strategy.as_deref(),
+        Some("mcp-text-blocks")
+    );
+    assert_eq!(contract.eligible_strategy_version.as_deref(), Some("1"));
+    assert_eq!(contract.proposal_validated, Some(true));
+    assert_eq!(contract.proposal_replacements, Some(1));
+    assert!(contract.proposal_rejection.is_none());
     assert!(contract.candidate_strategy.is_some());
 }
 

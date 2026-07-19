@@ -41,6 +41,18 @@ pub struct McpContractShadow {
     pub has_metadata: bool,
     pub is_error: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligible_strategy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligible_strategy_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_validated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_replacements: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_rejection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pass_through_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_strategy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_chars_in: Option<usize>,
@@ -300,7 +312,10 @@ pub fn compute_shadow_decision_with_mcp(
                 cwd: cwd.to_string(),
                 prompt_keywords: frame.prompt_keywords.clone(),
             };
-            let candidate = super::mcp::compress_mcp_result_shadow(result, &opts, &context);
+            let observation =
+                super::mcp_strategy::evaluate_mcp_strategies_shadow(result, &opts, &context);
+            let manifest = observation.manifest;
+            let validated = observation.validated;
             McpContractShadow {
                 // Keep the live evidence honest: this is computed from the parsed value rather
                 // than inferred from the parser contract. The work happens only while shadow
@@ -312,9 +327,21 @@ pub fn compute_shadow_decision_with_mcp(
                 has_structured_content: coverage.has_structured_content,
                 has_metadata: coverage.has_metadata,
                 is_error: result.is_error(),
-                candidate_strategy: candidate.as_ref().map(|r| r.strategy.clone()),
-                candidate_chars_in: candidate.as_ref().map(|r| r.chars_in),
-                candidate_chars_out: candidate.as_ref().map(|r| r.chars_out),
+                eligible_strategy: manifest.map(|manifest| manifest.id.to_string()),
+                eligible_strategy_version: manifest.map(|manifest| manifest.version.to_string()),
+                proposal_validated: observation
+                    .proposal_attempted
+                    .then_some(validated.is_some()),
+                proposal_replacements: validated.map(|proposal| proposal.replacements),
+                proposal_rejection: observation
+                    .rejection
+                    .map(|rejection| rejection.code().to_string()),
+                pass_through_reason: observation.pass_through_reason.map(str::to_string),
+                candidate_strategy: validated
+                    .and(manifest)
+                    .map(|manifest| manifest.id.to_string()),
+                candidate_chars_in: validated.map(|proposal| proposal.chars_in),
+                candidate_chars_out: validated.map(|proposal| proposal.chars_out),
             }
         })
     } else {
