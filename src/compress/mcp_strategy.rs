@@ -372,15 +372,7 @@ fn entity_detail_shape(
     let entity_hint = structured.keys().any(|field| {
         matches!(
             normalized_entity_field(field).as_str(),
-            "id" | "entityid"
-                | "recordid"
-                | "objectid"
-                | "key"
-                | "issuekey"
-                | "slug"
-                | "number"
-                | "uri"
-                | "url"
+            "id" | "entityid" | "recordid" | "objectid" | "key" | "issuekey" | "slug" | "number"
         )
     });
     let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
@@ -1646,6 +1638,33 @@ mod tests {
         );
         assert_eq!(
             schema_less.pass_through_reason,
+            Some("entity-output-schema-required")
+        );
+    }
+
+    #[test]
+    fn a_url_alone_does_not_block_the_generic_text_fallback() {
+        let structured = json!({
+            "url": "https://example.invalid/status",
+            "description": "ordinary non-entity payload ".repeat(80)
+        });
+        let text = serde_json::to_string(&structured).unwrap();
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+            "isError": false
+        }))
+        .unwrap();
+        let observation = evaluate_mcp_strategies_shadow_with_contract_and_input(
+            &result,
+            None,
+            Some(&json!({})),
+            &options(400),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V2));
+        assert_ne!(
+            observation.pass_through_reason,
             Some("entity-output-schema-required")
         );
     }
