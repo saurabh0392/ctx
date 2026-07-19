@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::{parse_mcp_result, CanonicalContentBlock, CanonicalMcpResult, PreservedField};
+use super::{
+    parse_mcp_result, validate_mcp_output_schema, CanonicalContentBlock, CanonicalMcpResult,
+    McpOutputSchemaValidation, McpSchemaRejection, PreservedField, ToolContract,
+};
 
 /// Stable, inspectable contract for one result strategy. A version change deliberately creates a
 /// new evidence identity instead of silently inheriting activation from older behavior.
@@ -42,6 +45,7 @@ pub struct ValidatedMcpProposal {
     pub replacements: usize,
     pub chars_in: usize,
     pub chars_out: usize,
+    pub output_schema_validated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +67,8 @@ pub enum McpProposalRejection {
     NonTargetBlockChanged,
     TargetEnvelopeChanged,
     RenderedContractInvalid,
+    SourceSchema(McpSchemaRejection),
+    CandidateSchema(McpSchemaRejection),
 }
 
 impl McpProposalRejection {
@@ -85,7 +91,20 @@ impl McpProposalRejection {
             Self::NonTargetBlockChanged => "non-target-block-changed",
             Self::TargetEnvelopeChanged => "target-envelope-changed",
             Self::RenderedContractInvalid => "rendered-contract-invalid",
+            Self::SourceSchema(rejection) => rejection.code(),
+            Self::CandidateSchema(rejection) => candidate_schema_code(rejection),
         }
+    }
+}
+
+fn candidate_schema_code(rejection: McpSchemaRejection) -> &'static str {
+    match rejection {
+        McpSchemaRejection::StructuredContentMissing => "candidate-structured-content-missing",
+        McpSchemaRejection::StructuredContentOpaque => "candidate-structured-content-not-object",
+        McpSchemaRejection::StructuredContentTooLarge => "candidate-structured-content-too-large",
+        McpSchemaRejection::StructuredContentTooDeep => "candidate-structured-content-too-deep",
+        McpSchemaRejection::InstanceInvalid => "candidate-structured-content-schema-mismatch",
+        schema_rejection => schema_rejection.code(),
     }
 }
 
@@ -94,6 +113,17 @@ impl McpProposalRejection {
 /// observation-only while proving the invariants the later atomic apply path will depend on.
 pub fn validate_mcp_proposal(
     result: &CanonicalMcpResult,
+    manifest: &McpStrategyManifest,
+    proposal: &McpTransformProposal,
+) -> Result<ValidatedMcpProposal, McpProposalRejection> {
+    validate_mcp_proposal_with_contract(result, None, manifest, proposal)
+}
+
+/// Contract-aware proposal validation. The advertised schema is checked against the source and
+/// rebuilt candidate while both values remain inside this boundary.
+pub fn validate_mcp_proposal_with_contract(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
     manifest: &McpStrategyManifest,
     proposal: &McpTransformProposal,
 ) -> Result<ValidatedMcpProposal, McpProposalRejection> {
@@ -108,6 +138,13 @@ pub fn validate_mcp_proposal(
         PreservedField::Opaque(_) => return Err(McpProposalRejection::OpaqueErrorState),
         PreservedField::Absent | PreservedField::Value(false) => {}
     }
+    let output_schema_validated = match validate_mcp_output_schema(contract, result) {
+        McpOutputSchemaValidation::NotAdvertised => false,
+        McpOutputSchemaValidation::Valid => true,
+        McpOutputSchemaValidation::Rejected(rejection) => {
+            return Err(McpProposalRejection::SourceSchema(rejection))
+        }
+    };
     if proposal.replacements.is_empty() {
         return Err(McpProposalRejection::EmptyProposal);
     }
@@ -203,11 +240,19 @@ pub fn validate_mcp_proposal(
     if reparsed.render() != rendered {
         return Err(McpProposalRejection::RenderedContractInvalid);
     }
+    match validate_mcp_output_schema(contract, &reparsed) {
+        McpOutputSchemaValidation::NotAdvertised => {}
+        McpOutputSchemaValidation::Valid => {}
+        McpOutputSchemaValidation::Rejected(rejection) => {
+            return Err(McpProposalRejection::CandidateSchema(rejection))
+        }
+    }
 
     Ok(ValidatedMcpProposal {
         replacements: proposal.replacements.len(),
         chars_in,
         chars_out,
+        output_schema_validated,
     })
 }
 
