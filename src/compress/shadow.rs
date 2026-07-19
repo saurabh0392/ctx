@@ -40,6 +40,11 @@ pub struct McpContractShadow {
     pub has_structured_content: bool,
     pub has_metadata: bool,
     pub is_error: Option<bool>,
+    pub output_schema_advertised: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_schema_validation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_schema_validation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eligible_strategy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,8 +89,8 @@ pub struct ShadowFeatures {
     /// Dropped lines that carried a failure marker. Should stay ~0 (errors are pinned);
     /// a non-zero value is an early warning the heuristic is throwing away signal.
     pub risky_drops: usize,
-    /// Lossless MCP parse/render and typed-compressor evidence. This is observation only: T1 does
-    /// not use it to authorize an apply or rebuild a native result.
+    /// Lossless MCP parse/render, schema, and typed-compressor evidence. This is observation only:
+    /// T2 does not use it to authorize an apply or rebuild a native result.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_contract: Option<McpContractShadow>,
     /// Intent signal from the agent's narration (ADR 0004 / CTX-11). `Some(..)` when the signal ran
@@ -273,6 +278,30 @@ pub fn compute_shadow_decision_with_mcp(
     session_id: Option<&str>,
     cwd: &str,
 ) -> Option<ShadowDecision> {
+    compute_shadow_decision_with_mcp_contract(
+        tool_name,
+        tool_input,
+        raw_output,
+        canonical_mcp,
+        None,
+        cfg,
+        session_id,
+        cwd,
+    )
+}
+
+/// Contract-aware shadow computation for adapters or the future gateway after they observe a
+/// matching `tools/list` definition. The contract changes only content-free evidence.
+pub fn compute_shadow_decision_with_mcp_contract(
+    tool_name: &str,
+    tool_input: &Value,
+    raw_output: &str,
+    canonical_mcp: Option<&crate::tool_result::CanonicalMcpResult>,
+    mcp_tool_contract: Option<&crate::tool_result::ToolContract>,
+    cfg: &Config,
+    session_id: Option<&str>,
+    cwd: &str,
+) -> Option<ShadowDecision> {
     if raw_output.is_empty() {
         return None;
     }
@@ -312,8 +341,12 @@ pub fn compute_shadow_decision_with_mcp(
                 cwd: cwd.to_string(),
                 prompt_keywords: frame.prompt_keywords.clone(),
             };
-            let observation =
-                super::mcp_strategy::evaluate_mcp_strategies_shadow(result, &opts, &context);
+            let observation = super::mcp_strategy::evaluate_mcp_strategies_shadow_with_contract(
+                result,
+                mcp_tool_contract,
+                &opts,
+                &context,
+            );
             let manifest = observation.manifest;
             let validated = observation.validated;
             McpContractShadow {
@@ -327,6 +360,14 @@ pub fn compute_shadow_decision_with_mcp(
                 has_structured_content: coverage.has_structured_content,
                 has_metadata: coverage.has_metadata,
                 is_error: result.is_error(),
+                output_schema_advertised: mcp_tool_contract
+                    .is_some_and(|contract| contract.output_schema.is_present()),
+                source_schema_validation: observation
+                    .source_schema_validation
+                    .map(|validation| validation.code().to_string()),
+                candidate_schema_validation: observation
+                    .candidate_schema_validation
+                    .map(|validation| validation.code().to_string()),
                 eligible_strategy: manifest.map(|manifest| manifest.id.to_string()),
                 eligible_strategy_version: manifest.map(|manifest| manifest.version.to_string()),
                 proposal_validated: observation

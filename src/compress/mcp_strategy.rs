@@ -1,7 +1,7 @@
 use crate::tool_result::{
-    validate_mcp_proposal, CanonicalContentBlock, CanonicalMcpResult, McpProposalRejection,
-    McpStrategyManifest, McpTextReplacement, McpTransformProposal, PreservedField,
-    ValidatedMcpProposal,
+    validate_mcp_output_schema, validate_mcp_proposal_with_contract, CanonicalContentBlock,
+    CanonicalMcpResult, McpOutputSchemaValidation, McpProposalRejection, McpStrategyManifest,
+    McpTextReplacement, McpTransformProposal, PreservedField, ToolContract, ValidatedMcpProposal,
 };
 
 use super::mcp::compress_mcp_output;
@@ -14,12 +14,13 @@ const TEXT_BLOCK_INVARIANTS: &[&str] = &[
     "non-target-blocks-unchanged",
     "target-text-envelope-unchanged",
     "error-results-pass-through",
+    "advertised-output-schema-valid-before-and-after",
     "result-contract-reparses",
 ];
 
-pub(crate) const MCP_TEXT_BLOCKS_V1: McpStrategyManifest = McpStrategyManifest {
+pub(crate) const MCP_TEXT_BLOCKS_V2: McpStrategyManifest = McpStrategyManifest {
     id: "mcp-text-blocks",
-    version: "1",
+    version: "2",
     eligible_shape: "plain-text-content-blocks",
     invariants: TEXT_BLOCK_INVARIANTS,
     max_expansion_percent: 100,
@@ -31,6 +32,8 @@ pub(crate) struct McpStrategyObservation {
     pub validated: Option<ValidatedMcpProposal>,
     pub rejection: Option<McpProposalRejection>,
     pub pass_through_reason: Option<&'static str>,
+    pub source_schema_validation: Option<McpOutputSchemaValidation>,
+    pub candidate_schema_validation: Option<McpOutputSchemaValidation>,
 }
 
 trait McpResultStrategy: Sync {
@@ -54,7 +57,7 @@ struct TextBlockStrategy;
 
 impl McpResultStrategy for TextBlockStrategy {
     fn manifest(&self) -> &'static McpStrategyManifest {
-        &MCP_TEXT_BLOCKS_V1
+        &MCP_TEXT_BLOCKS_V2
     }
 
     fn eligible(&self, result: &CanonicalMcpResult) -> bool {
@@ -121,8 +124,18 @@ static STRATEGIES: [&dyn McpResultStrategy; 1] = [&TEXT_BLOCK_STRATEGY];
 
 /// Evaluate the deterministic registry in shadow mode. Eligibility is intentionally recorded even
 /// when no proposal is useful, and neither state grants permission to apply a trim.
+#[cfg(test)]
 pub(crate) fn evaluate_mcp_strategies_shadow(
     result: &CanonicalMcpResult,
+    opts: &CompressOptions,
+    ctx: &CompressContext,
+) -> McpStrategyObservation {
+    evaluate_mcp_strategies_shadow_with_contract(result, None, opts, ctx)
+}
+
+pub(crate) fn evaluate_mcp_strategies_shadow_with_contract(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
     opts: &CompressOptions,
     ctx: &CompressContext,
 ) -> McpStrategyObservation {
@@ -138,6 +151,21 @@ pub(crate) fn evaluate_mcp_strategies_shadow(
             validated: None,
             rejection: None,
             pass_through_reason,
+            source_schema_validation: None,
+            candidate_schema_validation: None,
+        };
+    }
+
+    let source_schema_validation = validate_mcp_output_schema(contract, result);
+    if let McpOutputSchemaValidation::Rejected(rejection) = source_schema_validation {
+        return McpStrategyObservation {
+            manifest: None,
+            proposal_attempted: false,
+            validated: None,
+            rejection: None,
+            pass_through_reason: Some(rejection.code()),
+            source_schema_validation: Some(source_schema_validation),
+            candidate_schema_validation: None,
         };
     }
 
@@ -154,6 +182,8 @@ pub(crate) fn evaluate_mcp_strategies_shadow(
                     validated: None,
                     rejection: None,
                     pass_through_reason: Some("within-budget"),
+                    source_schema_validation: Some(source_schema_validation),
+                    candidate_schema_validation: None,
                 };
             }
             McpProposalOutcome::NoSavings => {
@@ -163,25 +193,43 @@ pub(crate) fn evaluate_mcp_strategies_shadow(
                     validated: None,
                     rejection: None,
                     pass_through_reason: Some(McpProposalRejection::NoSavings.code()),
+                    source_schema_validation: Some(source_schema_validation),
+                    candidate_schema_validation: None,
                 };
             }
             McpProposalOutcome::Proposed(proposal) => proposal,
         };
-        return match validate_mcp_proposal(result, manifest, &proposal) {
+        return match validate_mcp_proposal_with_contract(result, contract, manifest, &proposal) {
             Ok(validated) => McpStrategyObservation {
                 manifest: Some(manifest),
                 proposal_attempted: true,
+                candidate_schema_validation: Some(if validated.output_schema_validated {
+                    McpOutputSchemaValidation::Valid
+                } else {
+                    McpOutputSchemaValidation::NotAdvertised
+                }),
                 validated: Some(validated),
                 rejection: None,
                 pass_through_reason: None,
+                source_schema_validation: Some(source_schema_validation),
             },
-            Err(rejection) => McpStrategyObservation {
-                manifest: Some(manifest),
-                proposal_attempted: true,
-                validated: None,
-                rejection: Some(rejection),
-                pass_through_reason: Some(rejection.code()),
-            },
+            Err(rejection) => {
+                let candidate_schema_validation = match rejection {
+                    McpProposalRejection::CandidateSchema(schema) => {
+                        Some(McpOutputSchemaValidation::Rejected(schema))
+                    }
+                    _ => None,
+                };
+                McpStrategyObservation {
+                    manifest: Some(manifest),
+                    proposal_attempted: true,
+                    validated: None,
+                    rejection: Some(rejection),
+                    pass_through_reason: Some(rejection.code()),
+                    source_schema_validation: Some(source_schema_validation),
+                    candidate_schema_validation,
+                }
+            }
         };
     }
 
@@ -191,6 +239,8 @@ pub(crate) fn evaluate_mcp_strategies_shadow(
         validated: None,
         rejection: None,
         pass_through_reason: Some("unsupported-shape"),
+        source_schema_validation: Some(source_schema_validation),
+        candidate_schema_validation: None,
     }
 }
 
@@ -199,7 +249,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::tool_result::parse_mcp_result;
+    use crate::tool_result::{parse_mcp_result, validate_mcp_proposal};
 
     fn options(target_chars: usize) -> CompressOptions {
         CompressOptions {
@@ -214,7 +264,7 @@ mod tests {
             .iter()
             .map(|strategy| strategy.manifest())
             .collect();
-        assert_eq!(manifests, vec![&MCP_TEXT_BLOCKS_V1]);
+        assert_eq!(manifests, vec![&MCP_TEXT_BLOCKS_V2]);
         assert!(!manifests[0].invariants.is_empty());
     }
 
@@ -233,7 +283,7 @@ mod tests {
         .expect("mixed result");
         let observation =
             evaluate_mcp_strategies_shadow(&result, &options(12), &CompressContext::default());
-        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V1));
+        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V2));
         assert!(observation.proposal_attempted);
         let validated = observation.validated.expect("validated proposal");
         assert_eq!(validated.replacements, 1);
@@ -263,7 +313,7 @@ mod tests {
             .map(|replacement| replacement.block_index)
             .collect();
         assert_eq!(targets, vec![0, 2]);
-        let validated = validate_mcp_proposal(&result, &MCP_TEXT_BLOCKS_V1, &proposal)
+        let validated = validate_mcp_proposal(&result, &MCP_TEXT_BLOCKS_V2, &proposal)
             .expect("validated block-aware proposal");
         assert_eq!(validated.replacements, 2);
         assert!(validated.chars_out <= 20);
@@ -296,6 +346,64 @@ mod tests {
     }
 
     #[test]
+    fn error_results_outrank_even_a_malformed_advertised_schema() {
+        let error = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": "actionable failure"}],
+            "isError": true
+        }))
+        .expect("error result");
+        let malformed_contract = ToolContract {
+            output_schema: PreservedField::Opaque(json!("future-schema")),
+            ..Default::default()
+        };
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &error,
+            Some(&malformed_contract),
+            &options(1),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.pass_through_reason, Some("error-result"));
+        assert!(observation.source_schema_validation.is_none());
+        assert!(observation.manifest.is_none());
+        assert!(!observation.proposal_attempted);
+    }
+
+    #[test]
+    fn schema_invalid_sources_pass_through_before_strategy_selection() {
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": "long repeated text long repeated text"}],
+            "structuredContent": {"items": [1, 2, 3]}
+        }))
+        .expect("result");
+        let contract = ToolContract {
+            output_schema: PreservedField::Value(json!({
+                "type": "object",
+                "properties": {"items": {"type": "array", "items": {"type": "string"}}},
+                "required": ["items"]
+            })),
+            ..Default::default()
+        };
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(1),
+            &CompressContext::default(),
+        );
+        assert_eq!(
+            observation.source_schema_validation,
+            Some(McpOutputSchemaValidation::Rejected(
+                crate::tool_result::McpSchemaRejection::InstanceInvalid
+            ))
+        );
+        assert_eq!(
+            observation.pass_through_reason,
+            Some("structured-content-schema-mismatch")
+        );
+        assert!(observation.manifest.is_none());
+        assert!(!observation.proposal_attempted);
+    }
+
+    #[test]
     fn eligibility_is_recorded_separately_when_no_proposal_is_needed() {
         let result = parse_mcp_result(&json!({
             "content": [{"type": "text", "text": "already small"}]
@@ -303,7 +411,7 @@ mod tests {
         .expect("small result");
         let observation =
             evaluate_mcp_strategies_shadow(&result, &options(100), &CompressContext::default());
-        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V1));
+        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V2));
         assert!(!observation.proposal_attempted);
         assert!(observation.validated.is_none());
         assert_eq!(observation.pass_through_reason, Some("within-budget"));
@@ -317,7 +425,7 @@ mod tests {
         .expect("one-character result");
         let observation =
             evaluate_mcp_strategies_shadow(&result, &options(0), &CompressContext::default());
-        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V1));
+        assert_eq!(observation.manifest, Some(&MCP_TEXT_BLOCKS_V2));
         assert!(observation.proposal_attempted);
         assert!(observation.validated.is_none());
         assert!(observation.rejection.is_none());

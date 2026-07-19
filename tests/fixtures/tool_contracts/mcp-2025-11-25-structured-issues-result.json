@@ -1,0 +1,36 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Issue CTX-75 is in progress. Issue CTX-72 is done. Issue CTX-74 is done. The same issue summary is intentionally repeated for deterministic compression evidence. Issue CTX-75 is in progress. Issue CTX-72 is done. Issue CTX-74 is done.",
+      "annotations": {
+        "audience": [
+          "assistant"
+        ],
+        "priority": 0.8
+      }
+    }
+  ],
+  "structuredContent": {
+    "issues": [
+      {
+        "id": "CTX-75",
+        "title": "Capture MCP tool contracts",
+        "status": "In Progress"
+      },
+      {
+        "id": "CTX-72",
+        "title": "Add block-aware proposals",
+        "status": "Done"
+      }
+    ],
+    "nextCursor": null
+  },
+  "isError": false,
+  "_meta": {
+    "request": "sanitized-structured-result"
+  },
+  "vendorResultField": {
+    "keep": true
+  }
+}

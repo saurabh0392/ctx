@@ -2,8 +2,8 @@ use serde_json::{Map, Value};
 
 /// One tool call and result after a platform adapter has lifted it out of its native wire shape.
 ///
-/// T1 only populates this fully for MCP fixtures. Keeping the exchange contract here prevents the
-/// native-hook and gateway migrations from inventing competing result models later.
+/// T1/T2 populate this for lossless MCP fixtures and shadow contracts. Keeping the exchange here
+/// prevents the native-hook and gateway migrations from inventing competing result models later.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalToolExchange<R = CanonicalMcpResult> {
     pub identity: ToolIdentity,
@@ -34,9 +34,9 @@ pub enum ToolTransport {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ToolContract {
     pub protocol_version: Option<String>,
-    pub input_schema: Option<Value>,
-    pub output_schema: Option<Value>,
-    pub annotations: Option<Value>,
+    pub input_schema: PreservedField<Value>,
+    pub output_schema: PreservedField<Value>,
+    pub annotations: PreservedField<Value>,
     pub preserved: Map<String, Value>,
 }
 
@@ -51,8 +51,9 @@ pub struct ToolProvenance {
 
 /// Distinguishes an absent optional field from a valid value and an extension/invalid value that
 /// CTX does not understand. That distinction is required for a value-identical render.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum PreservedField<T> {
+    #[default]
     Absent,
     Value(T),
     Opaque(Value),

@@ -27,7 +27,10 @@ pub use hook_io::{
     extract_compressible_text, extract_tool_output, post_tool_use, rewind_id_for,
     tool_response_value, trim_marker, wrap_updated_tool_output,
 };
-pub use shadow::{compute_shadow_decision, compute_shadow_decision_with_mcp, ShadowDecision};
+pub use shadow::{
+    compute_shadow_decision, compute_shadow_decision_with_mcp,
+    compute_shadow_decision_with_mcp_contract, ShadowDecision,
+};
 pub use types::{CompressKind, CompressResult};
 
 /// Version of the output transform whose evidence may authorize a live trim. Bump this whenever a

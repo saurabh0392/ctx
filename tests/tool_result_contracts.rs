@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use ctx::agent::{AgentTransport, ClaudeCodeTransport};
 use ctx::tool_result::{
-    parse_mcp_result, render_mcp_result_or_original, CanonicalContentBlock, McpResultCoverage,
+    parse_mcp_result, parse_mcp_tools_list, render_mcp_result_or_original,
+    validate_mcp_output_schema, CanonicalContentBlock, McpOutputSchemaValidation,
+    McpResultCoverage, McpToolContractCache, McpToolContractKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -314,7 +316,7 @@ fn typed_mcp_compressor_is_observation_only() {
     };
 
     let decision = ctx::agent::decide(&cfg, &tr);
-    assert!(!decision.apply, "typed T1 path must remain shadow-only");
+    assert!(!decision.apply, "typed T2 path must remain shadow-only");
     assert_eq!(tr.raw_output, raw_output, "shadow parse changed live text");
     let contract = decision
         .shadow
@@ -328,7 +330,7 @@ fn typed_mcp_compressor_is_observation_only() {
         contract.eligible_strategy.as_deref(),
         Some("mcp-text-blocks")
     );
-    assert_eq!(contract.eligible_strategy_version.as_deref(), Some("1"));
+    assert_eq!(contract.eligible_strategy_version.as_deref(), Some("2"));
     assert_eq!(contract.proposal_validated, Some(true));
     assert_eq!(contract.proposal_replacements, Some(1));
     assert!(contract.proposal_rejection.is_none());
@@ -398,6 +400,147 @@ fn typed_mcp_evidence_does_no_work_when_shadow_collection_is_disabled() {
 }
 
 #[test]
+fn tools_list_contract_fixture_round_trips_caches_and_validates() {
+    let tools_raw = read_json(&fixture_dir().join("mcp-2025-11-25-tools-list.json"));
+    let tools = parse_mcp_tools_list(&tools_raw).expect("tools/list fixture");
+    assert_eq!(tools.render(), tools_raw);
+
+    let mut cache = McpToolContractCache::new(8);
+    let capture = cache
+        .capture_tools_list("linear", "2025-11-25", &tools)
+        .expect("capture contracts");
+    assert_eq!(capture.captured, 2);
+    assert_eq!(capture.opaque, 1);
+
+    let key = McpToolContractKey::new("linear", "2025-11-25", "list_issues");
+    let contract = cache.get(&key).expect("list_issues contract");
+    assert!(contract.preserved.is_empty(), "cache is schema-only");
+    let result_raw = read_json(&fixture_dir().join("mcp-2025-11-25-structured-issues-result.json"));
+    let result = parse_mcp_result(&result_raw).expect("structured result fixture");
+    assert_eq!(
+        validate_mcp_output_schema(Some(contract), &result),
+        McpOutputSchemaValidation::Valid
+    );
+
+    assert!(cache
+        .get(&McpToolContractKey::new(
+            "github",
+            "2025-11-25",
+            "list_issues"
+        ))
+        .is_none());
+    assert!(cache
+        .get(&McpToolContractKey::new(
+            "linear",
+            "2025-06-18",
+            "list_issues"
+        ))
+        .is_none());
+}
+
+#[test]
+fn schema_evidence_is_separate_and_remains_shadow_only() {
+    let tools = parse_mcp_tools_list(&read_json(
+        &fixture_dir().join("mcp-2025-11-25-tools-list.json"),
+    ))
+    .expect("tools/list fixture");
+    let mut cache = McpToolContractCache::default();
+    cache
+        .capture_tools_list("linear", "2025-11-25", &tools)
+        .expect("capture");
+    let contract = cache
+        .get(&McpToolContractKey::new(
+            "linear",
+            "2025-11-25",
+            "list_issues",
+        ))
+        .expect("contract");
+    let result = parse_mcp_result(&read_json(
+        &fixture_dir().join("mcp-2025-11-25-structured-issues-result.json"),
+    ))
+    .expect("structured result");
+    let raw_output = result.compressible_text().expect("fixture text");
+    let cfg = ctx::config::Config {
+        compress_shadow_enabled: true,
+        compress_target_chars: 48,
+        ..Default::default()
+    };
+
+    let evidence = ctx::compress::compute_shadow_decision_with_mcp_contract(
+        "mcp__linear__list_issues",
+        &json!({}),
+        &raw_output,
+        Some(&result),
+        Some(contract),
+        &cfg,
+        None,
+        "/tmp/project",
+    )
+    .expect("shadow decision")
+    .features
+    .mcp_contract
+    .expect("MCP evidence");
+
+    assert!(evidence.output_schema_advertised);
+    assert_eq!(evidence.source_schema_validation.as_deref(), Some("valid"));
+    assert_eq!(
+        evidence.candidate_schema_validation.as_deref(),
+        Some("valid")
+    );
+    assert_eq!(evidence.proposal_validated, Some(true));
+    assert_eq!(
+        evidence.candidate_strategy.as_deref(),
+        Some("mcp-text-blocks")
+    );
+}
+
+#[test]
+fn invalid_structured_source_passes_through_before_strategy_selection() {
+    let tools = parse_mcp_tools_list(&read_json(
+        &fixture_dir().join("mcp-2025-11-25-tools-list.json"),
+    ))
+    .expect("tools/list fixture");
+    let contract = tools.tools[0].tool().expect("known tool").contract.clone();
+    let mut raw = read_json(&fixture_dir().join("mcp-2025-11-25-structured-issues-result.json"));
+    raw.pointer_mut("/structuredContent/issues/0")
+        .and_then(Value::as_object_mut)
+        .expect("first issue")
+        .remove("id");
+    let result = parse_mcp_result(&raw).expect("invalid structured source envelope");
+    let raw_output = result.compressible_text().expect("fixture text");
+    let cfg = ctx::config::Config {
+        compress_shadow_enabled: true,
+        compress_target_chars: 48,
+        ..Default::default()
+    };
+
+    let evidence = ctx::compress::compute_shadow_decision_with_mcp_contract(
+        "mcp__linear__list_issues",
+        &json!({}),
+        &raw_output,
+        Some(&result),
+        Some(&contract),
+        &cfg,
+        None,
+        "/tmp/project",
+    )
+    .expect("shadow decision")
+    .features
+    .mcp_contract
+    .expect("MCP evidence");
+    assert_eq!(
+        evidence.source_schema_validation.as_deref(),
+        Some("structured-content-schema-mismatch")
+    );
+    assert_eq!(
+        evidence.pass_through_reason.as_deref(),
+        Some("structured-content-schema-mismatch")
+    );
+    assert!(evidence.eligible_strategy.is_none());
+    assert!(evidence.proposal_validated.is_none());
+}
+
+#[test]
 fn generated_inputs_never_panic_or_partially_rebuild() {
     for seed in 0..512_u64 {
         let value = generated_value(seed, 0);
@@ -405,6 +548,17 @@ fn generated_inputs_never_panic_or_partially_rebuild() {
             render_mcp_result_or_original(&value),
             value,
             "generated seed {seed} changed during a no-transform render"
+        );
+        let tools_value = json!({
+            "tools": [value, generated_value(seed.wrapping_add(1), 0)],
+            "nextCursor": generated_value(seed.wrapping_add(2), 0),
+            "vendor": generated_value(seed.wrapping_add(3), 0)
+        });
+        let tools = parse_mcp_tools_list(&tools_value).expect("generated tools/list envelope");
+        assert_eq!(
+            tools.render(),
+            tools_value,
+            "generated tools/list seed {seed} changed during a no-transform render"
         );
     }
 }

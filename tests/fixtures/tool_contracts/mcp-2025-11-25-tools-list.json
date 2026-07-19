@@ -1,0 +1,96 @@
+{
+  "tools": [
+    {
+      "name": "list_issues",
+      "title": "List issues",
+      "description": "Return a page of issues",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "issue": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/issue"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issues",
+          "nextCursor"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "optional"
+      },
+      "_meta": {
+        "fixture": "sanitized"
+      },
+      "vendorToolField": {
+        "keep": true
+      }
+    },
+    {
+      "name": "future_contract",
+      "inputSchema": {
+        "type": "object"
+      },
+      "outputSchema": "future-schema-token",
+      "vendor": 7
+    },
+    {
+      "futureTool": true
+    }
+  ],
+  "nextCursor": "tool-page-2",
+  "_meta": {
+    "request": "sanitized-tools-list"
+  },
+  "vendorResultField": [
+    1,
+    2,
+    3
+  ]
+}
