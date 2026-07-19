@@ -38,7 +38,7 @@ Version 1 accepts only a schema-backed object with:
 4. a rows array whose item schema is a non-positional array with a homogeneous scalar-only item
    schema;
 5. non-empty, trimmed, unique column names and a source row width exactly equal to the column count;
-6. only string, number, boolean, or null cell values, with no nested arrays or objects;
+6. only string, integer, number, boolean, or null cell values, with no nested arrays or objects;
 7. a valid advertised output schema and schema-valid source `structuredContent`;
 8. exactly one plain text block that parses as JSON and is value-identical to the structured
    source; and

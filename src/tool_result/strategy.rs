@@ -1597,7 +1597,7 @@ pub(crate) fn assess_mcp_table_schema(
     let schema = resolve_search_local_schema(root, root)
         .ok_or(McpTableSchemaRejection::SchemaUnsupported)?;
     if !search_schema_types_are_subset_of(schema, &["object"])
-        || entity_schema_has_removal_dependencies(schema)
+        || table_schema_is_unsupported(schema)
     {
         return Err(McpTableSchemaRejection::SchemaUnsupported);
     }
@@ -1627,13 +1627,16 @@ pub(crate) fn assess_mcp_table_schema(
         .and_then(|schema| resolve_search_local_schema(root, schema))
         .filter(|schema| {
             search_schema_types_are_subset_of(schema, &["array"])
-                && !table_array_schema_is_unsupported(schema)
+                && !table_schema_is_unsupported(schema)
         })
         .ok_or(McpTableSchemaRejection::ColumnsInvalid)?;
     let _column_schema = columns_schema
         .get("items")
         .and_then(|schema| resolve_search_local_schema(root, schema))
-        .filter(|schema| search_schema_types_are_subset_of(schema, &["string"]))
+        .filter(|schema| {
+            search_schema_types_are_subset_of(schema, &["string"])
+                && !table_schema_is_unsupported(schema)
+        })
         .ok_or(McpTableSchemaRejection::ColumnsInvalid)?;
     let columns = source
         .get(*columns_field)
@@ -1676,7 +1679,7 @@ pub(crate) fn assess_mcp_table_schema(
         .and_then(|schema| resolve_search_local_schema(root, schema))
         .filter(|schema| {
             search_schema_types_are_subset_of(schema, &["array"])
-                && !table_array_schema_is_unsupported(schema)
+                && !table_schema_is_unsupported(schema)
         })
         .ok_or(McpTableSchemaRejection::RowsInvalid)?;
     let row_schema = rows_schema
@@ -1684,7 +1687,7 @@ pub(crate) fn assess_mcp_table_schema(
         .and_then(|schema| resolve_search_local_schema(root, schema))
         .filter(|schema| {
             search_schema_types_are_subset_of(schema, &["array"])
-                && !table_array_schema_is_unsupported(schema)
+                && !table_schema_is_unsupported(schema)
         })
         .ok_or(McpTableSchemaRejection::RowsInvalid)?;
     let _cell_schema = row_schema
@@ -1694,7 +1697,7 @@ pub(crate) fn assess_mcp_table_schema(
             search_schema_types_are_subset_of(
                 schema,
                 &["null", "boolean", "number", "integer", "string"],
-            )
+            ) && !table_schema_is_unsupported(schema)
         })
         .ok_or(McpTableSchemaRejection::RowsInvalid)?;
     let min_rows = rows_schema
@@ -1749,16 +1752,17 @@ fn table_rows_field(field: &str) -> bool {
     )
 }
 
-fn table_array_schema_is_unsupported(schema: &Value) -> bool {
-    [
-        "prefixItems",
-        "contains",
-        "minContains",
-        "maxContains",
-        "unevaluatedItems",
-    ]
-    .iter()
-    .any(|keyword| schema.get(*keyword).is_some())
+fn table_schema_is_unsupported(schema: &Value) -> bool {
+    entity_schema_has_removal_dependencies(schema)
+        || [
+            "prefixItems",
+            "contains",
+            "minContains",
+            "maxContains",
+            "unevaluatedItems",
+        ]
+        .iter()
+        .any(|keyword| schema.get(*keyword).is_some())
 }
 
 pub(crate) fn assess_mcp_tree_listing_schema(
@@ -3103,6 +3107,27 @@ mod tests {
         let rectangular = json!({"columns": ["id"], "rows": [["a"], ["b"]]});
         assert_eq!(
             assess_mcp_table_schema(&positional_schema, rectangular.as_object().unwrap()),
+            Err(McpTableSchemaRejection::RowsInvalid)
+        );
+
+        let mut composed_columns = schema.clone();
+        composed_columns["properties"]["columns"]["items"]["oneOf"] = json!([{"type": "string"}]);
+        assert_eq!(
+            assess_mcp_table_schema(&composed_columns, rectangular.as_object().unwrap()),
+            Err(McpTableSchemaRejection::ColumnsInvalid)
+        );
+
+        let mut conditional_cell = schema.clone();
+        conditional_cell["properties"]["rows"]["items"]["items"]["if"] = json!({"type": "string"});
+        assert_eq!(
+            assess_mcp_table_schema(&conditional_cell, rectangular.as_object().unwrap()),
+            Err(McpTableSchemaRejection::RowsInvalid)
+        );
+
+        let mut composed_rows = schema.clone();
+        composed_rows["properties"]["rows"]["allOf"] = json!([{"type": "array"}]);
+        assert_eq!(
+            assess_mcp_table_schema(&composed_rows, rectangular.as_object().unwrap()),
             Err(McpTableSchemaRejection::RowsInvalid)
         );
 
