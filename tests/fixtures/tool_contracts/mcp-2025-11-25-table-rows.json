@@ -1,0 +1,90 @@
+{
+  "protocolVersion": "2025-11-25",
+  "input": {
+    "report": "quarterly-sanitized-sample"
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "columns": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": { "type": "string" }
+      },
+      "rows": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": ["string", "integer"] }
+        }
+      },
+      "rowCount": { "type": "integer", "minimum": 0 },
+      "order": { "type": "string" }
+    },
+    "required": ["columns", "rows", "rowCount", "order"],
+    "additionalProperties": false
+  },
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"columns\":[\"record\",\"ordinal\",\"summary\"],\"rows\":[[\"customer-alpha\",1,\"Sanitized first table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"],[\"customer-beta\",2,\"Sanitized second table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"],[\"customer-gamma\",3,\"Sanitized third table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"],[\"customer-delta\",4,\"Sanitized fourth table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"],[\"customer-epsilon\",5,\"Sanitized fifth table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"],[\"customer-zeta\",6,\"Sanitized sixth table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"],[\"customer-eta\",7,\"Sanitized seventh table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"],[\"customer-theta\",8,\"Sanitized final table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data.\"]],\"rowCount\":8,\"order\":\"source-order\"}"
+      }
+    ],
+    "structuredContent": {
+      "columns": ["record", "ordinal", "summary"],
+      "rows": [
+        [
+          "customer-alpha",
+          1,
+          "Sanitized first table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ],
+        [
+          "customer-beta",
+          2,
+          "Sanitized second table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ],
+        [
+          "customer-gamma",
+          3,
+          "Sanitized third table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ],
+        [
+          "customer-delta",
+          4,
+          "Sanitized fourth table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ],
+        [
+          "customer-epsilon",
+          5,
+          "Sanitized fifth table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ],
+        [
+          "customer-zeta",
+          6,
+          "Sanitized sixth table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ],
+        [
+          "customer-eta",
+          7,
+          "Sanitized seventh table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ],
+        [
+          "customer-theta",
+          8,
+          "Sanitized final table row repeats planning, delivery, review, and follow-up context so deterministic bounded retention has meaningful work without containing production data."
+        ]
+      ],
+      "rowCount": 8,
+      "order": "source-order"
+    },
+    "isError": false,
+    "_meta": {
+      "fixture": "sanitized-table-rows"
+    }
+  }
+}

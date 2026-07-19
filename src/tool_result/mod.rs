@@ -20,18 +20,20 @@ pub use schema::{validate_mcp_output_schema, McpOutputSchemaValidation, McpSchem
 #[allow(deprecated)]
 pub use strategy::MCP_COLLECTION_OMISSION_MARKER_FIELD;
 pub(crate) use strategy::{
-    assess_mcp_entity_schema, assess_mcp_search_array_schema, assess_mcp_tree_listing_schema,
-    collection_head_tail_indices, entity_detail_candidate, entity_detail_text_projection,
-    search_ranked_prefix_indices, tree_listing_candidate, tree_listing_text_projection,
-    McpEntitySchemaAuthorization, McpTreeSchemaAuthorization,
+    assess_mcp_entity_schema, assess_mcp_search_array_schema, assess_mcp_table_schema,
+    assess_mcp_tree_listing_schema, collection_head_tail_indices, entity_detail_candidate,
+    entity_detail_text_projection, search_ranked_prefix_indices, table_rows_candidate,
+    table_rows_text_projection, tree_listing_candidate, tree_listing_text_projection,
+    McpEntitySchemaAuthorization, McpTableSchemaAuthorization, McpTreeSchemaAuthorization,
 };
 pub use strategy::{
     validate_mcp_proposal, validate_mcp_proposal_with_contract,
     validate_mcp_proposal_with_contract_and_input, McpEntityDetailEdit, McpPaginatedCollectionEdit,
     McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
-    McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal, McpTreeListingEdit,
-    ValidatedMcpProposal, MCP_MAX_ENTITY_FIELDS, MCP_MAX_ENTITY_OMITTED_FIELDS,
-    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_MAX_TREE_ENTRIES,
+    McpStructuredContentReplacement, McpTableRowsEdit, McpTextReplacement, McpTransformProposal,
+    McpTreeListingEdit, ValidatedMcpProposal, MCP_MAX_ENTITY_FIELDS, MCP_MAX_ENTITY_OMITTED_FIELDS,
+    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS,
+    MCP_MAX_RETAINED_TABLE_ROWS, MCP_MAX_TABLE_COLUMNS, MCP_MAX_TABLE_ROWS, MCP_MAX_TREE_ENTRIES,
     MCP_MAX_TREE_OMITTED_ENTRIES, MCP_OMISSION_MARKER_FIELD,
 };
 pub use types::{

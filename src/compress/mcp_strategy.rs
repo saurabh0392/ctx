@@ -1,15 +1,17 @@
 use crate::tool_result::{
-    assess_mcp_entity_schema, assess_mcp_search_array_schema, assess_mcp_tree_listing_schema,
-    collection_head_tail_indices, entity_detail_candidate, entity_detail_text_projection,
-    search_ranked_prefix_indices, tree_listing_candidate, tree_listing_text_projection,
+    assess_mcp_entity_schema, assess_mcp_search_array_schema, assess_mcp_table_schema,
+    assess_mcp_tree_listing_schema, collection_head_tail_indices, entity_detail_candidate,
+    entity_detail_text_projection, search_ranked_prefix_indices, table_rows_candidate,
+    table_rows_text_projection, tree_listing_candidate, tree_listing_text_projection,
     validate_mcp_output_schema, validate_mcp_proposal_with_contract_and_input,
     CanonicalContentBlock, CanonicalMcpResult, McpEntityDetailEdit, McpEntitySchemaAuthorization,
     McpOutputSchemaValidation, McpPaginatedCollectionEdit, McpProposalRejection,
     McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
-    McpStructuredContentReplacement, McpTextReplacement, McpTransformProposal, McpTreeListingEdit,
-    McpTreeSchemaAuthorization, PreservedField, ToolContract, ValidatedMcpProposal,
-    MCP_MAX_ENTITY_OMITTED_FIELDS, MCP_MAX_RETAINED_COLLECTION_ITEMS,
-    MCP_MAX_RETAINED_SEARCH_RESULTS, MCP_MAX_TREE_OMITTED_ENTRIES, MCP_OMISSION_MARKER_FIELD,
+    McpStructuredContentReplacement, McpTableRowsEdit, McpTableSchemaAuthorization,
+    McpTextReplacement, McpTransformProposal, McpTreeListingEdit, McpTreeSchemaAuthorization,
+    PreservedField, ToolContract, ValidatedMcpProposal, MCP_MAX_ENTITY_OMITTED_FIELDS,
+    MCP_MAX_RETAINED_COLLECTION_ITEMS, MCP_MAX_RETAINED_SEARCH_RESULTS,
+    MCP_MAX_RETAINED_TABLE_ROWS, MCP_MAX_TREE_OMITTED_ENTRIES, MCP_OMISSION_MARKER_FIELD,
 };
 use serde_json::{Map, Value};
 
@@ -92,6 +94,22 @@ const TREE_LISTING_INVARIANTS: &[&str] = &[
     "result-contract-reparses",
 ];
 
+const TABLE_ROWS_INVARIANTS: &[&str] = &[
+    "source-round-trip-identical",
+    "advertised-output-schema-valid-before-and-after",
+    "one-schema-authorized-columns-and-rows-table",
+    "non-empty-unique-bounded-columns-preserved",
+    "rectangular-scalar-rows-only",
+    "retained-rows-value-identical-and-source-ordered",
+    "first-and-last-source-rows-retained",
+    "largest-fitting-retained-row-count",
+    "non-row-siblings-unchanged",
+    "text-projection-matches-structured-candidate",
+    "explicit-content-free-omitted-row-marker",
+    "error-results-pass-through",
+    "result-contract-reparses",
+];
+
 pub(crate) const MCP_TEXT_BLOCKS_V2: McpStrategyManifest = McpStrategyManifest {
     id: "mcp-text-blocks",
     version: "2",
@@ -129,6 +147,14 @@ pub(crate) const MCP_TREE_LISTING_V1: McpStrategyManifest = McpStrategyManifest 
     version: "1",
     eligible_shape: "schema-backed-rooted-flat-tree-listing",
     invariants: TREE_LISTING_INVARIANTS,
+    max_expansion_percent: 100,
+};
+
+pub(crate) const MCP_TABLE_ROWS_V1: McpStrategyManifest = McpStrategyManifest {
+    id: "mcp-table-rows",
+    version: "1",
+    eligible_shape: "schema-backed-rectangular-scalar-table",
+    invariants: TABLE_ROWS_INVARIANTS,
     max_expansion_percent: 100,
 };
 
@@ -399,6 +425,43 @@ impl McpResultStrategy for TreeListingStrategy {
     }
 }
 
+struct TableRowsStrategy;
+
+impl McpResultStrategy for TableRowsStrategy {
+    fn manifest(&self) -> &'static McpStrategyManifest {
+        &MCP_TABLE_ROWS_V1
+    }
+
+    fn eligibility(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
+    ) -> McpStrategyEligibility {
+        match table_rows_shape(result, contract) {
+            Ok(Some(_)) => {
+                McpStrategyEligibility::Eligible("output-schema-rectangular-scalar-table")
+            }
+            Ok(None) => McpStrategyEligibility::NotApplicable,
+            Err(reason) => McpStrategyEligibility::Rejected(reason),
+        }
+    }
+
+    fn propose(
+        &self,
+        result: &CanonicalMcpResult,
+        contract: Option<&ToolContract>,
+        _tool_input: Option<&Value>,
+        opts: &CompressOptions,
+        _ctx: &CompressContext,
+    ) -> McpProposalOutcome {
+        let Ok(Some(shape)) = table_rows_shape(result, contract) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        propose_table_rows(result, &shape, opts, self.manifest())
+    }
+}
+
 #[derive(Debug)]
 struct PaginatedCollectionShape {
     field: String,
@@ -424,6 +487,12 @@ struct EntityDetailShape {
 #[derive(Debug)]
 struct TreeListingShape {
     authorization: McpTreeSchemaAuthorization,
+    text_block_index: usize,
+}
+
+#[derive(Debug)]
+struct TableRowsShape {
+    authorization: McpTableSchemaAuthorization,
     text_block_index: usize,
 }
 
@@ -515,6 +584,89 @@ fn tree_listing_shape(
         authorization,
         text_block_index: text_blocks[0].0,
     }))
+}
+
+fn table_rows_shape(
+    result: &CanonicalMcpResult,
+    contract: Option<&ToolContract>,
+) -> Result<Option<TableRowsShape>, &'static str> {
+    let PreservedField::Value(Value::Object(structured)) = &result.structured_content else {
+        return if raw_delimited_table_hint(result) {
+            Err("table-raw-delimited-text-unsupported")
+        } else {
+            Ok(None)
+        };
+    };
+    let table_hint = structured.keys().any(|field| {
+        matches!(
+            normalized_schema_field(field).as_str(),
+            "columns" | "headers"
+        )
+    }) && structured
+        .keys()
+        .any(|field| matches!(normalized_schema_field(field).as_str(), "rows" | "data"));
+    if !table_hint {
+        return Ok(None);
+    }
+    let Some(schema) = contract.and_then(|contract| contract.output_schema.value()) else {
+        return Err("table-output-schema-required");
+    };
+    if structured.keys().any(|field| is_pagination_field(field)) {
+        return Ok(None);
+    }
+    let authorization =
+        assess_mcp_table_schema(schema, structured).map_err(|rejection| rejection.code())?;
+    if structured.contains_key(MCP_OMISSION_MARKER_FIELD) {
+        return Err("table-omission-marker-collision");
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 {
+        return Err("table-text-mirror-required");
+    }
+    let parsed_text: Value =
+        serde_json::from_str(text_blocks[0].1).map_err(|_| "table-text-mirror-invalid")?;
+    if parsed_text != Value::Object(structured.clone()) {
+        return Err("table-text-mirror-invalid");
+    }
+
+    Ok(Some(TableRowsShape {
+        authorization,
+        text_block_index: text_blocks[0].0,
+    }))
+}
+
+fn raw_delimited_table_hint(result: &CanonicalMcpResult) -> bool {
+    let mut text_blocks = result
+        .content
+        .iter()
+        .filter_map(CanonicalContentBlock::text);
+    let Some(text) = text_blocks.next() else {
+        return false;
+    };
+    if text_blocks.next().is_some() {
+        return false;
+    }
+    let lines: Vec<_> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(8)
+        .collect();
+    if lines.len() < 3 {
+        return false;
+    }
+    [',', '\t'].iter().any(|delimiter| {
+        let first_count = lines[0].matches(*delimiter).count();
+        first_count > 0
+            && lines[1..]
+                .iter()
+                .all(|line| line.matches(*delimiter).count() == first_count)
+    })
 }
 
 fn entity_detail_shape(
@@ -1139,6 +1291,94 @@ fn propose_tree_listing(
     }))
 }
 
+fn propose_table_rows(
+    result: &CanonicalMcpResult,
+    shape: &TableRowsShape,
+    opts: &CompressOptions,
+    manifest: &McpStrategyManifest,
+) -> McpProposalOutcome {
+    let PreservedField::Value(Value::Object(source)) = &result.structured_content else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let Some(source_rows) = source
+        .get(&shape.authorization.rows_field)
+        .and_then(Value::as_array)
+    else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let Some(source_text) = result
+        .content
+        .get(shape.text_block_index)
+        .and_then(CanonicalContentBlock::text)
+    else {
+        return McpProposalOutcome::NoSavings;
+    };
+    let source_chars = source_text.chars().count();
+    if source_chars <= opts.target_chars {
+        return McpProposalOutcome::WithinBudget;
+    }
+    if source_rows.len() < 3 {
+        return McpProposalOutcome::NoSavings;
+    }
+
+    let minimum_retained = shape.authorization.min_rows.max(2);
+    let maximum_retained = (source_rows.len() - 1).min(MCP_MAX_RETAINED_TABLE_ROWS);
+    if minimum_retained > maximum_retained {
+        return McpProposalOutcome::NoSavings;
+    }
+
+    let mut best = None;
+    let mut low = minimum_retained;
+    let mut high = maximum_retained;
+    while low <= high {
+        let retained = low + (high - low) / 2;
+        let retained_indices = collection_head_tail_indices(source_rows.len(), retained);
+        let candidate =
+            table_rows_candidate(source, &shape.authorization.rows_field, &retained_indices);
+        let projection = table_rows_text_projection(
+            &candidate,
+            &shape.authorization.columns_field,
+            &shape.authorization.rows_field,
+            shape.authorization.column_count,
+            source_rows.len(),
+        );
+        let Ok(text_projection) = serde_json::to_string(&projection) else {
+            return McpProposalOutcome::NoSavings;
+        };
+        let chars_out = text_projection.chars().count();
+        if chars_out > opts.target_chars.max(1) || chars_out >= source_chars {
+            high = retained - 1;
+            continue;
+        }
+        best = Some((retained_indices, Value::Object(candidate), text_projection));
+        low = retained + 1;
+    }
+    let Some((retained_indices, replacement, text_projection)) = best else {
+        return McpProposalOutcome::NoSavings;
+    };
+
+    McpProposalOutcome::Proposed(Box::new(McpTransformProposal {
+        strategy_id: manifest.id,
+        strategy_version: manifest.version,
+        max_total_text_chars: opts.target_chars.max(1),
+        replacements: vec![McpTextReplacement {
+            block_index: shape.text_block_index,
+            expected_text: source_text.to_string(),
+            replacement: text_projection,
+        }],
+        structured_content: Some(McpStructuredContentReplacement {
+            expected: Value::Object(source.clone()),
+            replacement,
+            edit: McpStructuredContentEdit::TableRows(McpTableRowsEdit {
+                columns_field: shape.authorization.columns_field.clone(),
+                rows_field: shape.authorization.rows_field.clone(),
+                retained_indices,
+                omission_marker_field: MCP_OMISSION_MARKER_FIELD.to_string(),
+            }),
+        }),
+    }))
+}
+
 fn structured_array_candidate(
     source: &Map<String, Value>,
     field: &str,
@@ -1210,9 +1450,11 @@ static PAGINATED_COLLECTION_STRATEGY: PaginatedCollectionStrategy = PaginatedCol
 static SEARCH_RESULTS_STRATEGY: SearchResultsStrategy = SearchResultsStrategy;
 static ENTITY_DETAIL_STRATEGY: EntityDetailStrategy = EntityDetailStrategy;
 static TREE_LISTING_STRATEGY: TreeListingStrategy = TreeListingStrategy;
-static STRATEGIES: [&dyn McpResultStrategy; 5] = [
+static TABLE_ROWS_STRATEGY: TableRowsStrategy = TableRowsStrategy;
+static STRATEGIES: [&dyn McpResultStrategy; 6] = [
     &SEARCH_RESULTS_STRATEGY,
     &TREE_LISTING_STRATEGY,
+    &TABLE_ROWS_STRATEGY,
     &PAGINATED_COLLECTION_STRATEGY,
     &ENTITY_DETAIL_STRATEGY,
     &TEXT_BLOCK_STRATEGY,
@@ -1616,6 +1858,64 @@ mod tests {
         (result, contract, input)
     }
 
+    fn table_result(row_count: usize) -> (CanonicalMcpResult, ToolContract) {
+        let rows: Vec<_> = (0..row_count)
+            .map(|index| {
+                json!([
+                    format!("row-{index}"),
+                    index,
+                    format!(
+                        "sanitized table cell {index} {}",
+                        "repeated tabular context ".repeat(10)
+                    )
+                ])
+            })
+            .collect();
+        let structured = json!({
+            "columns": ["record", "ordinal", "summary"],
+            "rows": rows,
+            "rowCount": row_count,
+            "order": "source-order"
+        });
+        let text = serde_json::to_string(&structured).expect("serialize table fixture");
+        let result = parse_mcp_result(&json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+            "isError": false,
+            "_meta": {"request": "table-r1"}
+        }))
+        .expect("table result");
+        let contract = ToolContract {
+            output_schema: PreservedField::Value(json!({
+                "type": "object",
+                "properties": {
+                    "columns": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {"type": "string"}
+                    },
+                    "rows": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": {"type": ["string", "integer"]}
+                        }
+                    },
+                    "rowCount": {"type": "integer", "minimum": 0},
+                    "order": {"type": "string"}
+                },
+                "required": ["columns", "rows", "rowCount", "order"],
+                "additionalProperties": false
+            })),
+            ..Default::default()
+        };
+        (result, contract)
+    }
+
     #[test]
     fn registry_is_deterministic_and_versioned() {
         let manifests: Vec<_> = STRATEGIES
@@ -1627,12 +1927,341 @@ mod tests {
             vec![
                 &MCP_SEARCH_RESULTS_V1,
                 &MCP_TREE_LISTING_V1,
+                &MCP_TABLE_ROWS_V1,
                 &MCP_PAGINATED_COLLECTION_V1,
                 &MCP_ENTITY_DETAIL_V1,
                 &MCP_TEXT_BLOCKS_V2
             ]
         );
         assert!(!manifests[0].invariants.is_empty());
+    }
+
+    #[test]
+    fn table_proposal_preserves_header_rows_order_and_largest_fitting_sample() {
+        let (result, contract) = table_result(12);
+        let shape = table_rows_shape(&result, Some(&contract))
+            .expect("shape assessment")
+            .expect("table shape");
+        assert_eq!(shape.authorization.columns_field, "columns");
+        assert_eq!(shape.authorization.rows_field, "rows");
+        assert_eq!(shape.authorization.column_count, 3);
+        assert_eq!(shape.authorization.min_rows, 2);
+
+        let source = result
+            .structured_content
+            .value()
+            .unwrap()
+            .as_object()
+            .unwrap();
+        let source_rows = source["rows"].as_array().unwrap();
+        let retained_indices = collection_head_tail_indices(source_rows.len(), 4);
+        let expected_candidate = table_rows_candidate(source, "rows", &retained_indices);
+        let target = serde_json::to_string(&table_rows_text_projection(
+            &expected_candidate,
+            "columns",
+            "rows",
+            3,
+            source_rows.len(),
+        ))
+        .unwrap()
+        .chars()
+        .count();
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_table_rows(&result, &shape, &options(target), &MCP_TABLE_ROWS_V1)
+        else {
+            panic!("expected table proposal");
+        };
+        let replacement = proposal.structured_content.as_ref().unwrap();
+        assert_eq!(replacement.replacement, Value::Object(expected_candidate));
+        let McpStructuredContentEdit::TableRows(edit) = &replacement.edit else {
+            panic!("expected table edit");
+        };
+        assert_eq!(edit.retained_indices, retained_indices);
+        let candidate = replacement.replacement.as_object().unwrap();
+        assert_eq!(candidate["columns"], source["columns"]);
+        assert_eq!(candidate["rowCount"], source["rowCount"]);
+        assert_eq!(candidate["order"], source["order"]);
+        for (row, index) in candidate["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(&retained_indices)
+        {
+            assert_eq!(row, &source_rows[*index]);
+        }
+
+        let validated = validate_mcp_proposal_with_contract_and_input(
+            &result,
+            Some(&contract),
+            None,
+            &MCP_TABLE_ROWS_V1,
+            &proposal,
+        )
+        .expect("table proposal validates");
+        assert_eq!(validated.table_columns, Some(3));
+        assert_eq!(validated.table_rows_in, Some(12));
+        assert_eq!(validated.table_rows_out, Some(4));
+        assert_eq!(validated.table_rows_omitted, Some(8));
+        assert_eq!(result.render(), *result.raw());
+    }
+
+    #[test]
+    fn stale_forged_and_overtrimmed_table_proposals_are_rejected() {
+        let (result, contract) = table_result(12);
+        let shape = table_rows_shape(&result, Some(&contract)).unwrap().unwrap();
+        let source = result
+            .structured_content
+            .value()
+            .unwrap()
+            .as_object()
+            .unwrap();
+        let rows = source["rows"].as_array().unwrap();
+        let four_indices = collection_head_tail_indices(rows.len(), 4);
+        let four_candidate = table_rows_candidate(source, "rows", &four_indices);
+        let target = serde_json::to_string(&table_rows_text_projection(
+            &four_candidate,
+            "columns",
+            "rows",
+            3,
+            rows.len(),
+        ))
+        .unwrap()
+        .chars()
+        .count();
+        let McpProposalOutcome::Proposed(proposal) =
+            propose_table_rows(&result, &shape, &options(target), &MCP_TABLE_ROWS_V1)
+        else {
+            panic!("expected table proposal");
+        };
+
+        let mut forged_selection = (*proposal).clone();
+        let McpStructuredContentEdit::TableRows(edit) =
+            &mut forged_selection.structured_content.as_mut().unwrap().edit
+        else {
+            panic!("expected table edit");
+        };
+        edit.retained_indices = vec![0, 1, 2, 11];
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_TABLE_ROWS_V1,
+                &forged_selection,
+            ),
+            Err(McpProposalRejection::TableSelectionInvalid)
+        );
+
+        let mut forged_marker = (*proposal).clone();
+        let mut projection: Value =
+            serde_json::from_str(&forged_marker.replacements[0].replacement).unwrap();
+        projection["_ctxOmission"]["columns"] = json!(999);
+        forged_marker.replacements[0].replacement = serde_json::to_string(&projection).unwrap();
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_TABLE_ROWS_V1,
+                &forged_marker,
+            ),
+            Err(McpProposalRejection::TableOmissionMarkerInvalid)
+        );
+
+        let mut overtrimmed = (*proposal).clone();
+        let replacement = overtrimmed.structured_content.as_mut().unwrap();
+        let three_indices = collection_head_tail_indices(rows.len(), 3);
+        let three_candidate = table_rows_candidate(source, "rows", &three_indices);
+        replacement.replacement = Value::Object(three_candidate.clone());
+        let McpStructuredContentEdit::TableRows(edit) = &mut replacement.edit else {
+            panic!("expected table edit");
+        };
+        edit.retained_indices = three_indices;
+        overtrimmed.replacements[0].replacement = serde_json::to_string(
+            &table_rows_text_projection(&three_candidate, "columns", "rows", 3, rows.len()),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_TABLE_ROWS_V1,
+                &overtrimmed,
+            ),
+            Err(McpProposalRejection::TableSelectionInvalid)
+        );
+
+        let mut stale = (*proposal).clone();
+        stale.structured_content.as_mut().unwrap().expected["order"] = json!("changed");
+        assert_eq!(
+            validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_TABLE_ROWS_V1,
+                &stale,
+            ),
+            Err(McpProposalRejection::StaleStructuredContent)
+        );
+    }
+
+    #[test]
+    fn table_strategy_rejects_raw_delimited_text_and_yields_on_pagination() {
+        for raw_table in ["id,name\n1,Ada\n2,Grace\n", "id\tname\n1\tAda\n2\tGrace\n"] {
+            let raw_table = parse_mcp_result(&json!({
+                "content": [{"type": "text", "text": raw_table}],
+                "isError": false
+            }))
+            .unwrap();
+            let observation = evaluate_mcp_strategies_shadow(
+                &raw_table,
+                &options(20),
+                &CompressContext::default(),
+            );
+            assert_eq!(observation.manifest, None);
+            assert_eq!(
+                observation.pass_through_reason,
+                Some("table-raw-delimited-text-unsupported")
+            );
+            assert!(!observation.proposal_attempted);
+        }
+        for two_line_text in [
+            "event,first\nevent,second\n",
+            "event\tfirst\nevent\tsecond\n",
+        ] {
+            let result = parse_mcp_result(&json!({
+                "content": [{"type": "text", "text": two_line_text}],
+                "isError": false
+            }))
+            .unwrap();
+            assert!(!raw_delimited_table_hint(&result));
+            assert!(table_rows_shape(&result, None).unwrap().is_none());
+        }
+
+        let (table, mut contract) = table_result(8);
+        let mut raw = table.raw().clone();
+        raw["structuredContent"]["nextCursor"] = json!("page-2");
+        raw["content"][0]["text"] =
+            json!(serde_json::to_string(&raw["structuredContent"]).unwrap());
+        if let PreservedField::Value(schema) = &mut contract.output_schema {
+            schema["additionalProperties"] = json!(true);
+        }
+        let paginated = parse_mcp_result(&raw).unwrap();
+        assert!(table_rows_shape(&paginated, Some(&contract))
+            .expect("shape assessment")
+            .is_none());
+    }
+
+    #[test]
+    fn table_schema_marker_mirror_and_error_boundaries_fail_open() {
+        let (result, contract) = table_result(8);
+        let schema_less = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            None,
+            &options(700),
+            &CompressContext::default(),
+        );
+        assert_eq!(schema_less.manifest, None);
+        assert_eq!(
+            schema_less.pass_through_reason,
+            Some("table-output-schema-required")
+        );
+
+        let mut collision_raw = result.raw().clone();
+        collision_raw["structuredContent"][MCP_OMISSION_MARKER_FIELD] = json!({"server": true});
+        collision_raw["content"][0]["text"] =
+            json!(serde_json::to_string(&collision_raw["structuredContent"]).unwrap());
+        let mut collision_contract = contract.clone();
+        if let PreservedField::Value(schema) = &mut collision_contract.output_schema {
+            schema["properties"][MCP_OMISSION_MARKER_FIELD] = json!({"type": "object"});
+        }
+        let collision = parse_mcp_result(&collision_raw).unwrap();
+        let collision_observation = evaluate_mcp_strategies_shadow_with_contract(
+            &collision,
+            Some(&collision_contract),
+            &options(700),
+            &CompressContext::default(),
+        );
+        assert_eq!(collision_observation.manifest, None);
+        assert_eq!(
+            collision_observation.pass_through_reason,
+            Some("table-omission-marker-collision")
+        );
+
+        let mut nonmirror_raw = result.raw().clone();
+        nonmirror_raw["content"][0]["text"] = json!("{\"columns\":[\"wrong\"],\"rows\":[]}");
+        let nonmirror = parse_mcp_result(&nonmirror_raw).unwrap();
+        let nonmirror_observation = evaluate_mcp_strategies_shadow_with_contract(
+            &nonmirror,
+            Some(&contract),
+            &options(700),
+            &CompressContext::default(),
+        );
+        assert_eq!(nonmirror_observation.manifest, None);
+        assert_eq!(
+            nonmirror_observation.pass_through_reason,
+            Some("table-text-mirror-invalid")
+        );
+
+        let mut error_raw = result.raw().clone();
+        error_raw["isError"] = json!(true);
+        let error = parse_mcp_result(&error_raw).unwrap();
+        let error_observation = evaluate_mcp_strategies_shadow_with_contract(
+            &error,
+            Some(&contract),
+            &options(700),
+            &CompressContext::default(),
+        );
+        assert_eq!(error_observation.manifest, None);
+        assert_eq!(error_observation.pass_through_reason, Some("error-result"));
+        assert!(!error_observation.proposal_attempted);
+    }
+
+    #[test]
+    fn table_minimum_rows_can_make_an_over_budget_source_untrimmable() {
+        let (result, contract) = table_result(2);
+        let observation = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(100),
+            &CompressContext::default(),
+        );
+        assert_eq!(observation.manifest, Some(&MCP_TABLE_ROWS_V1));
+        assert!(observation.proposal_attempted);
+        assert_eq!(observation.pass_through_reason, Some("no-savings"));
+    }
+
+    #[test]
+    fn table_generated_budgets_are_deterministic_and_within_budget_is_distinct() {
+        let (result, contract) = table_result(16);
+        let shape = table_rows_shape(&result, Some(&contract)).unwrap().unwrap();
+        let source_chars = result.content[0].text().unwrap().chars().count();
+        let within = evaluate_mcp_strategies_shadow_with_contract(
+            &result,
+            Some(&contract),
+            &options(source_chars),
+            &CompressContext::default(),
+        );
+        assert_eq!(within.manifest, Some(&MCP_TABLE_ROWS_V1));
+        assert!(!within.proposal_attempted);
+        assert_eq!(within.pass_through_reason, Some("within-budget"));
+
+        let mut validated_budgets = 0;
+        for target in (700..source_chars).step_by(150) {
+            let first = propose_table_rows(&result, &shape, &options(target), &MCP_TABLE_ROWS_V1);
+            let second = propose_table_rows(&result, &shape, &options(target), &MCP_TABLE_ROWS_V1);
+            assert_eq!(first, second);
+            let McpProposalOutcome::Proposed(proposal) = first else {
+                continue;
+            };
+            let validated = validate_mcp_proposal_with_contract(
+                &result,
+                Some(&contract),
+                &MCP_TABLE_ROWS_V1,
+                &proposal,
+            )
+            .expect("generated table proposal validates");
+            assert!(validated.chars_out <= target);
+            validated_budgets += 1;
+        }
+        assert!(validated_budgets >= 3);
     }
 
     #[test]
