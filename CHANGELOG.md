@@ -3,6 +3,32 @@
 All notable CTX changes are recorded here. Versions follow semantic versioning while the product is
 in beta.
 
+## [0.5.4] - 2026-07-18
+
+### Added
+
+- Lossless canonical MCP result and tool-contract capture behind the shadow-only evidence gate.
+- Independently validated proposal strategies for plain text blocks, schema-backed paginated
+  collections, ranked search results, entity/detail records, rooted flat tree listings, and
+  rectangular scalar tables.
+- Sanitized contract fixtures and adversarial tests for stale, forged, schema-hostile, oversized,
+  ambiguous, and content-leaking proposals.
+
+### Changed
+
+- Make every structured proposal prove source round-trip identity, advertised output-schema
+  validity, deterministic largest-fitting selection, and exact preservation of protected fields.
+- Tighten raw delimited-table detection so weak two-line comma or tab patterns continue through the
+  strategy registry instead of being misclassified.
+- Make dashboard coherence mutation checks deterministic and remove a stale Stop trial control.
+
+### Security and privacy
+
+- Keep proposal edits, retained indices, structured candidates, text projections, tool input, and
+  result content inside the transient validator boundary; this release remains shadow-only.
+- Emit only bounded content-free strategy, schema, character-count, and item-count evidence.
+- Fail closed on unsupported schemas and raw table dialects rather than guessing semantics.
+
 ## [0.5.3] - 2026-07-18
 
 ### Added
