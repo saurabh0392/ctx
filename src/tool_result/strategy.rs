@@ -1570,12 +1570,13 @@ fn normalize_tree_entry_path(path: &str) -> Option<(String, usize)> {
     if path.is_empty()
         || path.len() > MCP_MAX_TREE_PATH_BYTES
         || path.contains('\0')
-        || path.starts_with(['/', '\\'])
+        || path.starts_with('/')
+        || path.starts_with('\\')
         || path.as_bytes().get(1) == Some(&b':')
     {
         return None;
     }
-    let segments: Vec<_> = path.split(['/', '\\']).collect();
+    let segments: Vec<_> = path.split(&['/', '\\'][..]).collect();
     if segments.is_empty()
         || segments
             .iter()
