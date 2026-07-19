@@ -1130,6 +1130,42 @@ pub fn insert_rewind(
     );
 }
 
+/// Fallible variant used by the central apply transaction. Live adapters must not emit a
+/// shortened result unless the exact original is already durable, so swallowing a SQLite error
+/// (which is appropriate for the legacy best-effort hook path above) is not safe here.
+pub fn insert_rewind_checked(
+    conn: &Connection,
+    id: &str,
+    ts: &str,
+    session_id: Option<&str>,
+    tool_name: &str,
+    command_or_path: &str,
+    original: &str,
+    trimmed: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO rewind_store
+         (id, ts, session_id, tool_name, command_or_path, original, chars, trimmed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            ts,
+            session_id,
+            tool_name,
+            command_or_path,
+            original,
+            original.chars().count() as i64,
+            trimmed
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM rewind_store WHERE id NOT IN
+         (SELECT id FROM rewind_store ORDER BY ts DESC LIMIT 500)",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Mark a stored trim as recovered when the agent re-expands it (CTX-51 L2). A recovery is a
 /// benign outcome, so the gate later discounts it from the tool's harmful re-read count.
 pub fn mark_rewind_expanded(conn: &Connection, id: &str) {
@@ -2451,8 +2487,15 @@ fn apply_surface_capabilities(summary: &mut SurfaceSummary) {
                 .push("Built-in Read and search results are observed only".into());
         }
         "codex" => {
-            summary.integration = "plugin".into();
+            let gateway_servers = crate::mcp_gateway::registry::codex_gateway_server_count();
+            summary.integration = if gateway_servers > 0 {
+                "plugin+gateway"
+            } else {
+                "plugin"
+            }
+            .into();
             summary.can_trim_shell = true;
+            summary.can_trim_mcp = gateway_servers > 0;
             summary.status = if summary.seen {
                 "partially_active"
             } else {
@@ -2462,9 +2505,16 @@ fn apply_surface_capabilities(summary: &mut SurfaceSummary) {
             summary
                 .limitations
                 .push("Built-in Read and search results are observed only".into());
-            summary
-                .limitations
-                .push("Clean PostToolUse replacement is not enabled for MCP output".into());
+            if gateway_servers == 0 {
+                summary.limitations.push(
+                    "MCP servers remain direct until explicitly routed through the CTX gateway"
+                        .into(),
+                );
+            } else {
+                summary.limitations.push(format!(
+                    "MCP trimming applies only to {gateway_servers} explicitly approved gateway server(s)"
+                ));
+            }
         }
         _ => {}
     }

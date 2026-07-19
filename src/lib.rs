@@ -41,6 +41,7 @@ pub mod host;
 pub mod inject;
 pub mod learn;
 pub mod mcp;
+pub mod mcp_gateway;
 pub mod modes;
 pub mod outcome_signals;
 pub mod profiles;
@@ -65,7 +66,7 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{
     BenchCommand, Cli, Commands, ContextCommand, ExperimentCommand, ExperimentPlanCommand,
-    FilterCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand,
+    FilterCommand, GatewayCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand,
 };
 
 pub async fn run() -> Result<()> {
@@ -144,9 +145,35 @@ pub async fn run() -> Result<()> {
         Commands::Run {
             surface,
             session,
+            shell,
             command,
-        } => cmd_run::exec(command, &surface, session.as_deref())?,
+        } => cmd_run::exec(command, &surface, session.as_deref(), shell)?,
         Commands::Mcp => mcp::serve_stdio()?,
+        Commands::Gateway { command } => match command {
+            GatewayCommand::AddStdio {
+                id,
+                command,
+                cwd,
+                pass_env,
+                args,
+            } => mcp_gateway::registry::add_stdio(&id, &command, args, cwd, pass_env)?,
+            GatewayCommand::AddHttp {
+                id,
+                url,
+                bearer_token_env,
+                accept_remote_beta,
+            } => mcp_gateway::registry::add_http(&id, &url, bearer_token_env, accept_remote_beta)?,
+            GatewayCommand::List => mcp_gateway::registry::list()?,
+            GatewayCommand::Remove { id } => mcp_gateway::registry::remove(&id)?,
+            GatewayCommand::CodexEnable {
+                name,
+                accept_remote_beta,
+            } => mcp_gateway::registry::codex_enable(&name, accept_remote_beta)?,
+            GatewayCommand::CodexDisable { name } => mcp_gateway::registry::codex_disable(&name)?,
+            GatewayCommand::Login { id, yes } => mcp_gateway::oauth::login(&id, yes).await?,
+            GatewayCommand::Logout { id } => mcp_gateway::oauth::logout(&id)?,
+            GatewayCommand::Serve { id, surface } => mcp_gateway::serve(&id, &surface).await?,
+        },
         Commands::Mode { name, command } => match command {
             Some(ModeCommand::List) => {
                 let cfg = config::Config::load();

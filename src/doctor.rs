@@ -95,6 +95,30 @@ pub fn inspect() -> DoctorReport {
         "ctx recovery server registered in Claude settings",
     ));
 
+    match crate::mcp_gateway::registry::GatewayRegistry::load() {
+        Ok(registry) => {
+            let mut item = check(
+                "mcp_gateway",
+                true,
+                format!(
+                    "{} approved destination(s); {} Codex server(s) routed",
+                    registry.servers.len(),
+                    registry.codex_backups.len()
+                ),
+            );
+            item.state = Some(
+                if registry.servers.is_empty() {
+                    "not_configured"
+                } else {
+                    "configured"
+                }
+                .into(),
+            );
+            checks.push(item);
+        }
+        Err(error) => checks.push(check("mcp_gateway", false, error.to_string())),
+    }
+
     let codex = std::process::Command::new("codex")
         .arg("--version")
         .output();
@@ -127,7 +151,7 @@ pub fn inspect() -> DoctorReport {
                 "not_installed"
             } else if !heartbeat {
                 "awaiting_hook_trust"
-            } else if acted > 0 {
+            } else if acted > 0 || crate::mcp_gateway::registry::codex_gateway_server_count() > 0 {
                 "partially_active"
             } else {
                 "observing"
@@ -136,7 +160,10 @@ pub fn inspect() -> DoctorReport {
             let mut item = check(
                 "codex_plugin",
                 ok,
-                format!("{version_text}; {state}; MCP bundled with plugin"),
+                format!(
+                    "{version_text}; {state}; {} MCP server(s) routed through CTX",
+                    crate::mcp_gateway::registry::codex_gateway_server_count()
+                ),
             );
             item.state = Some(state.into());
             checks.push(item);

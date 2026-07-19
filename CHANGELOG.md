@@ -3,6 +3,43 @@
 All notable CTX changes are recorded here. Versions follow semantic versioning while the product is
 in beta.
 
+## [0.6.0] - 2026-07-19
+
+### Added
+
+- One two-phase MCP apply transaction: exact recovery is durable before emission, while applied
+  evidence is committed only after the adapter flushes the shortened result.
+- A local `stdio` MCP gateway with explicit server registration, isolated direct process spawning,
+  bounded JSON-RPC correlation, `tools/list` contract caching, and unknown-message pass-through.
+- Opt-in Streamable HTTP transport with exact destination receipts, DNS pinning, redirect and proxy
+  refusal, private-address blocking, MCP sessions, SSE parsing, and event-id redelivery suppression.
+- OAuth 2.1 authorization-code support with PKCE S256, dynamic client registration, state checking,
+  refresh rotation, and operating-system credential storage without a plaintext fallback.
+- Reversible `ctx gateway codex-enable` / `codex-disable` commands that preserve Codex policy fields
+  and restore the exact original MCP server table.
+- POSIX, PowerShell, `cmd.exe`, and WSL shell execution contracts plus macOS CI coverage.
+
+### Changed
+
+- Migrate Claude Code and Cursor MCP output replacement to the canonical block-aware strategy and
+  apply boundary; schema-dependent strategies activate through the gateway's captured contracts.
+- Preserve shell stdout, stderr, exit/signal status, invalid encodings, ANSI streams, and terminal
+  behavior separately; interactive and ambiguous commands bypass capture.
+- Report Codex MCP trimming as available only for explicitly approved gateway servers. Built-in
+  Read/search remains honestly observation-only because current Codex hooks cannot replace results.
+- Replace the absolute local-only promise with a precise one: CTX operates no traffic relay, local
+  evidence stays local, and remote MCP traffic goes only to the reviewed destination it already
+  requires.
+
+### Security and privacy
+
+- Store no OAuth token in SQLite, logs, analytics, or CTX config; fail closed if the OS credential
+  store is unavailable.
+- Reject shell spawning, literal imported secret environments, URL credentials, redirects,
+  ambient HTTP proxies, DNS rebinding to non-public addresses, and unapproved remote destinations.
+- Prove byte-identical gateway pass-through with trimming disabled and exact recovery plus non-text
+  block preservation with an authorized model-visible trim.
+
 ## [0.5.6] - 2026-07-19
 
 ### Fixed

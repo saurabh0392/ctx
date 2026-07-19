@@ -19,6 +19,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use anyhow::Result;
+use clap::ValueEnum;
 
 use crate::agent::ToolResult;
 use crate::config::Config;
@@ -29,15 +30,46 @@ struct RunOutcome {
     code: i32,
     raw_stdout: Vec<u8>,
     raw_stderr: Vec<u8>,
-    /// `Some` when ctx compacted the combined output; the agent should read this instead of the raw
-    /// streams. `None` means pass the raw streams through untouched.
-    compacted: Option<String>,
+    /// `Some` when ctx prepared a recoverable stdout compaction. Stderr always remains separate.
+    compacted: Option<PreparedShellTrim>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedShellTrim {
+    text: String,
+    rewind_id: String,
+    session_id: Option<String>,
+    tool_name: String,
+    command_or_path: String,
+    strategy: String,
+    chars_in: usize,
+    chars_out: usize,
+    lines_in: usize,
+    lines_out: usize,
+    surface: String,
+    cwd: String,
+    prepared_at: String,
+}
+
+/// Explicit cross-platform execution contract for the wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ShellKind {
+    Auto,
+    Posix,
+    PowerShell,
+    Cmd,
+    Wsl,
 }
 
 /// Entry point for `ctx run <command...>`. Runs the command through a shell, optionally compacts the
 /// output, writes the result, and exits with the command's own exit code. Does not return on the
 /// normal path: it calls [`std::process::exit`] so the exit status is faithful.
-pub fn exec(command_parts: Vec<String>, surface: &str, session_id: Option<&str>) -> Result<()> {
+pub fn exec(
+    command_parts: Vec<String>,
+    surface: &str,
+    session_id: Option<&str>,
+    shell: ShellKind,
+) -> Result<()> {
     if crate::surface::SurfaceId::parse(surface).is_none() {
         anyhow::bail!("unknown agent surface `{surface}`; expected claude-code, cursor, or codex");
     }
@@ -46,29 +78,43 @@ pub fn exec(command_parts: Vec<String>, surface: &str, session_id: Option<&str>)
         std::process::exit(0);
     }
 
-    let outcome = run_command(&command, surface, session_id);
-    write_outcome(&outcome);
+    // Interactive, streaming, and background commands must retain the real terminal contract.
+    // They bypass capture entirely, so CTX cannot accidentally remove TTY behavior just by being
+    // present in a rewritten command.
+    if !shell_output_semantically_safe(&command) {
+        let mut process = shell_command(shell, &command);
+        let status = process
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+        let code = status.as_ref().map(exit_code).unwrap_or(127);
+        if let Err(error) = status {
+            eprintln!("ctx run: failed to start passthrough command: {error}");
+        }
+        std::process::exit(code);
+    }
+
+    let outcome = run_command(&command, surface, session_id, shell);
+    write_outcome(&outcome)?;
+    if let Some(prepared) = &outcome.compacted {
+        if let Err(error) = mark_shell_trim_emitted(prepared) {
+            eprintln!("ctx run: output was emitted but applied receipt failed: {error}");
+        }
+    }
     std::process::exit(outcome.code);
 }
 
 /// Run `command` through the user's shell and decide whether to compact its output. On any spawn
 /// failure this returns a 127 outcome carrying the error on stderr, matching shell convention for a
 /// command that could not be executed.
-fn run_command(command: &str, surface: &str, session_id: Option<&str>) -> RunOutcome {
-    // Windows has no /bin/sh; earned commands run through cmd.exe there.
-    #[cfg(windows)]
-    let mut shell_cmd = {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    };
-    #[cfg(not(windows))]
-    let mut shell_cmd = {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut c = Command::new(shell);
-        c.arg("-c").arg(command);
-        c
-    };
+fn run_command(
+    command: &str,
+    surface: &str,
+    session_id: Option<&str>,
+    shell: ShellKind,
+) -> RunOutcome {
+    let mut shell_cmd = shell_command(shell, command);
     let output = shell_cmd
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
@@ -87,10 +133,14 @@ fn run_command(command: &str, surface: &str, session_id: Option<&str>) -> RunOut
         }
     };
 
-    let code = output.status.code().unwrap_or(1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let compacted = try_compact(command, &stdout, &stderr, surface, session_id);
+    let code = exit_code(&output.status);
+    let compacted = if output.status.success() {
+        std::str::from_utf8(&output.stdout)
+            .ok()
+            .and_then(|stdout| try_compact(command, stdout, surface, session_id))
+    } else {
+        None
+    };
 
     RunOutcome {
         code,
@@ -102,23 +152,27 @@ fn run_command(command: &str, surface: &str, session_id: Option<&str>) -> RunOut
 
 /// Emit the outcome. When ctx compacted, the agent reads the compacted text on stdout. Otherwise we
 /// replicate the real streams byte-for-byte so nothing downstream sees a difference.
-fn write_outcome(outcome: &RunOutcome) {
-    if let Some(text) = &outcome.compacted {
+fn write_outcome(outcome: &RunOutcome) -> Result<()> {
+    if let Some(prepared) = &outcome.compacted {
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(text.as_bytes());
-        if !text.ends_with('\n') {
-            let _ = out.write_all(b"\n");
+        out.write_all(prepared.text.as_bytes())?;
+        if !prepared.text.ends_with('\n') {
+            out.write_all(b"\n")?;
         }
-        let _ = out.flush();
-        return;
+        out.flush()?;
+        let mut err = std::io::stderr().lock();
+        err.write_all(&outcome.raw_stderr)?;
+        err.flush()?;
+        return Ok(());
     }
 
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(&outcome.raw_stdout);
-    let _ = out.flush();
+    out.write_all(&outcome.raw_stdout)?;
+    out.flush()?;
     let mut err = std::io::stderr().lock();
-    let _ = err.write_all(&outcome.raw_stderr);
-    let _ = err.flush();
+    err.write_all(&outcome.raw_stderr)?;
+    err.flush()?;
+    Ok(())
 }
 
 /// Build the canonical tool result for this Shell command, run the shared gate, and compact only
@@ -127,26 +181,24 @@ fn write_outcome(outcome: &RunOutcome) {
 fn try_compact(
     command: &str,
     stdout: &str,
-    stderr: &str,
     surface: &str,
     session_id: Option<&str>,
-) -> Option<String> {
+) -> Option<PreparedShellTrim> {
     let cfg = Config::load();
     if !cfg.compress_enabled {
         return None;
     }
 
-    // Cursor folds stdout and stderr into one "output" blob, so compact the combined view the agent
-    // would otherwise read.
-    let combined = combined_output(stdout, stderr);
-    if combined.trim().is_empty() {
+    // Preserve undecodable bytes and terminal control streams exactly. Stderr never enters this
+    // function, so diagnostics remain on the original channel even when stdout is shortened.
+    if stdout.trim().is_empty() || stdout.contains('\x1b') {
         return None;
     }
 
     let tr = ToolResult {
         tool_name: "Shell".to_string(),
         tool_input: serde_json::json!({ "command": command }),
-        raw_output: combined,
+        raw_output: stdout.to_owned(),
         canonical_mcp: None,
         // The preToolUse hook passes Cursor's conversation id through this env var when it rewrites
         // the command; absent that, the decision still runs with less session context.
@@ -213,73 +265,186 @@ fn try_compact(
         return None;
     }
 
-    record_apply(
-        tr.session_id.as_deref(),
-        &tr.tool_name,
-        &command_or_path,
-        result.strategy.as_str(),
-        result.chars_in,
-        result.chars_out,
-        &cfg,
-        &tr.cwd,
+    let rewind_id = sha256_rewind_id(command, stdout.as_bytes());
+    let prepared_at = chrono::Utc::now().to_rfc3339();
+    let marked = format!(
+        "{}{}",
+        result.text,
+        crate::compress::trim_marker(&rewind_id)
     );
-    crate::compress::record_shadow_decision(
-        tr.session_id.as_deref(),
-        &tr.tool_name,
-        &command_or_path,
-        decision.shadow.as_ref(),
-        true,
-        decision.explore_arm,
-        Some(surface),
-    );
-
-    Some(result.text)
-}
-
-/// Join the command's stdout and stderr the way Cursor presents a Shell result (a single output
-/// blob). Streams are kept in stdout-then-stderr order; interleaving is not preserved, which is fine
-/// for the inspection commands this path targets.
-fn combined_output(stdout: &str, stderr: &str) -> String {
-    match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
-        (false, false) => format!("{stdout}\n{stderr}"),
-        (false, true) => stdout.to_string(),
-        (true, false) => stderr.to_string(),
-        (true, true) => String::new(),
+    if marked.chars().count() >= stdout.chars().count() {
+        return None;
     }
+    let lines_out = marked.lines().count();
+    let mut conn = crate::db::open_db().ok()?;
+    crate::db::ensure_schema(&conn).ok()?;
+    let transaction = conn.transaction().ok()?;
+    crate::db::insert_rewind_checked(
+        &transaction,
+        &rewind_id,
+        &prepared_at,
+        tr.session_id.as_deref(),
+        &tr.tool_name,
+        &command_or_path,
+        stdout,
+        &marked,
+    )
+    .ok()?;
+    transaction.commit().ok()?;
+
+    Some(PreparedShellTrim {
+        chars_out: marked.chars().count(),
+        text: marked,
+        rewind_id,
+        session_id: tr.session_id,
+        tool_name: tr.tool_name,
+        command_or_path,
+        strategy: result.strategy,
+        chars_in: stdout.chars().count(),
+        lines_in: stdout.lines().count(),
+        lines_out,
+        surface: surface.to_owned(),
+        cwd: tr.cwd,
+        prepared_at,
+    })
 }
 
 /// Record a live Cursor Shell trim as a real apply: a compress_event for the savings feed plus the
 /// analytics counter, stamped `surface = "cursor"`. Mirrors the MCP apply path in `cursor_hook` so
 /// the cross-surface dashboard reflects Shell savings honestly (CTX-41).
-#[allow(clippy::too_many_arguments)]
-fn record_apply(
-    session_id: Option<&str>,
-    tool_name: &str,
-    command_or_path: &str,
-    strategy: &str,
-    chars_in: usize,
-    chars_out: usize,
-    cfg: &Config,
-    cwd: &str,
-) {
-    if let Ok(conn) = crate::db::open_db() {
-        let _ = crate::db::ensure_schema(&conn);
-        let _ = crate::db::insert_compress_event(
-            &conn,
-            &chrono::Utc::now().to_rfc3339(),
-            session_id,
-            tool_name,
-            strategy,
-            chars_in,
-            chars_out,
-            command_or_path,
-        );
-    }
+fn mark_shell_trim_emitted(prepared: &PreparedShellTrim) -> Result<()> {
+    let mut conn = crate::db::open_db()?;
+    crate::db::ensure_schema(&conn)?;
+    let transaction = conn.transaction()?;
+    let features_json = serde_json::json!({
+        "adapter": "shell-wrapper-v2",
+        "rewind": true,
+    })
+    .to_string();
+    crate::db::insert_compress_decision(
+        &transaction,
+        &crate::db::CompressDecision {
+            ts: &prepared.prepared_at,
+            session_id: prepared.session_id.as_deref(),
+            tool_name: &prepared.tool_name,
+            server_prefix: None,
+            kind: "shell",
+            task_mode: "wrapper",
+            lines_total: prepared.lines_in,
+            lines_keep: prepared.lines_out,
+            lines_drop: prepared.lines_in.saturating_sub(prepared.lines_out),
+            chars_in: prepared.chars_in,
+            would_chars_out: prepared.chars_out,
+            features_json: &features_json,
+            command_or_path: &prepared.command_or_path,
+            applied: true,
+            explore_arm: None,
+            surface: Some(&prepared.surface),
+        },
+    )?;
+    let decision_id = transaction.last_insert_rowid();
+    transaction.execute(
+        "UPDATE compress_decisions SET rewind_id=?2 WHERE id=?1",
+        rusqlite::params![decision_id, prepared.rewind_id],
+    )?;
+    crate::db::insert_compress_event(
+        &transaction,
+        &prepared.prepared_at,
+        prepared.session_id.as_deref(),
+        &prepared.tool_name,
+        &prepared.strategy,
+        prepared.chars_in,
+        prepared.chars_out,
+        &prepared.command_or_path,
+    )?;
+    transaction.commit()?;
     crate::analytics::record_compress(
-        chars_in.saturating_sub(chars_out),
-        cfg.active_profile.as_deref().unwrap_or("all"),
-        cwd,
+        prepared.chars_in.saturating_sub(prepared.chars_out),
+        Config::load().active_profile.as_deref().unwrap_or("all"),
+        &prepared.cwd,
     );
+    Ok(())
+}
+
+fn shell_command(kind: ShellKind, command: &str) -> Command {
+    let resolved = match kind {
+        ShellKind::Auto => {
+            if cfg!(windows) {
+                ShellKind::PowerShell
+            } else {
+                ShellKind::Posix
+            }
+        }
+        explicit => explicit,
+    };
+    match resolved {
+        ShellKind::Posix => {
+            let mut process =
+                Command::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned()));
+            process.arg("-c").arg(command);
+            process
+        }
+        ShellKind::PowerShell => {
+            let mut process = Command::new(if cfg!(windows) {
+                "powershell.exe"
+            } else {
+                "pwsh"
+            });
+            process
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+                .arg(command);
+            process
+        }
+        ShellKind::Cmd => {
+            let mut process = Command::new("cmd.exe");
+            process.args(["/D", "/S", "/C"]).arg(command);
+            process
+        }
+        ShellKind::Wsl => {
+            let mut process = Command::new("wsl.exe");
+            process.args(["--", "sh", "-lc"]).arg(command);
+            process
+        }
+        ShellKind::Auto => unreachable!(),
+    }
+}
+
+fn exit_code(status: &std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal().map(|signal| 128 + signal).unwrap_or(1)
+    }
+    #[cfg(not(unix))]
+    1
+}
+
+fn shell_output_semantically_safe(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase();
+    !normalized.contains('\0')
+        && !normalized.contains(" --interactive")
+        && !normalized.contains(" -i ")
+        && !normalized.contains("tail -f")
+        && !normalized.contains("tail --follow")
+        && !normalized.contains("watch ")
+        && !normalized.contains("less ")
+        && !normalized.contains("more ")
+        && !normalized.contains("top ")
+        && !normalized.contains("htop ")
+        && !normalized.trim_end().ends_with('&')
+}
+
+fn sha256_rewind_id(command: &str, stdout: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"ctx-shell-rewind-v1\0");
+    hash.update(command.as_bytes());
+    hash.update([0]);
+    hash.update(stdout);
+    format!("shell-{:x}", hash.finalize())
 }
 
 #[cfg(test)]
@@ -288,20 +453,28 @@ mod tests {
 
     #[test]
     fn preserves_exit_code() {
-        let outcome = run_command("exit 7", "cursor", None);
+        let outcome = run_command("exit 7", "cursor", None, ShellKind::Auto);
         assert_eq!(outcome.code, 7);
     }
 
     #[test]
     fn preserves_zero_exit_and_stdout() {
-        let outcome = run_command("printf 'hello world'", "cursor", None);
+        #[cfg(not(windows))]
+        let command = "printf 'hello world'";
+        #[cfg(windows)]
+        let command = "[Console]::Out.Write('hello world')";
+        let outcome = run_command(command, "cursor", None, ShellKind::Auto);
         assert_eq!(outcome.code, 0);
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stdout), "hello world");
     }
 
     #[test]
     fn captures_stderr_separately() {
-        let outcome = run_command("printf 'oops' 1>&2", "cursor", None);
+        #[cfg(not(windows))]
+        let command = "printf 'oops' 1>&2";
+        #[cfg(windows)]
+        let command = "[Console]::Error.Write('oops')";
+        let outcome = run_command(command, "cursor", None, ShellKind::Auto);
         assert_eq!(outcome.code, 0);
         assert!(outcome.raw_stdout.is_empty());
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stderr), "oops");
@@ -311,7 +484,11 @@ mod tests {
     fn small_output_passes_through_untouched() {
         // Tiny output is below any compaction budget, so it must pass through (compacted == None),
         // preserving the exact bytes.
-        let outcome = run_command("echo small", "cursor", None);
+        #[cfg(not(windows))]
+        let command = "echo small";
+        #[cfg(windows)]
+        let command = "[Console]::Out.WriteLine('small')";
+        let outcome = run_command(command, "cursor", None, ShellKind::Auto);
         assert!(
             outcome.compacted.is_none(),
             "small output must not be compacted"
@@ -326,7 +503,12 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn nonzero_exit_still_passes_through() {
-        let outcome = run_command("printf 'partial output'; exit 2", "cursor", None);
+        let outcome = run_command(
+            "printf 'partial output'; exit 2",
+            "cursor",
+            None,
+            ShellKind::Auto,
+        );
         assert_eq!(outcome.code, 2);
         assert_eq!(
             String::from_utf8_lossy(&outcome.raw_stdout),
@@ -338,7 +520,12 @@ mod tests {
     #[test]
     fn nonzero_exit_still_passes_through() {
         // cmd.exe: `&` chains commands and `exit N` sets the process exit code (no printf, no `;`).
-        let outcome = run_command("echo partial output & exit 2", "cursor", None);
+        let outcome = run_command(
+            "[Console]::Out.Write('partial output'); exit 2",
+            "cursor",
+            None,
+            ShellKind::Auto,
+        );
         assert_eq!(outcome.code, 2);
         assert_eq!(
             String::from_utf8_lossy(&outcome.raw_stdout).trim_end(),
@@ -347,10 +534,10 @@ mod tests {
     }
 
     #[test]
-    fn combined_output_orders_stdout_then_stderr() {
-        assert_eq!(combined_output("out", "err"), "out\nerr");
-        assert_eq!(combined_output("out", ""), "out");
-        assert_eq!(combined_output("", "err"), "err");
-        assert_eq!(combined_output("", ""), "");
+    fn interactive_and_background_contracts_never_compact() {
+        assert!(!shell_output_semantically_safe("tail -f app.log"));
+        assert!(!shell_output_semantically_safe("watch cargo test"));
+        assert!(!shell_output_semantically_safe("server &"));
+        assert!(shell_output_semantically_safe("cargo test --locked"));
     }
 }

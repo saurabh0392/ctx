@@ -719,6 +719,22 @@ These do not block T0-T2 but must be resolved before their dependent increment:
 
 ## Delivery status and immediate next slice
 
+The v0.6.0 implementation completes the T3-T6 engineering slice behind explicit controls. T3 now
+owns the only proposal-to-output transition: it persists exact recovery first and records applied
+evidence only after successful native emission. Claude Code and Cursor MCP adapters use that
+boundary; Codex's native PostToolUse remains observation-only by contract.
+
+T4 adds the local stdio gateway, bounded correlation and lifecycle handling, schema capture, direct
+shell-free child spawning, reversible Codex transport rewiring, doctor state, and real-process
+pass-through/apply tests. T5 adds the separately opt-in Streamable HTTP transport, pinned approved
+destinations, OAuth 2.1 PKCE and OS credential storage. It remains labeled beta until the T8
+independent security review; implementation completion is not a production-security claim. T6 now
+keeps shell streams/status distinct, bypasses capture for interactive or ambiguous commands, and
+defines POSIX, PowerShell, cmd.exe, and WSL contracts under Linux, macOS, and Windows CI.
+
+The next slice is T7 product proof and T8 external hardening: real-server breadth, latency and
+failure thresholds, signed artifacts, SBOM/audit output, and an independent gateway review.
+
 CTX-71 and ADR 0038 completed the T0/T1 foundation: lossless canonical MCP results, a versioned
 fixture ledger, cross-platform adapter capture, and shadow-only typed evidence are on `main`.
 CTX-72 and ADR 0039 added the first T2 boundary: versioned block-aware text proposals, structural

@@ -79,7 +79,7 @@ An “eligible” token in a report means CTX's current transform can remove it.
 
 ## Privacy and beta evidence
 
-Prompts, tool output, commands, paths, repo names, and source code stay local. CTX has no background telemetry.
+CTX's evidence database, recovery copies, commands, paths, repo names, and observed tool results stay on your device. CTX has no background telemetry and operates no tool-traffic relay. If you explicitly route a remote MCP server through the gateway, MCP requests still go directly from your device to the exact destination you approved; CTX shows that destination, blocks redirects and private-network pivots, and never sends the traffic to a CTX-operated service. OAuth tokens live in the operating-system credential store, not SQLite or CTX config files.
 
 At 7 and 21 active days, a beta install may offer an optional check-in. The dashboard shows the exact `ctx.beta-checkin.v1` JSON before Send becomes available. The allowlist contains only installation/version metadata, activity counts, Context Bill totals, trim/recovery counts, tool-stage counts, and four short product questions. Dismissing it waits seven days. A failed send is preserved locally for retry.
 
@@ -92,7 +92,7 @@ Issue reports follow the same preview-and-send rule. The localhost dashboard add
 | Claude Code on macOS | Supported | Yes | Yes | Opt-in |
 | Claude Code on Linux x86_64 | Best effort | Yes | Yes | Opt-in |
 | Cursor | Experimental | Yes | Partial, hook-dependent | Experimental |
-| Codex | Experimental | Live plugin hooks | Partial: eligible shell output | No |
+| Codex | Experimental | Live plugin hooks | Eligible shell output plus explicitly routed MCP servers | No |
 | Windows x86_64 | Experimental | Yes | Hook-dependent | Experimental |
 | Claude Desktop | Insight only | Session ingest | No | No |
 
@@ -111,8 +111,23 @@ ctx expand <rewind-id>
 ctx report --list
 ctx doctor
 ctx update --check
+ctx gateway list
 ctx setup --uninstall
 ```
+
+Codex's current PostToolUse hook cannot cleanly replace built-in or MCP results. For MCP tools, CTX
+therefore uses an explicit, reversible transport wrapper instead of pretending the observer hook can
+act:
+
+```bash
+ctx gateway codex-enable <existing-server> --accept-remote-beta # flag only for remote HTTP
+ctx gateway login <existing-server>                             # OAuth remote servers
+ctx gateway codex-disable <existing-server>                     # restore exact direct definition
+```
+
+Local stdio definitions run as child processes without a shell and with an isolated environment.
+Remote support is opt-in beta pending independent security review. Built-in Codex Read/search output
+remains observation-only because Codex exposes no model-visible replacement contract for it.
 
 MCP tool-menu filtering remains an explicit advanced control:
 

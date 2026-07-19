@@ -27,6 +27,7 @@ pub use hook_io::{
     extract_compressible_text, extract_tool_output, post_tool_use, rewind_id_for,
     tool_response_value, trim_marker, wrap_updated_tool_output,
 };
+pub(crate) use mcp_strategy::propose_mcp_apply_candidate;
 pub use shadow::{
     compute_shadow_decision, compute_shadow_decision_with_mcp,
     compute_shadow_decision_with_mcp_contract, ShadowDecision,

@@ -42,7 +42,7 @@ fn cargo_bin_display() -> String {
         .unwrap_or_default()
 }
 
-/// Preview line for setup: ctx runs hook-first with a local dashboard, no proxy.
+/// Preview line for setup: the default path is hook-first with a local dashboard and no model-API proxy.
 pub fn dashboard_ingest_summary(dashboard_port: u16, periodic_ingest: bool) -> String {
     let ingest_tail = if periodic_ingest {
         ", periodic ingest (every 5 min)"

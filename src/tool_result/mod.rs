@@ -1,15 +1,19 @@
 //! Lossless, platform-neutral tool result contracts.
 //!
-//! The shipping compression path still uses [`crate::compress::CompressResult`]. This module is
-//! the shadow-mode foundation for migrating native hooks and the future MCP gateway without
-//! flattening structured results into a string first.
+//! Native MCP hooks and the gateway apply only candidates produced and revalidated through this
+//! module. Legacy non-MCP text compressors still use [`crate::compress::CompressResult`].
 
+mod apply;
 mod contract;
 mod mcp;
 mod schema;
 mod strategy;
 mod types;
 
+pub use apply::{
+    mark_mcp_trim_emitted, prepare_mcp_trim, prepare_mcp_trim_in, McpApplyRequest,
+    McpPrepareOutcome, PreparedMcpTrim,
+};
 pub use contract::{
     parse_mcp_tools_list, CanonicalMcpTool, CanonicalMcpToolEntry, CanonicalMcpToolsList,
     McpContractCacheError, McpContractCapture, McpToolContractCache, McpToolContractKey,
@@ -27,7 +31,7 @@ pub(crate) use strategy::{
     McpEntitySchemaAuthorization, McpTableSchemaAuthorization, McpTreeSchemaAuthorization,
 };
 pub use strategy::{
-    validate_mcp_proposal, validate_mcp_proposal_with_contract,
+    render_validated_mcp_proposal, validate_mcp_proposal, validate_mcp_proposal_with_contract,
     validate_mcp_proposal_with_contract_and_input, McpEntityDetailEdit, McpPaginatedCollectionEdit,
     McpProposalRejection, McpSearchResultsEdit, McpStrategyManifest, McpStructuredContentEdit,
     McpStructuredContentReplacement, McpTableRowsEdit, McpTextReplacement, McpTransformProposal,
