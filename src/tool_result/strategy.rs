@@ -7,6 +7,9 @@ use super::{
     McpOutputSchemaValidation, McpSchemaRejection, PreservedField, ToolContract,
 };
 
+pub const MCP_COLLECTION_OMISSION_MARKER_FIELD: &str = "_ctxOmission";
+pub const MCP_MAX_RETAINED_COLLECTION_ITEMS: usize = 64;
+
 /// Stable, inspectable contract for one result strategy. A version change deliberately creates a
 /// new evidence identity instead of silently inheriting activation from older behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +32,30 @@ pub struct McpTextReplacement {
     pub replacement: String,
 }
 
+/// A structured replacement is deliberately typed by transform family. This prevents a future
+/// strategy from using the proposal boundary as a generic JSON rewrite escape hatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpStructuredContentReplacement {
+    pub expected: Value,
+    pub replacement: Value,
+    pub edit: McpStructuredContentEdit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpStructuredContentEdit {
+    PaginatedCollection(McpPaginatedCollectionEdit),
+}
+
+/// Proof inputs for one top-level collection reduction. The validator independently checks every
+/// index and marker field; strategies cannot assert that an arbitrary replacement is a collection
+/// trim merely by constructing this value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPaginatedCollectionEdit {
+    pub field: String,
+    pub retained_indices: Vec<usize>,
+    pub omission_marker_field: String,
+}
+
 /// A contentful, in-memory proposal. T2 does not expose a renderer or an apply operation from this
 /// type: the proposal exists only to exercise the validator and record content-free shadow proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +64,7 @@ pub struct McpTransformProposal {
     pub strategy_version: &'static str,
     pub max_total_text_chars: usize,
     pub replacements: Vec<McpTextReplacement>,
+    pub structured_content: Option<McpStructuredContentReplacement>,
 }
 
 /// Content-free proof emitted after an entire proposal passes structural invariants.
@@ -46,6 +74,10 @@ pub struct ValidatedMcpProposal {
     pub chars_in: usize,
     pub chars_out: usize,
     pub output_schema_validated: bool,
+    pub structured_content_replaced: bool,
+    pub collection_items_in: Option<usize>,
+    pub collection_items_out: Option<usize>,
+    pub collection_items_omitted: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +91,8 @@ pub enum McpProposalRejection {
     TargetOutOfBounds,
     TargetIsNotPlainText,
     StaleSourceText,
+    StaleStructuredContent,
+    StructuredContentSchemaRequired,
     ExpansionLimitExceeded,
     OutputBudgetExceeded,
     NoSavings,
@@ -66,6 +100,11 @@ pub enum McpProposalRejection {
     ContentLengthInvariantFailed,
     NonTargetBlockChanged,
     TargetEnvelopeChanged,
+    StructuredContentInvariantFailed,
+    CollectionTargetInvalid,
+    CollectionSelectionInvalid,
+    CollectionTextMirrorInvalid,
+    CollectionOmissionMarkerInvalid,
     RenderedContractInvalid,
     SourceSchema(McpSchemaRejection),
     CandidateSchema(McpSchemaRejection),
@@ -83,6 +122,8 @@ impl McpProposalRejection {
             Self::TargetOutOfBounds => "target-out-of-bounds",
             Self::TargetIsNotPlainText => "target-is-not-plain-text",
             Self::StaleSourceText => "stale-source-text",
+            Self::StaleStructuredContent => "stale-structured-content",
+            Self::StructuredContentSchemaRequired => "structured-content-output-schema-required",
             Self::ExpansionLimitExceeded => "expansion-limit-exceeded",
             Self::OutputBudgetExceeded => "output-budget-exceeded",
             Self::NoSavings => "no-savings",
@@ -90,6 +131,11 @@ impl McpProposalRejection {
             Self::ContentLengthInvariantFailed => "content-length-invariant-failed",
             Self::NonTargetBlockChanged => "non-target-block-changed",
             Self::TargetEnvelopeChanged => "target-envelope-changed",
+            Self::StructuredContentInvariantFailed => "structured-content-invariant-failed",
+            Self::CollectionTargetInvalid => "collection-target-invalid",
+            Self::CollectionSelectionInvalid => "collection-selection-invalid",
+            Self::CollectionTextMirrorInvalid => "collection-text-mirror-invalid",
+            Self::CollectionOmissionMarkerInvalid => "collection-omission-marker-invalid",
             Self::RenderedContractInvalid => "rendered-contract-invalid",
             Self::SourceSchema(rejection) => rejection.code(),
             Self::CandidateSchema(rejection) => candidate_schema_code(rejection),
@@ -145,7 +191,10 @@ pub fn validate_mcp_proposal_with_contract(
             return Err(McpProposalRejection::SourceSchema(rejection))
         }
     };
-    if proposal.replacements.is_empty() {
+    if proposal.structured_content.is_some() && !output_schema_validated {
+        return Err(McpProposalRejection::StructuredContentSchemaRequired);
+    }
+    if proposal.replacements.is_empty() && proposal.structured_content.is_none() {
         return Err(McpProposalRejection::EmptyProposal);
     }
 
@@ -177,6 +226,15 @@ pub fn validate_mcp_proposal_with_contract(
         }
         *text = replacement.replacement.clone();
     }
+    let collection_metrics = match &proposal.structured_content {
+        Some(replacement) => Some(validate_and_apply_structured_content(
+            result,
+            &mut candidate,
+            replacement,
+            &replacements_by_target,
+        )?),
+        None => None,
+    };
     let chars_in: usize = result
         .content
         .iter()
@@ -204,7 +262,12 @@ pub fn validate_mcp_proposal_with_contract(
     let rendered_object = rendered
         .as_object()
         .ok_or(McpProposalRejection::RenderedContractInvalid)?;
-    if !maps_equal_except(original, rendered_object, "content") {
+    let allowed_top_level_changes: &[&str] = if proposal.structured_content.is_some() {
+        &["content", "structuredContent"]
+    } else {
+        &["content"]
+    };
+    if !maps_equal_except_many(original, rendered_object, allowed_top_level_changes) {
         return Err(McpProposalRejection::TopLevelInvariantFailed);
     }
 
@@ -253,7 +316,142 @@ pub fn validate_mcp_proposal_with_contract(
         chars_in,
         chars_out,
         output_schema_validated,
+        structured_content_replaced: proposal.structured_content.is_some(),
+        collection_items_in: collection_metrics.map(|metrics| metrics.items_in),
+        collection_items_out: collection_metrics.map(|metrics| metrics.items_out),
+        collection_items_omitted: collection_metrics.map(|metrics| metrics.items_omitted),
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CollectionMetrics {
+    items_in: usize,
+    items_out: usize,
+    items_omitted: usize,
+}
+
+fn validate_and_apply_structured_content(
+    result: &CanonicalMcpResult,
+    candidate: &mut CanonicalMcpResult,
+    replacement: &McpStructuredContentReplacement,
+    text_replacements: &HashMap<usize, &McpTextReplacement>,
+) -> Result<CollectionMetrics, McpProposalRejection> {
+    let PreservedField::Value(source) = &result.structured_content else {
+        return Err(McpProposalRejection::StaleStructuredContent);
+    };
+    if source != &replacement.expected {
+        return Err(McpProposalRejection::StaleStructuredContent);
+    }
+
+    let metrics = match &replacement.edit {
+        McpStructuredContentEdit::PaginatedCollection(edit) => validate_collection_edit(
+            result,
+            &replacement.expected,
+            &replacement.replacement,
+            edit,
+            text_replacements,
+        )?,
+    };
+    candidate.structured_content = PreservedField::Value(replacement.replacement.clone());
+    Ok(metrics)
+}
+
+fn validate_collection_edit(
+    result: &CanonicalMcpResult,
+    source: &Value,
+    candidate: &Value,
+    edit: &McpPaginatedCollectionEdit,
+    text_replacements: &HashMap<usize, &McpTextReplacement>,
+) -> Result<CollectionMetrics, McpProposalRejection> {
+    let (Some(source), Some(candidate)) = (source.as_object(), candidate.as_object()) else {
+        return Err(McpProposalRejection::CollectionTargetInvalid);
+    };
+    if !maps_equal_except(source, candidate, &edit.field) {
+        return Err(McpProposalRejection::StructuredContentInvariantFailed);
+    }
+    let (Some(source_items), Some(candidate_items)) = (
+        source.get(&edit.field).and_then(Value::as_array),
+        candidate.get(&edit.field).and_then(Value::as_array),
+    ) else {
+        return Err(McpProposalRejection::CollectionTargetInvalid);
+    };
+    if source_items.len() <= candidate_items.len()
+        || candidate_items.len() > MCP_MAX_RETAINED_COLLECTION_ITEMS
+        || candidate_items.len() != edit.retained_indices.len()
+        || edit.retained_indices.first() != Some(&0)
+        || edit.retained_indices.last() != Some(&(source_items.len() - 1))
+        || edit.retained_indices
+            != collection_head_tail_indices(source_items.len(), candidate_items.len())
+    {
+        return Err(McpProposalRejection::CollectionSelectionInvalid);
+    }
+    let mut previous = None;
+    for (candidate_item, index) in candidate_items.iter().zip(&edit.retained_indices) {
+        if *index >= source_items.len()
+            || previous.is_some_and(|previous| *index <= previous)
+            || source_items.get(*index) != Some(candidate_item)
+        {
+            return Err(McpProposalRejection::CollectionSelectionInvalid);
+        }
+        previous = Some(*index);
+    }
+
+    let text_blocks: Vec<_> = result
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| block.text().map(|text| (index, text)))
+        .collect();
+    if text_blocks.len() != 1 || text_replacements.len() != 1 {
+        return Err(McpProposalRejection::CollectionTextMirrorInvalid);
+    }
+    let (block_index, source_text) = text_blocks[0];
+    let Some(text_replacement) = text_replacements.get(&block_index) else {
+        return Err(McpProposalRejection::CollectionTextMirrorInvalid);
+    };
+    let parsed_source: Value = serde_json::from_str(source_text)
+        .map_err(|_| McpProposalRejection::CollectionTextMirrorInvalid)?;
+    if parsed_source != Value::Object(source.clone()) {
+        return Err(McpProposalRejection::CollectionTextMirrorInvalid);
+    }
+    let mut parsed_candidate: Value = serde_json::from_str(&text_replacement.replacement)
+        .map_err(|_| McpProposalRejection::CollectionTextMirrorInvalid)?;
+    if edit.omission_marker_field != MCP_COLLECTION_OMISSION_MARKER_FIELD {
+        return Err(McpProposalRejection::CollectionOmissionMarkerInvalid);
+    }
+    let marker = parsed_candidate
+        .as_object_mut()
+        .and_then(|object| object.remove(&edit.omission_marker_field))
+        .ok_or(McpProposalRejection::CollectionOmissionMarkerInvalid)?;
+    if parsed_candidate != Value::Object(candidate.clone()) {
+        return Err(McpProposalRejection::CollectionTextMirrorInvalid);
+    }
+
+    let items_in = source_items.len();
+    let items_out = candidate_items.len();
+    let items_omitted = items_in - items_out;
+    let expected_marker = serde_json::json!({
+        "field": edit.field,
+        "originalItems": items_in,
+        "retainedItems": items_out,
+        "omittedItems": items_omitted,
+        "selection": "first-and-last"
+    });
+    if marker != expected_marker {
+        return Err(McpProposalRejection::CollectionOmissionMarkerInvalid);
+    }
+
+    Ok(CollectionMetrics {
+        items_in,
+        items_out,
+        items_omitted,
+    })
+}
+
+pub(crate) fn collection_head_tail_indices(total: usize, retained: usize) -> Vec<usize> {
+    let head = retained.div_ceil(2);
+    let tail = retained / 2;
+    (0..head).chain((total - tail)..total).collect()
 }
 
 fn same_text_block_envelope(before: &Value, after: &Value, replacement: &str) -> bool {
@@ -279,6 +477,27 @@ fn maps_equal_except(
         && before
             .iter()
             .filter(|(key, _)| key.as_str() != excluded)
+            .all(|(key, value)| after.get(key) == Some(value))
+}
+
+fn maps_equal_except_many(
+    before: &serde_json::Map<String, Value>,
+    after: &serde_json::Map<String, Value>,
+    excluded: &[&str],
+) -> bool {
+    let is_excluded = |key: &str| excluded.contains(&key);
+    let before_len = before
+        .keys()
+        .filter(|key| !is_excluded(key.as_str()))
+        .count();
+    let after_len = after
+        .keys()
+        .filter(|key| !is_excluded(key.as_str()))
+        .count();
+    before_len == after_len
+        && before
+            .iter()
+            .filter(|(key, _)| !is_excluded(key.as_str()))
             .all(|(key, value)| after.get(key) == Some(value))
 }
 
@@ -324,6 +543,7 @@ mod tests {
                 expected_text: "long source text".into(),
                 replacement: replacement.into(),
             }],
+            structured_content: None,
         }
     }
 
@@ -394,6 +614,7 @@ mod tests {
                 expected_text: "actionable error details".into(),
                 replacement: "error".into(),
             }],
+            structured_content: None,
         };
         assert_eq!(
             validate_mcp_proposal(&error, &MANIFEST, &error_proposal),

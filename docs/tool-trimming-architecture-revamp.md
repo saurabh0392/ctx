@@ -724,11 +724,15 @@ fixture ledger, cross-platform adapter capture, and shadow-only typed evidence a
 CTX-72 and ADR 0039 added the first T2 boundary: versioned block-aware text proposals, structural
 invariants, fail-open error handling, and content-free validation evidence.
 
-CTX-75 and ADR 0040 are the next T2 increment. They add lossless `tools/list` contract capture, a
-bounded server/protocol/tool-isolated cache, and local-only output-schema validation before and
-after an in-memory proposal. The increment remains shadow-only because current native hooks do not
-expose a trustworthy matching `tools/list` lifecycle.
+CTX-75 and ADR 0040 completed the contract boundary: lossless `tools/list` capture, a bounded
+server/protocol/tool-isolated cache, and local-only output-schema validation before and after an
+in-memory proposal are on `main`.
 
-After that boundary is merged, T2 can add the first schema-aware paginated collection strategy,
-then search and entity strategies, without coupling them to the native adapters or gateway. The T3
-atomic apply transaction remains the first place a validated proposal may become model-visible.
+CTX-76 and ADR 0041 are the next T2 increment. They add the first schema-aware paginated collection
+proposal, a typed structured-edit validator, deterministic head-and-tail retention, and an explicit
+omitted-count marker in a verified text projection. The increment remains shadow-only; structured
+candidates never leave the validation boundary.
+
+After that boundary is merged, T2 can add search and entity strategies without coupling them to
+the native adapters or gateway. The T3 atomic apply transaction remains the first place a validated
+proposal may become model-visible.

@@ -5,7 +5,7 @@ use ctx::agent::{AgentTransport, ClaudeCodeTransport};
 use ctx::tool_result::{
     parse_mcp_result, parse_mcp_tools_list, render_mcp_result_or_original,
     validate_mcp_output_schema, CanonicalContentBlock, McpOutputSchemaValidation,
-    McpResultCoverage, McpToolContractCache, McpToolContractKey,
+    McpResultCoverage, McpToolContractCache, McpToolContractKey, PreservedField, ToolContract,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -326,15 +326,84 @@ fn typed_mcp_compressor_is_observation_only() {
         .expect("typed MCP evidence");
     assert!(contract.round_trip_identical);
     assert_eq!(contract.text_blocks, 1);
-    assert_eq!(
-        contract.eligible_strategy.as_deref(),
-        Some("mcp-text-blocks")
-    );
-    assert_eq!(contract.eligible_strategy_version.as_deref(), Some("2"));
-    assert_eq!(contract.proposal_validated, Some(true));
-    assert_eq!(contract.proposal_replacements, Some(1));
+    assert!(contract.eligible_strategy.is_none());
+    assert!(contract.eligible_strategy_version.is_none());
+    assert!(contract.proposal_validated.is_none());
+    assert!(contract.proposal_replacements.is_none());
     assert!(contract.proposal_rejection.is_none());
-    assert!(contract.candidate_strategy.is_some());
+    assert!(contract.candidate_strategy.is_none());
+    assert_eq!(
+        contract.pass_through_reason.as_deref(),
+        Some("collection-output-schema-required")
+    );
+}
+
+#[test]
+fn paginated_collection_fixture_produces_schema_valid_content_free_shadow_evidence() {
+    let fixture = read_json(&fixture_dir().join("mcp-2025-11-25-paginated-collection.json"));
+    let raw = fixture["result"].clone();
+    let parsed = parse_mcp_result(&raw).expect("paginated fixture result");
+    assert_eq!(parsed.render(), raw);
+    let text = parsed.content[0].text().expect("JSON text projection");
+    let text_value: Value = serde_json::from_str(text).expect("text projection is JSON");
+    assert_eq!(
+        parsed.structured_content.value(),
+        Some(&text_value),
+        "source text must be a trustworthy mirror before collection trimming"
+    );
+    let contract = ToolContract {
+        protocol_version: Some(fixture["protocolVersion"].as_str().unwrap().to_string()),
+        output_schema: PreservedField::Value(fixture["outputSchema"].clone()),
+        ..Default::default()
+    };
+    assert_eq!(
+        validate_mcp_output_schema(Some(&contract), &parsed),
+        McpOutputSchemaValidation::Valid
+    );
+
+    let cfg = ctx::config::Config {
+        compress_enabled: true,
+        compress_shadow_enabled: true,
+        compress_target_chars: 750,
+        compress_preset: ctx::config::CompressPreset::Off,
+        ..Default::default()
+    };
+    let decision = ctx::compress::compute_shadow_decision_with_mcp_contract(
+        "mcp__linear__list_issues",
+        &json!({}),
+        text,
+        Some(&parsed),
+        Some(&contract),
+        &cfg,
+        Some("fixture-session"),
+        "/tmp/fixture",
+    )
+    .expect("shadow decision");
+    let evidence = decision
+        .features
+        .mcp_contract
+        .as_ref()
+        .expect("MCP evidence");
+    assert_eq!(
+        evidence.eligible_strategy.as_deref(),
+        Some("mcp-paginated-collection")
+    );
+    assert_eq!(evidence.eligible_strategy_version.as_deref(), Some("1"));
+    assert_eq!(
+        evidence.shape_authorization.as_deref(),
+        Some("output-schema-and-pagination-fields")
+    );
+    assert_eq!(evidence.proposal_validated, Some(true));
+    assert_eq!(evidence.candidate_collection_items_in, Some(6));
+    assert!(evidence.candidate_collection_items_out.unwrap() < 6);
+    assert_eq!(
+        evidence.candidate_collection_items_omitted,
+        evidence
+            .candidate_collection_items_in
+            .zip(evidence.candidate_collection_items_out)
+            .map(|(before, after)| before - after)
+    );
+    assert!(!decision.features_json().contains("CTX-101"));
 }
 
 #[test]
@@ -439,7 +508,7 @@ fn tools_list_contract_fixture_round_trips_caches_and_validates() {
 }
 
 #[test]
-fn schema_evidence_is_separate_and_remains_shadow_only() {
+fn schema_evidence_rejects_an_unverifiable_text_structured_projection() {
     let tools = parse_mcp_tools_list(&read_json(
         &fixture_dir().join("mcp-2025-11-25-tools-list.json"),
     ))
@@ -483,15 +552,14 @@ fn schema_evidence_is_separate_and_remains_shadow_only() {
 
     assert!(evidence.output_schema_advertised);
     assert_eq!(evidence.source_schema_validation.as_deref(), Some("valid"));
+    assert!(evidence.candidate_schema_validation.is_none());
+    assert!(evidence.proposal_validated.is_none());
+    assert!(evidence.eligible_strategy.is_none());
     assert_eq!(
-        evidence.candidate_schema_validation.as_deref(),
-        Some("valid")
+        evidence.pass_through_reason.as_deref(),
+        Some("collection-text-mirror-invalid")
     );
-    assert_eq!(evidence.proposal_validated, Some(true));
-    assert_eq!(
-        evidence.candidate_strategy.as_deref(),
-        Some("mcp-text-blocks")
-    );
+    assert!(evidence.candidate_strategy.is_none());
 }
 
 #[test]

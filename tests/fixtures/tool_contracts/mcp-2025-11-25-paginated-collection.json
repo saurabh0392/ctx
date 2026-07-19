@@ -1,0 +1,93 @@
+{
+  "protocolVersion": "2025-11-25",
+  "tool": "list_issues",
+  "outputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "issues": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "$ref": "#/$defs/issue"
+        }
+      },
+      "nextCursor": {
+        "type": ["string", "null"]
+      },
+      "totalCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "order": {
+        "type": "string"
+      }
+    },
+    "required": ["issues", "nextCursor", "totalCount", "order"],
+    "additionalProperties": false,
+    "$defs": {
+      "issue": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "summary": {"type": "string"}
+        },
+        "required": ["id", "title", "summary"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"issues\":[{\"id\":\"CTX-101\",\"title\":\"First issue\",\"summary\":\"Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence.\"},{\"id\":\"CTX-102\",\"title\":\"Second issue\",\"summary\":\"Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence.\"},{\"id\":\"CTX-103\",\"title\":\"Third issue\",\"summary\":\"Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence.\"},{\"id\":\"CTX-104\",\"title\":\"Fourth issue\",\"summary\":\"Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence.\"},{\"id\":\"CTX-105\",\"title\":\"Fifth issue\",\"summary\":\"Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence.\"},{\"id\":\"CTX-106\",\"title\":\"Sixth issue\",\"summary\":\"Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence.\"}],\"nextCursor\":\"page-2\",\"totalCount\":42,\"order\":\"createdAt desc\"}",
+        "annotations": {
+          "audience": ["assistant"]
+        }
+      }
+    ],
+    "structuredContent": {
+      "issues": [
+        {
+          "id": "CTX-101",
+          "title": "First issue",
+          "summary": "Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence."
+        },
+        {
+          "id": "CTX-102",
+          "title": "Second issue",
+          "summary": "Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence."
+        },
+        {
+          "id": "CTX-103",
+          "title": "Third issue",
+          "summary": "Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence."
+        },
+        {
+          "id": "CTX-104",
+          "title": "Fourth issue",
+          "summary": "Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence."
+        },
+        {
+          "id": "CTX-105",
+          "title": "Fifth issue",
+          "summary": "Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence."
+        },
+        {
+          "id": "CTX-106",
+          "title": "Sixth issue",
+          "summary": "Long deterministic issue context repeated for collection budget evidence. Long deterministic issue context repeated for collection budget evidence."
+        }
+      ],
+      "nextCursor": "page-2",
+      "totalCount": 42,
+      "order": "createdAt desc"
+    },
+    "isError": false,
+    "_meta": {
+      "fixture": "sanitized-paginated-collection"
+    }
+  }
+}
