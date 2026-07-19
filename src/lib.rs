@@ -113,6 +113,7 @@ pub async fn run() -> Result<()> {
         },
         Commands::Setup {
             uninstall,
+            purge_data,
             no_install,
             no_zshrc_prompt,
             dry_run,
@@ -120,7 +121,7 @@ pub async fn run() -> Result<()> {
             beta,
         } => {
             if uninstall {
-                setup::uninstall()?;
+                setup::uninstall(purge_data, yes)?;
             } else {
                 setup::run(no_install, no_zshrc_prompt, dry_run, yes, beta)?;
             }

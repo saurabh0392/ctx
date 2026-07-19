@@ -44,6 +44,9 @@ pub enum Commands {
         /// Reverse everything ctx setup did
         #[arg(long)]
         uninstall: bool,
+        /// Permanently delete all CTX-owned local data after uninstalling integrations
+        #[arg(long, requires = "uninstall")]
+        purge_data: bool,
         /// Install hooks/services only; skip writing ~/.claude/settings.json
         /// Use this when Claude Code is open — close it, then re-run `ctx setup`
         #[arg(long)]

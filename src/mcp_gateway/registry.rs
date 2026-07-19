@@ -5,6 +5,17 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 const REGISTRY_VERSION: u32 = 1;
+const CODEX_TRANSPORT_KEYS: [&str; 9] = [
+    "command",
+    "args",
+    "cwd",
+    "env",
+    "env_vars",
+    "url",
+    "bearer_token_env_var",
+    "http_headers",
+    "env_http_headers",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayRegistry {
@@ -324,17 +335,7 @@ pub fn codex_enable(name: &str, accept_remote_beta: bool) -> Result<()> {
         .and_then(|servers| servers.get_mut(name))
         .and_then(toml::Value::as_table_mut)
         .context("Codex MCP table disappeared while rewriting")?;
-    for key in [
-        "command",
-        "args",
-        "cwd",
-        "env",
-        "env_vars",
-        "url",
-        "bearer_token_env_var",
-        "http_headers",
-        "env_http_headers",
-    ] {
+    for key in CODEX_TRANSPORT_KEYS {
         current.remove(key);
     }
     current.insert(
@@ -402,13 +403,135 @@ pub fn codex_disable(name: &str) -> Result<()> {
         .get_mut("mcp_servers")
         .and_then(toml::Value::as_table_mut)
         .context("Codex config has no mcp_servers table")?;
-    servers.insert(name.to_owned(), backup.server);
+    let current = servers
+        .get(name)
+        .cloned()
+        .context("Codex MCP server disappeared while restoring it")?;
+    servers.insert(
+        name.to_owned(),
+        restore_direct_transport(&current, &backup.server)?,
+    );
     write_toml_atomic(&path, &config)?;
     registry.codex_backups.remove(name);
     registry.servers.remove(&backup.gateway_id);
     registry.save()?;
     println!("Restored direct Codex MCP server {name:?}. Restart Codex to activate it.");
     Ok(())
+}
+
+/// Restore every Codex MCP definition that CTX routed through its gateway.
+///
+/// The registry is the ownership ledger, but a user may have edited a server after CTX enabled it.
+/// Only overwrite entries that still have CTX's exact gateway argument shape. Stale ownership rows
+/// are removed without touching a user-modified Codex definition.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CodexRestoreReport {
+    pub restored: Vec<String>,
+    pub preserved: Vec<String>,
+}
+
+pub fn codex_restore_all() -> Result<CodexRestoreReport> {
+    let mut registry = GatewayRegistry::load()?;
+    if registry.codex_backups.is_empty() {
+        return Ok(CodexRestoreReport::default());
+    }
+
+    let path = codex_config_path()?;
+    if !path.is_file() {
+        let backups: Vec<CodexBackup> = registry.codex_backups.values().cloned().collect();
+        for backup in backups {
+            registry.servers.remove(&backup.gateway_id);
+        }
+        registry.codex_backups.clear();
+        registry.save()?;
+        return Ok(CodexRestoreReport::default());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("read Codex config {}", path.display()))?;
+    let mut config: toml::Value =
+        toml::from_str(&raw).with_context(|| format!("parse Codex config {}", path.display()))?;
+    let mut servers = config
+        .get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut);
+
+    let backups: Vec<(String, CodexBackup)> = registry
+        .codex_backups
+        .iter()
+        .map(|(name, backup)| (name.clone(), backup.clone()))
+        .collect();
+    let mut report = CodexRestoreReport::default();
+    for (name, backup) in &backups {
+        let still_owned = servers
+            .as_deref()
+            .and_then(|servers| servers.get(name))
+            .and_then(toml::Value::as_table)
+            .is_some_and(|table| is_gateway_shape(table, name));
+        if still_owned {
+            if let Some(servers) = servers.as_deref_mut() {
+                let current = servers
+                    .get(name)
+                    .cloned()
+                    .context("Codex MCP server disappeared while restoring it")?;
+                servers.insert(
+                    name.clone(),
+                    restore_direct_transport(&current, &backup.server)?,
+                );
+            }
+            report.restored.push(name.clone());
+        } else if servers
+            .as_deref()
+            .is_some_and(|servers| servers.contains_key(name))
+        {
+            report.preserved.push(name.clone());
+        }
+    }
+    if !report.restored.is_empty() {
+        write_toml_atomic(&path, &config)?;
+    }
+    for (name, backup) in backups {
+        registry.codex_backups.remove(&name);
+        registry.servers.remove(&backup.gateway_id);
+    }
+    registry.save()?;
+    Ok(report)
+}
+
+fn is_gateway_shape(table: &toml::map::Map<String, toml::Value>, name: &str) -> bool {
+    let Some(command) = table.get("command").and_then(toml::Value::as_str) else {
+        return false;
+    };
+    let executable_name = command.rsplit(['/', '\\']).next().unwrap_or_default();
+    if !executable_name.eq_ignore_ascii_case("ctx")
+        && !executable_name.eq_ignore_ascii_case("ctx.exe")
+    {
+        return false;
+    }
+    let Some(args) = table.get("args").and_then(toml::Value::as_array) else {
+        return false;
+    };
+    let expected = ["gateway", "serve", name, "--surface", "codex"];
+    args.len() == expected.len()
+        && args
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.as_str() == Some(expected))
+}
+
+fn restore_direct_transport(current: &toml::Value, backup: &toml::Value) -> Result<toml::Value> {
+    let mut restored = current
+        .as_table()
+        .cloned()
+        .context("current Codex MCP server is not a table")?;
+    let backup = backup
+        .as_table()
+        .context("backed-up Codex MCP server is not a table")?;
+    for key in CODEX_TRANSPORT_KEYS {
+        restored.remove(key);
+        if let Some(value) = backup.get(key) {
+            restored.insert(key.to_owned(), value.clone());
+        }
+    }
+    Ok(toml::Value::Table(restored))
 }
 
 fn codex_config_path() -> Result<PathBuf> {
@@ -550,5 +673,76 @@ mod tests {
             toml::Value::Array(vec![toml::Value::String("doctor".into())]),
         );
         assert!(!is_current_gateway_command(&table, "linear", &executable));
+    }
+
+    #[test]
+    fn restore_all_restores_only_entries_still_routed_through_ctx() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", tmp.path());
+        std::env::set_var("CTX_TEST_HOME", tmp.path());
+        std::fs::create_dir_all(tmp.path().join(".codex")).unwrap();
+        std::fs::write(
+            tmp.path().join(".codex/config.toml"),
+            r#"
+[mcp_servers.linear]
+command = "/usr/local/bin/ctx"
+args = ["gateway", "serve", "linear", "--surface", "codex"]
+enabled = false
+
+[mcp_servers.user_changed]
+command = "/usr/bin/custom"
+args = ["serve"]
+"#,
+        )
+        .unwrap();
+        let mut registry = GatewayRegistry::default();
+        for name in ["linear", "user_changed"] {
+            registry.servers.insert(
+                name.into(),
+                GatewayServer::StreamableHttp(HttpServer {
+                    url: format!("https://{name}.example.test/mcp"),
+                    bearer_token_env: None,
+                    approved_at: "now".into(),
+                }),
+            );
+            registry.codex_backups.insert(
+                name.into(),
+                CodexBackup {
+                    gateway_id: name.into(),
+                    server: toml::from_str::<toml::Value>(&format!(
+                        "command = \"/usr/bin/{name}\"\nargs = [\"direct\"]"
+                    ))
+                    .unwrap(),
+                },
+            );
+        }
+        registry.save().unwrap();
+
+        let restored = codex_restore_all().unwrap();
+        assert_eq!(restored.restored, vec!["linear"]);
+        assert_eq!(restored.preserved, vec!["user_changed"]);
+        let config = std::fs::read_to_string(tmp.path().join(".codex/config.toml")).unwrap();
+        assert!(config.contains("command = \"/usr/bin/linear\""));
+        assert!(config.contains("enabled = false"));
+        assert!(config.contains("command = \"/usr/bin/custom\""));
+        let registry = GatewayRegistry::load().unwrap();
+        assert!(registry.codex_backups.is_empty());
+        assert!(registry.servers.is_empty());
+
+        std::env::remove_var("CTX_HOME");
+        std::env::remove_var("CTX_TEST_HOME");
+    }
+
+    #[test]
+    fn gateway_shape_accepts_windows_executable_casing() {
+        let value: toml::Value = toml::from_str(
+            r#"command = "C:\\Users\\dev\\CTX.EXE"
+args = ["gateway", "serve", "linear", "--surface", "codex"]"#,
+        )
+        .unwrap();
+        assert!(is_gateway_shape(value.as_table().unwrap(), "linear"));
     }
 }
