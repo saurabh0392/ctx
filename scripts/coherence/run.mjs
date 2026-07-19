@@ -13,6 +13,7 @@
 import { createRequire } from 'module';
 import { readFileSync, writeFileSync } from 'fs';
 import { invariants } from './invariants.mjs';
+import { waitForChange } from './wait-for-change.mjs';
 
 const require = createRequire(import.meta.url);
 const pwPath = process.env.PW_CORE || 'playwright-core';
@@ -96,7 +97,13 @@ async function main() {
     async clickAndSettle(handle) {
       try { await handle.click({ timeout: 2000 }); } catch { /* detached */ }
       try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* no net */ }
-      await page.waitForTimeout(700);
+    },
+    async waitForViewChange(view, before) {
+      return waitForChange(() => H.viewSignature(view), before, {
+        timeoutMs: 5000,
+        intervalMs: 100,
+        sleep: (ms) => page.waitForTimeout(ms),
+      });
     },
     async resetConfig() {
       if (LIVE_CONFIG && PRISTINE_CONFIG) {

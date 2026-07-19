@@ -32,7 +32,7 @@ jobs:
       - name: Claim consistency
         run: |
           node scripts/coherence/claims.mjs
-          node --test scripts/coherence/beta-summary.test.mjs
+          npm --prefix scripts/coherence test
       - name: Rust quality gates
         run: |
           cargo fmt --check
