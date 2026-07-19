@@ -482,8 +482,12 @@ pub enum HookCommand {
     CursorPostToolUse,
     /// Cursor preToolUse: rewrite an earned Shell command to `ctx run <cmd>` (ADR 0024 / CTX-41)
     CursorPreToolUse,
-    /// Cursor preCompact: record a live Cursor compaction event (ADR 0023 / CTX-31)
+    /// Cursor preCompact: record a live compaction attempt (ADR 0047)
     CursorPreCompact,
+    /// Claude Code native compaction start observer.
+    ClaudePreCompact,
+    /// Claude Code native compaction completion observer.
+    ClaudePostCompact,
     /// Codex plugin lifecycle heartbeat.
     CodexSessionStart,
     /// Codex user turn and correction-signal observer.

@@ -293,6 +293,7 @@ fn apply_native_mcp(
         manifest: candidate.manifest,
         proposal: &candidate.proposal,
         authorized: true,
+        transport_latency_ms: None,
     };
     let crate::tool_result::McpPrepareOutcome::Ready(prepared) =
         crate::tool_result::prepare_mcp_trim(canonical, &request)

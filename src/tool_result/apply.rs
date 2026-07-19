@@ -27,6 +27,9 @@ pub struct McpApplyRequest<'a> {
     pub proposal: &'a McpTransformProposal,
     /// Permission comes from the existing evidence gate. Eligibility alone is never permission.
     pub authorized: bool,
+    /// Gateway round-trip latency at the point the response became available. Native hooks leave
+    /// this `None`; the gateway uses it for product-proof receipts.
+    pub transport_latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +50,7 @@ pub struct PreparedMcpTrim {
     lines_total: usize,
     lines_keep: usize,
     prepared_at: String,
+    transport_latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,13 +81,25 @@ pub fn prepare_mcp_trim(
             reason: format!("recovery-schema-unavailable: {error}"),
         };
     }
-    match prepare_mcp_trim_in(&mut conn, original, request) {
+    let outcome = match prepare_mcp_trim_in(&mut conn, original, request) {
         Ok(outcome) => outcome,
         Err(error) => McpPrepareOutcome::PassThrough {
             result: exact_original,
             reason: format!("apply-prepare-failed: {error}"),
         },
+    };
+    if let (Some(latency_ms), McpPrepareOutcome::PassThrough { reason, .. }) =
+        (request.transport_latency_ms, &outcome)
+    {
+        crate::db::record_gateway_runtime_event_best_effort(
+            request.surface,
+            request.server_id,
+            "pass_through",
+            Some(latency_ms),
+            Some(reason),
+        );
     }
+    outcome
 }
 
 /// Testable core of the prepare phase. The caller is responsible for ensuring the CTX schema.
@@ -163,6 +179,7 @@ pub fn prepare_mcp_trim_in(
         lines_total: original_json.lines().count(),
         lines_keep: trimmed_json.lines().count(),
         prepared_at,
+        transport_latency_ms: request.transport_latency_ms,
     })))
 }
 
@@ -223,6 +240,15 @@ fn mark_mcp_trim_emitted_in(conn: &mut Connection, prepared: &PreparedMcpTrim) -
         &prepared.command_or_path,
     )?;
     transaction.commit().context("commit applied transaction")?;
+    if let Some(latency_ms) = prepared.transport_latency_ms {
+        crate::db::record_gateway_runtime_event_best_effort(
+            &prepared.surface,
+            &prepared.server_id,
+            "applied",
+            Some(latency_ms),
+            None,
+        );
+    }
     Ok(())
 }
 
@@ -291,6 +317,7 @@ mod tests {
             manifest: &MANIFEST,
             proposal: &proposal,
             authorized: true,
+            transport_latency_ms: None,
         };
         let McpPrepareOutcome::Ready(prepared) =
             prepare_mcp_trim_in(&mut conn, &canonical, &request).unwrap()
@@ -354,6 +381,7 @@ mod tests {
             manifest: &MANIFEST,
             proposal: &proposal,
             authorized: false,
+            transport_latency_ms: None,
         };
         let McpPrepareOutcome::PassThrough { result, reason } =
             prepare_mcp_trim_in(&mut conn, &canonical, &request).unwrap()

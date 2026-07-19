@@ -104,8 +104,67 @@ impl GatewayRegistry {
             .with_context(|| format!("write gateway registry temp {}", tmp.display()))?;
         std::fs::rename(&tmp, &path)
             .with_context(|| format!("replace gateway registry {}", path.display()))?;
+        crate::config::protect_private_file(&path)?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayDestinationReceipt {
+    pub id: String,
+    pub transport: String,
+    pub destination: String,
+    pub remote: bool,
+    pub approved_at: Option<String>,
+    pub routed_to_codex: bool,
+    pub credential_source: String,
+}
+
+/// User-reviewable egress ledger. It includes exact destinations and credential *sources*, never
+/// credential values. Local child processes are listed too so "nothing remote" is provable rather
+/// than an ambiguous empty card.
+pub fn destination_receipts() -> Vec<GatewayDestinationReceipt> {
+    let Ok(registry) = GatewayRegistry::load() else {
+        return Vec::new();
+    };
+    registry
+        .servers
+        .iter()
+        .map(|(id, server)| {
+            let routed_to_codex = registry
+                .codex_backups
+                .values()
+                .any(|backup| backup.gateway_id == *id);
+            match server {
+                GatewayServer::Stdio(server) => GatewayDestinationReceipt {
+                    id: id.clone(),
+                    transport: "stdio".into(),
+                    destination: server.command.to_string_lossy().into_owned(),
+                    remote: false,
+                    approved_at: None,
+                    routed_to_codex,
+                    credential_source: if server.pass_env.is_empty() {
+                        "none".into()
+                    } else {
+                        format!("{} approved environment name(s)", server.pass_env.len())
+                    },
+                },
+                GatewayServer::StreamableHttp(server) => GatewayDestinationReceipt {
+                    id: id.clone(),
+                    transport: "streamable-http".into(),
+                    destination: server.url.clone(),
+                    remote: true,
+                    approved_at: Some(server.approved_at.clone()),
+                    routed_to_codex,
+                    credential_source: server
+                        .bearer_token_env
+                        .as_ref()
+                        .map(|name| format!("environment variable {name}"))
+                        .unwrap_or_else(|| "OS credential store (OAuth)".into()),
+                },
+            }
+        })
+        .collect()
 }
 
 pub fn codex_gateway_server_count() -> usize {

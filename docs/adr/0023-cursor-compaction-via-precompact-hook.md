@@ -1,10 +1,13 @@
 # 0023. Cursor compaction via the preCompact hook, at lower confidence
 
-- Status: accepted
+- Status: superseded by ADR 0047
 - Date: 2026-06-14
 - Deciders: Saurabh Sharan, ctx CTO partner
 - Ticket: CTX-31 (persist Cursor compaction so it graduates from unknown)
 - Extends: ADR 0016 (compaction-harm detector), ADR 0018 (Cursor as a live hook surface)
+
+> Historical note: ADR 0047 corrects this ADR's central assumption. Cursor `preCompact` proves an
+> attempt, not completion; current UI and API never count it as a completed compaction.
 
 ## Context
 

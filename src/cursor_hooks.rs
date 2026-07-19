@@ -13,7 +13,7 @@ pub const CTX_CURSOR_POST_TOOL_SUBCOMMAND: &str = "hook cursor-post-tool-use";
 /// to `ctx run <cmd>` so the compacted result returns as Shell's own output (the RTK approach).
 pub const CTX_CURSOR_PRE_TOOL_SUBCOMMAND: &str = "hook cursor-pre-tool-use";
 
-/// ctx subcommand wired as the Cursor preCompact command hook (CTX-31 / ADR 0023).
+/// ctx subcommand wired as the Cursor preCompact command hook (ADR 0047).
 pub const CTX_CURSOR_PRE_COMPACT_SUBCOMMAND: &str = "hook cursor-pre-compact";
 
 /// One ctx-managed Cursor hook: which event it registers under, the ctx subcommand it runs, and an
@@ -26,8 +26,8 @@ struct CtxCursorHook {
 
 /// Every Cursor hook ctx owns. postToolUse observes all tools (and trims MCP results); preToolUse is
 /// scoped to Shell so only shell commands are considered for the `ctx run` input rewrite (CTX-41);
-/// preCompact records compaction events so Cursor graduates from honest-unknown on the compaction
-/// view (ADR 0023 / CTX-31).
+/// preCompact records compaction attempts so Cursor graduates from honest-unknown without claiming
+/// completion (ADR 0047).
 fn ctx_cursor_hooks() -> [CtxCursorHook; 3] {
     [
         CtxCursorHook {
@@ -206,7 +206,7 @@ mod tests {
             .contains(CTX_CURSOR_PRE_TOOL_SUBCOMMAND));
         assert_eq!(pre[0]["matcher"].as_str(), Some("Shell"));
 
-        // preCompact records compaction events (CTX-31), no matcher.
+        // preCompact records compaction attempts (ADR 0047), no matcher.
         let compact = doc["hooks"]["preCompact"].as_array().unwrap();
         assert_eq!(compact.len(), 1);
         assert!(compact[0]["command"]

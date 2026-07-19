@@ -129,48 +129,16 @@ pub fn post_tool_use() -> Result<()> {
 }
 
 pub fn pre_compact() -> Result<()> {
-    record_compaction("pre")
+    crate::compaction::record_stdin(CODEX_SURFACE, crate::compaction::CompactionPhase::Attempted)
 }
 
 pub fn post_compact() -> Result<()> {
-    record_compaction("post")
+    crate::compaction::record_stdin(CODEX_SURFACE, crate::compaction::CompactionPhase::Completed)
 }
 
 pub fn stop() -> Result<()> {
     let payload = read_payload()?;
     record_event(&payload, "Stop");
-    emit(&json!({}))
-}
-
-fn record_compaction(phase: &str) -> Result<()> {
-    let payload = read_payload()?;
-    let event_name = if phase == "pre" {
-        "PreCompact"
-    } else {
-        "PostCompact"
-    };
-    let key = event_key(&payload, event_name);
-    if let Ok(conn) = crate::db::open_db() {
-        let _ = crate::db::ensure_schema(&conn);
-        let _ = crate::db::claim_surface_hook_event(
-            &conn,
-            &key,
-            CODEX_SURFACE,
-            event_name,
-            string_field(&payload, &["session_id", "sessionId"]),
-            string_field(&payload, &["turn_id", "turnId"]),
-            None,
-        );
-        let _ = crate::db::insert_native_compaction(
-            &conn,
-            &key,
-            CODEX_SURFACE,
-            phase,
-            string_field(&payload, &["session_id", "sessionId"]),
-            string_field(&payload, &["turn_id", "turnId"]),
-            string_field(&payload, &["trigger", "compact_trigger"]),
-        );
-    }
     emit(&json!({}))
 }
 

@@ -54,6 +54,7 @@
     ],
     "PreCompact": [
       {
+        "matcher": "manual|auto",
         "hooks": [
           {
             "type": "command",
@@ -66,6 +67,7 @@
     ],
     "PostCompact": [
       {
+        "matcher": "manual|auto",
         "hooks": [
           {
             "type": "command",

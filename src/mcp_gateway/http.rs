@@ -1,5 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
+use std::time::Instant;
 use std::{collections::HashSet, collections::VecDeque};
 
 use anyhow::{Context, Result};
@@ -71,11 +72,20 @@ pub async fn serve(server_id: &str, surface: &str, server: &HttpServer) -> Resul
         if let Some(session) = session_id.as_deref() {
             request = request.header("Mcp-Session-Id", session);
         }
-        let response = request
-            .body(trim_newline(&frame).to_vec())
-            .send()
-            .await
-            .context("send approved remote MCP request")?;
+        let request_started = Instant::now();
+        let response = match request.body(trim_newline(&frame).to_vec()).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                crate::db::record_gateway_runtime_event_best_effort(
+                    surface,
+                    server_id,
+                    "failure",
+                    Some(request_started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+                    Some("remote-request-failed"),
+                );
+                return Err(error).context("send approved remote MCP request");
+            }
+        };
         if let Some(received) = response
             .headers()
             .get("Mcp-Session-Id")
@@ -90,6 +100,13 @@ pub async fn serve(server_id: &str, surface: &str, server: &HttpServer) -> Resul
             continue;
         }
         if !status.is_success() {
+            crate::db::record_gateway_runtime_event_best_effort(
+                surface,
+                server_id,
+                "failure",
+                Some(request_started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+                Some(&format!("remote-http-status-{status}")),
+            );
             anyhow::bail!("remote MCP destination returned HTTP {status}");
         }
         let content_type = response

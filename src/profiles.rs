@@ -3439,6 +3439,9 @@ mod tests {
 
     #[test]
     fn allowed_server_names_maps_mcp_prefixes_to_server_ids() {
+        let _guard = CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CTX_HOME", tmp.path());
 
@@ -3467,6 +3470,9 @@ mod tests {
 
     #[test]
     fn collect_observed_prefixes_empty_without_history() {
+        let _guard = CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CTX_HOME", tmp.path());
         assert!(collect_observed_prefixes().is_empty());
@@ -3483,6 +3489,9 @@ mod tests {
 
     #[test]
     fn builtin_templates_hidden_until_usage_profiles_exist() {
+        let _guard = CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CTX_HOME", tmp.path());
         let slugs = visible_profile_slugs("all");

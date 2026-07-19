@@ -88,6 +88,11 @@ const TOOL_DEFS: &[(&str, &str, &str)] = &[
         r#"{"type":"object","properties":{"id":{"type":"string","description":"The rewind id shown in the ctx trim marker."}},"required":["id"]}"#,
     ),
     (
+        "ctx_recovery_check",
+        "Test CTX recovery end to end with synthetic text. Stores it, restores it byte-for-byte, deletes it, and returns metadata only—never a retained original.",
+        "{}",
+    ),
+    (
         "ctx_tools",
         "Show which MCP servers ctx has pruned from the tool menu (hidden to save tokens) and any restores already queued for the next session. Call this when a tool you expected is missing, to see what you can bring back with ctx_restore.",
         "{}",
@@ -126,6 +131,7 @@ fn handle_tool_call(name: &str, args: &Value) -> Result<Value, String> {
         "ctx_profiles" => tool_profiles(),
         "ctx_waste" => tool_waste(),
         "ctx_expand" => tool_expand(args),
+        "ctx_recovery_check" => tool_recovery_check(),
         "ctx_tools" => tool_tools(),
         "ctx_restore" => tool_restore(args),
         _ => Err(format!("Unknown tool: {name}")),
@@ -217,6 +223,12 @@ fn tool_expand(args: &Value) -> Result<Value, String> {
             "No stored output for id \"{id}\". It may have aged out of the rewind store."
         )),
     }
+}
+
+fn tool_recovery_check() -> Result<Value, String> {
+    crate::db::recovery_self_test()
+        .and_then(|result| serde_json::to_value(result).map_err(Into::into))
+        .map_err(|error| error.to_string())
 }
 
 fn tool_tools() -> Result<Value, String> {
@@ -446,6 +458,8 @@ fn tool_settings() -> Result<Value, String> {
             "session_embeddings": count("session_embeddings"),
             "requests": count("requests"),
         }),
+        "rewind_store": conn.as_ref().map(crate::db::rewind_store_status),
+        "outbound_destinations": crate::mcp_gateway::registry::destination_receipts(),
     }))
 }
 
