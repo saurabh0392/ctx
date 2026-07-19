@@ -16,6 +16,7 @@
 //   H.$$(sel, fn)          -> page.$$eval(sel, fn)
 //   H.parseK(str)          -> "14.0M" | "23K" | "701" -> Number
 //   H.clickAndSettle(h)    -> click an element handle, wait for any reload to settle
+//   H.waitForViewChange(v, before) -> poll until the view changes or a bounded timeout expires
 //   H.resetConfig()        -> restore the isolated config.toml to pristine (undo a mutation click)
 //   H.pretty(rawToolName)  -> the dashboard's prettyTool() display form
 
@@ -52,8 +53,8 @@ export const invariants = [
           const handle = await H.findControl(view, k);
           if (!handle) continue; // superseded by a prior mutation; not a dead-button signal
           await H.clickAndSettle(handle);
-          const after = await H.viewSignature(view);
-          if (before === after) dead.push(`${view}: "${k.label}"${k.tool ? ` on ${k.tool}` : ''}`);
+          const observed = await H.waitForViewChange(view, before);
+          if (!observed.changed) dead.push(`${view}: "${k.label}"${k.tool ? ` on ${k.tool}` : ''}`);
         }
       }
       await H.resetConfig();

@@ -110,7 +110,7 @@ jobs:
       - name: Claim consistency
         run: |
           node scripts/coherence/claims.mjs
-          node --test scripts/coherence/beta-summary.test.mjs
+          npm --prefix scripts/coherence test
       - name: Install coherence deps + chromium
         working-directory: scripts/coherence
         run: |
