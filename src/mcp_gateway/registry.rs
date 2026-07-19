@@ -250,12 +250,8 @@ pub fn codex_enable(name: &str, accept_remote_beta: bool) -> Result<()> {
     let table = server
         .as_table()
         .with_context(|| format!("Codex MCP server {name:?} is not a table"))?;
-    if table
-        .get("command")
-        .and_then(toml::Value::as_str)
-        .and_then(|command| Path::new(command).file_name())
-        == std::env::current_exe()?.file_name()
-    {
+    let executable = std::fs::canonicalize(std::env::current_exe()?)?;
+    if is_current_gateway_command(table, name, &executable) {
         anyhow::bail!("Codex MCP server {name:?} is already routed through CTX");
     }
 
@@ -322,7 +318,6 @@ pub fn codex_enable(name: &str, accept_remote_beta: bool) -> Result<()> {
     );
     registry.save()?;
 
-    let executable = std::fs::canonicalize(std::env::current_exe()?)?;
     let current = config
         .get_mut("mcp_servers")
         .and_then(toml::Value::as_table_mut)
@@ -364,6 +359,31 @@ pub fn codex_enable(name: &str, accept_remote_beta: bool) -> Result<()> {
     }
     println!("Codex MCP server {name:?} now runs through CTX. Restart Codex to activate it.");
     Ok(())
+}
+
+fn is_current_gateway_command(
+    table: &toml::map::Map<String, toml::Value>,
+    name: &str,
+    executable: &Path,
+) -> bool {
+    let Some(command) = table.get("command").and_then(toml::Value::as_str) else {
+        return false;
+    };
+    let Ok(command) = resolve_executable(command) else {
+        return false;
+    };
+    if command != executable {
+        return false;
+    }
+    let Some(args) = table.get("args").and_then(toml::Value::as_array) else {
+        return false;
+    };
+    let expected = ["gateway", "serve", name, "--surface", "codex"];
+    args.len() == expected.len()
+        && args
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.as_str() == Some(expected))
 }
 
 pub fn codex_disable(name: &str) -> Result<()> {
@@ -503,5 +523,32 @@ mod tests {
         assert!(validate_http_url_syntax("https://mcp.example.test/rpc").is_ok());
         assert!(validate_http_url_syntax("http://mcp.example.test/rpc").is_err());
         assert!(validate_http_url_syntax("https://token@mcp.example.test/rpc").is_err());
+    }
+
+    #[test]
+    fn routed_detection_requires_exact_executable_and_gateway_arguments() {
+        let executable = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let mut table = toml::map::Map::new();
+        table.insert(
+            "command".into(),
+            toml::Value::String(executable.to_string_lossy().into_owned()),
+        );
+        table.insert(
+            "args".into(),
+            toml::Value::Array(
+                ["gateway", "serve", "linear", "--surface", "codex"]
+                    .into_iter()
+                    .map(|arg| toml::Value::String(arg.into()))
+                    .collect(),
+            ),
+        );
+        assert!(is_current_gateway_command(&table, "linear", &executable));
+        assert!(!is_current_gateway_command(&table, "github", &executable));
+
+        table.insert(
+            "args".into(),
+            toml::Value::Array(vec![toml::Value::String("doctor".into())]),
+        );
+        assert!(!is_current_gateway_command(&table, "linear", &executable));
     }
 }

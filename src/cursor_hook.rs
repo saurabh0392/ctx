@@ -140,6 +140,9 @@ fn mcp_server_id(tool_name: &str) -> String {
 }
 
 #[cfg(test)]
+/// Build Cursor's legacy `updated_mcp_tool_output` from trimmed text while preserving the MCP
+/// envelope. Kept only to verify compatibility with captured Cursor payloads; live MCP replacement
+/// now goes through the canonical two-phase apply path above.
 fn cursor_mcp_updated_output(original_output: Option<&Value>, compressed: &str) -> Value {
     let mut env = original_output
         .and_then(Value::as_str)
@@ -466,11 +469,6 @@ fn cursor_shell_command(payload: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Build Cursor's `updated_mcp_tool_output` from the trimmed text, mirroring the MCP result
-/// envelope Cursor sends in. Verified live against a real Cursor 3.7 postToolUse payload (ADR
-/// 0018): `tool_output` is a JSON-stringified `{"content":[{"type":"text","text":...}],
-/// "isError":false}`. We parse it so sibling fields (e.g. `isError`) survive, and replace only the
-/// text content with the trimmed text, so the model reads the shorter result in the same shape.
 /// Lift a Cursor `postToolUse` payload into the canonical tool result. Returns `None` when there
 /// is no compressible output (a write/delete-style tool, or an empty result), so the caller stays
 /// silent rather than recording an empty decision.

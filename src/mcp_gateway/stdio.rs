@@ -146,15 +146,34 @@ pub async fn serve(server_id: &str, surface: &str, server: &StdioServer) -> Resu
 }
 
 async fn read_frame<R: AsyncRead + Unpin>(reader: &mut BufReader<R>) -> Result<Option<Vec<u8>>> {
+    read_frame_bounded(reader, MAX_FRAME_BYTES).await
+}
+
+async fn read_frame_bounded<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    limit: usize,
+) -> Result<Option<Vec<u8>>> {
     let mut frame = Vec::new();
-    let read = reader.read_until(b'\n', &mut frame).await?;
-    if read == 0 {
-        return Ok(None);
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return if frame.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(frame))
+            };
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.map_or(available.len(), |index| index + 1);
+        if frame.len().saturating_add(take) > limit {
+            anyhow::bail!("MCP frame exceeds {limit} bytes");
+        }
+        frame.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline.is_some() {
+            return Ok(Some(frame));
+        }
     }
-    if frame.len() > MAX_FRAME_BYTES {
-        anyhow::bail!("MCP frame exceeds {} bytes", MAX_FRAME_BYTES);
-    }
-    Ok(Some(frame))
 }
 
 pub(super) fn observe_client_frame(state: &mut RelayState, frame: &[u8]) -> Result<()> {
@@ -358,5 +377,13 @@ mod tests {
         let mut frame = serde_json::to_vec(&notification).unwrap();
         frame.push(b'\n');
         assert_eq!(transform_server_frame(&mut state, &frame).0, frame);
+    }
+
+    #[tokio::test]
+    async fn frame_reader_stops_at_the_bound_without_waiting_for_a_newline() {
+        let input = std::io::Cursor::new(vec![b'x'; 17]);
+        let mut reader = BufReader::with_capacity(4, input);
+        let error = read_frame_bounded(&mut reader, 16).await.unwrap_err();
+        assert!(error.to_string().contains("exceeds 16 bytes"));
     }
 }

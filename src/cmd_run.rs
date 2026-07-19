@@ -519,7 +519,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn nonzero_exit_still_passes_through() {
-        // cmd.exe: `&` chains commands and `exit N` sets the process exit code (no printf, no `;`).
+        // Auto uses PowerShell on Windows; `exit N` sets its process exit code.
         let outcome = run_command(
             "[Console]::Out.Write('partial output'); exit 2",
             "cursor",
