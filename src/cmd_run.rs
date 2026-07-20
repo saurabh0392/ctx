@@ -343,9 +343,11 @@ fn mark_shell_trim_emitted(prepared: &PreparedShellTrim) -> Result<()> {
         },
     )?;
     let decision_id = transaction.last_insert_rowid();
-    transaction.execute(
-        "UPDATE compress_decisions SET rewind_id=?2 WHERE id=?1",
-        rusqlite::params![decision_id, prepared.rewind_id],
+    crate::db::mark_decision_emitted(
+        &transaction,
+        decision_id,
+        &prepared.rewind_id,
+        prepared.chars_out,
     )?;
     crate::db::insert_compress_event(
         &transaction,

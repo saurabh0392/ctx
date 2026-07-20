@@ -498,6 +498,14 @@ fn migrate_compress_decisions_table(conn: &Connection) {
         "ALTER TABLE compress_decisions ADD COLUMN rewind_id TEXT",
         [],
     );
+    // The shadow proposal and the bytes actually emitted are different contracts. A proposal may
+    // be recomputed by the native adapter before it writes the final result, so
+    // `would_chars_out` must never be used as proof of model-visible savings. This receipt is set
+    // only after the shortened result has been written successfully.
+    let _ = conn.execute(
+        "ALTER TABLE compress_decisions ADD COLUMN actual_chars_out INTEGER",
+        [],
+    );
     let _ = conn.execute(
         "ALTER TABLE compress_decisions ADD COLUMN outcome_recovered INTEGER",
         [],
@@ -518,6 +526,18 @@ fn migrate_compress_decisions_table(conn: &Connection) {
     );
     let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN expanded_at TEXT", []);
     let _ = conn.execute("ALTER TABLE rewind_store ADD COLUMN trimmed TEXT", []);
+    // Backfill releases that already kept the exact emitted text in the recovery store. Rows
+    // without that durable receipt remain NULL and therefore cannot contribute claimed savings.
+    let _ = conn.execute(
+        "UPDATE compress_decisions
+         SET actual_chars_out = (
+             SELECT length(COALESCE(rewind_store.trimmed,''))
+             FROM rewind_store WHERE rewind_store.id = compress_decisions.rewind_id
+         )
+         WHERE applied=1 AND actual_chars_out IS NULL AND rewind_id IS NOT NULL
+           AND EXISTS(SELECT 1 FROM rewind_store WHERE rewind_store.id=compress_decisions.rewind_id)",
+        [],
+    );
     // Phase 2 randomized exploration arm (ADR 0009): "treatment" (trimmed) or "control"
     // (deliberately kept) for rows that entered the experiment; NULL for every prior and
     // non-experiment decision. Kept separate from `applied` because a randomized control and an
@@ -730,7 +750,11 @@ pub fn gateway_runtime_summary(conn: &Connection) -> GatewayRuntimeSummary {
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ProductProofMetrics {
-    /// Character-derived estimate; kept explicitly separate from exact input-menu token receipts.
+    /// Exact character delta from results that were confirmed written to the model-visible
+    /// transport. This is the source for the approximate token figure below.
+    pub output_chars_saved: i64,
+    /// Character-derived estimate from `output_chars_saved`; kept explicitly separate from exact
+    /// input-menu token receipts.
     pub output_tokens_saved_estimate: i64,
     pub input_tokens_saved: i64,
     pub applied_trims: i64,
@@ -755,7 +779,8 @@ pub fn product_proof_metrics(conn: &Connection) -> ProductProofMetrics {
     ) = conn
         .query_row(
             "SELECT
-                COALESCE(SUM(CASE WHEN applied=1 THEN MAX(chars_in-would_chars_out,0) ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN applied=1 AND actual_chars_out IS NOT NULL
+                    THEN MAX(chars_in-actual_chars_out,0) ELSE 0 END),0),
                 COALESCE(SUM(applied=1),0),
                 COALESCE(SUM(applied=1 AND outcome_joined=1),0),
                 COALESCE(SUM(applied=1 AND outcome_joined=1 AND COALESCE(outcome_correction,0)=1),0),
@@ -793,6 +818,7 @@ pub fn product_proof_metrics(conn: &Connection) -> ProductProofMetrics {
         )
         .unwrap_or(0);
     ProductProofMetrics {
+        output_chars_saved: saved_chars,
         output_tokens_saved_estimate: saved_chars / 4,
         input_tokens_saved,
         applied_trims: applied,
@@ -1046,7 +1072,7 @@ pub struct ContextBillTrim {
     pub source: String,
     /// Lines this trim dropped (`lines_drop`), the primary metric the UI shows.
     pub lines: i64,
-    /// Context removed, in characters (`chars_in - would_chars_out`); the UI converts to tokens with
+    /// Context removed in the confirmed model-visible transport. The UI converts to tokens with
     /// its tok() helper, same as the rewinds path.
     pub tokens: i64,
     pub ts: String,
@@ -1208,7 +1234,8 @@ pub fn repo_bill(conn: &Connection, repo_key: &str) -> ContextBill {
                 COUNT(*),
                 COALESCE(SUM(chars_in), 0),
                 COALESCE(SUM(chars_in - would_chars_out), 0),
-                COALESCE(SUM(CASE WHEN applied = 1 THEN chars_in - would_chars_out ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN applied = 1 AND actual_chars_out IS NOT NULL
+                    THEN MAX(chars_in - actual_chars_out, 0) ELSE 0 END), 0)
          FROM compress_decisions
          WHERE COALESCE(json_extract(features_json,'$.repo_key'),'(unknown)') = ?1
          GROUP BY tool_name
@@ -1626,6 +1653,79 @@ mod recovery_store_tests {
     }
 
     #[test]
+    fn savings_use_the_emitted_receipt_not_the_shadow_proposal() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", temp.path());
+        let conn = open_db().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        insert_compress_decision(
+            &conn,
+            &CompressDecision {
+                ts: "2026-07-20T04:41:22Z",
+                session_id: Some("s1"),
+                tool_name: "Edit",
+                server_prefix: None,
+                kind: "edit",
+                task_mode: "normal",
+                lines_total: 100,
+                lines_keep: 80,
+                lines_drop: 20,
+                chars_in: 10_000,
+                // Deliberately different from what the adapter eventually emitted.
+                would_chars_out: 8_000,
+                features_json: "{}",
+                command_or_path: "/project/src/lib.rs",
+                applied: true,
+                explore_arm: Some("treatment"),
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+        let decision_id = conn.last_insert_rowid();
+
+        let before = product_proof_metrics(&conn);
+        assert_eq!(before.applied_trims, 1);
+        assert_eq!(before.output_chars_saved, 0);
+        assert_eq!(before.output_tokens_saved_estimate, 0);
+
+        let original = "x".repeat(10_000);
+        let emitted = "y".repeat(2_500);
+        insert_rewind_checked(
+            &conn,
+            "rw-emitted",
+            "2026-07-20T04:41:22Z",
+            Some("s1"),
+            "Edit",
+            "/project/src/lib.rs",
+            &original,
+            &emitted,
+        )
+        .unwrap();
+        mark_decision_emitted(&conn, decision_id, "rw-emitted", emitted.chars().count()).unwrap();
+
+        let proof = product_proof_metrics(&conn);
+        assert_eq!(proof.output_chars_saved, 7_500);
+        assert_eq!(proof.output_tokens_saved_estimate, 1_875);
+        let by_tool = compress_savings_by_tool(&conn);
+        let edit = by_tool.iter().find(|row| row.tool_name == "Edit").unwrap();
+        assert_eq!(edit.applied_count, 1);
+        assert_eq!(edit.chars_saved, 7_500);
+        let bill = context_bill(&conn);
+        assert_eq!(bill.total_reclaimed_chars, 7_500);
+        let surface = surface_summary(&conn)
+            .into_iter()
+            .find(|row| row.surface == "claude-code")
+            .unwrap();
+        assert_eq!(surface.chars_saved, 7_500);
+        let week = weekly_net_ahead(&conn).remove(0);
+        assert_eq!(week.output_reclaimed_tokens, 1_875);
+    }
+
+    #[test]
     fn recovery_cap_fails_closed_when_one_original_cannot_fit() {
         let _guard = crate::test_lock::CTX_ENV_LOCK
             .lock()
@@ -1669,8 +1769,9 @@ pub fn mark_rewind_expanded(conn: &Connection, id: &str) {
 }
 
 /// Link the just-recorded applied decision to the rewind entry it produced, so a later recovery
-/// joins back to it. Runs right after the decision insert, so the latest applied row for this
-/// session and tool is the one to stamp.
+/// joins back to it. The retained trimmed text is also the durable model-visible size receipt.
+/// Runs right after the decision insert, so the latest applied row for this session and tool is the
+/// one to stamp.
 pub fn link_decision_rewind(
     conn: &Connection,
     session_id: Option<&str>,
@@ -1678,13 +1779,48 @@ pub fn link_decision_rewind(
     rewind_id: &str,
 ) {
     let _ = conn.execute(
-        "UPDATE compress_decisions SET rewind_id = ?3
+        "UPDATE compress_decisions
+         SET rewind_id = ?3,
+             actual_chars_out = (
+                 SELECT length(COALESCE(trimmed,'')) FROM rewind_store WHERE id=?3
+             )
          WHERE id = (
              SELECT MAX(id) FROM compress_decisions
              WHERE applied = 1 AND tool_name = ?2 AND session_id IS ?1
          )",
         params![session_id, tool_name, rewind_id],
     );
+}
+
+/// Attach the exact emitted-size receipt to a known applied decision. Adapters call this only after
+/// their native transport accepted the shortened result; a failure therefore under-counts instead
+/// of claiming savings that may not have reached the model.
+pub fn mark_decision_emitted(
+    conn: &Connection,
+    decision_id: i64,
+    rewind_id: &str,
+    actual_chars_out: usize,
+) -> Result<()> {
+    let retained_chars: i64 = conn.query_row(
+        "SELECT length(COALESCE(trimmed,'')) FROM rewind_store WHERE id=?1",
+        params![rewind_id],
+        |row| row.get(0),
+    )?;
+    if retained_chars != actual_chars_out as i64 {
+        anyhow::bail!(
+            "emitted result size {actual_chars_out} did not match retained receipt {retained_chars}"
+        );
+    }
+    let changed = conn.execute(
+        "UPDATE compress_decisions
+         SET rewind_id=?2, actual_chars_out=?3
+         WHERE id=?1 AND applied=1",
+        params![decision_id, rewind_id, actual_chars_out as i64],
+    )?;
+    if changed != 1 {
+        anyhow::bail!("applied decision {decision_id} was not available for its emitted receipt");
+    }
+    Ok(())
 }
 
 /// Fetch a stored original by id. None if the id is unknown or the store is empty.
@@ -1801,7 +1937,8 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
                 COUNT(*),
                 COALESCE(SUM(chars_in), 0),
                 COALESCE(SUM(chars_in - would_chars_out), 0),
-                COALESCE(SUM(CASE WHEN applied = 1 THEN chars_in - would_chars_out ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN applied = 1 AND actual_chars_out IS NOT NULL
+                    THEN MAX(chars_in - actual_chars_out, 0) ELSE 0 END), 0)
          FROM compress_decisions
          GROUP BY tool_name
          ORDER BY 3 DESC",
@@ -1907,11 +2044,11 @@ pub fn context_bill(conn: &Connection) -> ContextBill {
     if let Ok(mut stmt) = conn.prepare(
         "SELECT COALESCE(NULLIF(command_or_path, ''), '(unlabeled)'),
                 lines_drop,
-                (chars_in - would_chars_out),
+                MAX(chars_in - actual_chars_out, 0),
                 ts,
                 rewind_id
          FROM compress_decisions
-         WHERE tool_name = ?1 AND applied = 1 AND lines_drop > 0
+         WHERE tool_name = ?1 AND applied = 1 AND actual_chars_out IS NOT NULL AND lines_drop > 0
          ORDER BY ts DESC LIMIT 6",
     ) {
         for i in 0..bill.tools.len() {
@@ -2327,11 +2464,10 @@ pub fn compress_decision_feed(conn: &Connection, limit: usize) -> Vec<CompressDe
     }
 }
 
-/// Applied compression savings per tool, drawn only from decisions ctx actually trimmed.
-/// `chars_saved` is characters removed from what the model saw (chars_in - would_chars_out,
-/// floored at 0). Shadow-only decisions (applied = 0) contribute nothing, so this never counts
-/// trims that were not really made. Bucketing into "earned" vs "still testing" happens upstream
-/// by joining tool_name to the causal verdict.
+/// Applied compression savings per tool, drawn only from decisions with a confirmed emitted-size
+/// receipt. Shadow-only decisions and legacy rows without proof of what reached the model
+/// contribute nothing. Bucketing into "earned" vs "still testing" happens upstream by joining
+/// tool_name to the causal verdict.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct CompressToolSavings {
     pub tool_name: String,
@@ -2343,8 +2479,9 @@ pub fn compress_savings_by_tool(conn: &Connection) -> Vec<CompressToolSavings> {
     let mut stmt = match conn.prepare(
         "SELECT tool_name,
                 COALESCE(SUM(CASE WHEN applied = 1 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN applied = 1 AND chars_in > would_chars_out
-                                  THEN chars_in - would_chars_out ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN applied = 1 AND actual_chars_out IS NOT NULL
+                                      AND chars_in > actual_chars_out
+                                  THEN chars_in - actual_chars_out ELSE 0 END), 0)
          FROM compress_decisions
          GROUP BY tool_name",
     ) {
@@ -2957,7 +3094,8 @@ pub fn surface_summary(conn: &Connection) -> Vec<SurfaceSummary> {
                 SUM(COALESCE(outcome_joined,0)),
                 SUM(COALESCE(outcome_correction,0)),
                 SUM(COALESCE(outcome_reread,0)),
-                SUM(CASE WHEN applied=1 THEN (chars_in - would_chars_out) ELSE 0 END),
+                SUM(CASE WHEN applied=1 AND actual_chars_out IS NOT NULL
+                         THEN MAX(chars_in - actual_chars_out,0) ELSE 0 END),
                 SUM(CASE WHEN substr(ts,1,10)=?1 THEN 1 ELSE 0 END),
                 MAX(ts)
          FROM compress_decisions
@@ -3111,6 +3249,13 @@ fn compaction_receipt(conn: &Connection, surface: &str) -> CapabilityReceipt {
 }
 
 fn apply_surface_capabilities(conn: &Connection, summary: &mut SurfaceSummary) {
+    // `surface_summary_full` reapplies capabilities after transcript/plugin heartbeats adjust the
+    // seen state. Rebuild derived fields instead of appending to the first pass.
+    summary.limitations.clear();
+    summary.capabilities.clear();
+    summary.can_trim_shell = false;
+    summary.can_trim_builtin = false;
+    summary.can_trim_mcp = false;
     summary.capability_contract_version = 1;
     summary.can_observe = true;
     summary.can_observe_compaction = true;
@@ -3771,10 +3916,14 @@ pub fn weekly_net_ahead(conn: &Connection) -> Vec<WeekNetAhead> {
     let sql = format!(
         "SELECT strftime('%Y-W%W', ts) AS wk,
                 MIN(date(ts)),
-                COALESCE(SUM(CASE WHEN applied=1 THEN (chars_in - would_chars_out) ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN applied=1 AND actual_chars_out IS NOT NULL
+                    THEN MAX(chars_in - actual_chars_out,0) ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN lines_drop>0 THEN (chars_in - would_chars_out) ELSE 0 END),0),
-                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 THEN 1 ELSE 0 END),0),
-                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1 AND lines_drop>0 AND {retouch}=1 AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1
+                    AND lines_drop>0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=1
+                    AND lines_drop>0 AND {retouch}=1
+                    AND COALESCE(outcome_recovered,0)=0 THEN 1 ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 THEN 1 ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN COALESCE(outcome_joined,0)=1 AND applied=0 AND lines_drop>0 AND {retouch}=1 THEN 1 ELSE 0 END),0)
          FROM compress_decisions
@@ -4367,9 +4516,9 @@ pub struct CompressSummaryRow {
 pub fn compress_savings_by_surface_tool(conn: &Connection) -> Vec<(String, String, i64)> {
     let Ok(mut stmt) = conn.prepare(
         "SELECT COALESCE(surface,'claude-code'), tool_name,
-                COALESCE(SUM(chars_in-would_chars_out),0)
+                COALESCE(SUM(MAX(chars_in-actual_chars_out,0)),0)
          FROM compress_decisions
-         WHERE applied=1 AND lines_drop>0
+         WHERE applied=1 AND actual_chars_out IS NOT NULL AND lines_drop>0
            AND COALESCE(transform_version,'retention-v1')=?1
          GROUP BY 1,2",
     ) else {
@@ -8147,6 +8296,11 @@ mod compress_decision_tests {
         let mut claude = decision("2026-06-14T10:00:00+00:00", "c1", "Read", "/a.rs");
         claude.applied = true; // chars_in 5000, would_chars_out 2000 -> 3000 saved
         insert_compress_decision(&conn, &claude).unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET actual_chars_out=2000 WHERE tool_name='Read'",
+            [],
+        )
+        .unwrap();
 
         let mut cursor = decision("2026-06-14T11:00:00+00:00", "u1", "Grep", "fn main");
         cursor.surface = Some("cursor");
@@ -8343,8 +8497,11 @@ mod compress_decision_tests {
             },
         )
         .unwrap();
-        conn.execute("UPDATE compress_decisions SET outcome_joined=1", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE compress_decisions SET outcome_joined=1, actual_chars_out=4000",
+            [],
+        )
+        .unwrap();
 
         let wk = weekly_net_ahead(&conn);
         let w = wk.first().expect("one week");
@@ -8418,6 +8575,12 @@ mod compress_decision_tests {
         assert_eq!(cu.tool_calls_seen, 1);
         assert_eq!(cu.transcript_corrections, 1);
         assert!(cu.last_seen.is_some());
+        assert_eq!(
+            cu.limitations.len(),
+            1,
+            "derived limitations must not duplicate"
+        );
+        assert_eq!(cu.capabilities.len(), 4);
     }
 }
 

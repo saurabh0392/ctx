@@ -112,7 +112,10 @@ pub struct ParsedSession {
 #[derive(Serialize)]
 pub struct MonthlySpend {
     pub month: String,
-    pub total_usd: f64,
+    /// API list-price equivalent derived from local token receipts. This is not the user's account
+    /// bill; `actual_spend_usd` is the separately entered billing-page value.
+    pub api_equivalent_usd: f64,
+    pub cost_basis: &'static str,
     pub input_tokens: usize,
     pub cache_creation_tokens: usize,
     pub cache_read_tokens: usize,
@@ -1312,7 +1315,8 @@ pub fn monthly_spend(sessions: &[SessionCost]) -> Vec<MonthlySpend> {
         let ctx_saved = ctx_by_month.get(&month).copied().unwrap_or(0.0);
         let e = by_month.entry(month.clone()).or_insert(MonthlySpend {
             month: month.clone(),
-            total_usd: 0.0,
+            api_equivalent_usd: 0.0,
+            cost_basis: "API list-price equivalent derived from local session token receipts; not an account bill",
             input_tokens: 0,
             cache_creation_tokens: 0,
             cache_read_tokens: 0,
@@ -1323,7 +1327,7 @@ pub fn monthly_spend(sessions: &[SessionCost]) -> Vec<MonthlySpend> {
             budget_usd: None,
             actual_spend_baseline_usd: None,
         });
-        e.total_usd += s.total_usd;
+        e.api_equivalent_usd += s.total_usd;
         e.input_tokens += s.input_tokens;
         e.cache_creation_tokens += s.cache_creation_tokens;
         e.cache_read_tokens += s.cache_read_tokens;

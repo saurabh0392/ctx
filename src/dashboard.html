@@ -1599,9 +1599,17 @@
   }
 
   // Tidy a raw tool name for a chip: "mcp__claude_ai_Linear__save_issue" -> "Linear: save issue".
+  // Codex app tools carry one extra segment (`mcp__codex_apps__notion__fetch`). Preserve the
+  // concrete app and operation so unrelated Notion tools do not all collapse to "apps: notion";
+  // that collision could make a held mutation and an eligible read look like the same tool.
   function prettyTool(name) {
     if (name && name.startsWith("mcp__")) {
       const parts = name.split("__");
+      if (parts[1] === "codex_apps" && parts.length >= 4) {
+        const app = parts[2] || "app";
+        const method = parts.slice(3).join(" ").replace(/_/g, " ");
+        return `${app.charAt(0).toUpperCase()}${app.slice(1)}: ${method}`;
+      }
       const prov = (parts[1] || "").split("_").pop();
       const method = (parts[2] || "").replace(/_/g, " ");
       return prov ? `${prov}: ${method}` : method;
@@ -2779,9 +2787,9 @@
       </div>
       <div class="st-card">
         <div class="st-card-h">Product proof</div>
-        <div class="st-card-sub">Local receipts for what reached the model, what was recovered, what needed another touch, and what the MCP gateway cost. Output tokens are explicitly a character-based estimate; menu tokens are exact.</div>
+        <div class="st-card-sub">Local receipts for what actually reached the model, what was recovered, what needed another touch, and what the MCP gateway cost. Output characters come from the emitted result; tokens are a character-based estimate. Menu tokens are exact recorded estimates.</div>
         <div class="st-card-body"><div class="st-meta">
-          <div><div class="st-mk">Output saved (est.)</div><div class="st-mv">${fmtK(pp.output_tokens_saved_estimate || 0)} tok</div></div>
+          <div><div class="st-mk">Output removed</div><div class="st-mv">${num(pp.output_chars_saved || 0)} chars · ~${fmtK(pp.output_tokens_saved_estimate || 0)} tok</div></div>
           <div><div class="st-mk">Input menu saved</div><div class="st-mv">${fmtK(pp.input_tokens_saved || 0)} tok</div></div>
           <div><div class="st-mk">Applied / observed</div><div class="st-mv">${num(pp.applied_trims || 0)} / ${num(pp.observed_results || 0)}</div></div>
           <div><div class="st-mk">Recoveries</div><div class="st-mv">${num(pp.recoveries || 0)}</div></div>

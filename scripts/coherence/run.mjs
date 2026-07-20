@@ -28,6 +28,11 @@ const WAIT_SEL = { home: '#h2-ladder .h2-rung', see: '.see-tax', save: '#save-la
 function prettyTool(name) {
   if (name && name.startsWith('mcp__')) {
     const parts = name.split('__');
+    if (parts[1] === 'codex_apps' && parts.length >= 4) {
+      const app = parts[2] || 'app';
+      const method = parts.slice(3).join(' ').replace(/_/g, ' ');
+      return `${app.charAt(0).toUpperCase()}${app.slice(1)}: ${method}`;
+    }
     const prov = (parts[1] || '').split('_').pop();
     const method = (parts[2] || '').replace(/_/g, ' ');
     return prov ? `${prov}: ${method}` : method;
