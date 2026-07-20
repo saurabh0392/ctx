@@ -231,7 +231,7 @@ pub fn post_tool_use() -> Result<()> {
     stdout.write_all(b"\n")?;
     stdout.flush()?;
 
-    record_shadow_decision(
+    let decision_id = record_shadow_decision(
         session_id,
         tool_name,
         &command_or_path,
@@ -252,7 +252,14 @@ pub fn post_tool_use() -> Result<()> {
             marked.chars().count(),
             &command_or_path,
         );
-        crate::db::link_decision_rewind(&conn, session_id, tool_name, &rewind_id);
+        if let Some(decision_id) = decision_id {
+            let _ = crate::db::mark_decision_emitted(
+                &conn,
+                decision_id,
+                &rewind_id,
+                marked.chars().count(),
+            );
+        }
     }
     analytics::record_compress(
         result.chars_in.saturating_sub(marked.chars().count()),
@@ -341,19 +348,17 @@ pub(crate) fn record_shadow_decision(
     applied: bool,
     explore_arm: Option<&str>,
     surface: Option<&str>,
-) {
-    let Some(d) = decision else {
-        return;
-    };
+) -> Option<i64> {
+    let d = decision?;
     let cfg_shadow = Config::load().compress_shadow_enabled;
     if !cfg_shadow {
-        return;
+        return None;
     }
     let Ok(conn) = crate::db::open_db() else {
-        return;
+        return None;
     };
     if crate::db::ensure_schema(&conn).is_err() {
-        return;
+        return None;
     }
     let features_json = d.features_json();
     let ts = chrono::Utc::now().to_rfc3339();
@@ -375,7 +380,9 @@ pub(crate) fn record_shadow_decision(
         explore_arm,
         surface,
     };
-    let _ = crate::db::insert_compress_decision(&conn, &row);
+    crate::db::insert_compress_decision(&conn, &row)
+        .ok()
+        .map(|()| conn.last_insert_rowid())
 }
 
 /// Raw tool result from the PostToolUse hook payload.

@@ -3,6 +3,17 @@
 All notable CTX changes are recorded here. Versions follow semantic versioning while the product is
 in beta.
 
+## [Unreleased]
+
+### Fixed
+
+- Derive every model-visible savings figure from the exact emitted result instead of the earlier
+  shadow proposal, and backfill existing receipts from the local recovery store.
+- Make `ctx_status` combine emitted output savings with input-menu savings rather than reporting
+  output savings as zero, and remove duplicate platform limitations from capability receipts.
+- Label transcript-derived dollar figures as API-equivalent estimates, separately from manually
+  entered actual account spend.
+
 ## [0.6.1] - 2026-07-19
 
 ### Added

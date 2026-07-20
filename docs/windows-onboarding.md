@@ -83,7 +83,8 @@ Work normally. ctx runs in the background: it indexes each session, records what
 Inside a Claude Code session, ask for any of these. Claude calls them through the MCP server:
 
 - `ctx_status` gives your active profile, session count, and savings so far.
-- `ctx_spend` breaks down this month's cost by token type, with budget versus actual.
+- `ctx_spend` breaks down this month's API-equivalent usage estimate by token type and shows
+  user-entered actual account spend separately when it is available.
 - `ctx_sessions` lists your recent sessions with cost, duration, and model.
 - `ctx_waste` lists MCP servers that loaded on every request but were never called in the last 30 days, so you can see what to prune.
 - `ctx_tips` and `ctx_patterns` surface what is driving spend and where it repeats.

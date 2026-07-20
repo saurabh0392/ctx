@@ -70,6 +70,27 @@ fn main() -> anyhow::Result<()> {
             false,
             None,
         ),
+        // Codex app tools carry an extra MCP name segment. Include one eligible read and one held
+        // mutation so the dashboard cannot collapse both into the same display name and leak the
+        // eligible read into the held section (or present the mutation as trimmable on See).
+        dec(
+            "mcp__codex_apps__notion__fetch",
+            "mcp",
+            3,
+            2400,
+            1600,
+            false,
+            None,
+        ),
+        dec(
+            "mcp__codex_apps__notion__notion_update_page",
+            "mcp",
+            3,
+            2400,
+            1900,
+            false,
+            None,
+        ),
         // Eligible reads with applied trims: real reclaimed output to reconcile on Home vs See.
         dec("Read", "read", 20, 6000, 2000, true, None),
         dec("Edit", "edit", 14, 4000, 1500, true, Some("treatment")),
@@ -92,6 +113,26 @@ fn main() -> anyhow::Result<()> {
     for batch in &batches {
         for d in batch {
             db::insert_compress_decision(&conn, d)?;
+            if d.applied {
+                // An applied proposal is not proof that shortened output reached the model. Seed
+                // the same retained text + exact emitted-size receipt the live adapters write, so
+                // coherence exercises the shipped savings semantics instead of shadow estimates.
+                let decision_id = conn.last_insert_rowid();
+                let rewind_id = format!("fixture-{decision_id}");
+                let original = "x".repeat(d.chars_in);
+                let trimmed = "y".repeat(d.would_chars_out);
+                db::insert_rewind_checked(
+                    &conn,
+                    &rewind_id,
+                    d.ts,
+                    d.session_id,
+                    d.tool_name,
+                    d.command_or_path,
+                    &original,
+                    &trimmed,
+                )?;
+                db::mark_decision_emitted(&conn, decision_id, &rewind_id, trimmed.chars().count())?;
+            }
             total += 1;
         }
     }

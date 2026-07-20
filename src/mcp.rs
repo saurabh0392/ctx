@@ -44,27 +44,27 @@ fn err_response(id: Value, code: i64, msg: &str) -> JsonRpcResponse {
 const TOOL_DEFS: &[(&str, &str, &str)] = &[
     (
         "ctx_status",
-        "Current ctx status: active profile, session count, token savings, cost saved, budget info.",
+        "Current ctx status: active profile, emitted output savings, input-menu savings, API-equivalent usage estimate, actual spend when entered, and budget info.",
         "{}",
     ),
     (
         "ctx_spend",
-        "Monthly spend breakdown: total USD, tokens by type, session count, ctx savings, budget vs actual. Optional month param (YYYY-MM).",
+        "Monthly API-equivalent usage estimate by token type, plus user-entered actual spend and budget when available. Optional month param (YYYY-MM).",
         r#"{"type":"object","properties":{"month":{"type":"string","description":"Month in YYYY-MM format. Defaults to current month."}}}"#,
     ),
     (
         "ctx_sessions",
-        "Recent sessions with cost, duration, turns, model, project folder. Returns up to 20.",
+        "Recent sessions with API-equivalent usage estimate, duration, turns, model, and project folder. Returns up to 20.",
         "{}",
     ),
     (
         "ctx_tips",
-        "Cost optimization tips based on session analysis: what is driving spend and how to reduce it.",
+        "Usage optimization tips based on session analysis: what drives API-equivalent token cost and how to reduce it.",
         "{}",
     ),
     (
         "ctx_patterns",
-        "Detected repeat patterns: recurring prompts, project concentration, evening spikes. Each has estimated USD impact.",
+        "Detected repeat patterns: recurring prompts, project concentration, evening spikes. USD figures are API-equivalent estimates, not account billing.",
         "{}",
     ),
     (
@@ -139,17 +139,33 @@ fn handle_tool_call(name: &str, args: &Value) -> Result<Value, String> {
 }
 
 fn tool_status() -> Result<Value, String> {
-    let records = crate::analytics::load_records();
     let config = crate::config::Config::load();
-    let filter_recs: Vec<_> = records.iter().filter(|r| r.tools_removed > 0).collect();
-    let total_tokens: usize = filter_recs.iter().map(|r| r.tokens_saved).sum();
-    let total_tools: usize = filter_recs.iter().map(|r| r.tools_removed).sum();
-    let all_tokens = total_tokens;
+    let conn = crate::db::open_db().map_err(|e| e.to_string())?;
+    crate::db::ensure_schema(&conn).map_err(|e| e.to_string())?;
+    let proof = crate::db::product_proof_metrics(&conn);
+    let input_menu_tokens_saved = proof.input_tokens_saved.max(0) as usize;
+    let (total_tools, filtered_requests): (usize, usize) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(tools_removed),0),
+                    COALESCE(SUM(CASE WHEN tools_removed>0 THEN 1 ELSE 0 END),0)
+             FROM requests",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?.max(0) as usize,
+                    row.get::<_, i64>(1)?.max(0) as usize,
+                ))
+            },
+        )
+        .unwrap_or((0, 0));
+    let output_tokens_saved_estimate = proof.output_tokens_saved_estimate.max(0) as usize;
+    let total_tokens_saved_estimate =
+        input_menu_tokens_saved.saturating_add(output_tokens_saved_estimate);
 
     let spend_sessions = crate::conversations::all_sessions();
     let now = chrono::Utc::now();
     let current_month = format!("{}-{:02}", now.year(), now.month());
-    let month_spend: f64 = spend_sessions
+    let month_api_equivalent: f64 = spend_sessions
         .iter()
         .filter(|s| s.started_at.starts_with(&current_month))
         .map(|s| s.total_usd)
@@ -177,8 +193,8 @@ fn tool_status() -> Result<Value, String> {
     .unwrap()
     .signed_duration_since(chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap())
     .num_days() as f64;
-    let projection = if month_spend > 0.0 {
-        Some(month_spend / day * days_in_month)
+    let projection = if month_api_equivalent > 0.0 {
+        Some(month_api_equivalent / day * days_in_month)
     } else {
         None
     };
@@ -186,14 +202,21 @@ fn tool_status() -> Result<Value, String> {
     Ok(json!({
         "active_profile": config.active_profile.as_deref().unwrap_or("all"),
         "month": current_month,
-        "month_spend_usd": month_spend,
+        "month_api_equivalent_usd": month_api_equivalent,
+        "month_actual_spend_usd": config.monthly_actual_spend_usd,
         "month_sessions": month_sessions,
-        "month_end_projection_usd": projection,
+        "month_end_api_equivalent_projection_usd": projection,
+        "spend_basis": "API list-price equivalent derived from local session token receipts; not an account bill",
         "budget_usd": config.monthly_budget_usd,
-        "total_tokens_saved": all_tokens,
+        "output_chars_saved": proof.output_chars_saved,
+        "output_tokens_saved_estimate": output_tokens_saved_estimate,
+        "input_menu_tokens_saved": input_menu_tokens_saved,
+        "total_tokens_saved": total_tokens_saved_estimate,
+        "total_tokens_saved_estimate": total_tokens_saved_estimate,
+        "savings_basis": "output tokens are estimated from confirmed emitted characters; input-menu tokens are exact recorded estimates",
         "total_tools_removed": total_tools,
-        "cost_saved_usd": (all_tokens as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
-        "filtered_requests": filter_recs.len(),
+        "input_menu_cost_saved_usd_estimate": (input_menu_tokens_saved as f64 / 1_000_000.0) * crate::analytics::CACHE_READ_RATE_PER_MTOK,
+        "filtered_requests": filtered_requests,
         "inject_enabled": config.inject_enabled,
         "store_prompt_text": config.store_prompt_text_enabled(),
         "embeddings_enabled": config.embeddings_enabled(),
@@ -385,7 +408,8 @@ fn tool_sessions() -> Result<Value, String> {
                 "started_at": s.started_at,
                 "project": s.project,
                 "turns": s.turn_count,
-                "total_usd": s.total_usd,
+                "api_equivalent_usd": s.total_usd,
+                "cost_basis": "API list-price equivalent derived from local session token receipts; not an account bill",
                 "input_tokens": s.input_tokens,
                 "cache_read_tokens": s.cache_read_tokens,
                 "output_tokens": s.output_tokens,
@@ -582,4 +606,64 @@ pub fn serve_stdio() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_combines_emitted_output_and_input_savings_without_calling_estimate_actual_spend() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("CTX_HOME", temp.path());
+        let conn = crate::db::open_db().unwrap();
+        crate::db::ensure_schema(&conn).unwrap();
+        crate::db::insert_compress_decision(
+            &conn,
+            &crate::db::CompressDecision {
+                ts: "2026-07-20T00:00:00Z",
+                session_id: Some("s1"),
+                tool_name: "Read",
+                server_prefix: None,
+                kind: "read",
+                task_mode: "scan",
+                lines_total: 10,
+                lines_keep: 1,
+                lines_drop: 9,
+                chars_in: 1_000,
+                would_chars_out: 700,
+                features_json: "{}",
+                command_or_path: "/fixture",
+                applied: true,
+                explore_arm: None,
+                surface: Some("claude-code"),
+            },
+        )
+        .unwrap();
+        let decision_id = conn.last_insert_rowid();
+        crate::db::insert_rewind_checked(
+            &conn,
+            "status-rw",
+            "2026-07-20T00:00:00Z",
+            Some("s1"),
+            "Read",
+            "/fixture",
+            &"x".repeat(1_000),
+            &"y".repeat(100),
+        )
+        .unwrap();
+        crate::db::mark_decision_emitted(&conn, decision_id, "status-rw", 100).unwrap();
+
+        let status = tool_status().unwrap();
+        assert_eq!(status["output_chars_saved"], 900);
+        assert_eq!(status["output_tokens_saved_estimate"], 225);
+        assert_eq!(status["input_menu_tokens_saved"], 0);
+        assert_eq!(status["total_tokens_saved"], 225);
+        assert!(status.get("month_api_equivalent_usd").is_some());
+        assert!(status.get("month_actual_spend_usd").is_some());
+        assert!(status.get("month_spend_usd").is_none());
+    }
 }

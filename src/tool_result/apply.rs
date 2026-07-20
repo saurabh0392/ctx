@@ -5,7 +5,9 @@
 //! `mark_mcp_trim_emitted`. This keeps recovery fail-closed and applied telemetry truthful.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+#[cfg(test)]
+use rusqlite::params;
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -225,9 +227,11 @@ fn mark_mcp_trim_emitted_in(conn: &mut Connection, prepared: &PreparedMcpTrim) -
     };
     crate::db::insert_compress_decision(&transaction, &row)?;
     let decision_id = transaction.last_insert_rowid();
-    transaction.execute(
-        "UPDATE compress_decisions SET rewind_id = ?2 WHERE id = ?1",
-        params![decision_id, prepared.rewind_id],
+    crate::db::mark_decision_emitted(
+        &transaction,
+        decision_id,
+        &prepared.rewind_id,
+        prepared.chars_out,
     )?;
     crate::db::insert_compress_event(
         &transaction,
