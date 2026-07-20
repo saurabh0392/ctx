@@ -5,6 +5,8 @@ in beta.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-20
+
 ### Fixed
 
 - Derive every model-visible savings figure from the exact emitted result instead of the earlier
@@ -13,6 +15,8 @@ in beta.
   output savings as zero, and remove duplicate platform limitations from capability receipts.
 - Label transcript-derived dollar figures as API-equivalent estimates, separately from manually
   entered actual account spend.
+- Keep Codex app operations distinct in dashboard labels so eligible reads and held mutations cannot
+  collapse into one apparent tool.
 
 ## [0.6.1] - 2026-07-19
 
