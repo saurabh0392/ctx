@@ -5,9 +5,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-// Bumped to 11 for normalized compaction semantics, gateway runtime proof, and T7 recovery status. The
+// Bumped to 12 for privacy-bounded model-route evidence and corrected compaction semantics. The
 // CREATE TABLE batch is version-gated, so a new table only lands on existing installs when this rises.
-pub(crate) const SCHEMA_VERSION: i32 = 11;
+pub(crate) const SCHEMA_VERSION: i32 = 12;
 
 /// Product events are local-only evidence for the beta scorecard. This allowlist is deliberately
 /// closed: callers cannot turn the table into a generic analytics sink containing prompts, paths,
@@ -633,6 +633,26 @@ fn migrate_surface_hook_tables(conn: &Connection) {
         );
         CREATE INDEX IF NOT EXISTS idx_gateway_runtime_ts
             ON gateway_runtime_events(ts);
+
+        CREATE TABLE IF NOT EXISTS model_gateway_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            route_id TEXT NOT NULL,
+            surface TEXT NOT NULL,
+            surface_version TEXT,
+            protocol TEXT NOT NULL,
+            authentication TEXT NOT NULL,
+            fixed_upstream TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            reason_code TEXT,
+            chars_in INTEGER,
+            chars_out INTEGER,
+            latency_ms INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_gateway_route_ts
+            ON model_gateway_events(route_id, ts);
         "#,
     );
     // v10 stored `pre`/`post`. Normalize in place so every reader uses the product-level meaning
@@ -645,6 +665,223 @@ fn migrate_surface_hook_tables(conn: &Connection) {
         "UPDATE native_compactions SET phase='completed' WHERE phase='post'",
         [],
     );
+}
+
+/// Content-free proof emitted by the local model gateway. Every free-form dimension is validated
+/// against a narrow token grammar before persistence; request bodies, headers, tool output,
+/// credentials, paths, and arbitrary error strings have no field in this contract.
+pub struct ModelGatewayEvent<'a> {
+    pub route_id: &'a str,
+    pub surface: &'a str,
+    pub surface_version: Option<&'a str>,
+    pub protocol: &'a str,
+    pub authentication: &'a str,
+    pub fixed_upstream: &'a str,
+    pub mode: &'a str,
+    pub outcome: &'a str,
+    pub quantity: usize,
+    pub reason_code: Option<&'a str>,
+    pub chars_in: Option<usize>,
+    pub chars_out: Option<usize>,
+    pub latency_ms: Option<u64>,
+}
+
+const MODEL_GATEWAY_OUTCOMES: &[&str] = &[
+    "attempted",
+    "accepted",
+    "applied",
+    "held-whole",
+    "already-shortened",
+    "unknown",
+    "provider-rejected",
+    "transport-failure",
+    "bypassed",
+];
+
+fn model_gateway_token(value: &str, max: usize) -> Result<String> {
+    if value.is_empty()
+        || value.len() > max
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        anyhow::bail!("invalid model gateway evidence token");
+    }
+    Ok(value.to_owned())
+}
+
+fn model_gateway_version(value: &str) -> Result<String> {
+    if value.is_empty()
+        || value.len() > 96
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'-' | b'_' | b'.' | b':' | b'/' | b'+' | b' ' | b'(' | b')'
+                )
+        })
+    {
+        anyhow::bail!("invalid model gateway surface version");
+    }
+    Ok(value.to_owned())
+}
+
+pub fn record_model_gateway_event(conn: &Connection, event: &ModelGatewayEvent<'_>) -> Result<()> {
+    migrate_surface_hook_tables(conn);
+    if !MODEL_GATEWAY_OUTCOMES.contains(&event.outcome) {
+        anyhow::bail!("invalid model gateway evidence outcome");
+    }
+    let fixed_upstream = match event.fixed_upstream {
+        "https://api.openai.com" | "https://api.anthropic.com" => event.fixed_upstream,
+        _ => anyhow::bail!("invalid model gateway evidence destination"),
+    };
+    let reason_code = event
+        .reason_code
+        .map(|value| model_gateway_token(value, 64))
+        .transpose()?;
+    let chars_in = event
+        .chars_in
+        .map(|value| value.min(i64::MAX as usize) as i64);
+    let chars_out = event
+        .chars_out
+        .map(|value| value.min(i64::MAX as usize) as i64);
+    if matches!((chars_in, chars_out), (Some(input), Some(output)) if output > input) {
+        anyhow::bail!("invalid model gateway character receipt");
+    }
+    conn.execute(
+        "INSERT INTO model_gateway_events
+         (ts,route_id,surface,surface_version,protocol,authentication,fixed_upstream,mode,
+          outcome,quantity,reason_code,chars_in,chars_out,latency_ms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params![
+            chrono::Utc::now().to_rfc3339(),
+            model_gateway_token(event.route_id, 64)?,
+            model_gateway_token(event.surface, 32)?,
+            event
+                .surface_version
+                .map(model_gateway_version)
+                .transpose()?,
+            model_gateway_token(event.protocol, 48)?,
+            model_gateway_token(event.authentication, 32)?,
+            fixed_upstream,
+            model_gateway_token(event.mode, 16)?,
+            event.outcome,
+            event.quantity.clamp(1, 10_000) as i64,
+            reason_code,
+            chars_in,
+            chars_out,
+            event
+                .latency_ms
+                .map(|value| value.min(i64::MAX as u64) as i64),
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM model_gateway_events WHERE id NOT IN
+         (SELECT id FROM model_gateway_events ORDER BY id DESC LIMIT 20000)",
+        [],
+    )?;
+    Ok(())
+}
+
+pub fn record_model_gateway_event_best_effort(event: &ModelGatewayEvent<'_>) {
+    if let Ok(conn) = open_db() {
+        let _ = record_model_gateway_event(&conn, event);
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelGatewayRouteSummary {
+    pub route_id: String,
+    pub surface: String,
+    pub surface_version: Option<String>,
+    pub protocol: String,
+    pub authentication: String,
+    pub fixed_upstream: String,
+    pub mode: String,
+    pub attempted: i64,
+    pub accepted: i64,
+    pub applied: i64,
+    pub held_whole: i64,
+    pub already_shortened: i64,
+    pub unknown: i64,
+    pub provider_rejected: i64,
+    pub transport_failures: i64,
+    pub bypassed: i64,
+    pub chars_in: i64,
+    pub chars_out: i64,
+    pub chars_saved: i64,
+    pub average_latency_ms: Option<f64>,
+    pub max_latency_ms: Option<i64>,
+    pub recent_reason_codes: Vec<String>,
+}
+
+pub fn model_gateway_route_summaries(conn: &Connection) -> Vec<ModelGatewayRouteSummary> {
+    migrate_surface_hook_tables(conn);
+    let Ok(mut statement) = conn.prepare(
+        "SELECT route_id,surface,surface_version,protocol,authentication,fixed_upstream,mode,
+                SUM(CASE WHEN outcome='attempted' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='accepted' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='applied' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='held-whole' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='already-shortened' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='unknown' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='provider-rejected' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='transport-failure' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN outcome='bypassed' THEN quantity ELSE 0 END),
+                COALESCE(SUM(CASE WHEN outcome='applied' THEN chars_in ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN outcome='applied' THEN chars_out ELSE 0 END),0),
+                AVG(CASE WHEN outcome='accepted' THEN latency_ms END),
+                MAX(CASE WHEN outcome='accepted' THEN latency_ms END)
+         FROM model_gateway_events
+         GROUP BY route_id,surface,surface_version,protocol,authentication,fixed_upstream,mode
+         ORDER BY MAX(id) DESC",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        let chars_in = row.get::<_, i64>(16)?;
+        let chars_out = row.get::<_, i64>(17)?;
+        Ok(ModelGatewayRouteSummary {
+            route_id: row.get(0)?,
+            surface: row.get(1)?,
+            surface_version: row.get(2)?,
+            protocol: row.get(3)?,
+            authentication: row.get(4)?,
+            fixed_upstream: row.get(5)?,
+            mode: row.get(6)?,
+            attempted: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+            accepted: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+            applied: row.get::<_, Option<i64>>(9)?.unwrap_or(0),
+            held_whole: row.get::<_, Option<i64>>(10)?.unwrap_or(0),
+            already_shortened: row.get::<_, Option<i64>>(11)?.unwrap_or(0),
+            unknown: row.get::<_, Option<i64>>(12)?.unwrap_or(0),
+            provider_rejected: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
+            transport_failures: row.get::<_, Option<i64>>(14)?.unwrap_or(0),
+            bypassed: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
+            chars_in,
+            chars_out,
+            chars_saved: chars_in.saturating_sub(chars_out),
+            average_latency_ms: row.get(18)?,
+            max_latency_ms: row.get(19)?,
+            recent_reason_codes: Vec::new(),
+        })
+    }) else {
+        return Vec::new();
+    };
+    let mut summaries = rows.filter_map(|row| row.ok()).collect::<Vec<_>>();
+    for summary in &mut summaries {
+        let Ok(mut reasons) = conn.prepare(
+            "SELECT DISTINCT reason_code FROM model_gateway_events
+             WHERE route_id=?1 AND reason_code IS NOT NULL ORDER BY id DESC LIMIT 8",
+        ) else {
+            continue;
+        };
+        if let Ok(rows) = reasons.query_map([&summary.route_id], |row| row.get::<_, String>(0)) {
+            summary.recent_reason_codes = rows.filter_map(|row| row.ok()).collect();
+        };
+    }
+    summaries
 }
 
 pub fn record_gateway_runtime_event(
@@ -1650,6 +1887,71 @@ mod recovery_store_tests {
             summary.recent_pass_through_reasons,
             vec!["unsupported-shape"]
         );
+    }
+
+    #[test]
+    fn model_gateway_receipts_are_content_free_and_grouped_by_full_route_identity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        let event =
+            |outcome, quantity, reason, chars_in, chars_out, latency_ms| ModelGatewayEvent {
+                route_id: "codex-api",
+                surface: "codex",
+                surface_version: Some("codex-cli 1.2.3"),
+                protocol: "openai-responses",
+                authentication: "api-key",
+                fixed_upstream: "https://api.openai.com",
+                mode: "testing",
+                outcome,
+                quantity,
+                reason_code: reason,
+                chars_in,
+                chars_out,
+                latency_ms,
+            };
+        record_model_gateway_event(&conn, &event("attempted", 1, None, None, None, None)).unwrap();
+        record_model_gateway_event(
+            &conn,
+            &event("accepted", 1, Some("http-success"), None, None, Some(12)),
+        )
+        .unwrap();
+        record_model_gateway_event(
+            &conn,
+            &event(
+                "applied",
+                2,
+                Some("upstream-accepted"),
+                Some(10_000),
+                Some(500),
+                Some(12),
+            ),
+        )
+        .unwrap();
+        record_model_gateway_event(
+            &conn,
+            &event("held-whole", 3, Some("shadow-mode"), None, None, None),
+        )
+        .unwrap();
+
+        let summaries = model_gateway_route_summaries(&conn);
+        assert_eq!(summaries.len(), 1);
+        let summary = &summaries[0];
+        assert_eq!(summary.route_id, "codex-api");
+        assert_eq!(summary.surface_version.as_deref(), Some("codex-cli 1.2.3"));
+        assert_eq!(summary.attempted, 1);
+        assert_eq!(summary.accepted, 1);
+        assert_eq!(summary.applied, 2);
+        assert_eq!(summary.held_whole, 3);
+        assert_eq!(summary.chars_saved, 9_500);
+        assert_eq!(summary.average_latency_ms, Some(12.0));
+        assert!(summary
+            .recent_reason_codes
+            .contains(&"upstream-accepted".to_string()));
+
+        let unsafe_event = event("unknown", 1, Some("Bearer seeded-secret"), None, None, None);
+        assert!(record_model_gateway_event(&conn, &unsafe_event).is_err());
+        let encoded = serde_json::to_string(&model_gateway_route_summaries(&conn)).unwrap();
+        assert!(!encoded.contains("seeded-secret"));
     }
 
     #[test]
@@ -4127,10 +4429,10 @@ pub const COMPACTION_FOLLOWUP_WINDOW_TURNS: i64 = 5;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CompactionFollowups {
     pub surface: String,
-    /// How completion is known: `native_post`, `native_post+transcript_inference`,
-    /// `native_pre_only`, `transcript_inference`, or `none`.
+    /// How the platform signal is known: `native_post`, `native_post+transcript_pre`,
+    /// `native_pre_only`, `transcript_pre_only`, or `none`.
     pub detection: String,
-    /// `confirmed`, `mixed`, `attempt_only`, `inferred`, or `unknown`.
+    /// `confirmed`, `attempt_only`, or `unknown`.
     pub confidence: String,
     /// Pre-compaction hook deliveries after retry de-duplication.
     pub attempted_events: Option<i64>,
@@ -4138,8 +4440,11 @@ pub struct CompactionFollowups {
     pub completed_events: Option<i64>,
     /// Completed compactions proved by a native post hook.
     pub confirmed_completed_events: Option<i64>,
-    /// Completed compactions recovered from structural transcript markers.
+    /// Deprecated compatibility field. Transcript pre markers never prove completion, so this is
+    /// zero only alongside native completion visibility and otherwise absent.
     pub inferred_completed_events: Option<i64>,
+    /// Pre-compaction transcript markers not paired with a native completion receipt.
+    pub unconfirmed_attempted_events: Option<i64>,
     /// Compatibility alias for completed events. This never counts pre-hook attempts.
     pub compaction_events: Option<i64>,
     /// Compaction events with at least one correction within the window after them. `None` when
@@ -4151,9 +4456,9 @@ pub struct CompactionFollowups {
     pub window_turns: i64,
 }
 
-/// Per-surface compaction visibility. Claude Code and Codex prefer native post hooks; Claude falls
-/// back to transcript inference for history created before those hooks were installed. Cursor's
-/// public contract exposes only a pre hook, so it reports attempts and never fabricates completions.
+/// Per-surface compaction visibility. Only a native post event proves completion. Historical Claude
+/// transcript `pre_compact` markers and Cursor's public pre hook report attempts and never fabricate
+/// completions.
 pub fn compaction_followups(conn: &Connection) -> Vec<CompactionFollowups> {
     let window = COMPACTION_FOLLOWUP_WINDOW_TURNS;
     vec![
@@ -4222,6 +4527,7 @@ fn native_compaction_followups(
         completed_events: completion_visible.then_some(completed),
         confirmed_completed_events: completion_visible.then_some(completed),
         inferred_completed_events: completion_visible.then_some(0),
+        unconfirmed_attempted_events: None,
         compaction_events: completion_visible.then_some(completed),
         followed_by_correction: None,
         sessions_with_compaction: completion_visible.then_some(sessions),
@@ -4267,6 +4573,7 @@ fn cursor_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
         completed_events: None,
         confirmed_completed_events: None,
         inferred_completed_events: None,
+        unconfirmed_attempted_events: Some(attempts),
         compaction_events: None,
         followed_by_correction: None,
         sessions_with_compaction: None,
@@ -4283,6 +4590,7 @@ fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
         completed_events: None,
         confirmed_completed_events: None,
         inferred_completed_events: None,
+        unconfirmed_attempted_events: None,
         compaction_events: None,
         followed_by_correction: None,
         sessions_with_compaction: None,
@@ -4294,23 +4602,18 @@ fn unknown_surface(surface: &str, window: i64) -> CompactionFollowups {
 struct InferredClaudeCompactions {
     has_turns: bool,
     events: i64,
-    followed: i64,
-    sessions: i64,
 }
 
 /// Walk transcript-only Claude sessions. Sessions already represented by a native hook event are
 /// excluded so current compactions are not counted twice when the next ingest sees the same
 /// session. Historical sessions remain available after native hooks are installed.
-fn inferred_claude_compactions(
-    conn: &Connection,
-    window: i64,
-) -> Option<InferredClaudeCompactions> {
+fn inferred_claude_compactions(conn: &Connection) -> Option<InferredClaudeCompactions> {
     // flags is a stored JSON-array string (for example ["pre_compact","correction"]) or a
     // legacy bare string. The substring test deliberately matches both historical shapes.
-    let rows: Vec<(i64, i64, String, String)> = {
+    let rows: Vec<(i64, i64, String)> = {
         let mut statement = conn
             .prepare(
-                "SELECT t.session_id, t.turn_index, COALESCE(t.flags, ''), s.external_key
+                "SELECT t.session_id, t.turn_index, COALESCE(t.flags, '')
                  FROM turns t
                  JOIN sessions s ON s.id=t.session_id
                  WHERE NOT EXISTS (
@@ -4326,7 +4629,6 @@ fn inferred_claude_compactions(
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
                 ))
             })
             .ok()?;
@@ -4337,45 +4639,29 @@ fn inferred_claude_compactions(
         has_turns: !rows.is_empty(),
         ..Default::default()
     };
-    let mut sessions_with = std::collections::HashSet::new();
 
-    // Walk each session once. A compaction at turn `pc` is followed by a correction when a
-    // correction turn lands in (pc, pc + window].
+    // Walk each session once. `pre_compact` proves only that a compaction was about to be attempted;
+    // without a native post receipt it is not a completion and cannot enter harm follow-ups.
     let mut i = 0usize;
     while i < rows.len() {
         let sid = rows[i].0;
-        let external_key = rows[i].3.clone();
         let mut j = i;
         while j < rows.len() && rows[j].0 == sid {
             j += 1;
         }
         let session = &rows[i..j];
-        let corrections: Vec<i64> = session
-            .iter()
-            .filter(|(_, _, flags, _)| flags.contains("correction"))
-            .map(|(_, index, _, _)| *index)
-            .collect();
-        for (_, index, flags, _) in session {
+        for (_, _, flags) in session {
             if flags.contains("pre_compact") {
                 stats.events += 1;
-                sessions_with.insert(external_key.clone());
-                if corrections
-                    .iter()
-                    .any(|&correction| correction > *index && correction <= *index + window)
-                {
-                    stats.followed += 1;
-                }
             }
         }
         i = j;
     }
-    stats.sessions = sessions_with.len() as i64;
     Some(stats)
 }
 
-/// Claude Code arm of [`compaction_followups`]. Native post hooks prove current completions while
-/// structural transcript markers retain older history. The sources remain split in the response;
-/// their sum is the compatibility completion total.
+/// Claude Code arm of [`compaction_followups`]. Native post hooks prove completions. Structural
+/// transcript markers retain older attempt visibility but never enter the completion total.
 fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFollowups {
     migrate_surface_hook_tables(conn);
     let attempted = conn
@@ -4412,48 +4698,46 @@ fn claude_compaction_followups(conn: &Connection, window: i64) -> CompactionFoll
         .unwrap_or(false)
         || attempted > 0
         || confirmed > 0;
-    let inferred = inferred_claude_compactions(conn, window).unwrap_or_default();
+    let inferred = inferred_claude_compactions(conn).unwrap_or_default();
 
     if !native_seen && !inferred.has_turns {
         return unknown_surface("claude-code", window);
     }
 
     if native_seen {
-        let mixed = inferred.events > 0;
-        let completed = confirmed + inferred.events;
         return CompactionFollowups {
             surface: "claude-code".into(),
-            detection: if mixed {
-                "native_post+transcript_inference"
+            detection: if inferred.events > 0 {
+                "native_post+transcript_pre"
             } else {
                 "native_post"
             }
             .into(),
-            confidence: if mixed { "mixed" } else { "confirmed" }.into(),
-            attempted_events: Some(attempted),
-            completed_events: Some(completed),
+            confidence: "confirmed".into(),
+            attempted_events: Some(attempted + inferred.events),
+            completed_events: Some(confirmed),
             confirmed_completed_events: Some(confirmed),
-            inferred_completed_events: Some(inferred.events),
-            compaction_events: Some(completed),
-            // Native events do not yet have a stable turn join. Avoid presenting the historical
-            // subset's correction count as if it covered the combined denominator.
-            followed_by_correction: (confirmed == 0).then_some(inferred.followed),
-            sessions_with_compaction: Some(native_sessions + inferred.sessions),
+            inferred_completed_events: Some(0),
+            unconfirmed_attempted_events: Some(inferred.events),
+            compaction_events: Some(confirmed),
+            followed_by_correction: None,
+            sessions_with_compaction: Some(native_sessions),
             window_turns: window,
         };
     }
 
     CompactionFollowups {
         surface: "claude-code".into(),
-        detection: "transcript_inference".into(),
-        confidence: "inferred".into(),
-        attempted_events: None,
-        completed_events: Some(inferred.events),
-        confirmed_completed_events: Some(0),
-        inferred_completed_events: Some(inferred.events),
-        compaction_events: Some(inferred.events),
-        followed_by_correction: Some(inferred.followed),
-        sessions_with_compaction: Some(inferred.sessions),
+        detection: "transcript_pre_only".into(),
+        confidence: "attempt_only".into(),
+        attempted_events: Some(inferred.events),
+        completed_events: None,
+        confirmed_completed_events: None,
+        inferred_completed_events: None,
+        unconfirmed_attempted_events: Some(inferred.events),
+        compaction_events: None,
+        followed_by_correction: None,
+        sessions_with_compaction: None,
         window_turns: window,
     }
 }
@@ -8082,7 +8366,7 @@ mod compress_decision_tests {
     }
 
     #[test]
-    fn compaction_counts_correction_inside_window_only() {
+    fn transcript_pre_markers_are_attempts_not_completed_compactions() {
         let _guard = crate::test_lock::CTX_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -8110,19 +8394,14 @@ mod compress_decision_tests {
 
         let out = compaction_followups(&conn);
         let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
-        assert_eq!(claude.confidence, "inferred");
-        assert_eq!(claude.detection, "transcript_inference");
-        assert_eq!(
-            claude.compaction_events,
-            Some(2),
-            "two compaction events seen"
-        );
-        assert_eq!(
-            claude.followed_by_correction,
-            Some(1),
-            "only session A's correction is inside the window"
-        );
-        assert_eq!(claude.sessions_with_compaction, Some(2));
+        assert_eq!(claude.confidence, "attempt_only");
+        assert_eq!(claude.detection, "transcript_pre_only");
+        assert_eq!(claude.attempted_events, Some(2));
+        assert_eq!(claude.unconfirmed_attempted_events, Some(2));
+        assert_eq!(claude.completed_events, None);
+        assert_eq!(claude.compaction_events, None);
+        assert_eq!(claude.followed_by_correction, None);
+        assert_eq!(claude.sessions_with_compaction, None);
         assert_eq!(claude.window_turns, COMPACTION_FOLLOWUP_WINDOW_TURNS);
     }
 
@@ -8169,13 +8448,14 @@ mod compress_decision_tests {
             .iter()
             .find(|entry| entry.surface == "claude-code")
             .unwrap();
-        assert_eq!(claude.confidence, "mixed");
-        assert_eq!(claude.detection, "native_post+transcript_inference");
-        assert_eq!(claude.attempted_events, Some(1));
+        assert_eq!(claude.confidence, "confirmed");
+        assert_eq!(claude.detection, "native_post+transcript_pre");
+        assert_eq!(claude.attempted_events, Some(2));
         assert_eq!(claude.confirmed_completed_events, Some(1));
-        assert_eq!(claude.inferred_completed_events, Some(1));
-        assert_eq!(claude.completed_events, Some(2));
-        assert_eq!(claude.sessions_with_compaction, Some(2));
+        assert_eq!(claude.inferred_completed_events, Some(0));
+        assert_eq!(claude.unconfirmed_attempted_events, Some(1));
+        assert_eq!(claude.completed_events, Some(1));
+        assert_eq!(claude.sessions_with_compaction, Some(1));
         assert_eq!(claude.followed_by_correction, None);
     }
 
@@ -8197,10 +8477,11 @@ mod compress_decision_tests {
 
         let out = compaction_followups(&conn);
         let claude = out.iter().find(|s| s.surface == "claude-code").unwrap();
-        assert_eq!(claude.confidence, "inferred");
-        assert_eq!(claude.compaction_events, Some(0));
-        assert_eq!(claude.followed_by_correction, Some(0));
-        assert_eq!(claude.sessions_with_compaction, Some(0));
+        assert_eq!(claude.confidence, "attempt_only");
+        assert_eq!(claude.attempted_events, Some(0));
+        assert_eq!(claude.compaction_events, None);
+        assert_eq!(claude.followed_by_correction, None);
+        assert_eq!(claude.sessions_with_compaction, None);
     }
 
     #[test]

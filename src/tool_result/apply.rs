@@ -98,6 +98,14 @@ pub struct PreparedTextTrim {
     transport_latency_ms: Option<u64>,
 }
 
+impl PreparedTextTrim {
+    /// Content-free dimensions for an acceptance receipt. The original and replacement text stay
+    /// private to the atomic apply path.
+    pub fn character_receipt(&self) -> (usize, usize) {
+        (self.chars_in, self.chars_out)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TextPrepareOutcome {
     Ready(Box<PreparedTextTrim>),
@@ -225,13 +233,13 @@ pub fn prepare_text_trim_in(
 }
 
 /// Mark a prepared text replacement only after its transport has proof of upstream acceptance.
-pub fn mark_text_trim_accepted(prepared: &PreparedTextTrim) -> Result<()> {
+pub fn mark_text_trim_accepted(prepared: &PreparedTextTrim) -> Result<bool> {
     let mut conn = crate::db::open_db()?;
     crate::db::ensure_schema(&conn)?;
     mark_text_trim_accepted_in(&mut conn, prepared)
 }
 
-fn mark_text_trim_accepted_in(conn: &mut Connection, prepared: &PreparedTextTrim) -> Result<()> {
+fn mark_text_trim_accepted_in(conn: &mut Connection, prepared: &PreparedTextTrim) -> Result<bool> {
     let transaction = conn
         .transaction()
         .context("start accepted text transaction")?;
@@ -242,7 +250,7 @@ fn mark_text_trim_accepted_in(conn: &mut Connection, prepared: &PreparedTextTrim
     )?;
     if already_accepted {
         transaction.commit()?;
-        return Ok(());
+        return Ok(false);
     }
     let features = json!({
         "adapter": "transport-atomic-v1",
@@ -300,7 +308,7 @@ fn mark_text_trim_accepted_in(conn: &mut Connection, prepared: &PreparedTextTrim
             None,
         );
     }
-    Ok(())
+    Ok(true)
 }
 
 fn text_rewind_id(

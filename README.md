@@ -79,7 +79,7 @@ An “eligible” token in a report means CTX's current transform can remove it.
 
 ## Privacy and beta evidence
 
-CTX's evidence database, recovery copies, commands, paths, repo names, and observed tool results stay on your device. CTX has no background telemetry and operates no tool-traffic relay. If you explicitly route a remote MCP server through the gateway, MCP requests still go directly from your device to the exact destination you approved; CTX shows that destination, blocks redirects and private-network pivots, and never sends the traffic to a CTX-operated service. OAuth tokens live in the operating-system credential store, not SQLite or CTX config files.
+CTX's evidence database, recovery copies, commands, paths, repo names, and observed tool results stay on your device. CTX has no background telemetry and operates no cloud relay. If you explicitly route a remote MCP server through the gateway, MCP requests still go from your device to the exact destination you approved; CTX shows that destination, blocks redirects and private-network pivots, and never sends the traffic to a CTX-operated service. OAuth tokens live in the operating-system credential store, not SQLite or CTX config files.
 
 At 7 and 21 active days, a beta install may offer an optional check-in. The dashboard shows the exact `ctx.beta-checkin.v1` JSON before Send becomes available. The allowlist contains only installation/version metadata, activity counts, Context Bill totals, trim/recovery counts, tool-stage counts, and four short product questions. Dismissing it waits seven days. A failed send is preserved locally for retry.
 
@@ -129,6 +129,30 @@ ctx gateway codex-disable <existing-server>                     # restore exact 
 Local stdio definitions run as child processes without a shell and with an isolated environment.
 Remote support is opt-in beta pending independent security review. Built-in Codex Read/search output
 remains observation-only because Codex exposes no model-visible replacement contract for it.
+
+### Experimental model-path routes
+
+CTX can also run an explicitly configured loopback model route. This is off by default and separate
+from the MCP gateway. The first implemented route contracts are Codex API-key traffic using OpenAI
+Responses over HTTP/SSE and Claude Code traffic using Anthropic Messages. Cursor model traffic,
+Codex ChatGPT-login and WebSocket traffic, and provider-hosted tools remain unavailable.
+
+```bash
+ctx model-gateway setup codex --authentication api-key --mode shadow
+ctx model-gateway enable codex-api --yes
+ctx model-gateway status codex-api
+ctx model-gateway doctor codex-api
+ctx model-gateway bypass codex-api
+ctx model-gateway disable codex-api
+```
+
+An enabled route lets a CTX process on this machine see the routed model request transiently in
+memory and forward it to the fixed provider shown by `status`; it does not keep prompts local and
+does not send them through a CTX cloud service. Shadow mode observes and keeps all results whole.
+Testing mode may shorten only the narrow verified contracts, retains exact originals only after an
+accepted trim, and records content-free attempted/accepted/applied/held/failure receipts. Review the
+dashboard's Model routes card for the exact controlled path, gaps, destination, recovery, purge, and
+bypass command.
 
 MCP tool-menu filtering remains an explicit advanced control:
 
