@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::model_gateway::route::{AuthenticationMode, WireProtocol};
 use crate::surface::SurfaceId;
 
-const REGISTRY_VERSION: u32 = 1;
+const REGISTRY_VERSION: u32 = 2;
 const MIN_UNPRIVILEGED_PORT: u16 = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +19,31 @@ pub enum ProviderTarget {
     #[serde(rename = "openai")]
     OpenAi,
     Anthropic,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelRouteMode {
+    #[default]
+    Shadow,
+    Testing,
+}
+
+impl ModelRouteMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "shadow" => Some(Self::Shadow),
+            "testing" => Some(Self::Testing),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shadow => "shadow",
+            Self::Testing => "testing",
+        }
+    }
 }
 
 impl ProviderTarget {
@@ -54,8 +79,8 @@ pub struct ModelRoute {
     pub authentication: AuthenticationMode,
     pub upstream: ProviderTarget,
     pub listen_port: u16,
-    /// M1 files carrying `true` are rejected even if hand-edited.
-    pub transformations_enabled: bool,
+    #[serde(default)]
+    pub mode: ModelRouteMode,
 }
 
 impl ModelRoute {
@@ -94,9 +119,6 @@ impl ModelRoute {
         validate_id(&self.id)?;
         if self.listen_port < MIN_UNPRIVILEGED_PORT {
             anyhow::bail!("model route port must be between {MIN_UNPRIVILEGED_PORT} and 65535");
-        }
-        if self.transformations_enabled {
-            anyhow::bail!("M1 routes must keep transformations disabled");
         }
         match (self.surface, self.protocol, self.upstream) {
             (SurfaceId::ClaudeCode, WireProtocol::AnthropicMessages, ProviderTarget::Anthropic)
@@ -162,7 +184,10 @@ impl RouteRegistry {
         }
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("read model route registry {}", path.display()))?;
-        let registry: Self = serde_json::from_str(&raw)
+        let mut value: serde_json::Value = serde_json::from_str(&raw)
+            .with_context(|| format!("parse model route registry {}", path.display()))?;
+        migrate_v1(&mut value)?;
+        let registry: Self = serde_json::from_value(value)
             .with_context(|| format!("parse model route registry {}", path.display()))?;
         registry.validate()?;
         Ok(registry)
@@ -215,6 +240,7 @@ pub fn add(
     authentication: &str,
     upstream: &str,
     port: u16,
+    mode: &str,
 ) -> Result<()> {
     let route = ModelRoute {
         id: id.to_owned(),
@@ -225,7 +251,9 @@ pub fn add(
             anyhow::anyhow!("unknown upstream {upstream:?} (use openai or anthropic)")
         })?,
         listen_port: port,
-        transformations_enabled: false,
+        mode: ModelRouteMode::parse(mode).ok_or_else(|| {
+            anyhow::anyhow!("unknown model route mode {mode:?} (use shadow or testing)")
+        })?,
     };
     route.validate()?;
     let mut registry = RouteRegistry::load()?;
@@ -241,7 +269,7 @@ pub fn add(
     }
     registry.routes.insert(id.to_owned(), route.clone());
     registry.save()?;
-    println!("Registered transformation-off model route {id:?}.");
+    println!("Registered {} model route {id:?}.", route.mode.as_str());
     println!("  client base URL: {}", route.local_base_url());
     println!("  accepted path: {}", route.endpoint_path());
     println!("  fixed upstream: {}", route.upstream.origin());
@@ -268,13 +296,14 @@ pub fn list() -> Result<()> {
     }
     for route in registry.routes.values() {
         println!(
-            "{}\t{}\t{}\t{}\tbase:{}\tpath:{}\ttransformations:off",
+            "{}\t{}\t{}\t{}\tbase:{}\tpath:{}\tmode:{}",
             route.id,
             route.surface.as_str(),
             route.protocol.as_str(),
             route.authentication.as_str(),
             route.local_base_url(),
-            route.endpoint_path()
+            route.endpoint_path(),
+            route.mode.as_str()
         );
         println!("  fixed upstream: {}", route.upstream.origin());
     }
@@ -323,6 +352,48 @@ fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v1(value: &mut serde_json::Value) -> Result<()> {
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    if version != 1 {
+        return Ok(());
+    }
+    if value
+        .get("routes")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|routes| routes.values())
+        .any(|route| {
+            route
+                .get("transformationsEnabled")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        })
+    {
+        anyhow::bail!("legacy model route attempted to enable transformations outside M3 mode");
+    }
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("model route registry root must be an object"))?;
+    root.insert("version".into(), serde_json::json!(REGISTRY_VERSION));
+    if let Some(routes) = root
+        .get_mut("routes")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for route in routes.values_mut() {
+            if let Some(route) = route.as_object_mut() {
+                route.remove("transformationsEnabled");
+                route
+                    .entry("mode")
+                    .or_insert_with(|| serde_json::json!("shadow"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,18 +406,40 @@ mod tests {
             authentication: AuthenticationMode::ApiKey,
             upstream: ProviderTarget::OpenAi,
             listen_port: port,
-            transformations_enabled: false,
+            mode: ModelRouteMode::Shadow,
         }
     }
 
     #[test]
-    fn cursor_and_hand_edited_transformations_fail_closed() {
+    fn cursor_fails_closed_while_testing_is_explicit() {
         let mut route = codex_route("codex", 8871);
         route.surface = SurfaceId::Cursor;
         assert!(route.validate().is_err());
         route.surface = SurfaceId::Codex;
-        route.transformations_enabled = true;
-        assert!(route.validate().is_err());
+        route.mode = ModelRouteMode::Testing;
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn legacy_routes_migrate_to_shadow_but_legacy_true_is_rejected() {
+        let mut safe = serde_json::json!({
+            "version": 1,
+            "routes": {"codex": {
+                "id":"codex", "surface":"codex", "protocol":"openai-responses",
+                "authentication":"api-key", "upstream":"openai", "listenPort":8871,
+                "transformationsEnabled":false
+            }}
+        });
+        migrate_v1(&mut safe).unwrap();
+        let migrated: RouteRegistry = serde_json::from_value(safe).unwrap();
+        assert_eq!(migrated.version, 2);
+        assert_eq!(migrated.routes["codex"].mode, ModelRouteMode::Shadow);
+
+        let mut unsafe_route = serde_json::json!({
+            "version": 1,
+            "routes": {"codex": {"transformationsEnabled":true}}
+        });
+        assert!(migrate_v1(&mut unsafe_route).is_err());
     }
 
     #[test]
@@ -394,6 +487,7 @@ mod tests {
             "api-key",
             "openai",
             8871,
+            "shadow",
         )
         .unwrap();
         let loaded = RouteRegistry::load().unwrap();

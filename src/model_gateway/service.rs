@@ -39,7 +39,14 @@ pub async fn serve(route_id: &str) -> Result<()> {
     eprintln!("  listen: {}", route.local_base_url());
     eprintln!("  accepted path: {}", route.endpoint_path());
     eprintln!("  fixed upstream: {}", route.upstream.origin());
-    eprintln!("  transformations: off");
+    eprintln!("  mode: {}", route.mode.as_str());
+    eprintln!(
+        "  transformations: {}",
+        match route.mode {
+            super::registry::ModelRouteMode::Shadow => "off",
+            super::registry::ModelRouteMode::Testing => "narrow testing contracts only",
+        }
+    );
     eprintln!("  credentials persisted by CTX: no");
 
     axum::serve(listener, app)

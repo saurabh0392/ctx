@@ -311,6 +311,9 @@ pub enum ModelGatewayCommand {
         /// Unprivileged loopback port dedicated to this route.
         #[arg(long)]
         port: u16,
+        /// shadow observes only; testing permits M3's narrow evidence-gated contracts.
+        #[arg(long, default_value = "shadow")]
+        mode: String,
     },
     /// List registered model routes, their local paths, and fixed destinations.
     ListRoutes,

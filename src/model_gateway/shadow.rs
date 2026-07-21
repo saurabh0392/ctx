@@ -24,6 +24,9 @@ pub(super) struct ShadowHealthReceipt {
     pub would_shorten: u64,
     pub last_coverage_reasons: BTreeMap<String, usize>,
     pub raw_requests_persisted: bool,
+    pub testing_requests_mutated: u64,
+    pub testing_trims_prepared: u64,
+    pub last_testing_reasons: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Default)]
@@ -33,6 +36,9 @@ struct ShadowStats {
     decisions_computed: u64,
     would_shorten: u64,
     last_coverage_reasons: BTreeMap<String, usize>,
+    testing_requests_mutated: u64,
+    testing_trims_prepared: u64,
+    last_testing_reasons: BTreeMap<String, usize>,
 }
 
 #[derive(Clone)]
@@ -49,7 +55,12 @@ impl ShadowEngine {
         }
     }
 
-    pub(super) fn observe(&self, route: &ModelRoute, headers: &HeaderMap, body: &[u8]) {
+    pub(super) fn observe(
+        &self,
+        route: &ModelRoute,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> CorrelationOutcome {
         let mut outcome = if identity_encoded(headers) {
             protocols::inspect(route.protocol, route.surface.as_str(), body)
         } else {
@@ -61,10 +72,11 @@ impl ShadowEngine {
         let mut decisions = 0u64;
         let mut would_shorten = 0u64;
 
-        let correlated = std::mem::take(&mut outcome.exchanges);
-        for exchange in correlated {
+        let mut already_shortened = 0usize;
+        let mut unsupported = 0usize;
+        for exchange in &outcome.exchanges {
             if exchange.result.already_shortened {
-                outcome.reason(CoverageReason::AlreadyShortened);
+                already_shortened += 1;
                 continue;
             }
             let raw_output = exchange.result.combined_text();
@@ -79,17 +91,23 @@ impl ShadowEngine {
                 "",
             );
             let Some(decision) = decision else {
-                outcome.reason(CoverageReason::UnsupportedResultShape);
+                unsupported += 1;
                 continue;
             };
             decisions += 1;
             would_shorten += u64::from(decision.would_chars_out < decision.chars_in);
         }
+        for _ in 0..already_shortened {
+            outcome.reason(CoverageReason::AlreadyShortened);
+        }
+        for _ in 0..unsupported {
+            outcome.reason(CoverageReason::UnsupportedResultShape);
+        }
 
         let reasons = outcome
             .reasons
-            .into_iter()
-            .map(|(reason, count)| (reason.as_str().to_string(), count))
+            .iter()
+            .map(|(reason, count)| (reason.as_str().to_string(), *count))
             .collect();
         let mut stats = self
             .stats
@@ -100,6 +118,27 @@ impl ShadowEngine {
         stats.decisions_computed += decisions;
         stats.would_shorten += would_shorten;
         stats.last_coverage_reasons = reasons;
+        drop(stats);
+        outcome
+    }
+
+    pub(super) fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub(super) fn record_testing_prepare(
+        &self,
+        mutated: bool,
+        trims: usize,
+        reasons: &BTreeMap<String, usize>,
+    ) {
+        let mut stats = self
+            .stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        stats.testing_requests_mutated += u64::from(mutated);
+        stats.testing_trims_prepared += trims as u64;
+        stats.last_testing_reasons = reasons.clone();
     }
 
     pub(super) fn health(&self) -> ShadowHealthReceipt {
@@ -115,6 +154,9 @@ impl ShadowEngine {
             would_shorten: stats.would_shorten,
             last_coverage_reasons: stats.last_coverage_reasons.clone(),
             raw_requests_persisted: false,
+            testing_requests_mutated: stats.testing_requests_mutated,
+            testing_trims_prepared: stats.testing_trims_prepared,
+            last_testing_reasons: stats.last_testing_reasons.clone(),
         }
     }
 }
