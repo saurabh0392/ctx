@@ -1,7 +1,6 @@
 # Model gateway M2 protocol adapter ledger
 
-Status: implementation in progress; shared core, Anthropic Messages, and OpenAI Responses packs
-complete
+Status: implementation complete; M3 active mutation remains disabled
 
 Date: 2026-07-21
 
@@ -83,11 +82,26 @@ content, and cross-protocol rejection. The fake-upstream relay fixture proves th
 Responses request remains byte-identical while the health receipt reports its content-free shadow
 decision.
 
-## Remaining M2 work
+## OpenAI Chat Completions pack
 
-- OpenAI Chat Completions pack, kept independent from Responses despite shared provider naming;
-- equivalent-fixture decisions across all three adapters; and
-- full three-pack corpus and cross-activation tests.
+The `openai-chat-completions-v1` pack correlates assistant `tool_calls[].id` with later
+`role: tool` messages using a Chat-only correlation scope. Function arguments must be a JSON object.
+Tool definitions contribute the nested function parameter schema. Result content may be a string or
+an array made entirely of text parts, with exact `messages[index].content` text paths retained.
+
+Responses input items and Anthropic `tool_use` / `tool_result` blocks do not activate Chat. Unknown
+tool-call types, mixed-media result parts, malformed arguments, duplicate calls/results, missing
+identities, and excessive shapes remain whole under the shared coverage reasons.
+
+This protocol pack does not make Cursor routable. M0's Cursor route remains held; the independent
+pack exists for a future captured Cursor boundary and the later Copilot BYOK wave.
+
+## M2 exit evidence
+
+Equivalent Anthropic Messages, OpenAI Responses, and OpenAI Chat fixtures normalize to the same
+tool name, input object, output text, and shared strategy decision. A full 3-by-3 isolation matrix
+proves each adapter produces an exchange only for its own body. Supported relay fixtures remain
+byte-identical upstream, and unknown or ambiguous shapes produce content-free reason codes.
 
 M2 does not persist shadow decisions as product proof, enable a client route, mutate a model
 request, store rewind content, or claim model-visible savings. Those boundaries remain M3-M5 work.
