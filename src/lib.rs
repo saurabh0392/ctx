@@ -193,6 +193,24 @@ pub async fn run() -> Result<()> {
             ModelGatewayCommand::SanitizeCapture { input } => {
                 model_gateway::sanitize_capture_file(input.as_deref())?
             }
+            ModelGatewayCommand::AddRoute {
+                id,
+                surface,
+                protocol,
+                authentication,
+                upstream,
+                port,
+            } => model_gateway::registry::add(
+                &id,
+                &surface,
+                &protocol,
+                &authentication,
+                &upstream,
+                port,
+            )?,
+            ModelGatewayCommand::ListRoutes => model_gateway::registry::list()?,
+            ModelGatewayCommand::RemoveRoute { id } => model_gateway::registry::remove(&id)?,
+            ModelGatewayCommand::Serve { id } => model_gateway::serve(&id).await?,
         },
         Commands::Mode { name, command } => match command {
             Some(ModeCommand::List) => {

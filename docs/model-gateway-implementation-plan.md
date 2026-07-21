@@ -1,13 +1,14 @@
 # CTX model-path gateway implementation plan
 
-Status: implementation in progress (M0)
+Status: implementation in progress (M0-M1)
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
 Parent: `docs/tool-trimming-architecture-revamp.md`
 Surface plans: `docs/codex-model-gateway-implementation-plan.md`
 Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
-`docs/model-gateway-m0-compatibility.md`, `docs/claims.md`, and `SECURITY.md`
+`docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`, `docs/claims.md`, and
+`SECURITY.md`
 
 ## Decision summary
 
@@ -476,6 +477,8 @@ results through supported or explicit user configuration. A Wave 1 surface may r
 rather than forcing an unsafe route.
 
 ### M1 — Provider-neutral transparent runtime
+
+Implementation ledger: `docs/model-gateway-m1-runtime.md`.
 
 - Add the route registry, loopback listener, fixed upstream connectors, HTTP/SSE relay, shared
   bounds, content redaction, health endpoint, and supervised service skeleton.

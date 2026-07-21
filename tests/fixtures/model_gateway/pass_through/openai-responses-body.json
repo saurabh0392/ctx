@@ -1,0 +1,8 @@
+{
+  "model": "synthetic-model",
+  "input": [
+    { "type": "message", "role": "user", "content": "keep these bytes exactly" },
+    { "type": "function_call_output", "call_id": "call_123", "output": "line one\nline two" }
+  ],
+  "stream": true
+}
