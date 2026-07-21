@@ -5,7 +5,7 @@ Date: 2026-07-18
 Owner: Saurabh
 Target: post-v0.5 product wave
 Companions: `docs/tool-management-plan.md`, `docs/codex-plugin-implementation-plan.md`,
-`docs/claims.md`, `SECURITY.md`, and ADR 0015
+`docs/codex-model-gateway-implementation-plan.md`, `docs/claims.md`, `SECURITY.md`, and ADR 0015
 
 ## Decision summary
 
@@ -719,6 +719,15 @@ These do not block T0-T2 but must be resolved before their dependent increment:
 7. Whether error-result trimming should ever graduate from whole-result preservation.
 
 ## Delivery status and immediate next slice
+
+### Proposed post-v0.6 Codex extension
+
+`docs/codex-model-gateway-implementation-plan.md` proposes an opt-in, explicitly configured local
+Responses gateway for model-path trimming of Codex built-in and direct MCP results. That proposal is
+not part of the completed T3-T7 scope and does not silently revoke ADR 0015. Its G0 decision gate
+must first distinguish the new loopback application proxy from the retired certificate-based TLS
+MITM, prove ChatGPT and API-key authentication, and verify real model-visible tool-output shapes.
+Standard CTX has no model-traffic proxy unless the user explicitly enables the proposed mode.
 
 The v0.6.0 implementation completes the T3-T6 engineering slice behind explicit controls. T3 now
 owns the only proposal-to-output transition: it persists exact recovery first and records applied
