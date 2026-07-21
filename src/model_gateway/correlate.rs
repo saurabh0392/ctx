@@ -23,6 +23,7 @@ pub enum CoverageReason {
     DuplicateToolCall,
     DuplicateToolResult,
     UnsupportedResultShape,
+    MutationToolHeld,
     ResultTooLarge,
     AlreadyShortened,
     UnsupportedContentEncoding,
@@ -43,6 +44,7 @@ impl CoverageReason {
             Self::DuplicateToolCall => "duplicate-tool-call",
             Self::DuplicateToolResult => "duplicate-tool-result",
             Self::UnsupportedResultShape => "unsupported-result-shape",
+            Self::MutationToolHeld => "mutation-tool-held",
             Self::ResultTooLarge => "result-too-large",
             Self::AlreadyShortened => "already-shortened",
             Self::UnsupportedContentEncoding => "unsupported-content-encoding",
@@ -74,17 +76,23 @@ pub(super) fn correlate(
         return outcome;
     }
 
-    let mut calls_by_id: BTreeMap<&str, Vec<&PendingCall>> = BTreeMap::new();
+    let mut calls_by_id: BTreeMap<(&str, &str), Vec<&PendingCall>> = BTreeMap::new();
     for call in &calls {
-        calls_by_id.entry(&call.call_id).or_default().push(call);
+        calls_by_id
+            .entry((call.correlation_scope, &call.call_id))
+            .or_default()
+            .push(call);
     }
-    let mut result_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut result_counts: BTreeMap<(&str, String), usize> = BTreeMap::new();
     for result in &results {
-        *result_counts.entry(result.call_id.clone()).or_default() += 1;
+        *result_counts
+            .entry((result.correlation_scope, result.call_id.clone()))
+            .or_default() += 1;
     }
 
     for result in results {
-        let Some(matches) = calls_by_id.get(result.call_id.as_str()) else {
+        let key = (result.correlation_scope, result.call_id.as_str());
+        let Some(matches) = calls_by_id.get(&key) else {
             outcome.reason(CoverageReason::MissingToolCall);
             continue;
         };
@@ -92,7 +100,11 @@ pub(super) fn correlate(
             outcome.reason(CoverageReason::DuplicateToolCall);
             continue;
         }
-        if result_counts.get(result.call_id.as_str()).copied() != Some(1) {
+        if result_counts
+            .get(&(result.correlation_scope, result.call_id.clone()))
+            .copied()
+            != Some(1)
+        {
             outcome.reason(CoverageReason::DuplicateToolResult);
             continue;
         }
@@ -133,6 +145,7 @@ mod tests {
     fn call(id: &str, name: &str) -> PendingCall {
         PendingCall {
             position: 0,
+            correlation_scope: "test",
             call_id: id.into(),
             tool_name: name.into(),
             input: json!({}),
@@ -143,6 +156,7 @@ mod tests {
     fn result(id: &str) -> PendingResult {
         PendingResult {
             position: 1,
+            correlation_scope: "test",
             call_id: id.into(),
             result: CanonicalModelResult {
                 source_item_type: "test-result",

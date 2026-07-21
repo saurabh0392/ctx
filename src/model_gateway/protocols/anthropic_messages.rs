@@ -97,6 +97,7 @@ fn parse_call(
         .ok_or(CoverageReason::InvalidToolInput)?;
     Ok(PendingCall {
         position,
+        correlation_scope: "anthropic-tool",
         call_id,
         tool_name: tool_name.to_string(),
         input,
@@ -173,6 +174,7 @@ fn parse_result(
         .and_then(|value| crate::tool_result::parse_mcp_result(&value).ok());
     Ok(PendingResult {
         position,
+        correlation_scope: "anthropic-tool",
         call_id,
         result: CanonicalModelResult {
             source_item_type: "tool_result",
