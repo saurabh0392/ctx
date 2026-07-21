@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use super::registry::RouteRegistry;
 use super::relay::{self, RelayState};
 
-pub async fn serve(route_id: &str) -> Result<()> {
+pub async fn serve(route_id: &str, health_nonce: Option<&str>) -> Result<()> {
     let registry = RouteRegistry::load()?;
     let route = registry
         .routes
@@ -22,7 +22,12 @@ pub async fn serve(route_id: &str) -> Result<()> {
         .connect_timeout(Duration::from_secs(10))
         .build()
         .context("build model gateway upstream client")?;
-    let state = Arc::new(RelayState::new(route.clone(), upstream, client)?);
+    let state = Arc::new(RelayState::new_with_health_nonce(
+        route.clone(),
+        upstream,
+        client,
+        health_nonce.map(str::to_owned),
+    )?);
     let app = relay::router(state);
     let listener = tokio::net::TcpListener::bind(route.listen_address())
         .await

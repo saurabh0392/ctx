@@ -28,13 +28,24 @@ pub(super) struct RelayState {
     upstream: reqwest::Url,
     client: reqwest::Client,
     shadow: ShadowEngine,
+    health_nonce: Option<String>,
 }
 
 impl RelayState {
+    #[cfg(test)]
     pub(super) fn new(
         route: ModelRoute,
         upstream: reqwest::Url,
         client: reqwest::Client,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_health_nonce(route, upstream, client, None)
+    }
+
+    pub(super) fn new_with_health_nonce(
+        route: ModelRoute,
+        upstream: reqwest::Url,
+        client: reqwest::Client,
+        health_nonce: Option<String>,
     ) -> anyhow::Result<Self> {
         route.validate()?;
         if upstream.username() != ""
@@ -48,6 +59,7 @@ impl RelayState {
             upstream,
             client,
             shadow: ShadowEngine::new(crate::config::Config::load()),
+            health_nonce,
         })
     }
 }
@@ -71,6 +83,8 @@ struct HealthReceipt {
     fixed_upstream: &'static str,
     upstream_verified: bool,
     transformations: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_nonce: Option<String>,
     shadow: ShadowHealthReceipt,
 }
 
@@ -88,6 +102,7 @@ async fn health(State(state): State<Arc<RelayState>>) -> impl IntoResponse {
             super::registry::ModelRouteMode::Shadow => "off",
             super::registry::ModelRouteMode::Testing => "testing",
         },
+        instance_nonce: state.health_nonce.clone(),
         shadow: state.shadow.health(),
     })
 }
@@ -690,6 +705,39 @@ mod tests {
         assert_eq!(receipt["transformations"], "off");
         assert_eq!(receipt["authentication"], "api-key");
         assert_eq!(receipt["fixedUpstream"], "https://api.openai.com");
+        assert!(capture.bodies.lock().unwrap().is_empty());
+        upstream_task.abort();
+        gateway_task.abort();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_health_nonce_proves_the_exact_listener_without_upstream_traffic() {
+        let capture = Capture::default();
+        let upstream_app = Router::new()
+            .fallback(any(capture_request))
+            .with_state(capture.clone());
+        let (upstream, upstream_task) = spawn(upstream_app).await;
+        let state = Arc::new(
+            RelayState::new_with_health_nonce(
+                codex_route(),
+                reqwest::Url::parse(&format!("{upstream}/v1/responses")).unwrap(),
+                test_client(),
+                Some("00112233445566778899aabbccddeeff".into()),
+            )
+            .unwrap(),
+        );
+        let (gateway, gateway_task) = spawn(router(state)).await;
+
+        let receipt: Value = test_client()
+            .get(format!("{gateway}/__ctx/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(receipt["instanceNonce"], "00112233445566778899aabbccddeeff");
+        assert_eq!(receipt["routeId"], "codex-test");
         assert!(capture.bodies.lock().unwrap().is_empty());
         upstream_task.abort();
         gateway_task.abort();

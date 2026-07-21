@@ -8,6 +8,7 @@ mod canonical;
 pub mod capture;
 mod correlate;
 mod json_patch;
+pub mod lifecycle;
 pub mod probe;
 mod protocols;
 pub mod registry;
@@ -15,6 +16,8 @@ mod relay;
 pub mod route;
 mod service;
 mod shadow;
+mod supervisor;
+mod surfaces;
 
 use std::io::Read;
 use std::path::Path;
@@ -90,8 +93,8 @@ pub fn sanitize_capture_file(input: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-pub async fn serve(route_id: &str) -> Result<()> {
-    service::serve(route_id).await
+pub async fn serve(route_id: &str, health_nonce: Option<&str>) -> Result<()> {
+    service::serve(route_id, health_nonce).await
 }
 
 fn read_bounded(reader: impl Read) -> Result<String> {

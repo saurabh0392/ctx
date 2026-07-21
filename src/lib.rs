@@ -126,7 +126,7 @@ pub async fn run() -> Result<()> {
             if uninstall {
                 setup::uninstall(purge_data, yes)?;
             } else {
-                setup::run(no_install, no_zshrc_prompt, dry_run, yes, beta)?;
+                setup::run(no_install, no_zshrc_prompt, dry_run, yes, beta).await?;
             }
         }
         Commands::Doctor { json } => doctor::run(json)?,
@@ -211,8 +211,34 @@ pub async fn run() -> Result<()> {
                 &mode,
             )?,
             ModelGatewayCommand::ListRoutes => model_gateway::registry::list()?,
+            ModelGatewayCommand::Setup {
+                surface,
+                authentication,
+                id,
+                port,
+                mode,
+            } => model_gateway::registry::setup_supported(
+                &surface,
+                &authentication,
+                id.as_deref(),
+                port,
+                &mode,
+            )?,
             ModelGatewayCommand::RemoveRoute { id } => model_gateway::registry::remove(&id)?,
-            ModelGatewayCommand::Serve { id } => model_gateway::serve(&id).await?,
+            ModelGatewayCommand::Enable { id, yes } => {
+                model_gateway::lifecycle::enable(&id, yes).await?
+            }
+            ModelGatewayCommand::Status { id, json } => {
+                model_gateway::lifecycle::print_status(id.as_deref(), json).await?
+            }
+            ModelGatewayCommand::Doctor { id, json } => {
+                model_gateway::lifecycle::print_doctor(id.as_deref(), json).await?
+            }
+            ModelGatewayCommand::Bypass { id } => model_gateway::lifecycle::bypass(&id)?,
+            ModelGatewayCommand::Disable { id } => model_gateway::lifecycle::disable(&id)?,
+            ModelGatewayCommand::Serve { id, health_nonce } => {
+                model_gateway::serve(&id, health_nonce.as_deref()).await?
+            }
         },
         Commands::Mode { name, command } => match command {
             Some(ModeCommand::List) => {
