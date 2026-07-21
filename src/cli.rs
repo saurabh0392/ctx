@@ -121,9 +121,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: GatewayCommand,
     },
-    /// Inspect model-route compatibility or redact an offline protocol capture (M0 only).
-    ///
-    /// This command does not start a listener, change client configuration, or route traffic.
+    /// Inspect, configure, and operate opt-in local model-path routes.
     ModelGateway {
         #[command(subcommand)]
         command: ModelGatewayCommand,
@@ -292,7 +290,7 @@ pub enum ModelGatewayCommand {
         #[arg(long)]
         input: Option<std::path::PathBuf>,
     },
-    /// Register a transformation-off route with a fixed built-in provider destination.
+    /// Register an advanced route with an explicit protocol and fixed provider destination.
     AddRoute {
         /// Immutable lowercase route id.
         id: String,
@@ -315,12 +313,58 @@ pub enum ModelGatewayCommand {
         #[arg(long, default_value = "shadow")]
         mode: String,
     },
+    /// Create a supported Wave 1 route with safe protocol/provider defaults.
+    Setup {
+        /// claude-code or codex. Cursor reports unavailable until its boundary is captured.
+        surface: String,
+        /// Route-specific auth identity; credentials are never stored.
+        #[arg(long)]
+        authentication: String,
+        /// Override the stable generated route id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Override the default loopback port (8871 Codex, 8872 Claude Code).
+        #[arg(long)]
+        port: Option<u16>,
+        /// shadow observes only; testing permits M3's narrow evidence-gated contracts.
+        #[arg(long, default_value = "shadow")]
+        mode: String,
+    },
     /// List registered model routes, their local paths, and fixed destinations.
     ListRoutes,
     /// Remove a CTX model route. This does not edit coding-client configuration.
     RemoveRoute { id: String },
-    /// Serve one registered route in transformation-off pass-through mode.
-    Serve { id: String },
+    /// Start a healthy route and atomically switch its supported client configuration.
+    Enable {
+        id: String,
+        /// Confirm that this local CTX process may see model requests and authorization headers in
+        /// memory while forwarding them to the displayed fixed provider.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show route ownership, client configuration, service, and fixed destination state.
+    Status {
+        id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Diagnose route/config/service agreement without requiring the gateway to be healthy.
+    Doctor {
+        id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Immediately restore the prior client route while retaining recoverable CTX route state.
+    Bypass { id: String },
+    /// Restore the prior client route and remove CTX's route/service ownership.
+    Disable { id: String },
+    /// Serve one registered route. Normally launched by `enable`.
+    Serve {
+        id: String,
+        /// CTX-owned listener identity used by lifecycle health proof.
+        #[arg(long, hide = true)]
+        health_nonce: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

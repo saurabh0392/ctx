@@ -136,7 +136,7 @@ fn apply_fresh_install_defaults(cfg: &mut crate::config::Config, beta: bool) {
     }
 }
 
-pub fn run(
+pub async fn run(
     no_install: bool,
     _no_zshrc_prompt: bool,
     dry_run: bool,
@@ -411,6 +411,12 @@ pub fn run(
         }
     }
 
+    // Model-path mode is never enabled by ordinary setup. If the user had already opted into a
+    // route, reinstall its service against this exact binary and require the same listener identity
+    // before setup completes. A failed refresh restores the prior client route rather than leaving
+    // the coding agent pointed at a dead gateway.
+    crate::model_gateway::lifecycle::refresh_owned_services().await?;
+
     if !no_install {
         println!();
         println!("Next: {}", host.reload_instruction());
@@ -499,6 +505,11 @@ pub fn uninstall(purge_data: bool, yes: bool) -> Result<()> {
         }
         Vec::new()
     };
+
+    // Restore every model-path client field before removing the service or binary that serves it.
+    // A user-edited owned field fails closed so uninstall can never strand or overwrite a custom
+    // route silently.
+    crate::model_gateway::lifecycle::disable_all_for_uninstall()?;
 
     // Restore Codex MCP definitions before removing the binary/plugin that serves the gateway.
     // This must fail loudly: leaving an MCP server pointed at a dead CTX executable is worse than

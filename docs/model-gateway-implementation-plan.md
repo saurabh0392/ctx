@@ -1,6 +1,6 @@
 # CTX model-path gateway implementation plan
 
-Status: M0-M3 implemented; M3 live-provider evidence pending
+Status: M0-M4 implemented; M3 live-provider and M4 live lifecycle evidence pending
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
@@ -9,6 +9,7 @@ Surface plans: `docs/codex-model-gateway-implementation-plan.md`
 Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
 `docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`,
 `docs/model-gateway-m2-protocol-adapters.md`, `docs/model-gateway-m3-atomic-apply.md`,
+`docs/model-gateway-m4-surface-lifecycle.md`,
 `docs/claims.md`, and `SECURITY.md`
 
 ## Decision summary
@@ -516,6 +517,8 @@ Exit gate: mock and live upstreams receive the intended shortened result, exact 
 failed or rejected request is counted as applied.
 
 ### M4 — Wave 1 surface adapters and lifecycle
+
+Implementation ledger: `docs/model-gateway-m4-surface-lifecycle.md`.
 
 - Add reversible Cursor, Claude Code, and Codex setup/probe/doctor/bypass/disable operations.
 - Keep manual setup where a surface lacks documented programmable configuration.

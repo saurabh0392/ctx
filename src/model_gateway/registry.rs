@@ -277,8 +277,102 @@ pub fn add(
     Ok(())
 }
 
+pub fn setup_supported(
+    surface: &str,
+    authentication: &str,
+    requested_id: Option<&str>,
+    requested_port: Option<u16>,
+    mode: &str,
+) -> Result<()> {
+    let surface = parse_surface(surface)?;
+    let authentication = parse_authentication(authentication)?;
+    let (prefix, protocol, upstream, default_port, auth_suffix) = match surface {
+        SurfaceId::Codex => {
+            let suffix = match authentication {
+                AuthenticationMode::ApiKey => "api",
+                AuthenticationMode::ChatGptLogin => anyhow::bail!(
+                    "Codex chatgpt-login setup remains held until its fixed backend, WebSocket, refresh, and account-UI contracts pass live capture; use api-key only for the current experimental route"
+                ),
+                _ => anyhow::bail!(
+                    "Codex setup currently supports only --authentication api-key"
+                ),
+            };
+            (
+                "codex",
+                WireProtocol::OpenAiResponses,
+                ProviderTarget::OpenAi,
+                8871,
+                suffix,
+            )
+        }
+        SurfaceId::ClaudeCode => {
+            let suffix = match authentication {
+                AuthenticationMode::ApiKey => "api",
+                AuthenticationMode::BearerToken => "bearer",
+                AuthenticationMode::Subscription => "subscription",
+                _ => anyhow::bail!(
+                    "Claude Code setup supports --authentication api-key, bearer-token, or subscription"
+                ),
+            };
+            (
+                "claude",
+                WireProtocol::AnthropicMessages,
+                ProviderTarget::Anthropic,
+                8872,
+                suffix,
+            )
+        }
+        SurfaceId::Cursor => anyhow::bail!(
+            "Cursor model-path setup is unavailable: no documented programmable route passed M0; standard hook and MCP coverage remains available"
+        ),
+    };
+    let id = requested_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{prefix}-{auth_suffix}"));
+    let route = ModelRoute {
+        id: id.clone(),
+        surface,
+        protocol,
+        authentication,
+        upstream,
+        listen_port: requested_port.unwrap_or(default_port),
+        mode: ModelRouteMode::parse(mode).ok_or_else(|| {
+            anyhow::anyhow!("unknown model route mode {mode:?} (use shadow or testing)")
+        })?,
+    };
+    route.validate()?;
+    let registry = RouteRegistry::load()?;
+    if let Some(existing) = registry.routes.get(&id) {
+        if existing == &route {
+            println!("Model route {id:?} is already configured exactly as requested.");
+            println!("Next: ctx model-gateway enable {id} --yes");
+            return Ok(());
+        }
+        anyhow::bail!(
+            "model route {id:?} already exists with different settings; disable or remove it before replacing it"
+        );
+    }
+    drop(registry);
+    add(
+        &id,
+        route.surface.as_str(),
+        route.protocol.as_str(),
+        route.authentication.as_str(),
+        route.upstream.as_str(),
+        route.listen_port,
+        route.mode.as_str(),
+    )?;
+    println!("Next: ctx model-gateway enable {id} --yes");
+    Ok(())
+}
+
 pub fn remove(id: &str) -> Result<()> {
     validate_id(id)?;
+    if super::lifecycle::is_owned(id)? {
+        anyhow::bail!(
+            "model route {id:?} owns client configuration; use `ctx model-gateway disable {id}` so CTX restores it first"
+        );
+    }
     let mut registry = RouteRegistry::load()?;
     if registry.routes.remove(id).is_none() {
         anyhow::bail!("model route {id:?} is not registered");
@@ -286,6 +380,20 @@ pub fn remove(id: &str) -> Result<()> {
     registry.save()?;
     println!("Removed model route {id:?}; no client configuration was changed.");
     Ok(())
+}
+
+pub(super) fn remove_exact(expected: &ModelRoute) -> Result<()> {
+    let mut registry = RouteRegistry::load()?;
+    match registry.routes.get(&expected.id) {
+        None => return Ok(()),
+        Some(current) if current == expected => {}
+        Some(_) => anyhow::bail!(
+            "model route {:?} changed after activation; CTX restored the client but preserved the modified registry entry",
+            expected.id
+        ),
+    }
+    registry.routes.remove(&expected.id);
+    registry.save()
 }
 
 pub fn list() -> Result<()> {
@@ -511,6 +619,33 @@ mod tests {
                 .mode()
                 & 0o777;
             assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn supported_setup_is_idempotent_and_cursor_stays_held() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("CTX_HOME");
+        std::env::set_var("CTX_HOME", temp.path());
+
+        setup_supported("codex", "api-key", None, None, "shadow").unwrap();
+        setup_supported("codex", "api-key", None, None, "shadow").unwrap();
+        let registry = RouteRegistry::load().unwrap();
+        assert_eq!(registry.routes.len(), 1);
+        let route = &registry.routes["codex-api"];
+        assert_eq!(route.protocol, WireProtocol::OpenAiResponses);
+        assert_eq!(route.upstream, ProviderTarget::OpenAi);
+        assert_eq!(route.listen_port, 8871);
+        assert!(setup_supported("codex", "chatgpt-login", None, None, "shadow").is_err());
+        assert!(setup_supported("cursor", "api-key", None, None, "shadow").is_err());
+
+        if let Some(value) = old_home {
+            std::env::set_var("CTX_HOME", value);
+        } else {
+            std::env::remove_var("CTX_HOME");
         }
     }
 }
