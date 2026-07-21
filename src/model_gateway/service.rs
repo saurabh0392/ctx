@@ -27,6 +27,7 @@ pub async fn serve(route_id: &str, health_nonce: Option<&str>) -> Result<()> {
         upstream,
         client,
         health_nonce.map(str::to_owned),
+        super::lifecycle::client_version_for_route(route_id),
     )?);
     let app = relay::router(state);
     let listener = tokio::net::TcpListener::bind(route.listen_address())

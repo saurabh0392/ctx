@@ -510,6 +510,19 @@ struct ContextView {
     /// T7 product-proof receipts: model-visible savings, recovery, harm, latency, failures, and
     /// coverage from the same local ledger that authorizes live changes.
     product_proof: crate::db::ProductProofMetrics,
+    /// M5's model-path control and proof surface. Route lifecycle truth comes from the ownership
+    /// registry; content-free traffic evidence comes from the local database.
+    model_gateway: ModelGatewayDashboardView,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelGatewayDashboardView {
+    routes: Vec<crate::model_gateway::lifecycle::RouteStatus>,
+    evidence: Vec<crate::db::ModelGatewayRouteSummary>,
+    cursor_model_path_available: bool,
+    setup_is_opt_in: bool,
+    raw_requests_persisted: bool,
 }
 
 /// POST /api/context/rewind: return the verbatim original ctx trimmed, by rewind id (CTX-57).
@@ -648,6 +661,7 @@ async fn api_context() -> Json<ContextView> {
         wnad,
         insight_actions,
         product_proof,
+        model_gateway_evidence,
     ) = match open_ctx_db() {
         Some(conn) => {
             let stats = crate::db::compress_decision_stats(&conn);
@@ -719,6 +733,7 @@ async fn api_context() -> Json<ContextView> {
             let wnad = crate::db::weekly_net_ahead(&conn);
             let insight_actions = crate::db::insight_actions(&conn);
             let product_proof = crate::db::product_proof_metrics(&conn);
+            let model_gateway_evidence = crate::db::model_gateway_route_summaries(&conn);
             (
                 stats,
                 tools,
@@ -730,6 +745,7 @@ async fn api_context() -> Json<ContextView> {
                 wnad,
                 insight_actions,
                 product_proof,
+                model_gateway_evidence,
             )
         }
         None => (
@@ -753,6 +769,7 @@ async fn api_context() -> Json<ContextView> {
             Vec::new(),
             Default::default(),
             Default::default(),
+            Vec::new(),
         ),
     };
 
@@ -774,6 +791,16 @@ async fn api_context() -> Json<ContextView> {
         }
     });
 
+    let model_gateway = ModelGatewayDashboardView {
+        routes: crate::model_gateway::lifecycle::dashboard_status()
+            .await
+            .unwrap_or_default(),
+        evidence: model_gateway_evidence,
+        cursor_model_path_available: false,
+        setup_is_opt_in: true,
+        raw_requests_persisted: false,
+    };
+
     Json(ContextView {
         preset: cfg.compress_preset.as_str().to_string(),
         shadow_enabled: cfg.compress_shadow_enabled,
@@ -789,6 +816,7 @@ async fn api_context() -> Json<ContextView> {
         wnad,
         insight_actions,
         product_proof,
+        model_gateway,
     })
 }
 

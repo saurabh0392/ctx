@@ -1,6 +1,7 @@
 //! Byte-faithful, transformation-off HTTP/SSE relay for M1.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
@@ -29,6 +30,8 @@ pub(super) struct RelayState {
     client: reqwest::Client,
     shadow: ShadowEngine,
     health_nonce: Option<String>,
+    surface_version: Option<String>,
+    evidence_enabled: bool,
 }
 
 impl RelayState {
@@ -38,7 +41,7 @@ impl RelayState {
         upstream: reqwest::Url,
         client: reqwest::Client,
     ) -> anyhow::Result<Self> {
-        Self::new_with_health_nonce(route, upstream, client, None)
+        Self::new_with_health_nonce(route, upstream, client, None, None)
     }
 
     pub(super) fn new_with_health_nonce(
@@ -46,6 +49,7 @@ impl RelayState {
         upstream: reqwest::Url,
         client: reqwest::Client,
         health_nonce: Option<String>,
+        surface_version: Option<String>,
     ) -> anyhow::Result<Self> {
         route.validate()?;
         if upstream.username() != ""
@@ -60,7 +64,45 @@ impl RelayState {
             client,
             shadow: ShadowEngine::new(crate::config::Config::load()),
             health_nonce,
+            surface_version,
+            evidence_enabled: cfg!(not(test)),
         })
+    }
+
+    fn record(
+        &self,
+        outcome: &'static str,
+        quantity: usize,
+        reason_code: Option<&str>,
+        chars: Option<(usize, usize)>,
+        latency_ms: Option<u64>,
+    ) {
+        if !self.evidence_enabled {
+            return;
+        }
+        let (chars_in, chars_out) =
+            chars.map_or((None, None), |(input, output)| (Some(input), Some(output)));
+        crate::db::record_model_gateway_event_best_effort(&crate::db::ModelGatewayEvent {
+            route_id: &self.route.id,
+            surface: self.route.surface.as_str(),
+            surface_version: self.surface_version.as_deref(),
+            protocol: self.route.protocol.as_str(),
+            authentication: self.route.authentication.as_str(),
+            fixed_upstream: self.route.upstream.origin(),
+            mode: self.route.mode.as_str(),
+            outcome,
+            quantity,
+            reason_code,
+            chars_in,
+            chars_out,
+            latency_ms,
+        });
+    }
+
+    #[cfg(test)]
+    fn with_test_evidence(mut self) -> Self {
+        self.evidence_enabled = true;
+        self
     }
 }
 
@@ -85,6 +127,8 @@ struct HealthReceipt {
     transformations: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     instance_nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_version: Option<String>,
     shadow: ShadowHealthReceipt,
 }
 
@@ -103,6 +147,7 @@ async fn health(State(state): State<Arc<RelayState>>) -> impl IntoResponse {
             super::registry::ModelRouteMode::Testing => "testing",
         },
         instance_nonce: state.health_nonce.clone(),
+        client_version: state.surface_version.clone(),
         shadow: state.shadow.health(),
     })
 }
@@ -123,9 +168,22 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
         Ok(body) => body,
         Err(_) => return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request-too-large"),
     };
+    let started = Instant::now();
+    state.record("attempted", 1, None, None, None);
     let mut upstream = state.upstream.clone();
     upstream.set_query(parts.uri.query());
     let observation = state.shadow.observe(&state.route, &parts.headers, &body);
+    if observation.exchanges.is_empty() && observation.reasons.is_empty() {
+        state.record("unknown", 1, Some("no-tool-result-observed"), None, None);
+    }
+    for (reason, quantity) in &observation.reasons {
+        let outcome = if *reason == super::correlate::CoverageReason::AlreadyShortened {
+            "already-shortened"
+        } else {
+            "unknown"
+        };
+        state.record(outcome, *quantity, Some(reason.as_str()), None, None);
+    }
     let prepared =
         super::apply::prepare_request(&state.route, &body, &observation, state.shadow.config());
     state.shadow.record_testing_prepare(
@@ -133,6 +191,23 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
         prepared.trims.len(),
         &prepared.reasons,
     );
+    if state.route.mode == super::registry::ModelRouteMode::Shadow
+        && !observation.exchanges.is_empty()
+    {
+        state.record(
+            "held-whole",
+            observation.exchanges.len(),
+            Some("shadow-mode"),
+            None,
+            None,
+        );
+    } else {
+        for (reason, quantity) in &prepared.reasons {
+            if reason != "already-shortened" {
+                state.record("held-whole", *quantity, Some(reason), None, None);
+            }
+        }
+    }
     let mut headers = forward_request_headers(&parts.headers);
     if prepared.mutated() {
         headers.remove(CONTENT_LENGTH);
@@ -148,7 +223,16 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
         .await
     {
         Ok(response) => response,
-        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "upstream-request-failed"),
+        Err(_) => {
+            state.record(
+                "transport-failure",
+                1,
+                Some("upstream-request-failed"),
+                None,
+                Some(elapsed_ms(started)),
+            );
+            return error_response(StatusCode::BAD_GATEWAY, "upstream-request-failed");
+        }
     };
 
     let status = response.status();
@@ -164,18 +248,37 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
         });
     let headers = forward_response_headers(response.headers());
     if status.is_success() && !sse {
-        accept_prepared(&prepared.trims);
+        let latency_ms = elapsed_ms(started);
+        state.record("accepted", 1, Some("http-success"), None, Some(latency_ms));
+        accept_prepared(&state, &prepared.trims, latency_ms);
+    } else if !status.is_success() {
+        state.record(
+            "provider-rejected",
+            1,
+            Some("provider-non-success"),
+            None,
+            Some(elapsed_ms(started)),
+        );
     }
-    let mut acceptance_pending = status.is_success() && sse && !prepared.trims.is_empty();
+    let mut acceptance_pending = status.is_success() && sse;
     let mut sse_probe = Vec::new();
     let trims = prepared.trims;
+    let receipt_state = state.clone();
     let stream = response.bytes_stream().map(move |chunk| {
         if acceptance_pending {
             if let Ok(bytes) = &chunk {
                 let remaining = 64 * 1024usize - sse_probe.len().min(64 * 1024);
                 sse_probe.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
                 if contains_complete_sse_data_event(&sse_probe) {
-                    accept_prepared(&trims);
+                    let latency_ms = elapsed_ms(started);
+                    receipt_state.record(
+                        "accepted",
+                        1,
+                        Some("sse-first-data"),
+                        None,
+                        Some(latency_ms),
+                    );
+                    accept_prepared(&receipt_state, &trims, latency_ms);
                     acceptance_pending = false;
                 }
             }
@@ -188,12 +291,30 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
     outgoing
 }
 
-fn accept_prepared(trims: &[crate::tool_result::PreparedTextTrim]) {
+fn accept_prepared(
+    state: &RelayState,
+    trims: &[crate::tool_result::PreparedTextTrim],
+    latency_ms: u64,
+) {
     for trim in trims {
-        if let Err(error) = crate::tool_result::mark_text_trim_accepted(trim) {
-            eprintln!("ctx model gateway could not record an accepted trim: {error}");
+        match crate::tool_result::mark_text_trim_accepted(trim) {
+            Ok(true) => state.record(
+                "applied",
+                1,
+                Some("upstream-accepted"),
+                Some(trim.character_receipt()),
+                Some(latency_ms),
+            ),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("ctx model gateway could not record an accepted trim: {error}");
+            }
         }
     }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn contains_complete_sse_data_event(bytes: &[u8]) -> bool {
@@ -435,9 +556,20 @@ mod tests {
         upstream: &str,
         route: ModelRoute,
     ) -> (String, tokio::task::JoinHandle<()>) {
-        let state = Arc::new(
-            RelayState::new(route, reqwest::Url::parse(upstream).unwrap(), test_client()).unwrap(),
-        );
+        gateway_for_route_with_evidence(upstream, route, false).await
+    }
+
+    async fn gateway_for_route_with_evidence(
+        upstream: &str,
+        route: ModelRoute,
+        evidence: bool,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let mut state =
+            RelayState::new(route, reqwest::Url::parse(upstream).unwrap(), test_client()).unwrap();
+        if evidence {
+            state = state.with_test_evidence();
+        }
+        let state = Arc::new(state);
         spawn(router(state)).await
     }
 
@@ -723,6 +855,7 @@ mod tests {
                 reqwest::Url::parse(&format!("{upstream}/v1/responses")).unwrap(),
                 test_client(),
                 Some("00112233445566778899aabbccddeeff".into()),
+                Some("codex-test 1.0".into()),
             )
             .unwrap(),
         );
@@ -737,6 +870,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(receipt["instanceNonce"], "00112233445566778899aabbccddeeff");
+        assert_eq!(receipt["clientVersion"], "codex-test 1.0");
         assert_eq!(receipt["routeId"], "codex-test");
         assert!(capture.bodies.lock().unwrap().is_empty());
         upstream_task.abort();
@@ -786,8 +920,12 @@ mod tests {
                 .route("/v1/responses", post(capture_request))
                 .with_state(capture.clone());
             let (upstream, upstream_task) = spawn(upstream_app).await;
-            let (gateway, gateway_task) =
-                gateway_for_route(&format!("{upstream}/v1/responses"), testing_codex_route()).await;
+            let (gateway, gateway_task) = gateway_for_route_with_evidence(
+                &format!("{upstream}/v1/responses"),
+                testing_codex_route(),
+                true,
+            )
+            .await;
             let body = synthetic_responses_body("accepted");
             let response = test_client()
                 .post(format!("{gateway}/v1/responses"))
@@ -813,6 +951,20 @@ mod tests {
             let rewind = crate::db::get_rewind(&conn, &rewind_id).unwrap();
             assert!(rewind.original.starts_with("accepted synthetic line 0"));
             assert!(!rewind.original.contains("ctx trimmed this output"));
+            let evidence = crate::db::model_gateway_route_summaries(&conn);
+            assert_eq!(evidence.len(), 1);
+            assert_eq!(evidence[0].attempted, 1);
+            assert_eq!(evidence[0].accepted, 1);
+            assert_eq!(evidence[0].applied, 1);
+            assert!(evidence[0].chars_saved > 0);
+            let raw: String = conn
+                .query_row(
+                    "SELECT GROUP_CONCAT(COALESCE(reason_code,''), ',') FROM model_gateway_events",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!raw.contains("accepted synthetic line"));
             upstream_task.abort();
             gateway_task.abort();
         });
@@ -845,8 +997,12 @@ mod tests {
                 )
                 .with_state(capture.clone());
             let (upstream, upstream_task) = spawn(upstream_app).await;
-            let (gateway, gateway_task) =
-                gateway_for_route(&format!("{upstream}/v1/responses"), testing_codex_route()).await;
+            let (gateway, gateway_task) = gateway_for_route_with_evidence(
+                &format!("{upstream}/v1/responses"),
+                testing_codex_route(),
+                true,
+            )
+            .await;
             let response = test_client()
                 .post(format!("{gateway}/v1/responses"))
                 .body(synthetic_responses_body("rejected"))
@@ -860,6 +1016,11 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM rewind_store", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(rewinds, 1, "prepared recovery survives rejection");
+            let evidence = crate::db::model_gateway_route_summaries(&conn);
+            assert_eq!(evidence[0].attempted, 1);
+            assert_eq!(evidence[0].provider_rejected, 1);
+            assert_eq!(evidence[0].accepted, 0);
+            assert_eq!(evidence[0].applied, 0);
             upstream_task.abort();
             gateway_task.abort();
         });
@@ -877,9 +1038,10 @@ mod tests {
             let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let unavailable = unused.local_addr().unwrap();
             drop(unused);
-            let (gateway, gateway_task) = gateway_for_route(
+            let (gateway, gateway_task) = gateway_for_route_with_evidence(
                 &format!("http://{unavailable}/v1/responses"),
                 testing_codex_route(),
+                true,
             )
             .await;
             let response = test_client()
@@ -895,6 +1057,11 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM rewind_store", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(rewinds, 1);
+            let evidence = crate::db::model_gateway_route_summaries(&conn);
+            assert_eq!(evidence[0].attempted, 1);
+            assert_eq!(evidence[0].transport_failures, 1);
+            assert_eq!(evidence[0].accepted, 0);
+            assert_eq!(evidence[0].applied, 0);
             gateway_task.abort();
         });
     }
@@ -931,8 +1098,12 @@ mod tests {
                 }),
             );
             let (upstream, upstream_task) = spawn(upstream_app).await;
-            let (gateway, gateway_task) =
-                gateway_for_route(&format!("{upstream}/v1/responses"), testing_codex_route()).await;
+            let (gateway, gateway_task) = gateway_for_route_with_evidence(
+                &format!("{upstream}/v1/responses"),
+                testing_codex_route(),
+                true,
+            )
+            .await;
             let response = test_client()
                 .post(format!("{gateway}/v1/responses"))
                 .body(synthetic_responses_body("sse"))
@@ -945,6 +1116,11 @@ mod tests {
             assert_eq!(applied_count(), 0);
             assert_eq!(chunks.next().await.unwrap().unwrap(), "data: accepted\n\n");
             assert_eq!(applied_count(), 1);
+            let conn = crate::db::open_db().unwrap();
+            let evidence = crate::db::model_gateway_route_summaries(&conn);
+            assert_eq!(evidence[0].attempted, 1);
+            assert_eq!(evidence[0].accepted, 1);
+            assert_eq!(evidence[0].applied, 1);
             upstream_task.abort();
             gateway_task.abort();
         });

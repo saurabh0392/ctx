@@ -121,7 +121,7 @@ impl OwnershipRegistry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-enum ServiceState {
+pub(crate) enum ServiceState {
     Healthy,
     NotRunning,
     IdentityMismatch,
@@ -129,7 +129,7 @@ enum ServiceState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-enum RegisteredRouteState {
+pub(crate) enum RegisteredRouteState {
     Matching,
     RegisteredOnly,
     Missing,
@@ -138,7 +138,7 @@ enum RegisteredRouteState {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RouteStatus {
+pub(crate) struct RouteStatus {
     route_id: String,
     surface: String,
     phase: String,
@@ -154,6 +154,14 @@ struct RouteStatus {
     client_version: Option<String>,
     credentials_persisted: bool,
     cursor_model_path_available: bool,
+    process_visibility: &'static str,
+    retained_locally: &'static str,
+    cloud_relay: bool,
+    controlled_path: &'static str,
+    unavailable_path: &'static str,
+    cache_accounting: &'static str,
+    recovery_command: &'static str,
+    purge_control: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     bypass_command: Option<String>,
 }
@@ -297,6 +305,11 @@ pub fn bypass(route_id: &str) -> Result<()> {
     receipt.bypassed_at = Some(now());
     ownership.routes.insert(route_id.to_owned(), receipt);
     ownership.save()?;
+    record_owned_event(
+        ownership.routes.get(route_id).expect("bypassed receipt"),
+        "bypassed",
+        "user-bypass",
+    );
     println!("Bypassed model route {route_id:?}; the client's prior route is restored.");
     println!("The local gateway remains installed for a fast, explicit re-enable.");
     Ok(())
@@ -403,6 +416,18 @@ pub async fn print_doctor(route_id: Option<&str>, json: bool) -> Result<()> {
 
 pub fn is_owned(route_id: &str) -> Result<bool> {
     Ok(OwnershipRegistry::load()?.routes.contains_key(route_id))
+}
+
+pub(super) fn client_version_for_route(route_id: &str) -> Option<String> {
+    OwnershipRegistry::load()
+        .ok()?
+        .routes
+        .get(route_id)
+        .and_then(|receipt| receipt.client_version.clone())
+}
+
+pub(crate) async fn dashboard_status() -> Result<Vec<RouteStatus>> {
+    collect_status(None).await
 }
 
 pub fn disable_all_for_uninstall() -> Result<()> {
@@ -517,10 +542,44 @@ async fn collect_status(route_id: Option<&str>) -> Result<Vec<RouteStatus>> {
             client_version,
             credentials_persisted: false,
             cursor_model_path_available: false,
+            process_visibility: "prompts, instructions, tool definitions and results, source content, and authorization headers in memory while forwarding",
+            retained_locally: "content-free route receipts, plus exact originals only when a trim is accepted",
+            cloud_relay: false,
+            controlled_path: match route.surface {
+                crate::surface::SurfaceId::Codex => "local tool results present in OpenAI Responses requests sent through this exact route",
+                crate::surface::SurfaceId::ClaudeCode => "client-side tool results present in Anthropic Messages requests sent through this exact route",
+                crate::surface::SurfaceId::Cursor => "none; Cursor has no verified programmable model route",
+            },
+            unavailable_path: match route.surface {
+                crate::surface::SurfaceId::Codex => "OpenAI-hosted tools, direct routes, ChatGPT-login routing, and WebSocket traffic",
+                crate::surface::SurfaceId::ClaudeCode => "Anthropic-hosted or provider-managed tools and traffic not sent through this route",
+                crate::surface::SurfaceId::Cursor => "all model traffic until a supported route is documented and captured",
+            },
+            cache_accounting: "not yet measured; character savings are not a cache-adjusted cost claim",
+            recovery_command: "ctx expand <rewind-id>",
+            purge_control: "Settings > Privacy and data > Purge originals",
             bypass_command: owned.map(|_| format!("ctx model-gateway bypass {id}")),
         });
     }
     Ok(statuses)
+}
+
+fn record_owned_event(receipt: &OwnershipReceipt, outcome: &'static str, reason: &'static str) {
+    crate::db::record_model_gateway_event_best_effort(&crate::db::ModelGatewayEvent {
+        route_id: &receipt.route.id,
+        surface: receipt.route.surface.as_str(),
+        surface_version: receipt.client_version.as_deref(),
+        protocol: receipt.route.protocol.as_str(),
+        authentication: receipt.route.authentication.as_str(),
+        fixed_upstream: receipt.route.upstream.origin(),
+        mode: receipt.route.mode.as_str(),
+        outcome,
+        quantity: 1,
+        reason_code: Some(reason),
+        chars_in: None,
+        chars_out: None,
+        latency_ms: None,
+    });
 }
 
 async fn start_and_verify(route: &ModelRoute, nonce: &str) -> Result<()> {

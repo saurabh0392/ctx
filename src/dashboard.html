@@ -958,6 +958,22 @@
         .sv-agent-cap { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 12px; line-height: 1.55; }
         .sv-agent-meta { font-family: var(--fmono); font-size: 11px; color: var(--faint); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
         @media (max-width: 640px) { .sv-agents { grid-template-columns: 1fr; } }
+        .sv-routes { display: grid; gap: 12px; margin-top: 14px; }
+        .sv-route { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 20px 22px; }
+        .sv-route-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+        .sv-route-name { font-family: var(--fserif); font-size: 19px; font-weight: 600; color: var(--ink); }
+        .sv-route-id { font-family: var(--fmono); font-size: 10.5px; color: var(--faint); margin-top: 3px; }
+        .sv-route-state { font-family: var(--fmono); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 4px 10px; border-radius: 999px; background: var(--line-soft); color: var(--muted); white-space: nowrap; }
+        .sv-route-state.live { background: var(--accent-soft); color: var(--accent-ink); }
+        .sv-route-proof { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 8px; margin-top: 16px; }
+        .sv-route-metric { background: var(--paper); border: 1px solid var(--line-soft); border-radius: 9px; padding: 10px 11px; }
+        .sv-route-metric b { display: block; font-family: var(--fmono); font-size: 16px; color: var(--ink); }
+        .sv-route-metric span { font-family: var(--fsans); font-size: 10.5px; color: var(--faint); }
+        .sv-route-copy { font-family: var(--fsans); font-size: 13px; color: var(--muted); line-height: 1.55; margin-top: 14px; }
+        .sv-route-copy b { color: var(--ink); font-weight: 600; }
+        .sv-route-controls { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); font-family: var(--fsans); font-size: 12px; color: var(--faint); line-height: 1.7; }
+        .sv-route-controls code { font-family: var(--fmono); color: var(--ink); background: var(--paper); padding: 2px 5px; border-radius: 4px; }
+        @media (max-width: 640px) { .sv-route-proof { grid-template-columns: 1fr 1fr; } }
         .sv-comp { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 20px 22px; margin-top: 14px; }
         .sv-comp.good { border-color: rgba(15,122,84,.24); background: linear-gradient(180deg, rgba(15,122,84,.03), var(--raised)); }
         .sv-comp-h { font-family: var(--fserif); font-size: 19px; font-weight: 600; color: var(--ink); }
@@ -979,6 +995,7 @@
         <div id="save-ladder"></div>
         <div id="save-tools"></div>
         <div id="save-agents"></div>
+        <div id="save-model-routes"></div>
         <div id="save-comp"></div>
         <div class="sv-footer">Local by default. Every verdict comes from observed behavior in your own sessions.</div>
       </div>
@@ -1546,12 +1563,12 @@
         `<div class="h2-rungs">`
         + rung("Watching", eligibleWatchN, "on", "measured, not touched")
         + rung("Testing", eligN.trial, "part", "building comparable runs")
-        + rung("Proving", eligN.proving, "part", "gathering enough evidence")
-        + rung("Earned", eligN.earned, "on", "safety check passed")
+        + rung("Evaluating", eligN.proving, "part", "gathering enough evidence")
+        + rung("Trimming", eligN.earned, "on", "safety check passed")
         + `</div>` + heldH + kept
         + `<div class="h2-revert"><span class="k">reversible</span><p>A trimmed detail already ran in full and is one command back. <b>ctx never removes a capability</b>, it only shows less of a result until your work says it can.</p></div>`;
     } else {
-      ladder.innerHTML = `<div class="h2-empty">No tools on the ladder yet. As you work, each tool starts at Watching and only moves toward Earned once comparable runs pass the safety check.</div>`;
+      ladder.innerHTML = `<div class="h2-empty">No tools on the ladder yet. As you work, each tool starts at Watching and only moves toward Trimming once comparable runs pass the safety check.</div>`;
     }
 
     // BEAT 3: Trust. The same one number, restated.
@@ -2344,7 +2361,7 @@
   async function loadSave() {
     let ctx, proof, mp;
     try { [ctx, proof, mp] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/model-progress").catch(() => null)]); setHealth(true); }
-    catch (e) { setHealth(false); $("save-ladder").innerHTML = '<div class="sv-empty">Could not reach ctx. Is the dashboard running?</div>'; $("save-tools").innerHTML = ""; $("save-agents").innerHTML = ""; $("save-comp").innerHTML = ""; return; }
+    catch (e) { setHealth(false); $("save-ladder").innerHTML = '<div class="sv-empty">Could not reach CTX. Is the dashboard running?</div>'; $("save-tools").innerHTML = ""; $("save-agents").innerHTML = ""; $("save-model-routes").innerHTML = ""; $("save-comp").innerHTML = ""; return; }
 
     const rows = mergeTools(ctx, proof);
     const autopilot = (ctx.preset || "off") !== "off";
@@ -2393,7 +2410,7 @@
     const heldParked = heldAll.length
       ? `<div class="sv-parked"><b>${num(heldAll.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
       : "";
-    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Testing", gTrial.length, "part", "building comparable runs")}${rung("Evaluating", gProving.length, "part", "gathering evidence")}${rung("Trimming", gEarned.length, "on", "safety check passed")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}`;
+    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Testing", gTrial.length, "part", "building comparable runs")}${rung("Evaluating", gProving.length, "part", "gathering evidence")}${rung("Trimming", gEarned.length, "on", "safety check passed")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}<section class="sv-sec">${wnadScoreboard(ctx.wnad || [], ctx.insight_actions || {})}</section>`;
 
     // Tool cards, grouped like the old report: spotlight, proving, then a quiet watch list.
     let body = "";
@@ -2447,14 +2464,55 @@
       $("save-agents").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Where ctx acts</div><h2 class="sv-sec-h">One honest layer under every agent.</h2><p class="sv-note">No agent vendor measures the others. This is the only place they sit together, on your own work.</p><div class="sv-agents">${cards}</div></section>`;
     } else { $("save-agents").innerHTML = ""; }
 
+    // Model routes: lifecycle truth and content-free transport receipts are separate. A registered
+    // route is never presented as active, and a shadow route is never presented as trimming.
+    const mg = ctx.model_gateway || {};
+    const routeEvidence = mg.evidence || [];
+    const evidenceFor = (r) => routeEvidence.find((e) => e.routeId === r.routeId && e.mode === r.mode)
+      || routeEvidence.find((e) => e.routeId === r.routeId)
+      || {};
+    const routeCard = (r) => {
+      const e = evidenceFor(r);
+      const transportActive = r.phase === "enabled" && r.serviceState === "healthy" && r.configState === "ctx-owned";
+      const state = transportActive
+        ? (r.mode === "testing" ? "active · testing" : "active · observing")
+        : r.phase === "bypassed" ? "bypassed"
+          : r.phase === "registered" ? "not enabled"
+            : r.phase === "enabled" ? "needs attention" : r.phase;
+      const canShorten = transportActive && r.mode === "testing";
+      const proofLine = canShorten
+        ? ((e.applied || 0) > 0
+            ? `CTX shortened <b>${num(e.applied)} accepted tool result${e.applied === 1 ? "" : "s"}</b> on this exact route.`
+            : `This route can shorten only the tested contracts named below; no accepted trim has been recorded yet.`)
+        : transportActive
+          ? `Traffic crosses the local process, but <b>shadow mode keeps every result whole</b>.`
+          : `<b>No model traffic is controlled right now.</b> Registration alone does not activate a route.`;
+      const version = r.clientVersion ? ` · ${esc(r.clientVersion)}` : "";
+      const bypass = r.bypassCommand ? `<div>Immediate bypass: <code>${esc(r.bypassCommand)}</code></div>` : "";
+      const latency = e.averageLatencyMs == null ? "not measured" : `${Math.round(e.averageLatencyMs)} ms average${e.maxLatencyMs == null ? "" : ` · ${num(e.maxLatencyMs)} ms max`}`;
+      return `<div class="sv-route"><div class="sv-route-top"><div><div class="sv-route-name">${esc(SURFACE_NAME[r.surface] || r.surface)} · ${esc(r.authentication)} · ${esc(r.protocol)}</div><div class="sv-route-id">${esc(r.routeId)}${version} · fixed destination ${esc(r.fixedUpstream)}</div></div><span class="sv-route-state ${transportActive ? "live" : ""}">${esc(state)}</span></div><div class="sv-route-proof"><div class="sv-route-metric"><b>${num(e.attempted || 0)}</b><span>requests seen</span></div><div class="sv-route-metric"><b>${num(e.accepted || 0)}</b><span>provider accepted</span></div><div class="sv-route-metric"><b>${num(e.applied || 0)}</b><span>trims applied</span></div><div class="sv-route-metric"><b>${fmtK(tok(e.charsSaved || 0))}</b><span>tokens reclaimed, estimated</span></div></div><div class="sv-route-copy">${proofLine}<br><b>Can reach:</b> ${esc(r.controlledPath)}.<br><b>Cannot reach:</b> ${esc(r.unavailablePath)}. Hosted results outside the client request are not observable and are not reported as zero.<br><b>Held or unknown:</b> ${num((e.heldWhole || 0) + (e.unknown || 0) + (e.alreadyShortened || 0))} observed result${((e.heldWhole || 0) + (e.unknown || 0) + (e.alreadyShortened || 0)) === 1 ? "" : "s"}; ${num((e.providerRejected || 0) + (e.transportFailures || 0))} provider or transport failure${((e.providerRejected || 0) + (e.transportFailures || 0)) === 1 ? "" : "s"}.<br><b>Acceptance latency:</b> ${esc(latency)}. <b>Cache impact:</b> ${esc(r.cacheAccounting)}.</div><div class="sv-route-controls"><div><b>Health:</b> client config ${esc(r.configState)} · local service ${esc(r.serviceState)} · route registry ${esc(r.registeredRouteState)}.</div><div><b>Trust boundary:</b> a process on this machine sees ${esc(r.processVisibility)}. It forwards only to ${esc(r.fixedUpstream)}; CTX cloud relay: ${r.cloudRelay ? "yes" : "no"}.</div><div><b>Stored:</b> ${esc(r.retainedLocally)}. Raw model requests are not persisted. Recover: <code>${esc(r.recoveryCommand)}</code>. Purge retained originals from <b>${esc(r.purgeControl)}</b>.</div>${bypass}</div></div>`;
+    };
+    const currentRoutes = mg.routes || [];
+    const historical = routeEvidence.filter((e) => !currentRoutes.some((r) => r.routeId === e.routeId));
+    const historyRows = historical.length
+      ? `<p class="sv-note" style="margin-top:12px"><b>Disabled route history:</b> ${historical.map((e) => `${esc(e.routeId)} — ${num(e.applied || 0)} applied, ${fmtK(tok(e.charsSaved || 0))} estimated tokens reclaimed`).join(" · ")}. These content-free receipts remain local; the routes no longer control traffic.</p>`
+      : "";
+    if (currentRoutes.length || historical.length) {
+      $("save-model-routes").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Model routes</div><h2 class="sv-sec-h">Exactly what crosses CTX, what changed, and how to get out.</h2><p class="sv-note">Model routing is opt-in. “Active” requires the client setting, local service, and exact route identity to agree. Shadow means observe only; Testing allows only the narrow contracts that passed the implementation gates.</p><div class="sv-routes">${currentRoutes.map(routeCard).join("")}</div>${historyRows}</section>`;
+    } else {
+      $("save-model-routes").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Model routes</div><h2 class="sv-sec-h">Off by default. No model traffic crosses CTX.</h2><p class="sv-note">Codex API-key Responses traffic and Claude Code Anthropic Messages traffic can be configured explicitly, starting in observation-only shadow mode. Cursor model traffic, Codex ChatGPT-login traffic, WebSockets, and provider-hosted tools remain unavailable. Setup never happens from this dashboard; review the terminal consent receipt first with <code>ctx model-gateway setup --help</code>.</p></section>`;
+    }
+
     // Context pressure: the health read plus the one lever. No by-agent grid, no correlation footnote.
     const comp = (ctx.compaction || []).find((s) => s.surface === "claude-code");
     let compCard;
-    if (comp && ["confirmed", "inferred"].includes(comp.confidence) && (comp.completed_events || 0) > 0) {
+    if (comp && comp.confidence === "confirmed" && (comp.completed_events || 0) > 0) {
       const n = comp.completed_events || 0, sess = comp.sessions_with_compaction || 0;
-      compCard = `<div class="sv-comp"><div class="sv-comp-h">Compacted ${num(n)} time${n === 1 ? "" : "s"} across ${num(sess)} session${sess === 1 ? "" : "s"}.</div><div class="sv-comp-cap">Each one means the agent ran out of room and summarized older detail away for the rest of that session. The lever that reduces it: split the session once the task shifts, so a fresh window starts empty. The <span onclick="go('see')" style="color:var(--accent-ink);cursor:pointer">See</span> page shows what is filling the window.</div></div>`;
-    } else if (comp && ["confirmed", "inferred"].includes(comp.confidence)) {
-      compCard = `<div class="sv-comp good"><div class="sv-comp-h">Your sessions stay under the limit.</div><div class="sv-comp-cap">Across the Claude Code sessions ctx has seen, your agent has not had to compact once. No mid-session detail was summarized away. If a session ever does compact, it shows up here with the one lever that reduces it: split the session once the task shifts.</div></div>`;
+      compCard = `<div class="sv-comp"><div class="sv-comp-h">${num(n)} completed compaction${n === 1 ? "" : "s"} confirmed${sess ? ` across ${num(sess)} session${sess === 1 ? "" : "s"}` : ""}.</div><div class="sv-comp-cap">A post-compaction event proves each completion. ${num(comp.unconfirmed_attempted_events || 0)} older pre-compaction marker${(comp.unconfirmed_attempted_events || 0) === 1 ? " is" : "s are"} shown only as unconfirmed attempts. Split a session when the task shifts; the <span onclick="go('see')" style="color:var(--accent-ink);cursor:pointer">See</span> page shows what is filling the window.</div></div>`;
+    } else if (comp && comp.confidence === "confirmed") {
+      compCard = `<div class="sv-comp good"><div class="sv-comp-h">No completed compaction confirmed.</div><div class="sv-comp-cap">The completion hook has not reported one. ${num(comp.unconfirmed_attempted_events || 0)} transcript pre-marker${(comp.unconfirmed_attempted_events || 0) === 1 ? " remains" : "s remain"} an attempt, not proof that history was summarized.</div></div>`;
+    } else if (comp && comp.confidence === "attempt_only") {
+      compCard = `<div class="sv-comp"><div class="sv-comp-h">${num(comp.attempted_events || 0)} compaction attempt${(comp.attempted_events || 0) === 1 ? "" : "s"} visible; completion unknown.</div><div class="sv-comp-cap">CTX can see a pre-compaction signal here but has no matching post event. It will not call those completed or claim that history was summarized.</div></div>`;
     } else {
       compCard = `<div class="sv-comp"><div class="sv-comp-h">Nothing to read yet.</div><div class="sv-comp-cap">ctx has not indexed Claude Code sessions on this machine yet. Once you run a few, this shows how often your agent hits its context limit.</div></div>`;
     }
@@ -2555,8 +2613,6 @@
       user_disabled: "kept whole by your setting",
       attempt_only: "attempt visible; completion not visible",
       confirmed: "completion confirmed",
-      mixed: "native completion plus inferred history",
-      inferred: "completion inferred from transcript",
       unknown: "not observed yet",
     };
     return label[receipt.mode] || String(receipt.mode || "unknown").replaceAll("_", " ");
@@ -2574,28 +2630,27 @@
     const claude = surfaces.find((s) => s.surface === "claude-code");
     const w = (claude && claude.window_turns) || 5;
 
-    // Health read leads from completion events only. A pre hook is never promoted into a completed
-    // compaction; the confidence label says whether completion is native or transcript-inferred.
+    // Health read leads from completion events only. A pre hook or transcript marker is never
+    // promoted into a completed compaction.
     let lead;
     if (!claude || claude.confidence === "unknown") {
       lead = `<div class="cf-lead"><div class="cf-big">Nothing to read yet</div><div class="cf-cap">ctx hasn't indexed any Claude Code sessions on this machine yet. Once you run a few, this shows how often your agent hits its context limit. Run <code>ctx ingest</code> if you have used Claude Code and still see nothing.</div></div>`;
+    } else if (claude.confidence === "attempt_only") {
+      const n = claude.attempted_events || 0;
+      lead = `<div class="cf-lead"><div class="cf-big">${num(n)} attempt${n === 1 ? "" : "s"}; completion unknown</div><div class="cf-cap">CTX found pre-compaction transcript markers but no native post receipt. A pre marker can show intent or pressure; it does not prove the compaction completed, so none are counted as completed.</div></div>`;
     } else if ((claude.completed_events || 0) === 0) {
-      lead = `<div class="cf-lead good"><div class="cf-big">No completed compaction observed</div><div class="cf-cap">${claude.confidence === "confirmed" ? "Claude Code's completion hook has not reported one." : "No completion marker appears in the Claude Code transcripts ctx indexed."} This is evidence about completed compaction, not a guess from a pre-hook attempt.</div></div>`;
+      lead = `<div class="cf-lead good"><div class="cf-big">No completed compaction confirmed</div><div class="cf-cap">Claude Code's completion hook has not reported one. ${num(claude.unconfirmed_attempted_events || 0)} historical pre-marker${(claude.unconfirmed_attempted_events || 0) === 1 ? " remains" : "s remain"} unconfirmed.</div></div>`;
     } else {
       const n = claude.completed_events || 0, sess = claude.sessions_with_compaction || 0;
       const per = sess > 0 ? (n / sess) : 0;
-      const source = claude.confidence === "confirmed"
-        ? "Confirmed by Claude Code's PostCompact hook"
-        : claude.confidence === "mixed"
-          ? `${num(claude.confirmed_completed_events || 0)} confirmed by PostCompact plus ${num(claude.inferred_completed_events || 0)} older transcript-inferred`
-          : "Inferred from Claude Code transcript completion markers";
+      const source = "Confirmed by Claude Code's post-compaction hook";
       lead = `<div class="cf-lead"><div class="cf-big">Compacted <b>${num(n)}</b> time${n === 1 ? "" : "s"}</div><div class="cf-cap">${source}${sess ? ` across ${num(sess)} session${sess === 1 ? "" : "s"}` : ""}${per >= 2 ? `, about ${per.toFixed(1)} per affected session` : ""}. Fewer is healthier.</div></div>`;
     }
 
     // Next action, the point of the page. Concrete levers, one anchored to the real top sink so it
     // is your data, not generic advice.
     let action = "";
-    const compacted = claude && ["confirmed", "mixed", "inferred"].includes(claude.confidence) && (claude.completed_events || 0) > 0;
+    const compacted = claude && claude.confidence === "confirmed" && (claude.completed_events || 0) > 0;
     if (compacted) {
       const top = bill && bill.tools && bill.tools.length ? bill.tools[0] : null;
       const sinkLine = top
@@ -2622,7 +2677,7 @@
       const body = n === 0
         ? `<div class="cf-num">none</div><div class="cf-note">No completed compaction observed.</div>`
         : `<div class="cf-num">${num(n)}</div><div class="cf-note">compaction${n === 1 ? "" : "s"} across ${sessLbl}.</div>`;
-      const badge = s.confidence === "confirmed" ? "completion confirmed" : s.confidence === "mixed" ? `${num(s.confirmed_completed_events || 0)} confirmed · ${num(s.inferred_completed_events || 0)} inferred` : "inferred from transcript";
+      const badge = "completion confirmed";
       return `<div class="cf-card"><div class="cf-surface">${esc(name)}</div><div class="cf-conf observed">${badge}</div>${body}</div>`;
     };
 
@@ -2644,7 +2699,7 @@
     $("compaction-body").innerHTML =
       lead +
       action +
-      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Claude Code and Codex expose both pre- and post-compaction hooks, so current installs can confirm completion. Historical Claude data falls back to transcript inference. Cursor exposes only preCompact, so CTX shows attempts and refuses to call them completed. Anything unseen stays unknown, never zero.</p><div class="cf-grid">${cards}</div></div>` +
+      `<div class="sec" style="margin-top:26px"><div class="sec-eyebrow">By agent</div><p class="sec-note">Claude Code and Codex expose both pre- and post-compaction hooks, so a post event can confirm completion. Historical Claude transcript pre-markers and Cursor's preCompact signal remain attempts only. Anything unseen stays unknown, never zero.</p><div class="cf-grid">${cards}</div></div>` +
       followup;
   }
 
