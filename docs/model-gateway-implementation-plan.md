@@ -1,6 +1,6 @@
 # CTX model-path gateway implementation plan
 
-Status: implementation in progress (M0-M2)
+Status: M0-M2 implemented; M3 next
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
