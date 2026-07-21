@@ -5,6 +5,42 @@ in beta.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-21
+
+### Added
+
+- Add an opt-in, provider-neutral model gateway with fixed OpenAI and Anthropic destinations,
+  loopback-only listeners, bounded HTTP/SSE relay behavior, and byte-identical shadow mode.
+- Add isolated OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages adapters with
+  fail-closed tool-call/result correlation and exact JSON-leaf replacement.
+- Add evidence-gated testing routes that durably retain the exact original before sending a
+  proposed trim and count it as applied only after HTTP or SSE provider acceptance.
+- Add reversible Codex and Claude Code configuration transactions, nonce-bound listener health,
+  launchd/systemd service contracts, route doctor, immediate bypass, disable, and uninstall.
+- Add route-scoped dashboard evidence and `ctx model-gateway readiness [--json]`, including exact
+  client/version/auth/protocol identity, recovery integrity, local-processing p95, unsupported
+  routes, and explicit external commercial-release blockers.
+
+### Changed
+
+- Separate time spent inside CTX from total provider-acceptance latency and isolate percentiles and
+  pass-through reasons by the complete route identity.
+- Distinguish attempted, accepted, applied, held-whole, already-shortened, unknown, rejected,
+  transport-failed, and bypassed model-route outcomes without persisting request content.
+- Treat native post-tool compaction receipts as completed while keeping transcript and Cursor
+  pre-compaction signals attempt-only.
+
+### Security and privacy
+
+- Keep model routing explicitly configured and local: no CTX certificate authority, DNS rewriting,
+  ambient proxying, generic CONNECT support, arbitrary upstream, or CTX-operated cloud relay.
+- Enforce a 500 ms fail-open transform deadline that sends the exact original and cooperatively
+  cancels late preparation; abandoned candidates are never counted as applied.
+- Persist neither model requests nor credentials, keep exact originals under existing local
+  retention/purge controls, and report prepared-but-unapplied recovery copies separately.
+- Keep Cursor model routing, Codex ChatGPT login, Codex WebSocket, provider-hosted tools, and every
+  commercial-readiness claim unavailable until their independent evidence gates are complete.
+
 ## [0.6.2] - 2026-07-20
 
 ### Fixed
