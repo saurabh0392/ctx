@@ -1,6 +1,6 @@
 # CTX model-path gateway implementation plan
 
-Status: M0-M5 implemented; M3 live-provider, M4 live lifecycle, and M6 beta evidence pending
+Status: M0-M6 gate implementation complete; live provider, OS, cohort, signing, audit, and independent-review evidence pending
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
@@ -10,6 +10,7 @@ Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
 `docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`,
 `docs/model-gateway-m2-protocol-adapters.md`, `docs/model-gateway-m3-atomic-apply.md`,
 `docs/model-gateway-m4-surface-lifecycle.md`, `docs/model-gateway-m5-product-proof.md`,
+`docs/model-gateway-m6-beta-gates.md`,
 `docs/claims.md`, and `SECURITY.md`
 
 ## Decision summary
@@ -544,6 +545,9 @@ Exit gate: first-time users can accurately explain their exact route, controlled
 paths, local trust boundary, recovery, compaction confidence, and bypass action from the main card.
 
 ### M6 — Wave 1 private beta and commercial gate
+
+Gate implementation ledger: `docs/model-gateway-m6-beta-gates.md`. The command and automated
+corpus are implemented; the live/external exit gates remain open and are reported as blockers.
 
 - Dogfood shadow, then randomized per-contract testing, then evidence-earned activation.
 - Run real corpora across built-in read/search/shell/edit, direct and CTX-routed MCP, large JSON,

@@ -2,6 +2,7 @@
 //! the synthetic contract or an evidence-authorized Shell test result can produce a replacement.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::ToolResult;
 use crate::config::Config;
@@ -22,6 +23,10 @@ impl PreparedModelRequest {
     pub fn mutated(&self) -> bool {
         !self.trims.is_empty()
     }
+
+    pub fn unchanged(body: &[u8]) -> Self {
+        unchanged(body)
+    }
 }
 
 struct Candidate {
@@ -30,11 +35,32 @@ struct Candidate {
     strategy: String,
 }
 
+#[cfg(test)]
 pub(super) fn prepare_request(
     route: &ModelRoute,
     body: &[u8],
     observation: &CorrelationOutcome,
     config: &Config,
+) -> PreparedModelRequest {
+    prepare_request_inner(route, body, observation, config, None)
+}
+
+pub(super) fn prepare_request_with_cancellation(
+    route: &ModelRoute,
+    body: &[u8],
+    observation: &CorrelationOutcome,
+    config: &Config,
+    cancelled: &AtomicBool,
+) -> PreparedModelRequest {
+    prepare_request_inner(route, body, observation, config, Some(cancelled))
+}
+
+fn prepare_request_inner(
+    route: &ModelRoute,
+    body: &[u8],
+    observation: &CorrelationOutcome,
+    config: &Config,
+    cancelled: Option<&AtomicBool>,
 ) -> PreparedModelRequest {
     if route.mode != ModelRouteMode::Testing {
         return unchanged(body);
@@ -43,6 +69,9 @@ pub(super) fn prepare_request(
     let mut prepared = Vec::new();
     let mut reasons = BTreeMap::new();
     for exchange in &observation.exchanges {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return unchanged(body);
+        }
         if exchange.result.text_leaves.len() != 1 {
             reason(&mut reasons, "multiple-text-leaves-held");
             continue;
@@ -83,6 +112,9 @@ pub(super) fn prepare_request(
         }
     }
 
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return unchanged(body);
+    }
     if prepared.is_empty() {
         return PreparedModelRequest {
             body: body.to_vec(),

@@ -5,9 +5,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::analytics::Record;
 
-// Bumped to 12 for privacy-bounded model-route evidence and corrected compaction semantics. The
+// Bumped to 13 for model-route local-processing latency and M6 integrity gates. The
 // CREATE TABLE batch is version-gated, so a new table only lands on existing installs when this rises.
-pub(crate) const SCHEMA_VERSION: i32 = 12;
+pub(crate) const SCHEMA_VERSION: i32 = 13;
 
 /// Product events are local-only evidence for the beta scorecard. This allowlist is deliberately
 /// closed: callers cannot turn the table into a generic analytics sink containing prompts, paths,
@@ -649,7 +649,8 @@ fn migrate_surface_hook_tables(conn: &Connection) {
             reason_code TEXT,
             chars_in INTEGER,
             chars_out INTEGER,
-            latency_ms INTEGER
+            latency_ms INTEGER,
+            local_processing_ms INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_model_gateway_route_ts
             ON model_gateway_events(route_id, ts);
@@ -663,6 +664,10 @@ fn migrate_surface_hook_tables(conn: &Connection) {
     );
     let _ = conn.execute(
         "UPDATE native_compactions SET phase='completed' WHERE phase='post'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE model_gateway_events ADD COLUMN local_processing_ms INTEGER",
         [],
     );
 }
@@ -684,6 +689,8 @@ pub struct ModelGatewayEvent<'a> {
     pub chars_in: Option<usize>,
     pub chars_out: Option<usize>,
     pub latency_ms: Option<u64>,
+    /// Time spent inside CTX before the upstream request starts. This excludes provider latency.
+    pub local_processing_ms: Option<u64>,
 }
 
 const MODEL_GATEWAY_OUTCOMES: &[&str] = &[
@@ -751,8 +758,8 @@ pub fn record_model_gateway_event(conn: &Connection, event: &ModelGatewayEvent<'
     conn.execute(
         "INSERT INTO model_gateway_events
          (ts,route_id,surface,surface_version,protocol,authentication,fixed_upstream,mode,
-          outcome,quantity,reason_code,chars_in,chars_out,latency_ms)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+          outcome,quantity,reason_code,chars_in,chars_out,latency_ms,local_processing_ms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         params![
             chrono::Utc::now().to_rfc3339(),
             model_gateway_token(event.route_id, 64)?,
@@ -772,6 +779,9 @@ pub fn record_model_gateway_event(conn: &Connection, event: &ModelGatewayEvent<'
             chars_out,
             event
                 .latency_ms
+                .map(|value| value.min(i64::MAX as u64) as i64),
+            event
+                .local_processing_ms
                 .map(|value| value.min(i64::MAX as u64) as i64),
         ],
     )?;
@@ -813,6 +823,11 @@ pub struct ModelGatewayRouteSummary {
     pub chars_saved: i64,
     pub average_latency_ms: Option<f64>,
     pub max_latency_ms: Option<i64>,
+    pub p95_latency_ms: Option<i64>,
+    pub average_local_processing_ms: Option<f64>,
+    pub p95_local_processing_ms: Option<i64>,
+    pub transform_deadlines: i64,
+    pub processing_failures: i64,
     pub recent_reason_codes: Vec<String>,
 }
 
@@ -832,7 +847,10 @@ pub fn model_gateway_route_summaries(conn: &Connection) -> Vec<ModelGatewayRoute
                 COALESCE(SUM(CASE WHEN outcome='applied' THEN chars_in ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN outcome='applied' THEN chars_out ELSE 0 END),0),
                 AVG(CASE WHEN outcome='accepted' THEN latency_ms END),
-                MAX(CASE WHEN outcome='accepted' THEN latency_ms END)
+                MAX(CASE WHEN outcome='accepted' THEN latency_ms END),
+                AVG(CASE WHEN outcome='accepted' THEN local_processing_ms END),
+                SUM(CASE WHEN reason_code='transform-deadline' THEN quantity ELSE 0 END),
+                SUM(CASE WHEN reason_code='processing-task-failed' THEN quantity ELSE 0 END)
          FROM model_gateway_events
          GROUP BY route_id,surface,surface_version,protocol,authentication,fixed_upstream,mode
          ORDER BY MAX(id) DESC",
@@ -864,6 +882,11 @@ pub fn model_gateway_route_summaries(conn: &Connection) -> Vec<ModelGatewayRoute
             chars_saved: chars_in.saturating_sub(chars_out),
             average_latency_ms: row.get(18)?,
             max_latency_ms: row.get(19)?,
+            p95_latency_ms: None,
+            average_local_processing_ms: row.get(20)?,
+            p95_local_processing_ms: None,
+            transform_deadlines: row.get::<_, Option<i64>>(21)?.unwrap_or(0),
+            processing_failures: row.get::<_, Option<i64>>(22)?.unwrap_or(0),
             recent_reason_codes: Vec::new(),
         })
     }) else {
@@ -873,15 +896,141 @@ pub fn model_gateway_route_summaries(conn: &Connection) -> Vec<ModelGatewayRoute
     for summary in &mut summaries {
         let Ok(mut reasons) = conn.prepare(
             "SELECT DISTINCT reason_code FROM model_gateway_events
-             WHERE route_id=?1 AND reason_code IS NOT NULL ORDER BY id DESC LIMIT 8",
+             WHERE route_id=?1 AND surface=?2 AND surface_version IS ?3 AND protocol=?4
+               AND authentication=?5 AND fixed_upstream=?6 AND mode=?7
+               AND reason_code IS NOT NULL ORDER BY id DESC LIMIT 8",
         ) else {
             continue;
         };
-        if let Ok(rows) = reasons.query_map([&summary.route_id], |row| row.get::<_, String>(0)) {
+        if let Ok(rows) = reasons.query_map(
+            params![
+                &summary.route_id,
+                &summary.surface,
+                summary.surface_version.as_deref(),
+                &summary.protocol,
+                &summary.authentication,
+                &summary.fixed_upstream,
+                &summary.mode,
+            ],
+            |row| row.get::<_, String>(0),
+        ) {
             summary.recent_reason_codes = rows.filter_map(|row| row.ok()).collect();
         };
+        summary.p95_latency_ms = model_gateway_percentile(conn, summary, "latency_ms");
+        summary.p95_local_processing_ms =
+            model_gateway_percentile(conn, summary, "local_processing_ms");
     }
     summaries
+}
+
+fn model_gateway_percentile(
+    conn: &Connection,
+    summary: &ModelGatewayRouteSummary,
+    column: &str,
+) -> Option<i64> {
+    let column = match column {
+        "latency_ms" => "latency_ms",
+        "local_processing_ms" => "local_processing_ms",
+        _ => return None,
+    };
+    let sql = format!(
+        "SELECT {column} FROM model_gateway_events
+         WHERE route_id=?1 AND surface=?2 AND surface_version IS ?3 AND protocol=?4
+           AND authentication=?5 AND fixed_upstream=?6 AND mode=?7
+           AND outcome='accepted' AND {column} IS NOT NULL ORDER BY {column}"
+    );
+    let mut statement = conn.prepare(&sql).ok()?;
+    let values = statement
+        .query_map(
+            params![
+                &summary.route_id,
+                &summary.surface,
+                summary.surface_version.as_deref(),
+                &summary.protocol,
+                &summary.authentication,
+                &summary.fixed_upstream,
+                &summary.mode,
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()?
+        .filter_map(|row| row.ok())
+        .collect::<Vec<_>>();
+    let index = values.len().checked_mul(95)?.div_ceil(100).checked_sub(1)?;
+    values.get(index).copied()
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelGatewayIntegrity {
+    pub route_id: String,
+    pub applied_decisions: i64,
+    pub applied_without_recovery: i64,
+}
+
+pub fn model_gateway_integrity(conn: &Connection) -> Vec<ModelGatewayIntegrity> {
+    migrate_surface_hook_tables(conn);
+    let Ok(mut routes) = conn.prepare(
+        "SELECT DISTINCT route_id FROM model_gateway_events
+         UNION SELECT DISTINCT server_prefix FROM compress_decisions
+           WHERE task_mode='model-gateway' AND server_prefix IS NOT NULL",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = routes.query_map([], |row| row.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.filter_map(|row| row.ok())
+        .map(|route_id| {
+            let (applied_decisions, applied_without_recovery) = conn
+                .query_row(
+                    "SELECT COUNT(*),
+                            COALESCE(SUM(CASE WHEN r.id IS NULL THEN 1 ELSE 0 END),0)
+                     FROM compress_decisions d
+                     LEFT JOIN rewind_store r ON r.id=d.rewind_id
+                     WHERE d.task_mode='model-gateway' AND d.server_prefix=?1 AND d.applied=1",
+                    [&route_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap_or((0, 0));
+            ModelGatewayIntegrity {
+                route_id,
+                applied_decisions,
+                applied_without_recovery,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelGatewayRecoverySummary {
+    pub prepared_recovery_copies: i64,
+    pub unapplied_recovery_copies: i64,
+}
+
+pub fn model_gateway_recovery_summary(conn: &Connection) -> ModelGatewayRecoverySummary {
+    let prepared_recovery_copies = conn
+        .query_row(
+            "SELECT COUNT(*) FROM rewind_store WHERE id LIKE 'model-%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let unapplied_recovery_copies = conn
+        .query_row(
+            "SELECT COUNT(*) FROM rewind_store r
+             WHERE r.id LIKE 'model-%' AND NOT EXISTS (
+               SELECT 1 FROM compress_decisions d WHERE d.rewind_id=r.id AND d.applied=1
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    ModelGatewayRecoverySummary {
+        prepared_recovery_copies,
+        unapplied_recovery_copies,
+    }
 }
 
 pub fn record_gateway_runtime_event(
@@ -1894,25 +2043,37 @@ mod recovery_store_tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&conn).unwrap();
         let event =
-            |outcome, quantity, reason, chars_in, chars_out, latency_ms| ModelGatewayEvent {
-                route_id: "codex-api",
-                surface: "codex",
-                surface_version: Some("codex-cli 1.2.3"),
-                protocol: "openai-responses",
-                authentication: "api-key",
-                fixed_upstream: "https://api.openai.com",
-                mode: "testing",
-                outcome,
-                quantity,
-                reason_code: reason,
-                chars_in,
-                chars_out,
-                latency_ms,
+            |outcome, quantity, reason, chars_in, chars_out, latency_ms, local_processing_ms| {
+                ModelGatewayEvent {
+                    route_id: "codex-api",
+                    surface: "codex",
+                    surface_version: Some("codex-cli 1.2.3"),
+                    protocol: "openai-responses",
+                    authentication: "api-key",
+                    fixed_upstream: "https://api.openai.com",
+                    mode: "testing",
+                    outcome,
+                    quantity,
+                    reason_code: reason,
+                    chars_in,
+                    chars_out,
+                    latency_ms,
+                    local_processing_ms,
+                }
             };
-        record_model_gateway_event(&conn, &event("attempted", 1, None, None, None, None)).unwrap();
+        record_model_gateway_event(&conn, &event("attempted", 1, None, None, None, None, None))
+            .unwrap();
         record_model_gateway_event(
             &conn,
-            &event("accepted", 1, Some("http-success"), None, None, Some(12)),
+            &event(
+                "accepted",
+                1,
+                Some("http-success"),
+                None,
+                None,
+                Some(12),
+                Some(3),
+            ),
         )
         .unwrap();
         record_model_gateway_event(
@@ -1924,12 +2085,21 @@ mod recovery_store_tests {
                 Some(10_000),
                 Some(500),
                 Some(12),
+                Some(3),
             ),
         )
         .unwrap();
         record_model_gateway_event(
             &conn,
-            &event("held-whole", 3, Some("shadow-mode"), None, None, None),
+            &event(
+                "held-whole",
+                3,
+                Some("shadow-mode"),
+                None,
+                None,
+                None,
+                Some(3),
+            ),
         )
         .unwrap();
 
@@ -1944,14 +2114,65 @@ mod recovery_store_tests {
         assert_eq!(summary.held_whole, 3);
         assert_eq!(summary.chars_saved, 9_500);
         assert_eq!(summary.average_latency_ms, Some(12.0));
+        assert_eq!(summary.p95_latency_ms, Some(12));
+        assert_eq!(summary.average_local_processing_ms, Some(3.0));
+        assert_eq!(summary.p95_local_processing_ms, Some(3));
         assert!(summary
             .recent_reason_codes
             .contains(&"upstream-accepted".to_string()));
 
-        let unsafe_event = event("unknown", 1, Some("Bearer seeded-secret"), None, None, None);
+        let unsafe_event = event(
+            "unknown",
+            1,
+            Some("Bearer seeded-secret"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(record_model_gateway_event(&conn, &unsafe_event).is_err());
         let encoded = serde_json::to_string(&model_gateway_route_summaries(&conn)).unwrap();
         assert!(!encoded.contains("seeded-secret"));
+    }
+
+    #[test]
+    fn model_gateway_percentiles_and_reasons_never_cross_client_versions() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        let record = |version, reason, latency_ms, local_processing_ms| {
+            record_model_gateway_event(
+                &conn,
+                &ModelGatewayEvent {
+                    route_id: "codex-api",
+                    surface: "codex",
+                    surface_version: Some(version),
+                    protocol: "openai-responses",
+                    authentication: "api-key",
+                    fixed_upstream: "https://api.openai.com",
+                    mode: "testing",
+                    outcome: "accepted",
+                    quantity: 1,
+                    reason_code: Some(reason),
+                    chars_in: None,
+                    chars_out: None,
+                    latency_ms: Some(latency_ms),
+                    local_processing_ms: Some(local_processing_ms),
+                },
+            )
+            .unwrap();
+        };
+        record("codex-cli 1.2.2", "old-version", 900, 800);
+        record("codex-cli 1.2.3", "current-version", 10, 2);
+
+        let summaries = model_gateway_route_summaries(&conn);
+        assert_eq!(summaries.len(), 2);
+        let current = summaries
+            .iter()
+            .find(|summary| summary.surface_version.as_deref() == Some("codex-cli 1.2.3"))
+            .unwrap();
+        assert_eq!(current.p95_latency_ms, Some(10));
+        assert_eq!(current.p95_local_processing_ms, Some(2));
+        assert_eq!(current.recent_reason_codes, vec!["current-version"]);
     }
 
     #[test]

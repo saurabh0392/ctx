@@ -354,6 +354,12 @@ pub enum ModelGatewayCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Evaluate local route proof and list the external gates still blocking commercial release.
+    Readiness {
+        /// Print the stable content-free Wave 1 readiness schema.
+        #[arg(long)]
+        json: bool,
+    },
     /// Immediately restore the prior client route while retaining recoverable CTX route state.
     Bypass { id: String },
     /// Restore the prior client route and remove CTX's route/service ownership.
