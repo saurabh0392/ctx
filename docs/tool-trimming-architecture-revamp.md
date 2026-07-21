@@ -5,7 +5,8 @@ Date: 2026-07-18
 Owner: Saurabh
 Target: post-v0.5 product wave
 Companions: `docs/tool-management-plan.md`, `docs/codex-plugin-implementation-plan.md`,
-`docs/codex-model-gateway-implementation-plan.md`, `docs/claims.md`, `SECURITY.md`, and ADR 0015
+`docs/model-gateway-implementation-plan.md`, `docs/codex-model-gateway-implementation-plan.md`,
+`docs/claims.md`, `SECURITY.md`, and ADR 0015
 
 ## Decision summary
 
@@ -20,9 +21,10 @@ CTX will support two execution paths:
    platform cannot expose to a replace-capable hook. It will support local `stdio` first and remote
    Streamable HTTP only after the separate authorization and network-security gate passes.
 
-The gateway is not a revival of the retired TLS MITM proxy. CTX will not intercept model-provider
-traffic, install a certificate authority, terminate arbitrary agent TLS, or relay tool data through
-a CTX-operated service. ADR 0015 remains in force for those behaviors.
+The MCP gateway is not a revival of the retired TLS MITM proxy. Within this revamp's shipped
+standard path, CTX does not intercept model-provider traffic, install a certificate authority,
+terminate arbitrary agent TLS, or relay tool data through a CTX-operated service. ADR 0015 remains
+in force; the separately proposed model gateway requires its own narrowing ADR and explicit opt-in.
 
 At the same time, retire the absolute promise that "everything stays local and secure." The product
 will make narrower claims that distinguish local MCP servers, user-configured remote MCP servers,
@@ -720,14 +722,16 @@ These do not block T0-T2 but must be resolved before their dependent increment:
 
 ## Delivery status and immediate next slice
 
-### Proposed post-v0.6 Codex extension
+### Proposed post-v0.6 model-gateway extension
 
-`docs/codex-model-gateway-implementation-plan.md` proposes an opt-in, explicitly configured local
-Responses gateway for model-path trimming of Codex built-in and direct MCP results. That proposal is
-not part of the completed T3-T7 scope and does not silently revoke ADR 0015. Its G0 decision gate
-must first distinguish the new loopback application proxy from the retired certificate-based TLS
-MITM, prove ChatGPT and API-key authentication, and verify real model-visible tool-output shapes.
-Standard CTX has no model-traffic proxy unless the user explicitly enables the proposed mode.
+`docs/model-gateway-implementation-plan.md` proposes an opt-in, explicitly configured local model
+gateway with separate surface, wire-protocol, and upstream-provider contracts. The first product wave
+targets Cursor, Claude Code, and Codex; `docs/codex-model-gateway-implementation-plan.md` owns the
+Codex surface and OpenAI Responses details. The proposal is not part of the completed T3-T7 scope and
+does not silently revoke ADR 0015. Its M0 decision gate must distinguish the loopback application
+gateway from the retired certificate-based TLS MITM, prove each advertised authentication and
+routing contract, and verify real model-visible tool-output shapes. Standard CTX has no model-traffic
+proxy unless the user explicitly enables a supported route.
 
 The v0.6.0 implementation completes the T3-T6 engineering slice behind explicit controls. T3 now
 owns the only proposal-to-output transition: it persists exact recovery first and records applied

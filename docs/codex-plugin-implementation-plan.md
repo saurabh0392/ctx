@@ -4,7 +4,8 @@ Status: implemented; private-beta validation pending
 Date: 2026-07-18
 Target: next CTX beta wave
 Decision owner: Saurabh
-Extension: `docs/codex-model-gateway-implementation-plan.md`
+Extension: `docs/model-gateway-implementation-plan.md`
+Codex surface: `docs/codex-model-gateway-implementation-plan.md`
 
 ## Outcome
 
@@ -22,9 +23,9 @@ The product must describe three capability levels accurately:
 
 The first commercial release target is **partially active**, not full parity with Claude Code.
 
-This remains the contract for standard, plugin-only mode. The separate model-gateway plan proposes
-an opt-in Responses transport that can make additional local tool results model-visible after its
-authentication, fidelity, security, and evidence gates pass.
+This remains the contract for standard, plugin-only mode. The umbrella model-gateway plan and its
+Codex surface plan propose an opt-in Responses route that can make additional local tool results
+model-visible after its authentication, fidelity, security, and evidence gates pass.
 
 ## Why this is feasible now
 
