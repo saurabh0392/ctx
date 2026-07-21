@@ -121,6 +121,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: GatewayCommand,
     },
+    /// Inspect model-route compatibility or redact an offline protocol capture (M0 only).
+    ///
+    /// This command does not start a listener, change client configuration, or route traffic.
+    ModelGateway {
+        #[command(subcommand)]
+        command: ModelGatewayCommand,
+    },
     /// Dry-run a prompt through the ctx pipeline (no tokens consumed)
     Simulate {
         /// Prompt text (reads from stdin if omitted)
@@ -261,6 +268,29 @@ pub enum GatewayCommand {
         id: String,
         #[arg(long, default_value = "codex")]
         surface: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ModelGatewayCommand {
+    /// Inspect documented local configuration boundaries without changing them.
+    Probe {
+        /// Surface to inspect: claude-code, cursor, codex, or all.
+        #[arg(long, default_value = "all")]
+        surface: String,
+        /// Execute each installed client's version command. Some clients may perform startup
+        /// maintenance even for --version, so the default probe only inspects file/config presence.
+        #[arg(long)]
+        run_client_version: bool,
+        /// Print the stable redacted receipt schema.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Convert an offline JSON capture envelope into a content-redacted structural receipt.
+    SanitizeCapture {
+        /// Read the raw envelope from this file; omit to read stdin. CTX never persists the input.
+        #[arg(long)]
+        input: Option<std::path::PathBuf>,
     },
 }
 

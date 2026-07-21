@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "path": "codex-openai-responses.json",
+      "surface": "codex",
+      "protocol": "openai-responses",
+      "provenance": "synthetic-redaction-contract",
+      "liveRouteProof": false
+    },
+    {
+      "path": "claude-anthropic-messages.json",
+      "surface": "claude-code",
+      "protocol": "anthropic-messages",
+      "provenance": "synthetic-redaction-contract",
+      "liveRouteProof": false
+    },
+    {
+      "path": "cursor-openai-chat.json",
+      "surface": "cursor",
+      "protocol": "openai-chat-completions",
+      "provenance": "synthetic-redaction-contract",
+      "liveRouteProof": false
+    }
+  ]
+}

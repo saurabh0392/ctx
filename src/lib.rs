@@ -43,6 +43,7 @@ pub mod inject;
 pub mod learn;
 pub mod mcp;
 pub mod mcp_gateway;
+pub mod model_gateway;
 pub mod modes;
 pub mod outcome_signals;
 pub mod profiles;
@@ -67,7 +68,8 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{
     BenchCommand, Cli, Commands, ContextCommand, ExperimentCommand, ExperimentPlanCommand,
-    FilterCommand, GatewayCommand, HookCommand, InjectCommand, ModeCommand, ProfileCommand,
+    FilterCommand, GatewayCommand, HookCommand, InjectCommand, ModeCommand, ModelGatewayCommand,
+    ProfileCommand,
 };
 
 pub async fn run() -> Result<()> {
@@ -181,6 +183,16 @@ pub async fn run() -> Result<()> {
             GatewayCommand::Login { id, yes } => mcp_gateway::oauth::login(&id, yes).await?,
             GatewayCommand::Logout { id } => mcp_gateway::oauth::logout(&id)?,
             GatewayCommand::Serve { id, surface } => mcp_gateway::serve(&id, &surface).await?,
+        },
+        Commands::ModelGateway { command } => match command {
+            ModelGatewayCommand::Probe {
+                surface,
+                run_client_version,
+                json,
+            } => model_gateway::print_probe(&surface, run_client_version, json)?,
+            ModelGatewayCommand::SanitizeCapture { input } => {
+                model_gateway::sanitize_capture_file(input.as_deref())?
+            }
         },
         Commands::Mode { name, command } => match command {
             Some(ModeCommand::List) => {

@@ -1,12 +1,13 @@
 # CTX model-path gateway implementation plan
 
-Status: proposed
+Status: implementation in progress (M0)
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
 Parent: `docs/tool-trimming-architecture-revamp.md`
 Surface plans: `docs/codex-model-gateway-implementation-plan.md`
-Companions: ADR 0015, ADR 0046, ADR 0047, `docs/claims.md`, and `SECURITY.md`
+Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
+`docs/model-gateway-m0-compatibility.md`, `docs/claims.md`, and `SECURITY.md`
 
 ## Decision summary
 
@@ -106,8 +107,8 @@ remains fully qualified.
 
 | Surface route | Configuration boundary | Initial protocol | Target status | Hard gap |
 | --- | --- | --- | --- | --- |
-| Cursor IDE with OpenAI BYOK/base-URL override | explicit user model setting | captured OpenAI Responses or Chat Completions dialect | feasibility gate, then shadow | Cursor-built models and specialized features may bypass the configured route |
-| Cursor CLI | supported endpoint/config only if live probe proves model routing | captured OpenAI dialect | feasibility gate | Cursor service and endpoint behavior must be measured, not inferred from CLI event output |
+| Cursor IDE with BYOK | manual provider setting; requests still involve Cursor's backend | unknown until live capture | hold / feasibility gate | BYOK does not prove a local provider-shaped route; specialized features keep using Cursor models |
+| Cursor CLI | `--endpoint` only if live probe proves a model routing contract | unknown/proprietary until capture | feasibility gate | Cursor service and endpoint behavior must be measured, not inferred from CLI event output |
 | Claude Code with `ANTHROPIC_BASE_URL` | supported gateway variable | Anthropic Messages over SSE | shadow, testing, active | direct fast-mode and safety traffic, plus hosted tools, can bypass the gateway path |
 | Codex with `openai_base_url` or a custom provider | supported user-level provider configuration | OpenAI Responses over HTTP/SSE/WebSocket | shadow, testing, active | OpenAI-hosted tools never returned through the client request |
 
@@ -458,6 +459,8 @@ confidence intervals, cache impact, latency, rejection reasons, and unsupported 
 ## Implementation increments
 
 ### M0 — ADR and three-surface compatibility gates
+
+Implementation ledger: `docs/model-gateway-m0-compatibility.md`.
 
 - Add the ADR allowing only an explicit loopback application gateway and preserving ADR 0015's CA
   prohibition.

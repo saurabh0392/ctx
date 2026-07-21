@@ -1,0 +1,28 @@
+{
+  "surface": "claude-code",
+  "clientVersion": "2.1.153 (Claude Code)",
+  "direction": "request",
+  "method": "POST",
+  "path": "/v1/messages?api_key=CTX_M0_SECRET_QUERY",
+  "transport": "sse",
+  "headers": [
+    {"name": "x-api-key", "value": "CTX_M0_SECRET_API_KEY"},
+    {"name": "anthropic-version", "value": "CTX_M0_SECRET_VERSION_HEADER"}
+  ],
+  "body": {
+    "model": "CTX_M0_SECRET_MODEL",
+    "messages": [
+      {"role": "user", "content": "CTX_M0_SECRET_PROMPT"},
+      {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "CTX_M0_SECRET_CALL", "name": "CTX_M0_SECRET_TOOL", "input": {"path": "CTX_M0_SECRET_PATH"}}
+      ]},
+      {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "CTX_M0_SECRET_CALL", "content": "CTX_M0_SECRET_OUTPUT"}
+      ]}
+    ],
+    "system": "CTX_M0_SECRET_SYSTEM"
+  },
+  "streamEvents": [
+    {"type": "message", "content": "CTX_M0_SECRET_STREAM"}
+  ]
+}

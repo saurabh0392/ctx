@@ -1,0 +1,29 @@
+{
+  "surface": "codex",
+  "clientVersion": "codex-cli 0.145.0-alpha.18",
+  "direction": "request",
+  "method": "POST",
+  "path": "https://CTX_M0_SECRET_HOST/v1/responses/CTX_M0_SECRET_TENANT?token=CTX_M0_SECRET_QUERY",
+  "transport": "sse",
+  "contentEncoding": "gzip",
+  "headers": [
+    {"name": "authorization", "value": "Bearer CTX_M0_SECRET_AUTH"},
+    {"name": "content-type", "value": "application/json"},
+    {"name": "x-CTX_M0_SECRET_HEADER", "value": "CTX_M0_SECRET_HEADER_VALUE"}
+  ],
+  "body": {
+    "model": "CTX_M0_SECRET_MODEL",
+    "input": [
+      {"type": "message", "role": "user", "content": "CTX_M0_SECRET_PROMPT"},
+      {"type": "function_call", "call_id": "CTX_M0_SECRET_CALL", "name": "CTX_M0_SECRET_TOOL", "arguments": "CTX_M0_SECRET_ARGS"},
+      {"type": "function_call_output", "call_id": "CTX_M0_SECRET_CALL", "output": "CTX_M0_SECRET_OUTPUT"}
+    ],
+    "previous_response_id": "CTX_M0_SECRET_RESPONSE",
+    "CTX_M0_SECRET_KEY": "CTX_M0_SECRET_UNKNOWN_VALUE"
+  },
+  "streamEvents": [
+    {"type": "summary", "content": "CTX_M0_SECRET_SUMMARY"},
+    {"type": "error", "error": {"message": "CTX_M0_SECRET_ERROR"}}
+  ],
+  "restoration": {"attempted": true, "succeeded": true, "byteIdentical": true}
+}
