@@ -1,6 +1,6 @@
 # CTX model gateway — Codex surface plan
 
-Status: proposed surface plan
+Status: shared G0-G5 code and API-key HTTP/SSE lifecycle implemented; ChatGPT and WebSocket routes held pending live evidence
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 Codex coverage wave
