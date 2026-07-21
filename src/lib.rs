@@ -234,6 +234,9 @@ pub async fn run() -> Result<()> {
             ModelGatewayCommand::Doctor { id, json } => {
                 model_gateway::lifecycle::print_doctor(id.as_deref(), json).await?
             }
+            ModelGatewayCommand::Readiness { json } => {
+                model_gateway::readiness::print(json).await?
+            }
             ModelGatewayCommand::Bypass { id } => model_gateway::lifecycle::bypass(&id)?,
             ModelGatewayCommand::Disable { id } => model_gateway::lifecycle::disable(&id)?,
             ModelGatewayCommand::Serve { id, health_nonce } => {

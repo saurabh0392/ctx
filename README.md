@@ -142,6 +142,7 @@ ctx model-gateway setup codex --authentication api-key --mode shadow
 ctx model-gateway enable codex-api --yes
 ctx model-gateway status codex-api
 ctx model-gateway doctor codex-api
+ctx model-gateway readiness --json
 ctx model-gateway bypass codex-api
 ctx model-gateway disable codex-api
 ```

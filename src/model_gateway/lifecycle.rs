@@ -139,31 +139,31 @@ pub(crate) enum RegisteredRouteState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RouteStatus {
-    route_id: String,
-    surface: String,
-    phase: String,
-    mode: String,
-    authentication: String,
-    protocol: String,
-    fixed_upstream: String,
-    local_base_url: String,
-    config_location: Option<String>,
-    config_state: FieldState,
-    service_state: ServiceState,
-    registered_route_state: RegisteredRouteState,
-    client_version: Option<String>,
-    credentials_persisted: bool,
-    cursor_model_path_available: bool,
-    process_visibility: &'static str,
-    retained_locally: &'static str,
-    cloud_relay: bool,
-    controlled_path: &'static str,
-    unavailable_path: &'static str,
-    cache_accounting: &'static str,
-    recovery_command: &'static str,
-    purge_control: &'static str,
+    pub(crate) route_id: String,
+    pub(crate) surface: String,
+    pub(crate) phase: String,
+    pub(crate) mode: String,
+    pub(crate) authentication: String,
+    pub(crate) protocol: String,
+    pub(crate) fixed_upstream: String,
+    pub(crate) local_base_url: String,
+    pub(crate) config_location: Option<String>,
+    pub(crate) config_state: FieldState,
+    pub(crate) service_state: ServiceState,
+    pub(crate) registered_route_state: RegisteredRouteState,
+    pub(crate) client_version: Option<String>,
+    pub(crate) credentials_persisted: bool,
+    pub(crate) cursor_model_path_available: bool,
+    pub(crate) process_visibility: &'static str,
+    pub(crate) retained_locally: &'static str,
+    pub(crate) cloud_relay: bool,
+    pub(crate) controlled_path: &'static str,
+    pub(crate) unavailable_path: &'static str,
+    pub(crate) cache_accounting: &'static str,
+    pub(crate) recovery_command: &'static str,
+    pub(crate) purge_control: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    bypass_command: Option<String>,
+    pub(crate) bypass_command: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -579,6 +579,7 @@ fn record_owned_event(receipt: &OwnershipReceipt, outcome: &'static str, reason:
         chars_in: None,
         chars_out: None,
         latency_ms: None,
+        local_processing_ms: None,
     });
 }
 

@@ -1,7 +1,8 @@
 //! Byte-faithful, transformation-off HTTP/SSE relay for M1.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
@@ -22,6 +23,7 @@ use super::shadow::{ShadowEngine, ShadowHealthReceipt};
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_LOCAL_PROCESSING_TIME: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub(super) struct RelayState {
@@ -32,6 +34,9 @@ pub(super) struct RelayState {
     health_nonce: Option<String>,
     surface_version: Option<String>,
     evidence_enabled: bool,
+    processing_deadline: Duration,
+    #[cfg(test)]
+    processing_delay: Option<Duration>,
 }
 
 impl RelayState {
@@ -66,6 +71,9 @@ impl RelayState {
             health_nonce,
             surface_version,
             evidence_enabled: cfg!(not(test)),
+            processing_deadline: MAX_LOCAL_PROCESSING_TIME,
+            #[cfg(test)]
+            processing_delay: None,
         })
     }
 
@@ -76,6 +84,7 @@ impl RelayState {
         reason_code: Option<&str>,
         chars: Option<(usize, usize)>,
         latency_ms: Option<u64>,
+        local_processing_ms: Option<u64>,
     ) {
         if !self.evidence_enabled {
             return;
@@ -96,12 +105,20 @@ impl RelayState {
             chars_in,
             chars_out,
             latency_ms,
+            local_processing_ms,
         });
     }
 
     #[cfg(test)]
     fn with_test_evidence(mut self) -> Self {
         self.evidence_enabled = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_test_processing_timing(mut self, delay: Duration, deadline: Duration) -> Self {
+        self.processing_delay = Some(delay);
+        self.processing_deadline = deadline;
         self
     }
 }
@@ -169,12 +186,81 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
         Err(_) => return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request-too-large"),
     };
     let started = Instant::now();
-    state.record("attempted", 1, None, None, None);
+    state.record("attempted", 1, None, None, None, None);
     let mut upstream = state.upstream.clone();
     upstream.set_query(parts.uri.query());
-    let observation = state.shadow.observe(&state.route, &parts.headers, &body);
-    if observation.exchanges.is_empty() && observation.reasons.is_empty() {
-        state.record("unknown", 1, Some("no-tool-result-observed"), None, None);
+    let processing_started = Instant::now();
+    let processing_shadow = state.shadow.clone();
+    let processing_route = state.route.clone();
+    let processing_headers = parts.headers.clone();
+    let processing_body = body.to_vec();
+    let processing_cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = processing_cancelled.clone();
+    #[cfg(test)]
+    let processing_delay = state.processing_delay;
+    let processing = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if let Some(delay) = processing_delay {
+            std::thread::sleep(delay);
+        }
+        if worker_cancelled.load(Ordering::Acquire) {
+            return (
+                super::correlate::CorrelationOutcome::default(),
+                super::apply::PreparedModelRequest::unchanged(&processing_body),
+            );
+        }
+        let observation =
+            processing_shadow.observe(&processing_route, &processing_headers, &processing_body);
+        let prepared = super::apply::prepare_request_with_cancellation(
+            &processing_route,
+            &processing_body,
+            &observation,
+            processing_shadow.config(),
+            &worker_cancelled,
+        );
+        processing_shadow.record_testing_prepare(
+            prepared.mutated(),
+            prepared.trims.len(),
+            &prepared.reasons,
+        );
+        (observation, prepared)
+    });
+    let (observation, prepared, processing_failure) =
+        match tokio::time::timeout(state.processing_deadline, processing).await {
+            Ok(Ok((observation, prepared))) => (observation, prepared, None),
+            Ok(Err(_)) => (
+                super::correlate::CorrelationOutcome::default(),
+                super::apply::PreparedModelRequest::unchanged(&body),
+                Some("processing-task-failed"),
+            ),
+            Err(_) => {
+                processing_cancelled.store(true, Ordering::Release);
+                (
+                    super::correlate::CorrelationOutcome::default(),
+                    super::apply::PreparedModelRequest::unchanged(&body),
+                    Some("transform-deadline"),
+                )
+            }
+        };
+    let local_processing_ms = elapsed_ms(processing_started);
+    if let Some(reason) = processing_failure {
+        state.record(
+            "held-whole",
+            1,
+            Some(reason),
+            None,
+            None,
+            Some(local_processing_ms),
+        );
+    } else if observation.exchanges.is_empty() && observation.reasons.is_empty() {
+        state.record(
+            "unknown",
+            1,
+            Some("no-tool-result-observed"),
+            None,
+            None,
+            None,
+        );
     }
     for (reason, quantity) in &observation.reasons {
         let outcome = if *reason == super::correlate::CoverageReason::AlreadyShortened {
@@ -182,16 +268,10 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
         } else {
             "unknown"
         };
-        state.record(outcome, *quantity, Some(reason.as_str()), None, None);
+        state.record(outcome, *quantity, Some(reason.as_str()), None, None, None);
     }
-    let prepared =
-        super::apply::prepare_request(&state.route, &body, &observation, state.shadow.config());
-    state.shadow.record_testing_prepare(
-        prepared.mutated(),
-        prepared.trims.len(),
-        &prepared.reasons,
-    );
-    if state.route.mode == super::registry::ModelRouteMode::Shadow
+    if processing_failure.is_none()
+        && state.route.mode == super::registry::ModelRouteMode::Shadow
         && !observation.exchanges.is_empty()
     {
         state.record(
@@ -200,11 +280,19 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
             Some("shadow-mode"),
             None,
             None,
+            Some(local_processing_ms),
         );
-    } else {
+    } else if processing_failure.is_none() {
         for (reason, quantity) in &prepared.reasons {
             if reason != "already-shortened" {
-                state.record("held-whole", *quantity, Some(reason), None, None);
+                state.record(
+                    "held-whole",
+                    *quantity,
+                    Some(reason),
+                    None,
+                    None,
+                    Some(local_processing_ms),
+                );
             }
         }
     }
@@ -230,6 +318,7 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
                 Some("upstream-request-failed"),
                 None,
                 Some(elapsed_ms(started)),
+                Some(local_processing_ms),
             );
             return error_response(StatusCode::BAD_GATEWAY, "upstream-request-failed");
         }
@@ -249,8 +338,15 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
     let headers = forward_response_headers(response.headers());
     if status.is_success() && !sse {
         let latency_ms = elapsed_ms(started);
-        state.record("accepted", 1, Some("http-success"), None, Some(latency_ms));
-        accept_prepared(&state, &prepared.trims, latency_ms);
+        state.record(
+            "accepted",
+            1,
+            Some("http-success"),
+            None,
+            Some(latency_ms),
+            Some(local_processing_ms),
+        );
+        accept_prepared(&state, &prepared.trims, latency_ms, local_processing_ms);
     } else if !status.is_success() {
         state.record(
             "provider-rejected",
@@ -258,6 +354,7 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
             Some("provider-non-success"),
             None,
             Some(elapsed_ms(started)),
+            Some(local_processing_ms),
         );
     }
     let mut acceptance_pending = status.is_success() && sse;
@@ -277,8 +374,9 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
                         Some("sse-first-data"),
                         None,
                         Some(latency_ms),
+                        Some(local_processing_ms),
                     );
-                    accept_prepared(&receipt_state, &trims, latency_ms);
+                    accept_prepared(&receipt_state, &trims, latency_ms, local_processing_ms);
                     acceptance_pending = false;
                 }
             }
@@ -295,6 +393,7 @@ fn accept_prepared(
     state: &RelayState,
     trims: &[crate::tool_result::PreparedTextTrim],
     latency_ms: u64,
+    local_processing_ms: u64,
 ) {
     for trim in trims {
         match crate::tool_result::mark_text_trim_accepted(trim) {
@@ -304,6 +403,7 @@ fn accept_prepared(
                 Some("upstream-accepted"),
                 Some(trim.character_receipt()),
                 Some(latency_ms),
+                Some(local_processing_ms),
             ),
             Ok(false) => {}
             Err(error) => {
@@ -957,6 +1057,13 @@ mod tests {
             assert_eq!(evidence[0].accepted, 1);
             assert_eq!(evidence[0].applied, 1);
             assert!(evidence[0].chars_saved > 0);
+            assert!(evidence[0].p95_local_processing_ms.is_some());
+            let integrity = crate::db::model_gateway_integrity(&conn);
+            assert_eq!(integrity[0].applied_decisions, 1);
+            assert_eq!(integrity[0].applied_without_recovery, 0);
+            let recovery = crate::db::model_gateway_recovery_summary(&conn);
+            assert_eq!(recovery.prepared_recovery_copies, 1);
+            assert_eq!(recovery.unapplied_recovery_copies, 0);
             let raw: String = conn
                 .query_row(
                     "SELECT GROUP_CONCAT(COALESCE(reason_code,''), ',') FROM model_gateway_events",
@@ -1021,6 +1128,67 @@ mod tests {
             assert_eq!(evidence[0].provider_rejected, 1);
             assert_eq!(evidence[0].accepted, 0);
             assert_eq!(evidence[0].applied, 0);
+            let recovery = crate::db::model_gateway_recovery_summary(&conn);
+            assert_eq!(recovery.prepared_recovery_copies, 1);
+            assert_eq!(recovery.unapplied_recovery_copies, 1);
+            upstream_task.abort();
+            gateway_task.abort();
+        });
+    }
+
+    #[test]
+    fn transform_deadline_sends_the_exact_original_and_never_counts_applied() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = ScopedCtxHome::set(temp.path());
+        runtime.block_on(async {
+            let capture = Capture::default();
+            let upstream_app = Router::new()
+                .route("/v1/responses", post(capture_request))
+                .with_state(capture.clone());
+            let (upstream, upstream_task) = spawn(upstream_app).await;
+            let state = RelayState::new(
+                testing_codex_route(),
+                reqwest::Url::parse(&format!("{upstream}/v1/responses")).unwrap(),
+                test_client(),
+            )
+            .unwrap()
+            .with_test_evidence()
+            .with_test_processing_timing(Duration::from_millis(40), Duration::from_millis(5));
+            let (gateway, gateway_task) = spawn(router(Arc::new(state))).await;
+            let original = synthetic_responses_body("deadline");
+
+            let response = test_client()
+                .post(format!("{gateway}/v1/responses"))
+                .body(original.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.bytes().await.unwrap().as_ref(), original);
+            assert_eq!(capture.bodies.lock().unwrap().as_slice(), &[original]);
+            assert_eq!(applied_count(), 0);
+
+            // The timed-out blocking worker is detached but cooperatively cancelled before it can
+            // begin observation or durable preparation.
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let conn = crate::db::open_db().unwrap();
+            let evidence = crate::db::model_gateway_route_summaries(&conn);
+            assert_eq!(evidence[0].attempted, 1);
+            assert_eq!(evidence[0].accepted, 1);
+            assert_eq!(evidence[0].applied, 0);
+            assert_eq!(evidence[0].held_whole, 1);
+            assert_eq!(evidence[0].transform_deadlines, 1);
+            assert_eq!(evidence[0].processing_failures, 0);
+            assert!(evidence[0]
+                .recent_reason_codes
+                .contains(&"transform-deadline".to_string()));
+            let recovery = crate::db::model_gateway_recovery_summary(&conn);
+            assert_eq!(recovery.prepared_recovery_copies, 0);
+            assert_eq!(recovery.unapplied_recovery_copies, 0);
             upstream_task.abort();
             gateway_task.abort();
         });

@@ -11,6 +11,7 @@ mod json_patch;
 pub mod lifecycle;
 pub mod probe;
 mod protocols;
+pub mod readiness;
 pub mod registry;
 mod relay;
 pub mod route;
