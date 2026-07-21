@@ -27,8 +27,8 @@ separate.
 
 > When a named model route is explicitly enabled, requests pass through a CTX process on this
 > device before CTX forwards them to the displayed model provider. CTX operates no cloud relay for
-> this traffic. Only supported client-side tool-result fields may change; exact originals are kept
-> locally only for accepted trims.
+> this traffic. Only supported client-side tool-result fields may change. Exact originals are kept
+> locally before a proposed trim is sent; only provider-accepted trims count as applied.
 
 “Local” describes the CTX process, not the final model destination. Do not say prompts stay local,
 that every request from a supported agent crosses CTX, that hosted tools are controllable, or that a

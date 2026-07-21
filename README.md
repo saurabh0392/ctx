@@ -149,8 +149,9 @@ ctx model-gateway disable codex-api
 An enabled route lets a CTX process on this machine see the routed model request transiently in
 memory and forward it to the fixed provider shown by `status`; it does not keep prompts local and
 does not send them through a CTX cloud service. Shadow mode observes and keeps all results whole.
-Testing mode may shorten only the narrow verified contracts, retains exact originals only after an
-accepted trim, and records content-free attempted/accepted/applied/held/failure receipts. Review the
+Testing mode may shorten only the narrow verified contracts, retains an exact original before a
+proposed trim is sent, and counts it applied only after provider acceptance. Rejected or uncertain
+sends can leave an unapplied recovery copy. CTX records only content-free route receipts. Review the
 dashboard's Model routes card for the exact controlled path, gaps, destination, recovery, purge, and
 bypass command.
 

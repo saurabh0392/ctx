@@ -543,7 +543,7 @@ async fn collect_status(route_id: Option<&str>) -> Result<Vec<RouteStatus>> {
             credentials_persisted: false,
             cursor_model_path_available: false,
             process_visibility: "prompts, instructions, tool definitions and results, source content, and authorization headers in memory while forwarding",
-            retained_locally: "content-free route receipts, plus exact originals only when a trim is accepted",
+            retained_locally: "content-free route receipts, plus exact originals when a trim is prepared before send; only provider-accepted trims count as applied",
             cloud_relay: false,
             controlled_path: match route.surface {
                 crate::surface::SurfaceId::Codex => "local tool results present in OpenAI Responses requests sent through this exact route",
