@@ -32,7 +32,8 @@ An opt-in model-path route has a broader local trust boundary: the CTX process s
 instructions, tool definitions and results, source content, and authorization headers transiently
 in memory, then forwards them to the route's fixed OpenAI or Anthropic destination with ordinary TLS
 verification. It persists neither raw model requests nor credentials. It persists content-free
-route receipts and, only after provider acceptance, the exact original for an applied trim. The
+route receipts and the exact original before sending a proposed trim; only provider-accepted trims
+count as applied. Rejected or uncertain sends can therefore leave an unapplied recovery copy. The
 dashboard shows the route, destination, lifecycle health, supported and unavailable paths, recovery
 and purge controls, and immediate bypass command. No CTX CA, DNS rewrite, ambient proxy, generic
 `CONNECT`, redirect following, or caller-selected upstream is used.
