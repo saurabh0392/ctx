@@ -1,14 +1,18 @@
 //! Provider-neutral model-path gateway contracts and M0 compatibility tooling.
 //!
-//! M0 is deliberately non-mutating: it can inspect documented configuration boundaries and
-//! sanitize an offline capture, but it cannot listen, route, forward, or rewrite model traffic.
+//! M0 probes compatibility, M1 provides a transformation-off relay, and M2 observes supported
+//! protocol shapes in content-local shadow. No model request is rewritten before M3.
 
+mod canonical;
 pub mod capture;
+mod correlate;
 pub mod probe;
+mod protocols;
 pub mod registry;
 mod relay;
 pub mod route;
 mod service;
+mod shadow;
 
 use std::io::Read;
 use std::path::Path;
