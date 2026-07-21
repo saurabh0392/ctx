@@ -1,6 +1,7 @@
 # Model gateway M2 protocol adapter ledger
 
-Status: implementation in progress; shared core and Anthropic Messages pack complete
+Status: implementation in progress; shared core, Anthropic Messages, and OpenAI Responses packs
+complete
 
 Date: 2026-07-21
 
@@ -56,9 +57,34 @@ Tests prove that:
 - a correlated Bash call is classified by the existing test-runner strategy rather than by adapter
   code.
 
+## OpenAI Responses pack
+
+The `openai-responses-v1` pack separately correlates these item families in the request `input`
+history:
+
+- `function_call` to `function_call_output`, with JSON-object arguments;
+- `custom_tool_call` to `custom_tool_call_output`, with freeform input kept in a named field; and
+- `local_shell_call` to `local_shell_call_output`, with a canonical Shell identity and bounded
+  action object.
+
+Each family has its own correlation scope, so an equal call ID cannot connect a function call to a
+custom or local-shell output. Calls must occur before their result. Top-level function definitions
+contribute only schema fields to the canonical contract; duplicate definitions provide no contract
+authority. Text output retains the exact `input[index].output` path.
+
+`apply_patch_call` and `apply_patch_call_output` are recognized but explicitly held as
+`mutation-tool-held`; M2 does not run a candidate on mutation results. Non-string output remains
+whole. String-only Responses input is a valid request with no local tool results, while Chat and
+Anthropic bodies fail the Responses shape gate.
+
+Tests cover all three eligible item families, schema capture, exact leaf location, shell strategy
+reuse, family isolation, call ordering, malformed arguments, mutation holds, unsupported result
+content, and cross-protocol rejection. The fake-upstream relay fixture proves the full recorded
+Responses request remains byte-identical while the health receipt reports its content-free shadow
+decision.
+
 ## Remaining M2 work
 
-- OpenAI Responses protocol pack, including request-history function call/output correlation;
 - OpenAI Chat Completions pack, kept independent from Responses despite shared provider naming;
 - equivalent-fixture decisions across all three adapters; and
 - full three-pack corpus and cross-activation tests.

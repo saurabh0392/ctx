@@ -318,14 +318,29 @@ mod tests {
             capture.uris.lock().unwrap().as_slice(),
             &["/v1/responses?mode=recorded"]
         );
-        let headers = capture.headers.lock().unwrap();
-        assert_eq!(
-            headers[0].get(AUTHORIZATION).unwrap(),
-            "Bearer seeded-secret"
-        );
-        assert!(headers[0].get("x-forwarded-host").is_none());
-        assert!(headers[0].get("x-ctx-route").is_none());
-        assert!(headers[0].get("x-remove-me").is_none());
+        {
+            let headers = capture.headers.lock().unwrap();
+            assert_eq!(
+                headers[0].get(AUTHORIZATION).unwrap(),
+                "Bearer seeded-secret"
+            );
+            assert!(headers[0].get("x-forwarded-host").is_none());
+            assert!(headers[0].get("x-ctx-route").is_none());
+            assert!(headers[0].get("x-remove-me").is_none());
+        }
+        let health: Value = test_client()
+            .get(format!("{gateway}/__ctx/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(health["transformations"], "off");
+        assert_eq!(health["shadow"]["requestsObserved"], 1);
+        assert_eq!(health["shadow"]["exchangesCorrelated"], 1);
+        assert_eq!(health["shadow"]["decisionsComputed"], 1);
+        assert_eq!(health["shadow"]["rawRequestsPersisted"], false);
         upstream_task.abort();
         gateway_task.abort();
     }
