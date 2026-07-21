@@ -27,6 +27,7 @@ pub enum ToolTransport {
     NativeHook,
     McpStdio,
     McpStreamableHttp,
+    ModelGateway,
     ShellWrapper,
     Unknown(String),
 }

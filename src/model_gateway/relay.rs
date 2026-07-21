@@ -13,6 +13,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 
 use super::registry::ModelRoute;
+use super::shadow::{ShadowEngine, ShadowHealthReceipt};
 
 #[cfg(not(test))]
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
@@ -24,6 +25,7 @@ pub(super) struct RelayState {
     route: ModelRoute,
     upstream: reqwest::Url,
     client: reqwest::Client,
+    shadow: ShadowEngine,
 }
 
 impl RelayState {
@@ -43,6 +45,7 @@ impl RelayState {
             route,
             upstream,
             client,
+            shadow: ShadowEngine::new(crate::config::Config::load()),
         })
     }
 }
@@ -66,6 +69,7 @@ struct HealthReceipt {
     fixed_upstream: &'static str,
     upstream_verified: bool,
     transformations: &'static str,
+    shadow: ShadowHealthReceipt,
 }
 
 async fn health(State(state): State<Arc<RelayState>>) -> impl IntoResponse {
@@ -79,6 +83,7 @@ async fn health(State(state): State<Arc<RelayState>>) -> impl IntoResponse {
         fixed_upstream: state.route.upstream.origin(),
         upstream_verified: false,
         transformations: "off",
+        shadow: state.shadow.health(),
     })
 }
 
@@ -100,6 +105,7 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
     };
     let mut upstream = state.upstream.clone();
     upstream.set_query(parts.uri.query());
+    state.shadow.observe(&state.route, &parts.headers, &body);
     let headers = forward_request_headers(&parts.headers);
     let response = match state
         .client
@@ -348,8 +354,24 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.bytes().await.unwrap().as_ref(), body);
         assert_eq!(capture.bodies.lock().unwrap().as_slice(), &[body.to_vec()]);
-        let headers = capture.headers.lock().unwrap();
-        assert_eq!(headers[0].get("x-api-key").unwrap(), "seeded-secret");
+        {
+            let headers = capture.headers.lock().unwrap();
+            assert_eq!(headers[0].get("x-api-key").unwrap(), "seeded-secret");
+        }
+        let health: Value = test_client()
+            .get(format!("{gateway}/__ctx/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(health["transformations"], "off");
+        assert_eq!(health["shadow"]["mode"], "shadow");
+        assert_eq!(health["shadow"]["requestsObserved"], 1);
+        assert_eq!(health["shadow"]["exchangesCorrelated"], 1);
+        assert_eq!(health["shadow"]["decisionsComputed"], 1);
+        assert_eq!(health["shadow"]["rawRequestsPersisted"], false);
         upstream_task.abort();
         gateway_task.abort();
     }

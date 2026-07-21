@@ -1,14 +1,14 @@
 # CTX model-path gateway implementation plan
 
-Status: implementation in progress (M0-M1)
+Status: implementation in progress (M0-M2)
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
 Parent: `docs/tool-trimming-architecture-revamp.md`
 Surface plans: `docs/codex-model-gateway-implementation-plan.md`
 Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
-`docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`, `docs/claims.md`, and
-`SECURITY.md`
+`docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`,
+`docs/model-gateway-m2-protocol-adapters.md`, `docs/claims.md`, and `SECURITY.md`
 
 ## Decision summary
 
@@ -490,6 +490,8 @@ Exit gate: every supported unchanged request is byte-identical upstream and each
 is semantically and temporally equivalent to direct routing.
 
 ### M2 — Protocol adapters in shadow mode
+
+Implementation ledger: `docs/model-gateway-m2-protocol-adapters.md`.
 
 - Implement Anthropic Messages, OpenAI Responses, and OpenAI Chat Completions as independent packs.
 - Add bounded call correlation and canonical exchange construction.
