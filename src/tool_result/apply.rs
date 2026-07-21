@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 #[cfg(test)]
 use rusqlite::params;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -59,6 +59,265 @@ pub struct PreparedMcpTrim {
 pub enum McpPrepareOutcome {
     Ready(Box<PreparedMcpTrim>),
     PassThrough { result: Value, reason: String },
+}
+
+/// A transport-neutral text replacement request. Protocol adapters identify the exact leaf; this
+/// boundary owns durable recovery and truthful accepted-delivery accounting.
+pub struct TextApplyRequest<'a> {
+    pub surface: &'a str,
+    pub route_id: &'a str,
+    pub protocol_version: &'a str,
+    pub tool_name: &'a str,
+    pub session_id: Option<&'a str>,
+    pub command_or_path: &'a str,
+    pub kind: &'a str,
+    pub strategy: &'a str,
+    pub original: &'a str,
+    pub replacement: &'a str,
+    pub authorized: bool,
+    pub transport_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedTextTrim {
+    pub replacement: String,
+    pub rewind_id: String,
+    surface: String,
+    route_id: String,
+    protocol_version: String,
+    tool_name: String,
+    session_id: Option<String>,
+    command_or_path: String,
+    kind: String,
+    strategy: String,
+    chars_in: usize,
+    chars_out: usize,
+    lines_total: usize,
+    lines_keep: usize,
+    prepared_at: String,
+    transport_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TextPrepareOutcome {
+    Ready(Box<PreparedTextTrim>),
+    PassThrough { reason: &'static str },
+}
+
+/// Production prepare entry point. Any persistence failure returns pass-through; it never exposes
+/// a replacement whose original is not already durable.
+pub fn prepare_text_trim(request: &TextApplyRequest<'_>) -> TextPrepareOutcome {
+    let mut conn = match crate::db::open_db() {
+        Ok(conn) => conn,
+        Err(_) => {
+            return TextPrepareOutcome::PassThrough {
+                reason: "recovery-store-unavailable",
+            }
+        }
+    };
+    if crate::db::ensure_schema(&conn).is_err() {
+        return TextPrepareOutcome::PassThrough {
+            reason: "recovery-schema-unavailable",
+        };
+    }
+    match prepare_text_trim_in(&mut conn, request) {
+        Ok(outcome) => outcome,
+        Err(_) => TextPrepareOutcome::PassThrough {
+            reason: "apply-prepare-failed",
+        },
+    }
+}
+
+/// Testable core for a protocol-neutral prepare. Repeated identical input produces the same rewind
+/// id and replacement bytes.
+pub fn prepare_text_trim_in(
+    conn: &mut Connection,
+    request: &TextApplyRequest<'_>,
+) -> Result<TextPrepareOutcome> {
+    if !request.authorized {
+        return Ok(TextPrepareOutcome::PassThrough {
+            reason: "evidence-gate-not-authorized",
+        });
+    }
+    if request
+        .original
+        .contains("[ctx trimmed this output to save context.")
+    {
+        return Ok(TextPrepareOutcome::PassThrough {
+            reason: "already-shortened",
+        });
+    }
+    if request.original.is_empty() || request.replacement.is_empty() {
+        return Ok(TextPrepareOutcome::PassThrough {
+            reason: "empty-text-replacement",
+        });
+    }
+
+    let rewind_id = text_rewind_id(
+        request.surface,
+        request.route_id,
+        request.protocol_version,
+        request.tool_name,
+        request.original.as_bytes(),
+    );
+    let replacement = format!(
+        "{}{}",
+        request.replacement,
+        crate::compress::trim_marker(&rewind_id)
+    );
+    let chars_in = request.original.chars().count();
+    let chars_out = replacement.chars().count();
+    let lines_keep = replacement.lines().count();
+    if chars_out >= chars_in {
+        return Ok(TextPrepareOutcome::PassThrough {
+            reason: "rendered-result-has-no-savings",
+        });
+    }
+
+    let prepared_at = chrono::Utc::now().to_rfc3339();
+    let transaction = conn
+        .transaction()
+        .context("start text recovery transaction")?;
+    let existing: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT original, COALESCE(trimmed, '') FROM rewind_store WHERE id=?1",
+            [&rewind_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match existing {
+        Some((original, trimmed)) if original == request.original && trimmed == replacement => {}
+        Some(_) => anyhow::bail!("deterministic rewind id collision"),
+        None => crate::db::insert_rewind_checked(
+            &transaction,
+            &rewind_id,
+            &prepared_at,
+            request.session_id,
+            request.tool_name,
+            request.command_or_path,
+            request.original,
+            &replacement,
+        )
+        .context("persist exact text original")?,
+    }
+    transaction
+        .commit()
+        .context("commit text recovery transaction")?;
+
+    Ok(TextPrepareOutcome::Ready(Box::new(PreparedTextTrim {
+        replacement,
+        rewind_id,
+        surface: request.surface.into(),
+        route_id: request.route_id.into(),
+        protocol_version: request.protocol_version.into(),
+        tool_name: request.tool_name.into(),
+        session_id: request.session_id.map(str::to_owned),
+        command_or_path: request.command_or_path.into(),
+        kind: request.kind.into(),
+        strategy: request.strategy.into(),
+        chars_in,
+        chars_out,
+        lines_total: request.original.lines().count(),
+        lines_keep,
+        prepared_at,
+        transport_latency_ms: request.transport_latency_ms,
+    })))
+}
+
+/// Mark a prepared text replacement only after its transport has proof of upstream acceptance.
+pub fn mark_text_trim_accepted(prepared: &PreparedTextTrim) -> Result<()> {
+    let mut conn = crate::db::open_db()?;
+    crate::db::ensure_schema(&conn)?;
+    mark_text_trim_accepted_in(&mut conn, prepared)
+}
+
+fn mark_text_trim_accepted_in(conn: &mut Connection, prepared: &PreparedTextTrim) -> Result<()> {
+    let transaction = conn
+        .transaction()
+        .context("start accepted text transaction")?;
+    let already_accepted: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM compress_decisions WHERE applied=1 AND rewind_id=?1)",
+        [&prepared.rewind_id],
+        |row| row.get(0),
+    )?;
+    if already_accepted {
+        transaction.commit()?;
+        return Ok(());
+    }
+    let features = json!({
+        "adapter": "transport-atomic-v1",
+        "route": prepared.route_id,
+        "protocolVersion": prepared.protocol_version,
+        "strategy": prepared.strategy,
+        "acceptance": "upstream",
+    });
+    let features_json = serde_json::to_string(&features)?;
+    let row = crate::db::CompressDecision {
+        ts: &prepared.prepared_at,
+        session_id: prepared.session_id.as_deref(),
+        tool_name: &prepared.tool_name,
+        server_prefix: Some(&prepared.route_id),
+        kind: &prepared.kind,
+        task_mode: "model-gateway",
+        lines_total: prepared.lines_total,
+        lines_keep: prepared.lines_keep,
+        lines_drop: prepared.lines_total.saturating_sub(prepared.lines_keep),
+        chars_in: prepared.chars_in,
+        would_chars_out: prepared.chars_out,
+        features_json: &features_json,
+        command_or_path: &prepared.command_or_path,
+        applied: true,
+        explore_arm: None,
+        surface: Some(&prepared.surface),
+    };
+    crate::db::insert_compress_decision(&transaction, &row)?;
+    let decision_id = transaction.last_insert_rowid();
+    crate::db::mark_decision_emitted(
+        &transaction,
+        decision_id,
+        &prepared.rewind_id,
+        prepared.chars_out,
+    )?;
+    crate::db::insert_compress_event(
+        &transaction,
+        &prepared.prepared_at,
+        prepared.session_id.as_deref(),
+        &prepared.tool_name,
+        &prepared.strategy,
+        prepared.chars_in,
+        prepared.chars_out,
+        &prepared.command_or_path,
+    )?;
+    transaction
+        .commit()
+        .context("commit accepted text transaction")?;
+    if let Some(latency_ms) = prepared.transport_latency_ms {
+        crate::db::record_gateway_runtime_event_best_effort(
+            &prepared.surface,
+            &prepared.route_id,
+            "applied",
+            Some(latency_ms),
+            None,
+        );
+    }
+    Ok(())
+}
+
+fn text_rewind_id(
+    surface: &str,
+    route_id: &str,
+    protocol_version: &str,
+    tool_name: &str,
+    original: &[u8],
+) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"ctx-transport-rewind-v1\0");
+    for part in [surface, route_id, protocol_version, tool_name] {
+        hash.update(part.as_bytes());
+        hash.update([0]);
+    }
+    hash.update(original);
+    format!("model-{:x}", hash.finalize())
 }
 
 /// Production entry point. Any database or validation failure is fail-open and returns the exact
@@ -398,5 +657,97 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM rewind_store", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    fn text_request<'a>(
+        original: &'a str,
+        replacement: &'a str,
+        authorized: bool,
+    ) -> TextApplyRequest<'a> {
+        TextApplyRequest {
+            surface: "codex",
+            route_id: "codex-testing",
+            protocol_version: "responses-v1",
+            tool_name: "Shell",
+            session_id: Some("session"),
+            command_or_path: "cargo test",
+            kind: "test",
+            strategy: "test-v1",
+            original,
+            replacement,
+            authorized,
+            transport_latency_ms: None,
+        }
+    }
+
+    #[test]
+    fn text_prepare_is_durable_deterministic_and_acceptance_is_idempotent() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema(&conn);
+        let original = (0..100)
+            .map(|index| format!("test {index} passed"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let request = text_request(&original, "test 0 passed\ntest 99 passed", true);
+        let TextPrepareOutcome::Ready(first) = prepare_text_trim_in(&mut conn, &request).unwrap()
+        else {
+            panic!("expected prepared text")
+        };
+        let TextPrepareOutcome::Ready(replayed) =
+            prepare_text_trim_in(&mut conn, &request).unwrap()
+        else {
+            panic!("expected deterministic replay")
+        };
+        assert_eq!(replayed.rewind_id, first.rewind_id);
+        assert_eq!(replayed.replacement, first.replacement);
+        let stored = crate::db::get_rewind(&conn, &first.rewind_id).unwrap();
+        assert_eq!(stored.original, original);
+        assert_eq!(stored.trimmed, first.replacement);
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM compress_decisions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(before, 0, "prepare/crash window cannot count as applied");
+
+        mark_text_trim_accepted_in(&mut conn, &first).unwrap();
+        mark_text_trim_accepted_in(&mut conn, &replayed).unwrap();
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM compress_decisions WHERE applied=1 AND rewind_id=?1",
+                [&first.rewind_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 1, "acceptance retries cannot double count");
+    }
+
+    #[test]
+    fn text_rejections_never_write_recovery_or_applied_receipts() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema(&conn);
+        let large = "original line\n".repeat(100);
+        let already =
+            format!("{large}[ctx trimmed this output to save context. Full original id: prior]");
+        let cases = [
+            text_request(&large, "short", false),
+            text_request("tiny", "not smaller", true),
+            text_request(&already, "short", true),
+        ];
+        for request in cases {
+            assert!(matches!(
+                prepare_text_trim_in(&mut conn, &request).unwrap(),
+                TextPrepareOutcome::PassThrough { .. }
+            ));
+        }
+        let rewinds: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rewind_store", [], |row| row.get(0))
+            .unwrap();
+        let applied: i64 = conn
+            .query_row("SELECT COUNT(*) FROM compress_decisions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!((rewinds, applied), (0, 0));
     }
 }
