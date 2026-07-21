@@ -45,6 +45,7 @@ impl CanonicalModelResult {
 #[derive(Debug, Clone)]
 pub(super) struct PendingCall {
     pub position: usize,
+    pub correlation_scope: &'static str,
     pub call_id: String,
     pub tool_name: String,
     pub input: Value,
@@ -54,6 +55,7 @@ pub(super) struct PendingCall {
 #[derive(Debug, Clone)]
 pub(super) struct PendingResult {
     pub position: usize,
+    pub correlation_scope: &'static str,
     pub call_id: String,
     pub result: CanonicalModelResult,
 }
