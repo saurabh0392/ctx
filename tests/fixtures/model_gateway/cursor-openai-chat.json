@@ -1,0 +1,25 @@
+{
+  "surface": "cursor",
+  "clientVersion": "3.9.16",
+  "direction": "request",
+  "method": "POST",
+  "path": "/v1/chat/completions/CTX_M0_SECRET_WORKSPACE",
+  "transport": "http",
+  "contentEncoding": "identity",
+  "headers": [
+    {"name": "authorization", "value": "Bearer CTX_M0_SECRET_AUTH"},
+    {"name": "x-cursor-workspace", "value": "CTX_M0_SECRET_WORKSPACE"}
+  ],
+  "body": {
+    "model": "CTX_M0_SECRET_MODEL",
+    "messages": [
+      {"role": "user", "content": "CTX_M0_SECRET_PROMPT"},
+      {"role": "assistant", "tool_calls": [
+        {"id": "CTX_M0_SECRET_CALL", "type": "function", "function": {"name": "CTX_M0_SECRET_TOOL", "arguments": "CTX_M0_SECRET_ARGS"}}
+      ]},
+      {"role": "tool", "tool_call_id": "CTX_M0_SECRET_CALL", "content": "CTX_M0_SECRET_OUTPUT"}
+    ]
+  },
+  "error": {"message": "CTX_M0_SECRET_NETWORK_ERROR"},
+  "restoration": {"attempted": true, "succeeded": false, "byteIdentical": false}
+}
