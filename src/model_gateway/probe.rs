@@ -161,6 +161,13 @@ fn inspect_codex(
     if openai_base_url.is_some() {
         keys.push("openai_base_url");
     }
+    let chatgpt_base_url = parsed
+        .as_ref()
+        .and_then(|v| v.get("chatgpt_base_url"))
+        .and_then(toml::Value::as_str);
+    if chatgpt_base_url.is_some() {
+        keys.push("chatgpt_base_url");
+    }
     let selected_provider = parsed
         .as_ref()
         .and_then(|v| v.get("model_provider"))
@@ -211,12 +218,14 @@ fn inspect_codex(
         RouteTransport::WebSocket,
     ];
     receipt.configuration_boundary = ConfigurationBoundary::SupportedUserConfig;
-    receipt.upstream_class =
-        if custom_selected || openai_base_url.is_some_and(|url| !is_official_openai_url(url)) {
-            UpstreamClass::LocalOrCustom
-        } else {
-            UpstreamClass::OpenAi
-        };
+    receipt.upstream_class = if custom_selected
+        || openai_base_url.is_some_and(|url| !is_official_openai_url(url))
+        || chatgpt_base_url.is_some_and(|url| !is_official_chatgpt_url(url))
+    {
+        UpstreamClass::LocalOrCustom
+    } else {
+        UpstreamClass::OpenAi
+    };
     receipt.authentication = match forced_login {
         Some("api") => AuthenticationMode::ApiKey,
         Some("chatgpt") => AuthenticationMode::ChatGptLogin,
@@ -237,7 +246,10 @@ fn inspect_codex(
         receipt.status = ProbeStatus::InvalidConfiguration;
         receipt.reasons =
             vec!["Codex user config exists but is not valid TOML; no route can be inferred"];
-    } else if openai_base_url.is_some() || selected_custom_has_base_url {
+    } else if openai_base_url.is_some()
+        || chatgpt_base_url.is_some()
+        || selected_custom_has_base_url
+    {
         receipt.status = ProbeStatus::ReadyForCapture;
         receipt.decision = RouteDecision::Narrow;
         receipt.reasons = vec![
@@ -452,6 +464,13 @@ fn is_official_openai_url(raw: &str) -> bool {
         .ok()
         .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
         .is_some_and(|host| host == "api.openai.com" || host.ends_with(".api.openai.com"))
+}
+
+fn is_official_chatgpt_url(raw: &str) -> bool {
+    reqwest::Url::parse(raw)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "chatgpt.com" || host.ends_with(".chatgpt.com"))
 }
 
 fn executable_present(command: &str) -> bool {

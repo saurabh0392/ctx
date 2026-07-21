@@ -1,11 +1,15 @@
-//! Byte-faithful, transformation-off HTTP/SSE relay for M1.
+//! Protocol-faithful HTTP/SSE/WebSocket relay for model routes.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
+use axum::extract::ws::{
+    CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket, WebSocketUpgrade,
+};
+use axum::extract::{FromRequestParts, State};
 use axum::http::header::{
     HeaderName, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING, UPGRADE,
 };
@@ -13,8 +17,14 @@ use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Json, Router};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::{
+    frame::coding::CloseCode as TungsteniteCloseCode, CloseFrame as TungsteniteCloseFrame,
+    WebSocketConfig,
+};
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
 use super::registry::ModelRoute;
 use super::shadow::{ShadowEngine, ShadowHealthReceipt};
@@ -24,6 +34,15 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_LOCAL_PROCESSING_TIME: Duration = Duration::from_millis(500);
+const UPSTREAM_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const WEBSOCKET_WRITE_BUFFER_BYTES: usize = 128 * 1024;
+const WEBSOCKET_MAX_WRITE_BUFFER_BYTES: usize = MAX_REQUEST_BYTES + WEBSOCKET_WRITE_BUFFER_BYTES;
+const SAFE_WEBSOCKET_RESPONSE_HEADERS: [&str; 4] = [
+    "x-reasoning-included",
+    "x-models-etag",
+    "openai-model",
+    "x-codex-turn-state",
+];
 
 #[derive(Clone)]
 pub(super) struct RelayState {
@@ -170,14 +189,38 @@ async fn health(State(state): State<Arc<RelayState>>) -> impl IntoResponse {
 }
 
 async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> Response<Body> {
-    if request.method() != Method::POST {
-        return error_response(StatusCode::METHOD_NOT_ALLOWED, "method-not-allowed");
-    }
-    if request.uri().path() != state.route.endpoint_path() {
-        return error_response(StatusCode::NOT_FOUND, "route-path-not-allowed");
-    }
     if request.headers().contains_key("origin") {
         return error_response(StatusCode::FORBIDDEN, "browser-origin-not-allowed");
+    }
+    if request.uri().path() != state.route.endpoint_path() {
+        if state
+            .route
+            .supports_auxiliary_path(request.method(), request.uri().path())
+        {
+            return relay_auxiliary(state, request).await;
+        }
+        return error_response(StatusCode::NOT_FOUND, "route-path-not-allowed");
+    }
+    if request.method() == Method::GET {
+        let upgrade_requested = request
+            .headers()
+            .get(CONNECTION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().contains("upgrade"))
+            && request
+                .headers()
+                .get(UPGRADE)
+                .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
+        if !upgrade_requested {
+            return error_response(StatusCode::METHOD_NOT_ALLOWED, "method-not-allowed");
+        }
+        if !state.route.supports_websockets() {
+            return error_response(StatusCode::METHOD_NOT_ALLOWED, "websocket-not-supported");
+        }
+        return relay_websocket(state, request).await;
+    }
+    if request.method() != Method::POST {
+        return error_response(StatusCode::METHOD_NOT_ALLOWED, "method-not-allowed");
     }
 
     let (parts, body) = request.into_parts();
@@ -186,116 +229,9 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
         Err(_) => return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request-too-large"),
     };
     let started = Instant::now();
-    state.record("attempted", 1, None, None, None, None);
     let mut upstream = state.upstream.clone();
     upstream.set_query(parts.uri.query());
-    let processing_started = Instant::now();
-    let processing_shadow = state.shadow.clone();
-    let processing_route = state.route.clone();
-    let processing_headers = parts.headers.clone();
-    let processing_body = body.to_vec();
-    let processing_cancelled = Arc::new(AtomicBool::new(false));
-    let worker_cancelled = processing_cancelled.clone();
-    #[cfg(test)]
-    let processing_delay = state.processing_delay;
-    let processing = tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        if let Some(delay) = processing_delay {
-            std::thread::sleep(delay);
-        }
-        if worker_cancelled.load(Ordering::Acquire) {
-            return (
-                super::correlate::CorrelationOutcome::default(),
-                super::apply::PreparedModelRequest::unchanged(&processing_body),
-            );
-        }
-        let observation =
-            processing_shadow.observe(&processing_route, &processing_headers, &processing_body);
-        let prepared = super::apply::prepare_request_with_cancellation(
-            &processing_route,
-            &processing_body,
-            &observation,
-            processing_shadow.config(),
-            &worker_cancelled,
-        );
-        processing_shadow.record_testing_prepare(
-            prepared.mutated(),
-            prepared.trims.len(),
-            &prepared.reasons,
-        );
-        (observation, prepared)
-    });
-    let (observation, prepared, processing_failure) =
-        match tokio::time::timeout(state.processing_deadline, processing).await {
-            Ok(Ok((observation, prepared))) => (observation, prepared, None),
-            Ok(Err(_)) => (
-                super::correlate::CorrelationOutcome::default(),
-                super::apply::PreparedModelRequest::unchanged(&body),
-                Some("processing-task-failed"),
-            ),
-            Err(_) => {
-                processing_cancelled.store(true, Ordering::Release);
-                (
-                    super::correlate::CorrelationOutcome::default(),
-                    super::apply::PreparedModelRequest::unchanged(&body),
-                    Some("transform-deadline"),
-                )
-            }
-        };
-    let local_processing_ms = elapsed_ms(processing_started);
-    if let Some(reason) = processing_failure {
-        state.record(
-            "held-whole",
-            1,
-            Some(reason),
-            None,
-            None,
-            Some(local_processing_ms),
-        );
-    } else if observation.exchanges.is_empty() && observation.reasons.is_empty() {
-        state.record(
-            "unknown",
-            1,
-            Some("no-tool-result-observed"),
-            None,
-            None,
-            None,
-        );
-    }
-    for (reason, quantity) in &observation.reasons {
-        let outcome = if *reason == super::correlate::CoverageReason::AlreadyShortened {
-            "already-shortened"
-        } else {
-            "unknown"
-        };
-        state.record(outcome, *quantity, Some(reason.as_str()), None, None, None);
-    }
-    if processing_failure.is_none()
-        && state.route.mode == super::registry::ModelRouteMode::Shadow
-        && !observation.exchanges.is_empty()
-    {
-        state.record(
-            "held-whole",
-            observation.exchanges.len(),
-            Some("shadow-mode"),
-            None,
-            None,
-            Some(local_processing_ms),
-        );
-    } else if processing_failure.is_none() {
-        for (reason, quantity) in &prepared.reasons {
-            if reason != "already-shortened" {
-                state.record(
-                    "held-whole",
-                    *quantity,
-                    Some(reason),
-                    None,
-                    None,
-                    Some(local_processing_ms),
-                );
-            }
-        }
-    }
+    let (prepared, local_processing_ms) = prepare_outbound(&state, &parts.headers, &body).await;
     let mut headers = forward_request_headers(&parts.headers);
     if prepared.mutated() {
         headers.remove(CONTENT_LENGTH);
@@ -389,6 +325,483 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
     outgoing
 }
 
+async fn relay_auxiliary(state: Arc<RelayState>, request: Request<Body>) -> Response<Body> {
+    let (parts, _) = request.into_parts();
+    let mut upstream = state.upstream.clone();
+    upstream.set_path(parts.uri.path());
+    upstream.set_query(parts.uri.query());
+    let mut headers = forward_request_headers(&parts.headers);
+    headers.remove(CONTENT_LENGTH);
+    headers.remove("content-md5");
+    headers.remove("digest");
+    let response = match state
+        .client
+        .request(parts.method, upstream)
+        .headers(headers)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            return error_response(StatusCode::BAD_GATEWAY, "upstream-request-failed");
+        }
+    };
+    let status = response.status();
+    let headers = forward_response_headers(response.headers());
+    let stream = response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(std::io::Error::other));
+    let mut outgoing = Response::new(Body::from_stream(stream));
+    *outgoing.status_mut() = status;
+    *outgoing.headers_mut() = headers;
+    outgoing
+}
+
+async fn relay_websocket(state: Arc<RelayState>, request: Request<Body>) -> Response<Body> {
+    let (mut parts, _) = request.into_parts();
+    let downstream_headers = parts.headers.clone();
+    let query = parts.uri.query().map(ToOwned::to_owned);
+    let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+        Ok(upgrade) => upgrade,
+        Err(_) => {
+            return error_response(StatusCode::BAD_REQUEST, "websocket-upgrade-invalid");
+        }
+    };
+
+    let mut upstream = state.upstream.clone();
+    upstream.set_query(query.as_deref());
+    if set_websocket_scheme(&mut upstream).is_err() {
+        return error_response(StatusCode::BAD_GATEWAY, "websocket-upstream-invalid");
+    }
+    let mut upstream_request = match upstream.as_str().into_client_request() {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(StatusCode::BAD_GATEWAY, "websocket-upstream-invalid");
+        }
+    };
+    let upstream_headers = forward_websocket_request_headers(&downstream_headers);
+    for (name, value) in &upstream_headers {
+        upstream_request
+            .headers_mut()
+            .append(name.clone(), value.clone());
+    }
+
+    let config = WebSocketConfig {
+        write_buffer_size: WEBSOCKET_WRITE_BUFFER_BYTES,
+        max_write_buffer_size: WEBSOCKET_MAX_WRITE_BUFFER_BYTES,
+        max_message_size: Some(MAX_REQUEST_BYTES),
+        max_frame_size: Some(MAX_REQUEST_BYTES),
+        ..Default::default()
+    };
+    let connected = tokio::time::timeout(
+        UPSTREAM_WEBSOCKET_CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async_with_config(upstream_request, Some(config), false),
+    )
+    .await;
+    let (upstream_socket, upstream_response) = match connected {
+        Ok(Ok(connected)) => connected,
+        Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
+            return error_response(response.status(), "websocket-upgrade-rejected");
+        }
+        Ok(Err(_)) | Err(_) => {
+            return error_response(StatusCode::BAD_GATEWAY, "websocket-upstream-connect-failed");
+        }
+    };
+
+    let selected_protocol = upstream_response
+        .headers()
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let upgrade = upgrade
+        .write_buffer_size(WEBSOCKET_WRITE_BUFFER_BYTES)
+        .max_write_buffer_size(WEBSOCKET_MAX_WRITE_BUFFER_BYTES)
+        .max_message_size(MAX_REQUEST_BYTES)
+        .max_frame_size(MAX_REQUEST_BYTES);
+    let relay_state = state.clone();
+    let processing_headers = downstream_headers;
+    let mut response = if let Some(protocol) = selected_protocol {
+        upgrade.protocols([protocol]).on_upgrade(move |downstream| {
+            pump_websocket(relay_state, processing_headers, downstream, upstream_socket)
+        })
+    } else {
+        upgrade.on_upgrade(move |downstream| {
+            pump_websocket(relay_state, processing_headers, downstream, upstream_socket)
+        })
+    };
+    for name in SAFE_WEBSOCKET_RESPONSE_HEADERS {
+        if let Some(value) = upstream_response.headers().get(name) {
+            response
+                .headers_mut()
+                .append(HeaderName::from_static(name), value.clone());
+        }
+    }
+    response
+}
+
+fn set_websocket_scheme(url: &mut reqwest::Url) -> Result<(), ()> {
+    let scheme = match url.scheme() {
+        "http" => "ws",
+        "https" => "wss",
+        _ => return Err(()),
+    };
+    url.set_scheme(scheme).map_err(|_| ())
+}
+
+struct PendingWebSocketTurn {
+    started: Instant,
+    local_processing_ms: u64,
+    trims: Option<Vec<crate::tool_result::PreparedTextTrim>>,
+    accepted: bool,
+}
+
+async fn pump_websocket(
+    state: Arc<RelayState>,
+    processing_headers: HeaderMap,
+    mut downstream: WebSocket,
+    mut upstream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) {
+    let mut active: Option<PendingWebSocketTurn> = None;
+    let mut queued = VecDeque::new();
+    loop {
+        tokio::select! {
+            downstream_message = downstream.next() => {
+                let Some(downstream_message) = downstream_message else { break };
+                let message = match downstream_message {
+                    Ok(message) => message,
+                    Err(_) => break,
+                };
+                let closes = matches!(message, AxumMessage::Close(_));
+                if let AxumMessage::Text(text) = message {
+                    if is_response_create(&text) {
+                        let started = Instant::now();
+                        let (prepared, local_processing_ms) =
+                            prepare_outbound(&state, &processing_headers, text.as_bytes()).await;
+                        let mut trims = prepared.trims;
+                        let outbound = match String::from_utf8(prepared.body) {
+                            Ok(outbound) => outbound,
+                            Err(_) => {
+                                trims.clear();
+                                state.record(
+                                    "held-whole",
+                                    1,
+                                    Some("websocket-transform-invalid-utf8"),
+                                    None,
+                                    None,
+                                    Some(local_processing_ms),
+                                );
+                                text.clone()
+                            }
+                        };
+                        if upstream.send(TungsteniteMessage::Text(outbound)).await.is_err() {
+                            state.record(
+                                "transport-failure",
+                                1,
+                                Some("websocket-upstream-send-failed"),
+                                None,
+                                Some(elapsed_ms(started)),
+                                Some(local_processing_ms),
+                            );
+                            break;
+                        }
+                        let turn = PendingWebSocketTurn {
+                            started,
+                            local_processing_ms,
+                            trims: Some(trims),
+                            accepted: false,
+                        };
+                        if active.is_none() {
+                            active = Some(turn);
+                        } else {
+                            queued.push_back(turn);
+                        }
+                    } else if upstream.send(TungsteniteMessage::Text(text)).await.is_err() {
+                        break;
+                    }
+                } else if upstream.send(axum_to_tungstenite(message)).await.is_err() {
+                    break;
+                }
+                if closes {
+                    break;
+                }
+            }
+            upstream_message = upstream.next() => {
+                let Some(upstream_message) = upstream_message else { break };
+                let message = match upstream_message {
+                    Ok(message) => message,
+                    Err(_) => {
+                        record_unaccepted_transport_failures(&state, &active, &queued);
+                        active = None;
+                        queued.clear();
+                        break;
+                    }
+                };
+                let closes = matches!(message, TungsteniteMessage::Close(_));
+                if let TungsteniteMessage::Text(text) = &message {
+                    observe_websocket_event(&state, text, &mut active, &mut queued);
+                }
+                if let Some(message) = tungstenite_to_axum(message) {
+                    if downstream.send(message).await.is_err() {
+                        break;
+                    }
+                }
+                if closes {
+                    break;
+                }
+            }
+        }
+    }
+    record_unaccepted_held_whole(&state, active.iter().chain(queued.iter()));
+}
+
+fn is_response_create(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(|kind| kind.as_str())
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("response.create")
+}
+
+fn observe_websocket_event(
+    state: &RelayState,
+    text: &str,
+    active: &mut Option<PendingWebSocketTurn>,
+    queued: &mut VecDeque<PendingWebSocketTurn>,
+) {
+    let event_type = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(|kind| kind.as_str())
+                .map(str::to_owned)
+        });
+    let Some(turn) = active.as_mut() else { return };
+    let rejected = matches!(
+        event_type.as_deref(),
+        Some("error" | "response.failed" | "response.incomplete")
+    );
+    if rejected && !turn.accepted {
+        state.record(
+            "provider-rejected",
+            1,
+            Some("websocket-error-event"),
+            None,
+            Some(elapsed_ms(turn.started)),
+            Some(turn.local_processing_ms),
+        );
+    } else if !turn.accepted {
+        let latency_ms = elapsed_ms(turn.started);
+        state.record(
+            "accepted",
+            1,
+            Some("websocket-first-event"),
+            None,
+            Some(latency_ms),
+            Some(turn.local_processing_ms),
+        );
+        if let Some(trims) = turn.trims.take() {
+            accept_prepared(state, &trims, latency_ms, turn.local_processing_ms);
+        }
+        turn.accepted = true;
+    }
+    let terminal = rejected || event_type.as_deref() == Some("response.completed");
+    if terminal {
+        *active = queued.pop_front();
+    }
+}
+
+fn record_unaccepted_transport_failures(
+    state: &RelayState,
+    active: &Option<PendingWebSocketTurn>,
+    queued: &VecDeque<PendingWebSocketTurn>,
+) {
+    for turn in active
+        .iter()
+        .chain(queued.iter())
+        .filter(|turn| !turn.accepted)
+    {
+        state.record(
+            "transport-failure",
+            1,
+            Some("websocket-upstream-receive-failed"),
+            None,
+            Some(elapsed_ms(turn.started)),
+            Some(turn.local_processing_ms),
+        );
+    }
+}
+
+fn record_unaccepted_held_whole<'a>(
+    state: &RelayState,
+    turns: impl Iterator<Item = &'a PendingWebSocketTurn>,
+) {
+    for turn in turns.filter(|turn| !turn.accepted) {
+        state.record(
+            "held-whole",
+            1,
+            Some("websocket-closed-before-acceptance"),
+            None,
+            Some(elapsed_ms(turn.started)),
+            Some(turn.local_processing_ms),
+        );
+    }
+}
+
+fn axum_to_tungstenite(message: AxumMessage) -> TungsteniteMessage {
+    match message {
+        AxumMessage::Text(text) => TungsteniteMessage::Text(text),
+        AxumMessage::Binary(bytes) => TungsteniteMessage::Binary(bytes),
+        AxumMessage::Ping(bytes) => TungsteniteMessage::Ping(bytes),
+        AxumMessage::Pong(bytes) => TungsteniteMessage::Pong(bytes),
+        AxumMessage::Close(frame) => {
+            TungsteniteMessage::Close(frame.map(|frame| TungsteniteCloseFrame {
+                code: TungsteniteCloseCode::from(frame.code),
+                reason: frame.reason,
+            }))
+        }
+    }
+}
+
+fn tungstenite_to_axum(message: TungsteniteMessage) -> Option<AxumMessage> {
+    match message {
+        TungsteniteMessage::Text(text) => Some(AxumMessage::Text(text)),
+        TungsteniteMessage::Binary(bytes) => Some(AxumMessage::Binary(bytes)),
+        TungsteniteMessage::Ping(bytes) => Some(AxumMessage::Ping(bytes)),
+        TungsteniteMessage::Pong(bytes) => Some(AxumMessage::Pong(bytes)),
+        TungsteniteMessage::Close(frame) => {
+            Some(AxumMessage::Close(frame.map(|frame| AxumCloseFrame {
+                code: frame.code.into(),
+                reason: frame.reason,
+            })))
+        }
+        TungsteniteMessage::Frame(_) => None,
+    }
+}
+
+async fn prepare_outbound(
+    state: &Arc<RelayState>,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> (super::apply::PreparedModelRequest, u64) {
+    state.record("attempted", 1, None, None, None, None);
+    let processing_started = Instant::now();
+    let processing_shadow = state.shadow.clone();
+    let processing_route = state.route.clone();
+    let processing_headers = headers.clone();
+    let processing_body = body.to_vec();
+    let processing_cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = processing_cancelled.clone();
+    #[cfg(test)]
+    let processing_delay = state.processing_delay;
+    let processing = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if let Some(delay) = processing_delay {
+            std::thread::sleep(delay);
+        }
+        if worker_cancelled.load(Ordering::Acquire) {
+            return (
+                super::correlate::CorrelationOutcome::default(),
+                super::apply::PreparedModelRequest::unchanged(&processing_body),
+            );
+        }
+        let observation =
+            processing_shadow.observe(&processing_route, &processing_headers, &processing_body);
+        let prepared = super::apply::prepare_request_with_cancellation(
+            &processing_route,
+            &processing_body,
+            &observation,
+            processing_shadow.config(),
+            &worker_cancelled,
+        );
+        processing_shadow.record_testing_prepare(
+            prepared.mutated(),
+            prepared.trims.len(),
+            &prepared.reasons,
+        );
+        (observation, prepared)
+    });
+    let (observation, prepared, processing_failure) =
+        match tokio::time::timeout(state.processing_deadline, processing).await {
+            Ok(Ok((observation, prepared))) => (observation, prepared, None),
+            Ok(Err(_)) => (
+                super::correlate::CorrelationOutcome::default(),
+                super::apply::PreparedModelRequest::unchanged(body),
+                Some("processing-task-failed"),
+            ),
+            Err(_) => {
+                processing_cancelled.store(true, Ordering::Release);
+                (
+                    super::correlate::CorrelationOutcome::default(),
+                    super::apply::PreparedModelRequest::unchanged(body),
+                    Some("transform-deadline"),
+                )
+            }
+        };
+    let local_processing_ms = elapsed_ms(processing_started);
+    if let Some(reason) = processing_failure {
+        state.record(
+            "held-whole",
+            1,
+            Some(reason),
+            None,
+            None,
+            Some(local_processing_ms),
+        );
+    } else if observation.exchanges.is_empty() && observation.reasons.is_empty() {
+        state.record(
+            "unknown",
+            1,
+            Some("no-tool-result-observed"),
+            None,
+            None,
+            None,
+        );
+    }
+    for (reason, quantity) in &observation.reasons {
+        let outcome = if *reason == super::correlate::CoverageReason::AlreadyShortened {
+            "already-shortened"
+        } else {
+            "unknown"
+        };
+        state.record(outcome, *quantity, Some(reason.as_str()), None, None, None);
+    }
+    if processing_failure.is_none()
+        && state.route.mode == super::registry::ModelRouteMode::Shadow
+        && !observation.exchanges.is_empty()
+    {
+        state.record(
+            "held-whole",
+            observation.exchanges.len(),
+            Some("shadow-mode"),
+            None,
+            None,
+            Some(local_processing_ms),
+        );
+    } else if processing_failure.is_none() {
+        for (reason, quantity) in &prepared.reasons {
+            if reason != "already-shortened" {
+                state.record(
+                    "held-whole",
+                    *quantity,
+                    Some(reason),
+                    None,
+                    None,
+                    Some(local_processing_ms),
+                );
+            }
+        }
+    }
+    (prepared, local_processing_ms)
+}
+
 fn accept_prepared(
     state: &RelayState,
     trims: &[crate::tool_result::PreparedTextTrim],
@@ -469,6 +882,21 @@ fn forward_request_headers(source: &HeaderMap) -> HeaderMap {
     headers
 }
 
+fn forward_websocket_request_headers(source: &HeaderMap) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let connection_tokens = connection_tokens(source);
+    for (name, value) in source {
+        if !blocked_request_header(name, &connection_tokens)
+            && (!name.as_str().starts_with("sec-websocket-")
+                || name.as_str().eq_ignore_ascii_case("sec-websocket-protocol"))
+            && !name.as_str().eq_ignore_ascii_case("origin")
+        {
+            headers.append(name.clone(), value.clone());
+        }
+    }
+    headers
+}
+
 fn forward_response_headers(source: &HeaderMap) -> HeaderMap {
     let mut headers = HeaderMap::new();
     let connection_tokens = connection_tokens(source);
@@ -521,7 +949,7 @@ mod tests {
 
     use axum::extract::State;
     use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, LOCATION};
-    use axum::routing::post;
+    use axum::routing::{get, post};
     use futures_util::stream;
     use serde_json::Value;
 
@@ -535,6 +963,7 @@ mod tests {
         bodies: Arc<Mutex<Vec<Vec<u8>>>>,
         headers: Arc<Mutex<Vec<HeaderMap>>>,
         uris: Arc<Mutex<Vec<String>>>,
+        websocket_messages: Arc<Mutex<Vec<String>>>,
     }
 
     fn codex_route() -> ModelRoute {
@@ -545,6 +974,18 @@ mod tests {
             authentication: AuthenticationMode::ApiKey,
             upstream: ProviderTarget::OpenAi,
             listen_port: 8871,
+            mode: ModelRouteMode::Shadow,
+        }
+    }
+
+    fn chatgpt_route() -> ModelRoute {
+        ModelRoute {
+            id: "codex-chatgpt-test".into(),
+            surface: SurfaceId::Codex,
+            protocol: WireProtocol::OpenAiResponses,
+            authentication: AuthenticationMode::ChatGptLogin,
+            upstream: ProviderTarget::OpenAiChatGpt,
+            listen_port: 8873,
             mode: ModelRouteMode::Shadow,
         }
     }
@@ -563,6 +1004,12 @@ mod tests {
 
     fn testing_codex_route() -> ModelRoute {
         let mut route = codex_route();
+        route.mode = ModelRouteMode::Testing;
+        route
+    }
+
+    fn testing_chatgpt_route() -> ModelRoute {
+        let mut route = chatgpt_route();
         route.mode = ModelRouteMode::Testing;
         route
     }
@@ -648,6 +1095,68 @@ mod tests {
         Response::new(Body::from(body))
     }
 
+    async fn capture_websocket(
+        State(capture): State<Capture>,
+        headers: HeaderMap,
+        websocket: WebSocketUpgrade,
+    ) -> Response<Body> {
+        capture.headers.lock().unwrap().push(headers);
+        let socket_capture = capture.clone();
+        let mut response =
+            websocket
+                .protocols(["responses"])
+                .on_upgrade(move |mut socket| async move {
+                    while let Some(message) = socket.next().await {
+                        let Ok(message) = message else { break };
+                        match message {
+                            AxumMessage::Text(text) => {
+                                socket_capture.websocket_messages.lock().unwrap().push(text);
+                                if socket
+                                    .send(AxumMessage::Text(
+                                        r#"{"type":"response.created"}"#.into(),
+                                    ))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                if socket
+                                    .send(AxumMessage::Text(
+                                        r#"{"type":"response.completed"}"#.into(),
+                                    ))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            AxumMessage::Binary(bytes) => {
+                                if socket.send(AxumMessage::Binary(bytes)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            AxumMessage::Ping(bytes) => {
+                                if socket.send(AxumMessage::Pong(bytes)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            AxumMessage::Pong(_) => {}
+                            AxumMessage::Close(frame) => {
+                                let _ = socket.send(AxumMessage::Close(frame)).await;
+                                break;
+                            }
+                        }
+                    }
+                });
+        response
+            .headers_mut()
+            .insert("x-reasoning-included", "true".parse().unwrap());
+        response
+            .headers_mut()
+            .insert("openai-model", "gpt-test".parse().unwrap());
+        response
+    }
+
     async fn gateway_for(upstream: &str) -> (String, tokio::task::JoinHandle<()>) {
         gateway_for_route(upstream, codex_route()).await
     }
@@ -671,6 +1180,263 @@ mod tests {
         }
         let state = Arc::new(state);
         spawn(router(state)).await
+    }
+
+    #[tokio::test]
+    async fn chatgpt_websocket_preserves_auth_frames_metadata_and_multi_turn_order() {
+        let capture = Capture::default();
+        let upstream_app = Router::new()
+            .route("/backend-api/codex/responses", get(capture_websocket))
+            .with_state(capture.clone());
+        let (upstream, upstream_task) = spawn(upstream_app).await;
+        let (gateway, gateway_task) = gateway_for_route(
+            &format!("{upstream}/backend-api/codex/responses"),
+            chatgpt_route(),
+        )
+        .await;
+        let mut request = format!(
+            "{}/backend-api/codex/responses?mode=responses",
+            gateway.replacen("http://", "ws://", 1)
+        )
+        .into_client_request()
+        .unwrap();
+        request
+            .headers_mut()
+            .insert(AUTHORIZATION, "Bearer seeded-secret".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("chatgpt-account-id", "acct-test".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("x-forwarded-host", "evil.example".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("x-ctx-route", "other-route".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("sec-websocket-protocol", "responses".parse().unwrap());
+
+        let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+        assert_eq!(response.headers()["sec-websocket-protocol"], "responses");
+        assert_eq!(response.headers()["x-reasoning-included"], "true");
+        assert_eq!(response.headers()["openai-model"], "gpt-test");
+
+        let mut sent = Vec::new();
+        for turn in 1..=2 {
+            let request = serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-test",
+                "input": [{"role": "user", "content": format!("turn-{turn}")}]
+            })
+            .to_string();
+            sent.push(request.clone());
+            socket
+                .send(TungsteniteMessage::Text(request))
+                .await
+                .unwrap();
+            assert_eq!(
+                socket.next().await.unwrap().unwrap(),
+                TungsteniteMessage::Text(r#"{"type":"response.created"}"#.into())
+            );
+            assert_eq!(
+                socket.next().await.unwrap().unwrap(),
+                TungsteniteMessage::Text(r#"{"type":"response.completed"}"#.into())
+            );
+        }
+        socket
+            .send(TungsteniteMessage::Binary(vec![0, 1, 2, 255]))
+            .await
+            .unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap(),
+            TungsteniteMessage::Binary(vec![0, 1, 2, 255])
+        );
+        socket.close(None).await.unwrap();
+
+        assert_eq!(*capture.websocket_messages.lock().unwrap(), sent);
+        let headers = capture.headers.lock().unwrap();
+        assert_eq!(headers[0][AUTHORIZATION], "Bearer seeded-secret");
+        assert_eq!(headers[0]["chatgpt-account-id"], "acct-test");
+        assert!(headers[0].get("x-forwarded-host").is_none());
+        assert!(headers[0].get("x-ctx-route").is_none());
+        upstream_task.abort();
+        gateway_task.abort();
+    }
+
+    #[tokio::test]
+    async fn chatgpt_models_metadata_is_fixed_get_only_and_preserves_auth_and_query() {
+        let capture = Capture::default();
+        let upstream_app = Router::new()
+            .route("/backend-api/codex/models", get(capture_request))
+            .fallback(any(capture_request))
+            .with_state(capture.clone());
+        let (upstream, upstream_task) = spawn(upstream_app).await;
+        let (gateway, gateway_task) = gateway_for_route(
+            &format!("{upstream}/backend-api/codex/responses"),
+            chatgpt_route(),
+        )
+        .await;
+
+        let response = test_client()
+            .get(format!(
+                "{gateway}/backend-api/codex/models?client_version=0.145.0"
+            ))
+            .header(AUTHORIZATION, "Bearer seeded-secret")
+            .header("chatgpt-account-id", "acct-test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            capture.uris.lock().unwrap().as_slice(),
+            &["/backend-api/codex/models?client_version=0.145.0"]
+        );
+        {
+            let headers = capture.headers.lock().unwrap();
+            assert_eq!(headers[0][AUTHORIZATION], "Bearer seeded-secret");
+            assert_eq!(headers[0]["chatgpt-account-id"], "acct-test");
+        }
+
+        let wrong_method = test_client()
+            .post(format!("{gateway}/backend-api/codex/models"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong_method.status(), StatusCode::NOT_FOUND);
+        let held_endpoint = test_client()
+            .get(format!("{gateway}/backend-api/codex/realtime/calls"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(held_endpoint.status(), StatusCode::NOT_FOUND);
+        assert_eq!(capture.uris.lock().unwrap().len(), 1);
+        upstream_task.abort();
+        gateway_task.abort();
+    }
+
+    #[tokio::test]
+    async fn chatgpt_websocket_rejects_browser_origin_before_upstream() {
+        let capture = Capture::default();
+        let upstream_app = Router::new()
+            .route("/backend-api/codex/responses", get(capture_websocket))
+            .with_state(capture.clone());
+        let (upstream, upstream_task) = spawn(upstream_app).await;
+        let (gateway, gateway_task) = gateway_for_route(
+            &format!("{upstream}/backend-api/codex/responses"),
+            chatgpt_route(),
+        )
+        .await;
+
+        let response = test_client()
+            .get(format!("{gateway}/backend-api/codex/responses"))
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("origin", "https://attacker.example")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(capture.headers.lock().unwrap().is_empty());
+        upstream_task.abort();
+        gateway_task.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_rejection_preserves_status_but_not_provider_body() {
+        let upstream_app = Router::new().route(
+            "/backend-api/codex/responses",
+            get(|| async {
+                let mut response = Response::new(Body::from("seeded-provider-secret"));
+                *response.status_mut() = StatusCode::UNAUTHORIZED;
+                response
+            }),
+        );
+        let (upstream, upstream_task) = spawn(upstream_app).await;
+        let (gateway, gateway_task) = gateway_for_route(
+            &format!("{upstream}/backend-api/codex/responses"),
+            chatgpt_route(),
+        )
+        .await;
+        let url = format!(
+            "{}/backend-api/codex/responses",
+            gateway.replacen("http://", "ws://", 1)
+        );
+
+        let error = tokio_tungstenite::connect_async(url).await.unwrap_err();
+        let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+            panic!("expected an HTTP WebSocket rejection");
+        };
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = response.body().as_deref().unwrap_or_default();
+        assert!(!String::from_utf8_lossy(body).contains("seeded-provider-secret"));
+        assert!(String::from_utf8_lossy(body).contains("websocket-upgrade-rejected"));
+        upstream_task.abort();
+        gateway_task.abort();
+    }
+
+    #[test]
+    fn chatgpt_websocket_testing_route_applies_only_after_provider_acceptance() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = ScopedCtxHome::set(temp.path());
+        runtime.block_on(async {
+            let capture = Capture::default();
+            let upstream_app = Router::new()
+                .route("/backend-api/codex/responses", get(capture_websocket))
+                .with_state(capture.clone());
+            let (upstream, upstream_task) = spawn(upstream_app).await;
+            let (gateway, gateway_task) = gateway_for_route_with_evidence(
+                &format!("{upstream}/backend-api/codex/responses"),
+                testing_chatgpt_route(),
+                true,
+            )
+            .await;
+            let url = format!(
+                "{}/backend-api/codex/responses",
+                gateway.replacen("http://", "ws://", 1)
+            );
+            let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+            let mut body: Value = serde_json::from_slice(&synthetic_responses_body("websocket"))
+                .expect("synthetic Responses request");
+            body.as_object_mut()
+                .unwrap()
+                .insert("type".into(), Value::String("response.create".into()));
+
+            let original = body.to_string();
+            socket
+                .send(TungsteniteMessage::Text(original.clone()))
+                .await
+                .unwrap();
+            socket.next().await.unwrap().unwrap();
+            assert_eq!(applied_count(), 1);
+            socket.next().await.unwrap().unwrap();
+            socket.close(None).await.unwrap();
+
+            let forwarded = capture.websocket_messages.lock().unwrap()[0].clone();
+            assert_ne!(forwarded, original);
+            assert!(forwarded.contains("ctx trimmed this output"));
+            let conn = crate::db::open_db().unwrap();
+            let evidence = crate::db::model_gateway_route_summaries(&conn);
+            assert_eq!(evidence[0].attempted, 1);
+            assert_eq!(evidence[0].accepted, 1);
+            assert_eq!(evidence[0].applied, 1);
+            let rewind_id: String = conn
+                .query_row(
+                    "SELECT rewind_id FROM compress_decisions WHERE applied=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let rewind = crate::db::get_rewind(&conn, &rewind_id).unwrap();
+            assert!(rewind.original.contains("websocket synthetic line 99"));
+            upstream_task.abort();
+            gateway_task.abort();
+        });
     }
 
     #[tokio::test]

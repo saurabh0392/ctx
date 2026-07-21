@@ -1,6 +1,6 @@
 # CTX model gateway — Codex surface plan
 
-Status: shared G0-G6 code and fail-closed beta gate implemented; API-key live corpus pending, ChatGPT and WebSocket routes held
+Status: shared G0-G6 code and fail-closed beta gate implemented; ChatGPT-login HTTP/SSE/WebSocket route passed first live macOS account smoke, commercial corpus pending
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 Codex coverage wave
@@ -473,6 +473,8 @@ Exit gate: all supported unchanged bodies are byte-identical upstream, allowed h
 are documented, and Codex behavior matches direct routing.
 
 ### G2 — Responses WebSocket and auth matrix
+
+Implementation ledger: `docs/model-gateway-m7-codex-chatgpt-websocket.md`.
 
 - Add captured Codex WebSocket upgrade, subprotocol, headers, frames, and multi-turn
   `response.create` behavior to the shared relay.

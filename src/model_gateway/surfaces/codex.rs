@@ -7,7 +7,8 @@ use super::{atomic_write, validate_restorable_base_url, FieldState, OwnedConfigF
 use crate::model_gateway::registry::ModelRoute;
 use crate::model_gateway::route::AuthenticationMode;
 
-const STRATEGY: &str = "codex-ctx-provider-http-sse-v1";
+const STRATEGY_HTTP_SSE_V1: &str = "codex-ctx-provider-http-sse-v1";
+const STRATEGY_HTTP_SSE_WS_V2: &str = "codex-ctx-provider-http-sse-ws-v2";
 const LOCATION: &str = "~/.codex/config.toml:model_provider+model_providers.ctx-model-gateway";
 const CTX_PROVIDER: &str = "ctx-model-gateway";
 
@@ -55,21 +56,17 @@ fn provider_table(document: &DocumentMut) -> Result<Option<&Table>> {
     }
 }
 
-fn provider_table_is_owned(table: &Table, route: &ModelRoute) -> bool {
+fn provider_table_is_owned(table: &Table, route: &ModelRoute, field: &OwnedConfigField) -> bool {
     table.len() == 5
         && table.get("name").and_then(Item::as_str) == Some("CTX local model gateway")
         && table.get("base_url").and_then(Item::as_str) == Some(route.local_base_url().as_str())
         && table.get("wire_api").and_then(Item::as_str) == Some("responses")
         && table.get("requires_openai_auth").and_then(Item::as_bool) == Some(true)
-        && table.get("supports_websockets").and_then(Item::as_bool) == Some(false)
+        && table.get("supports_websockets").and_then(Item::as_bool)
+            == Some(field.strategy == STRATEGY_HTTP_SSE_WS_V2)
 }
 
 fn validate_profile(document: &DocumentMut, route: &ModelRoute) -> Result<()> {
-    if route.authentication != AuthenticationMode::ApiKey {
-        anyhow::bail!(
-            "Codex ChatGPT-login routing remains held until its fixed backend and WebSocket/auth refresh contract pass live capture; M4 currently enables only api-key routes"
-        );
-    }
     if let Some(provider) = selected_provider(document)? {
         if provider != "openai" {
             anyhow::bail!(
@@ -77,18 +74,38 @@ fn validate_profile(document: &DocumentMut, route: &ModelRoute) -> Result<()> {
             );
         }
     }
-    if let Some(login) = document.get("forced_login_method").and_then(Item::as_str) {
-        if login != "api" {
-            anyhow::bail!(
-                "Codex forced_login_method {login:?} does not match the supported api-key route"
-            );
+    match route.authentication {
+        AuthenticationMode::ApiKey => {
+            if let Some(login) = document.get("forced_login_method").and_then(Item::as_str) {
+                if login != "api" {
+                    anyhow::bail!(
+                        "Codex forced_login_method {login:?} does not match the supported api-key route"
+                    );
+                }
+            }
+            if let Some(base) = document.get("openai_base_url") {
+                let base = base.as_str().ok_or_else(|| {
+                    anyhow::anyhow!("Codex openai_base_url is not a string; CTX preserved it")
+                })?;
+                validate_restorable_base_url(base, "api.openai.com")?;
+            }
         }
-    }
-    if let Some(base) = document.get("openai_base_url") {
-        let base = base.as_str().ok_or_else(|| {
-            anyhow::anyhow!("Codex openai_base_url is not a string; CTX preserved it")
-        })?;
-        validate_restorable_base_url(base, "api.openai.com")?;
+        AuthenticationMode::ChatGptLogin => {
+            if let Some(login) = document.get("forced_login_method").and_then(Item::as_str) {
+                if login != "chatgpt" {
+                    anyhow::bail!(
+                        "Codex forced_login_method {login:?} does not match the supported ChatGPT-login route"
+                    );
+                }
+            }
+            if let Some(base) = document.get("chatgpt_base_url") {
+                let base = base.as_str().ok_or_else(|| {
+                    anyhow::anyhow!("Codex chatgpt_base_url is not a string; CTX preserved it")
+                })?;
+                validate_restorable_base_url(base, "chatgpt.com")?;
+            }
+        }
+        _ => anyhow::bail!("Codex model lifecycle supports only api-key or chatgpt-login routes"),
     }
     Ok(())
 }
@@ -102,7 +119,7 @@ pub(super) fn prepare(route: &ModelRoute, home: &Path) -> Result<OwnedConfigFiel
         );
     }
     Ok(OwnedConfigField {
-        strategy: STRATEGY.into(),
+        strategy: STRATEGY_HTTP_SSE_WS_V2.into(),
         location: LOCATION.into(),
         config_existed,
         original_value: selected_provider(&document)?,
@@ -121,7 +138,7 @@ pub(super) fn apply(route: &ModelRoute, home: &Path, field: &OwnedConfigField) -
         );
     }
     if let Some(existing) = provider_table(&document)? {
-        if !provider_table_is_owned(existing, route) {
+        if !provider_table_is_owned(existing, route, field) {
             anyhow::bail!("Codex CTX provider table was modified; no file was changed");
         }
     } else {
@@ -136,9 +153,7 @@ pub(super) fn apply(route: &ModelRoute, home: &Path, field: &OwnedConfigField) -
         provider["base_url"] = value(route.local_base_url());
         provider["wire_api"] = value("responses");
         provider["requires_openai_auth"] = value(true);
-        // The M1-M4 relay supports HTTP/SSE. Explicitly keep Codex off the Responses WebSocket
-        // transport rather than pretending the existing relay can terminate it.
-        provider["supports_websockets"] = value(false);
+        provider["supports_websockets"] = value(field.strategy == STRATEGY_HTTP_SSE_WS_V2);
         providers.insert(CTX_PROVIDER, Item::Table(provider));
     }
     document["model_provider"] = value(CTX_PROVIDER);
@@ -154,7 +169,8 @@ pub(super) fn restore(route: &ModelRoute, home: &Path, field: &OwnedConfigField)
             "Codex model_provider was changed by the user after activation; CTX preserved it and refused destructive restoration"
         );
     }
-    if !provider_table(&document)?.is_some_and(|table| provider_table_is_owned(table, route)) {
+    if !provider_table(&document)?.is_some_and(|table| provider_table_is_owned(table, route, field))
+    {
         anyhow::bail!(
             "Codex CTX provider table was changed by the user after activation; CTX preserved it"
         );
@@ -194,7 +210,7 @@ pub(super) fn inspect(route: &ModelRoute, home: &Path, field: &OwnedConfigField)
     match (selected, table) {
         (Ok(selected), Ok(Some(table)))
             if selected.as_deref() == Some(CTX_PROVIDER)
-                && provider_table_is_owned(table, route) =>
+                && provider_table_is_owned(table, route, field) =>
         {
             FieldState::CtxOwned
         }
@@ -205,8 +221,82 @@ pub(super) fn inspect(route: &ModelRoute, home: &Path, field: &OwnedConfigField)
 }
 
 fn validate_field(field: &OwnedConfigField) -> Result<()> {
-    if field.strategy != STRATEGY || field.location != LOCATION || field.ctx_value != CTX_PROVIDER {
+    if !matches!(
+        field.strategy.as_str(),
+        STRATEGY_HTTP_SSE_V1 | STRATEGY_HTTP_SSE_WS_V2
+    ) || field.location != LOCATION
+        || field.ctx_value != CTX_PROVIDER
+    {
         anyhow::bail!("Codex ownership receipt uses an unsupported strategy");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_gateway::registry::{ModelRouteMode, ProviderTarget};
+    use crate::model_gateway::route::WireProtocol;
+    use crate::surface::SurfaceId;
+
+    fn chatgpt_route() -> ModelRoute {
+        ModelRoute {
+            id: "codex-chatgpt".into(),
+            surface: SurfaceId::Codex,
+            protocol: WireProtocol::OpenAiResponses,
+            authentication: AuthenticationMode::ChatGptLogin,
+            upstream: ProviderTarget::OpenAiChatGpt,
+            listen_port: 8873,
+            mode: ModelRouteMode::Shadow,
+        }
+    }
+
+    #[test]
+    fn chatgpt_route_adds_ws_provider_and_restores_without_auth_state() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = home.path().join(".codex");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config = config_dir.join("config.toml");
+        std::fs::write(
+            &config,
+            "# preserve me\nmodel = \"gpt-5\"\nforced_login_method = \"chatgpt\"\n[mcp_servers.keep]\nurl = \"https://example.com/mcp\"\n",
+        )
+        .unwrap();
+
+        let route = chatgpt_route();
+        let field = prepare(&route, home.path()).unwrap();
+        assert_eq!(field.strategy, STRATEGY_HTTP_SSE_WS_V2);
+        apply(&route, home.path(), &field).unwrap();
+
+        let enabled = std::fs::read_to_string(&config).unwrap();
+        assert!(enabled.contains("# preserve me"));
+        assert!(enabled.contains("model_provider = \"ctx-model-gateway\""));
+        assert!(enabled.contains("http://127.0.0.1:8873/backend-api/codex"));
+        assert!(enabled.contains("requires_openai_auth = true"));
+        assert!(enabled.contains("supports_websockets = true"));
+        assert!(enabled.contains("[mcp_servers.keep]"));
+        assert!(!enabled.to_ascii_lowercase().contains("access_token"));
+        assert_eq!(inspect(&route, home.path(), &field), FieldState::CtxOwned);
+
+        restore(&route, home.path(), &field).unwrap();
+        let restored = std::fs::read_to_string(&config).unwrap();
+        assert!(restored.contains("# preserve me"));
+        assert!(restored.contains("model = \"gpt-5\""));
+        assert!(restored.contains("forced_login_method = \"chatgpt\""));
+        assert!(restored.contains("[mcp_servers.keep]"));
+        assert!(!restored.contains("ctx-model-gateway"));
+    }
+
+    #[test]
+    fn chatgpt_route_refuses_an_api_forced_profile() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = home.path().join(".codex");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "forced_login_method = \"api\"\n",
+        )
+        .unwrap();
+        assert!(prepare(&chatgpt_route(), home.path()).is_err());
+    }
 }

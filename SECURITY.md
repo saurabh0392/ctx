@@ -38,5 +38,11 @@ dashboard shows the route, destination, lifecycle health, supported and unavaila
 and purge controls, and immediate bypass command. No CTX CA, DNS rewrite, ambient proxy, generic
 `CONNECT`, redirect following, or caller-selected upstream is used.
 
+The model-gateway `rawRequestsPersisted: false` receipt is scoped to the gateway transport and
+receipt tables. It is not a claim that the entire local CTX database is content-free: separate CTX
+session analytics may retain prompt previews, paths, commands, and tool metadata, while recovery
+retains exact originals by design. Treat the database as sensitive and use the dashboard's prompt,
+original, indexed-data, or full purge controls for the corresponding store.
+
 The macOS beta is not Developer ID signed or notarized, and the Windows beta is not Authenticode
 signed. That distribution limitation is disclosed in the installer and README.

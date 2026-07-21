@@ -51,6 +51,7 @@ struct ReadinessReport {
     external_gates: Vec<ExternalGate>,
     unsupported_routes: Vec<&'static str>,
     raw_requests_persisted: bool,
+    raw_request_scope: &'static str,
     credentials_persisted: bool,
 }
 
@@ -113,13 +114,9 @@ pub async fn print(json: bool) -> Result<()> {
         routes,
         recovery,
         external_gates,
-        unsupported_routes: vec![
-            "cursor-model-path",
-            "codex-chatgpt-login",
-            "codex-websocket",
-            "provider-hosted-tools",
-        ],
+        unsupported_routes: vec!["cursor-model-path", "provider-hosted-tools"],
         raw_requests_persisted: false,
+        raw_request_scope: "model-gateway transport and receipt tables only; separate local CTX analytics and recovery stores have their own retention controls",
         credentials_persisted: false,
     };
 
