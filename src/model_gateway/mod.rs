@@ -5,7 +5,10 @@
 
 pub mod capture;
 pub mod probe;
+pub mod registry;
+mod relay;
 pub mod route;
+mod service;
 
 use std::io::Read;
 use std::path::Path;
@@ -79,6 +82,10 @@ pub fn sanitize_capture_file(input: Option<&Path>) -> Result<()> {
     let sanitized = capture::sanitize(&capture);
     println!("{}", serde_json::to_string_pretty(&sanitized)?);
     Ok(())
+}
+
+pub async fn serve(route_id: &str) -> Result<()> {
+    service::serve(route_id).await
 }
 
 fn read_bounded(reader: impl Read) -> Result<String> {
