@@ -292,6 +292,32 @@ pub enum ModelGatewayCommand {
         #[arg(long)]
         input: Option<std::path::PathBuf>,
     },
+    /// Register a transformation-off route with a fixed built-in provider destination.
+    AddRoute {
+        /// Immutable lowercase route id.
+        id: String,
+        /// claude-code or codex. Cursor remains held until its local boundary is captured.
+        #[arg(long)]
+        surface: String,
+        /// anthropic-messages or openai-responses.
+        #[arg(long)]
+        protocol: String,
+        /// Route-specific auth identity; credentials are never stored in this registry.
+        #[arg(long)]
+        authentication: String,
+        /// Fixed provider class: anthropic or openai. Arbitrary URLs are not accepted.
+        #[arg(long)]
+        upstream: String,
+        /// Unprivileged loopback port dedicated to this route.
+        #[arg(long)]
+        port: u16,
+    },
+    /// List registered model routes, their local paths, and fixed destinations.
+    ListRoutes,
+    /// Remove a CTX model route. This does not edit coding-client configuration.
+    RemoveRoute { id: String },
+    /// Serve one registered route in transformation-off pass-through mode.
+    Serve { id: String },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

@@ -1,0 +1,9 @@
+{
+  "model": "synthetic-claude",
+  "messages": [
+    { "role": "user", "content": "keep this request byte-for-byte" },
+    { "role": "assistant", "content": [{ "type": "tool_use", "id": "toolu_123", "name": "read", "input": {} }] },
+    { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "toolu_123", "content": "exact tool output" }] }
+  ],
+  "stream": true
+}
