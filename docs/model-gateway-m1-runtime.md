@@ -24,9 +24,9 @@ without editing any coding-client profile:
   standard plus `Connection`-nominated hop-by-hop header removal; and
 - graceful foreground shutdown on Ctrl-C.
 
-Every route stores `transformationsEnabled: false`. Loading or serving a hand-edited route with
-that value set to true fails closed. M1 calls no trimming strategy and writes no applied/savings
-receipt.
+At the M1 boundary every route stored `transformationsEnabled: false`; loading a hand-edited true
+value failed closed. M3 supersedes that schema with explicit `shadow` and narrow `testing` modes.
+M1 itself calls no trimming strategy and writes no applied/savings receipt.
 
 ## Commands
 

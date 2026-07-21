@@ -200,6 +200,7 @@ pub async fn run() -> Result<()> {
                 authentication,
                 upstream,
                 port,
+                mode,
             } => model_gateway::registry::add(
                 &id,
                 &surface,
@@ -207,6 +208,7 @@ pub async fn run() -> Result<()> {
                 &authentication,
                 &upstream,
                 port,
+                &mode,
             )?,
             ModelGatewayCommand::ListRoutes => model_gateway::registry::list()?,
             ModelGatewayCommand::RemoveRoute { id } => model_gateway::registry::remove(&id)?,

@@ -1,6 +1,6 @@
 # CTX model-path gateway implementation plan
 
-Status: M0-M2 implemented; M3 next
+Status: M0-M3 implemented; M3 live-provider evidence pending
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
@@ -8,7 +8,8 @@ Parent: `docs/tool-trimming-architecture-revamp.md`
 Surface plans: `docs/codex-model-gateway-implementation-plan.md`
 Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
 `docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`,
-`docs/model-gateway-m2-protocol-adapters.md`, `docs/claims.md`, and `SECURITY.md`
+`docs/model-gateway-m2-protocol-adapters.md`, `docs/model-gateway-m3-atomic-apply.md`,
+`docs/claims.md`, and `SECURITY.md`
 
 ## Decision summary
 
@@ -502,6 +503,8 @@ Exit gate: supported fixtures normalize to the same canonical decisions as equiv
 fixtures; no protocol adapter can activate another.
 
 ### M3 — Atomic model-visible apply
+
+Implementation ledger: `docs/model-gateway-m3-atomic-apply.md`.
 
 - Generalize prepare/persist/emit/accept receipts across transports.
 - Patch only exact result leaves and preserve unrelated protocol content.

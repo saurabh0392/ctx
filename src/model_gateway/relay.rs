@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
-use axum::http::header::{HeaderName, CONNECTION, HOST, TRANSFER_ENCODING, UPGRADE};
+use axum::http::header::{
+    HeaderName, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING, UPGRADE,
+};
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
@@ -82,7 +84,10 @@ async fn health(State(state): State<Arc<RelayState>>) -> impl IntoResponse {
         authentication: state.route.authentication.as_str(),
         fixed_upstream: state.route.upstream.origin(),
         upstream_verified: false,
-        transformations: "off",
+        transformations: match state.route.mode {
+            super::registry::ModelRouteMode::Shadow => "off",
+            super::registry::ModelRouteMode::Testing => "testing",
+        },
         shadow: state.shadow.health(),
     })
 }
@@ -105,13 +110,25 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
     };
     let mut upstream = state.upstream.clone();
     upstream.set_query(parts.uri.query());
-    state.shadow.observe(&state.route, &parts.headers, &body);
-    let headers = forward_request_headers(&parts.headers);
+    let observation = state.shadow.observe(&state.route, &parts.headers, &body);
+    let prepared =
+        super::apply::prepare_request(&state.route, &body, &observation, state.shadow.config());
+    state.shadow.record_testing_prepare(
+        prepared.mutated(),
+        prepared.trims.len(),
+        &prepared.reasons,
+    );
+    let mut headers = forward_request_headers(&parts.headers);
+    if prepared.mutated() {
+        headers.remove(CONTENT_LENGTH);
+        headers.remove("content-md5");
+        headers.remove("digest");
+    }
     let response = match state
         .client
         .request(parts.method, upstream)
         .headers(headers)
-        .body(body)
+        .body(prepared.body)
         .send()
         .await
     {
@@ -120,14 +137,78 @@ async fn relay(State(state): State<Arc<RelayState>>, request: Request<Body>) -> 
     };
 
     let status = response.status();
+    let sse = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+        });
     let headers = forward_response_headers(response.headers());
-    let stream = response
-        .bytes_stream()
-        .map(|chunk| chunk.map_err(std::io::Error::other));
+    if status.is_success() && !sse {
+        accept_prepared(&prepared.trims);
+    }
+    let mut acceptance_pending = status.is_success() && sse && !prepared.trims.is_empty();
+    let mut sse_probe = Vec::new();
+    let trims = prepared.trims;
+    let stream = response.bytes_stream().map(move |chunk| {
+        if acceptance_pending {
+            if let Ok(bytes) = &chunk {
+                let remaining = 64 * 1024usize - sse_probe.len().min(64 * 1024);
+                sse_probe.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+                if contains_complete_sse_data_event(&sse_probe) {
+                    accept_prepared(&trims);
+                    acceptance_pending = false;
+                }
+            }
+        }
+        chunk.map_err(std::io::Error::other)
+    });
     let mut outgoing = Response::new(Body::from_stream(stream));
     *outgoing.status_mut() = status;
     *outgoing.headers_mut() = headers;
     outgoing
+}
+
+fn accept_prepared(trims: &[crate::tool_result::PreparedTextTrim]) {
+    for trim in trims {
+        if let Err(error) = crate::tool_result::mark_text_trim_accepted(trim) {
+            eprintln!("ctx model gateway could not record an accepted trim: {error}");
+        }
+    }
+}
+
+fn contains_complete_sse_data_event(bytes: &[u8]) -> bool {
+    let mut start = 0usize;
+    while start < bytes.len() {
+        let lf = bytes[start..]
+            .windows(2)
+            .position(|window| window == b"\n\n")
+            .map(|index| (start + index, 2));
+        let crlf = bytes[start..]
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| (start + index, 4));
+        let Some((end, delimiter_len)) = (match (lf, crlf) {
+            (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+            (Some(found), None) | (None, Some(found)) => Some(found),
+            (None, None) => None,
+        }) else {
+            return false;
+        };
+        if bytes[start..end]
+            .split(|byte| *byte == b'\n')
+            .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+            .any(|line| line.starts_with(b"data:"))
+        {
+            return true;
+        }
+        start = end + delimiter_len;
+    }
+    false
 }
 
 #[derive(Serialize)]
@@ -209,7 +290,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::model_gateway::registry::ProviderTarget;
+    use crate::model_gateway::registry::{ModelRouteMode, ProviderTarget};
     use crate::model_gateway::route::{AuthenticationMode, WireProtocol};
     use crate::surface::SurfaceId;
 
@@ -228,7 +309,7 @@ mod tests {
             authentication: AuthenticationMode::ApiKey,
             upstream: ProviderTarget::OpenAi,
             listen_port: 8871,
-            transformations_enabled: false,
+            mode: ModelRouteMode::Shadow,
         }
     }
 
@@ -240,8 +321,66 @@ mod tests {
             authentication: AuthenticationMode::ApiKey,
             upstream: ProviderTarget::Anthropic,
             listen_port: 8872,
-            transformations_enabled: false,
+            mode: ModelRouteMode::Shadow,
         }
+    }
+
+    fn testing_codex_route() -> ModelRoute {
+        let mut route = codex_route();
+        route.mode = ModelRouteMode::Testing;
+        route
+    }
+
+    fn synthetic_responses_body(label: &str) -> Vec<u8> {
+        let output = (0..100)
+            .map(|index| format!("{label} synthetic line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::to_vec(&serde_json::json!({"input":[
+            {"type":"function_call","call_id":"call","name":"ctx_synthetic_echo","arguments":"{\"contract\":\"ctx-synthetic-v1\"}"},
+            {"type":"function_call_output","call_id":"call","output":output}
+        ]}))
+        .unwrap()
+    }
+
+    struct ScopedCtxHome {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedCtxHome {
+        fn set(path: &std::path::Path) -> Self {
+            let lock = crate::test_lock::CTX_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let previous = std::env::var_os("CTX_HOME");
+            std::env::set_var("CTX_HOME", path);
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for ScopedCtxHome {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var("CTX_HOME", value);
+            } else {
+                std::env::remove_var("CTX_HOME");
+            }
+        }
+    }
+
+    fn applied_count() -> i64 {
+        let conn = crate::db::open_db().unwrap();
+        crate::db::ensure_schema(&conn).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM compress_decisions WHERE applied=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     fn test_client() -> reqwest::Client {
@@ -583,5 +722,193 @@ mod tests {
         assert!(capture.bodies.lock().unwrap().is_empty());
         upstream_task.abort();
         gateway_task.abort();
+    }
+
+    #[test]
+    fn testing_route_mutates_upstream_and_counts_only_successful_http_acceptance() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = ScopedCtxHome::set(temp.path());
+        runtime.block_on(async {
+            let capture = Capture::default();
+            let upstream_app = Router::new()
+                .route("/v1/responses", post(capture_request))
+                .with_state(capture.clone());
+            let (upstream, upstream_task) = spawn(upstream_app).await;
+            let (gateway, gateway_task) =
+                gateway_for_route(&format!("{upstream}/v1/responses"), testing_codex_route()).await;
+            let body = synthetic_responses_body("accepted");
+            let response = test_client()
+                .post(format!("{gateway}/v1/responses"))
+                .body(body.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let returned = response.bytes().await.unwrap();
+            assert_ne!(returned.as_ref(), body);
+            let upstream_body = capture.bodies.lock().unwrap()[0].clone();
+            assert_eq!(returned.as_ref(), upstream_body);
+            assert!(String::from_utf8_lossy(&upstream_body).contains("ctx trimmed this output"));
+            assert_eq!(applied_count(), 1);
+            let conn = crate::db::open_db().unwrap();
+            let rewind_id: String = conn
+                .query_row(
+                    "SELECT rewind_id FROM compress_decisions WHERE applied=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let rewind = crate::db::get_rewind(&conn, &rewind_id).unwrap();
+            assert!(rewind.original.starts_with("accepted synthetic line 0"));
+            assert!(!rewind.original.contains("ctx trimmed this output"));
+            upstream_task.abort();
+            gateway_task.abort();
+        });
+    }
+
+    #[test]
+    fn provider_rejection_keeps_rewind_but_never_counts_applied() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = ScopedCtxHome::set(temp.path());
+        runtime.block_on(async {
+            let capture = Capture::default();
+            let upstream_app = Router::new()
+                .route(
+                    "/v1/responses",
+                    post(
+                        |State(capture): State<Capture>, request: Request<Body>| async move {
+                            let (parts, body) = request.into_parts();
+                            let body = to_bytes(body, MAX_REQUEST_BYTES).await.unwrap();
+                            capture.bodies.lock().unwrap().push(body.to_vec());
+                            capture.headers.lock().unwrap().push(parts.headers);
+                            let mut response = Response::new(Body::from("rejected"));
+                            *response.status_mut() = StatusCode::BAD_REQUEST;
+                            response
+                        },
+                    ),
+                )
+                .with_state(capture.clone());
+            let (upstream, upstream_task) = spawn(upstream_app).await;
+            let (gateway, gateway_task) =
+                gateway_for_route(&format!("{upstream}/v1/responses"), testing_codex_route()).await;
+            let response = test_client()
+                .post(format!("{gateway}/v1/responses"))
+                .body(synthetic_responses_body("rejected"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(applied_count(), 0);
+            let conn = crate::db::open_db().unwrap();
+            let rewinds: i64 = conn
+                .query_row("SELECT COUNT(*) FROM rewind_store", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(rewinds, 1, "prepared recovery survives rejection");
+            upstream_task.abort();
+            gateway_task.abort();
+        });
+    }
+
+    #[test]
+    fn upstream_transport_failure_never_counts_applied() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = ScopedCtxHome::set(temp.path());
+        runtime.block_on(async {
+            let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let unavailable = unused.local_addr().unwrap();
+            drop(unused);
+            let (gateway, gateway_task) = gateway_for_route(
+                &format!("http://{unavailable}/v1/responses"),
+                testing_codex_route(),
+            )
+            .await;
+            let response = test_client()
+                .post(format!("{gateway}/v1/responses"))
+                .body(synthetic_responses_body("transport-failure"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            assert_eq!(applied_count(), 0);
+            let conn = crate::db::open_db().unwrap();
+            let rewinds: i64 = conn
+                .query_row("SELECT COUNT(*) FROM rewind_store", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(rewinds, 1);
+            gateway_task.abort();
+        });
+    }
+
+    #[test]
+    fn sse_acceptance_waits_for_the_first_complete_data_event() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = ScopedCtxHome::set(temp.path());
+        runtime.block_on(async {
+            let upstream_app = Router::new().route(
+                "/v1/responses",
+                post(|request: Request<Body>| async move {
+                    let (_, body) = request.into_parts();
+                    let _ = to_bytes(body, MAX_REQUEST_BYTES).await.unwrap();
+                    let chunks = stream::unfold(0, |index| async move {
+                        match index {
+                            0 => Some((Ok::<_, Infallible>(": keepalive\n\n"), 1)),
+                            1 => {
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                                Some((Ok::<_, Infallible>("data: accepted\n\n"), 2))
+                            }
+                            _ => None,
+                        }
+                    });
+                    let mut response = Response::new(Body::from_stream(chunks));
+                    response
+                        .headers_mut()
+                        .insert(CONTENT_TYPE, "text/event-stream".parse().unwrap());
+                    response
+                }),
+            );
+            let (upstream, upstream_task) = spawn(upstream_app).await;
+            let (gateway, gateway_task) =
+                gateway_for_route(&format!("{upstream}/v1/responses"), testing_codex_route()).await;
+            let response = test_client()
+                .post(format!("{gateway}/v1/responses"))
+                .body(synthetic_responses_body("sse"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(applied_count(), 0);
+            let mut chunks = response.bytes_stream();
+            assert_eq!(chunks.next().await.unwrap().unwrap(), ": keepalive\n\n");
+            assert_eq!(applied_count(), 0);
+            assert_eq!(chunks.next().await.unwrap().unwrap(), "data: accepted\n\n");
+            assert_eq!(applied_count(), 1);
+            upstream_task.abort();
+            gateway_task.abort();
+        });
+    }
+
+    #[test]
+    fn complete_sse_detection_handles_fragmented_and_crlf_events() {
+        assert!(!contains_complete_sse_data_event(b"data: part"));
+        assert!(contains_complete_sse_data_event(b"data: part\n\n"));
+        assert!(contains_complete_sse_data_event(
+            b"event: x\r\ndata: ok\r\n\r\n"
+        ));
+        assert!(!contains_complete_sse_data_event(b": keepalive\n\n"));
     }
 }

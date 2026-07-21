@@ -11,8 +11,9 @@ mod strategy;
 mod types;
 
 pub use apply::{
-    mark_mcp_trim_emitted, prepare_mcp_trim, prepare_mcp_trim_in, McpApplyRequest,
-    McpPrepareOutcome, PreparedMcpTrim,
+    mark_mcp_trim_emitted, mark_text_trim_accepted, prepare_mcp_trim, prepare_mcp_trim_in,
+    prepare_text_trim, prepare_text_trim_in, McpApplyRequest, McpPrepareOutcome, PreparedMcpTrim,
+    PreparedTextTrim, TextApplyRequest, TextPrepareOutcome,
 };
 pub use contract::{
     parse_mcp_tools_list, CanonicalMcpTool, CanonicalMcpToolEntry, CanonicalMcpToolsList,

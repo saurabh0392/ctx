@@ -3,9 +3,11 @@
 //! M0 probes compatibility, M1 provides a transformation-off relay, and M2 observes supported
 //! protocol shapes in content-local shadow. No model request is rewritten before M3.
 
+mod apply;
 mod canonical;
 pub mod capture;
 mod correlate;
+mod json_patch;
 pub mod probe;
 mod protocols;
 pub mod registry;
