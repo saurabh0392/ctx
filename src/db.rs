@@ -739,7 +739,9 @@ pub fn record_model_gateway_event(conn: &Connection, event: &ModelGatewayEvent<'
         anyhow::bail!("invalid model gateway evidence outcome");
     }
     let fixed_upstream = match event.fixed_upstream {
-        "https://api.openai.com" | "https://api.anthropic.com" => event.fixed_upstream,
+        "https://api.openai.com" | "https://chatgpt.com" | "https://api.anthropic.com" => {
+            event.fixed_upstream
+        }
         _ => anyhow::bail!("invalid model gateway evidence destination"),
     };
     let reason_code = event

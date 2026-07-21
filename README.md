@@ -133,13 +133,16 @@ remains observation-only because Codex exposes no model-visible replacement cont
 ### Experimental model-path routes
 
 CTX can also run an explicitly configured loopback model route. This is off by default and separate
-from the MCP gateway. The first implemented route contracts are Codex API-key traffic using OpenAI
-Responses over HTTP/SSE and Claude Code traffic using Anthropic Messages. Cursor model traffic,
-Codex ChatGPT-login and WebSocket traffic, and provider-hosted tools remain unavailable.
+from the MCP gateway. Implemented route contracts include Codex traffic using OpenAI Responses over
+HTTP/SSE/WebSocket with either API-key or existing ChatGPT-login authentication, plus Claude Code
+traffic using Anthropic Messages. Cursor model traffic and provider-hosted tools remain unavailable.
 
 ```bash
 ctx model-gateway setup codex --authentication api-key --mode shadow
 ctx model-gateway enable codex-api --yes
+# Or keep Codex on the user's existing ChatGPT subscription login:
+ctx model-gateway setup codex --authentication chatgpt-login --mode shadow
+ctx model-gateway enable codex-chatgpt --yes
 ctx model-gateway status codex-api
 ctx model-gateway doctor codex-api
 ctx model-gateway readiness --json

@@ -546,14 +546,15 @@ async fn collect_status(route_id: Option<&str>) -> Result<Vec<RouteStatus>> {
             retained_locally: "content-free route receipts, plus exact originals when a trim is prepared before send; only provider-accepted trims count as applied",
             cloud_relay: false,
             controlled_path: match route.surface {
-                crate::surface::SurfaceId::Codex => "local tool results present in OpenAI Responses requests sent through this exact route",
+                crate::surface::SurfaceId::Codex => "local tool results present in OpenAI Responses requests sent through this exact HTTP/SSE/WebSocket route",
                 crate::surface::SurfaceId::ClaudeCode => "client-side tool results present in Anthropic Messages requests sent through this exact route",
                 crate::surface::SurfaceId::Cursor => "none; Cursor has no verified programmable model route",
             },
-            unavailable_path: match route.surface {
-                crate::surface::SurfaceId::Codex => "OpenAI-hosted tools, direct routes, ChatGPT-login routing, and WebSocket traffic",
-                crate::surface::SurfaceId::ClaudeCode => "Anthropic-hosted or provider-managed tools and traffic not sent through this route",
-                crate::surface::SurfaceId::Cursor => "all model traffic until a supported route is documented and captured",
+            unavailable_path: match (route.surface, route.authentication) {
+                (crate::surface::SurfaceId::Codex, super::route::AuthenticationMode::ChatGptLogin) => "OpenAI-hosted tools, API-key/direct routes, and traffic not sent through this exact ChatGPT-login route",
+                (crate::surface::SurfaceId::Codex, _) => "OpenAI-hosted tools, ChatGPT-login/direct routes, and traffic not sent through this exact API-key route",
+                (crate::surface::SurfaceId::ClaudeCode, _) => "Anthropic-hosted or provider-managed tools and traffic not sent through this route",
+                (crate::surface::SurfaceId::Cursor, _) => "all model traffic until a supported route is documented and captured",
             },
             cache_accounting: "not yet measured; character savings are not a cache-adjusted cost claim",
             recovery_command: "ctx expand <rewind-id>",

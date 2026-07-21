@@ -10,7 +10,7 @@ Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
 `docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`,
 `docs/model-gateway-m2-protocol-adapters.md`, `docs/model-gateway-m3-atomic-apply.md`,
 `docs/model-gateway-m4-surface-lifecycle.md`, `docs/model-gateway-m5-product-proof.md`,
-`docs/model-gateway-m6-beta-gates.md`,
+`docs/model-gateway-m6-beta-gates.md`, `docs/model-gateway-m7-codex-chatgpt-websocket.md`,
 `docs/claims.md`, and `SECURITY.md`
 
 ## Decision summary

@@ -18,6 +18,8 @@ const MIN_UNPRIVILEGED_PORT: u16 = 1024;
 pub enum ProviderTarget {
     #[serde(rename = "openai")]
     OpenAi,
+    #[serde(rename = "openai-chatgpt")]
+    OpenAiChatGpt,
     Anthropic,
 }
 
@@ -50,6 +52,7 @@ impl ProviderTarget {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "openai" | "open-ai" => Some(Self::OpenAi),
+            "openai-chatgpt" | "chatgpt" => Some(Self::OpenAiChatGpt),
             "anthropic" => Some(Self::Anthropic),
             _ => None,
         }
@@ -58,6 +61,7 @@ impl ProviderTarget {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
+            Self::OpenAiChatGpt => "openai-chatgpt",
             Self::Anthropic => "anthropic",
         }
     }
@@ -65,6 +69,7 @@ impl ProviderTarget {
     pub fn origin(self) -> &'static str {
         match self {
             Self::OpenAi => "https://api.openai.com",
+            Self::OpenAiChatGpt => "https://chatgpt.com",
             Self::Anthropic => "https://api.anthropic.com",
         }
     }
@@ -89,11 +94,14 @@ impl ModelRoute {
     }
 
     pub fn endpoint_path(&self) -> &'static str {
-        match self.protocol {
-            WireProtocol::OpenAiResponses => "/v1/responses",
-            WireProtocol::OpenAiChatCompletions => "/v1/chat/completions",
-            WireProtocol::AnthropicMessages => "/v1/messages",
-            WireProtocol::Unknown => "/__unsupported__",
+        match (self.protocol, self.upstream) {
+            (WireProtocol::OpenAiResponses, ProviderTarget::OpenAiChatGpt) => {
+                "/backend-api/codex/responses"
+            }
+            (WireProtocol::OpenAiResponses, _) => "/v1/responses",
+            (WireProtocol::OpenAiChatCompletions, _) => "/v1/chat/completions",
+            (WireProtocol::AnthropicMessages, _) => "/v1/messages",
+            (WireProtocol::Unknown, _) => "/__unsupported__",
         }
     }
 
@@ -107,12 +115,38 @@ impl ModelRoute {
     }
 
     pub fn local_base_url(&self) -> String {
-        match self.surface {
-            SurfaceId::Codex => format!("http://{}/v1", self.listen_address()),
-            SurfaceId::ClaudeCode | SurfaceId::Cursor => {
+        match (self.surface, self.upstream) {
+            (SurfaceId::Codex, ProviderTarget::OpenAiChatGpt) => {
+                format!("http://{}/backend-api/codex", self.listen_address())
+            }
+            (SurfaceId::Codex, _) => format!("http://{}/v1", self.listen_address()),
+            (SurfaceId::ClaudeCode | SurfaceId::Cursor, _) => {
                 format!("http://{}", self.listen_address())
             }
         }
+    }
+
+    pub fn websocket_upstream_url(&self) -> Result<reqwest::Url> {
+        let mut url = self.upstream_url()?;
+        let scheme = match url.scheme() {
+            "https" => "wss",
+            "http" => "ws",
+            other => anyhow::bail!("unsupported model WebSocket upstream scheme {other:?}"),
+        };
+        url.set_scheme(scheme)
+            .map_err(|_| anyhow::anyhow!("build compiled-in model WebSocket upstream URL"))?;
+        Ok(url)
+    }
+
+    pub fn supports_websockets(&self) -> bool {
+        self.surface == SurfaceId::Codex && self.protocol == WireProtocol::OpenAiResponses
+    }
+
+    pub fn supports_auxiliary_path(&self, method: &axum::http::Method, path: &str) -> bool {
+        self.surface == SurfaceId::Codex
+            && self.upstream == ProviderTarget::OpenAiChatGpt
+            && method == axum::http::Method::GET
+            && path == "/backend-api/codex/models"
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -120,30 +154,38 @@ impl ModelRoute {
         if self.listen_port < MIN_UNPRIVILEGED_PORT {
             anyhow::bail!("model route port must be between {MIN_UNPRIVILEGED_PORT} and 65535");
         }
-        match (self.surface, self.protocol, self.upstream) {
-            (SurfaceId::ClaudeCode, WireProtocol::AnthropicMessages, ProviderTarget::Anthropic)
-            | (SurfaceId::Codex, WireProtocol::OpenAiResponses, ProviderTarget::OpenAi) => {}
-            (SurfaceId::Cursor, _, _) => anyhow::bail!(
-                "Cursor model routing is held until a supported local protocol boundary is captured"
-            ),
-            _ => anyhow::bail!(
-                "surface/protocol/upstream combination has no M0 compatibility decision"
-            ),
-        }
-        match (self.surface, self.authentication) {
+        match (
+            self.surface,
+            self.protocol,
+            self.upstream,
+            self.authentication,
+        ) {
             (
                 SurfaceId::ClaudeCode,
+                WireProtocol::AnthropicMessages,
+                ProviderTarget::Anthropic,
                 AuthenticationMode::ApiKey
                 | AuthenticationMode::BearerToken
                 | AuthenticationMode::Subscription,
             )
             | (
                 SurfaceId::Codex,
-                AuthenticationMode::ApiKey
-                | AuthenticationMode::ChatGptLogin
-                | AuthenticationMode::CustomProvider,
+                WireProtocol::OpenAiResponses,
+                ProviderTarget::OpenAi,
+                AuthenticationMode::ApiKey | AuthenticationMode::CustomProvider,
+            )
+            | (
+                SurfaceId::Codex,
+                WireProtocol::OpenAiResponses,
+                ProviderTarget::OpenAiChatGpt,
+                AuthenticationMode::ChatGptLogin,
             ) => {}
-            _ => anyhow::bail!("authentication mode is not a candidate for this surface"),
+            (SurfaceId::Cursor, _, _, _) => anyhow::bail!(
+                "Cursor model routing is held until a supported local protocol boundary is captured"
+            ),
+            _ => anyhow::bail!(
+                "surface/protocol/upstream combination has no M0 compatibility decision"
+            ),
         }
         Ok(())
     }
@@ -248,7 +290,9 @@ pub fn add(
         protocol: parse_protocol(protocol)?,
         authentication: parse_authentication(authentication)?,
         upstream: ProviderTarget::parse(upstream).ok_or_else(|| {
-            anyhow::anyhow!("unknown upstream {upstream:?} (use openai or anthropic)")
+            anyhow::anyhow!(
+                "unknown upstream {upstream:?} (use openai, openai-chatgpt, or anthropic)"
+            )
         })?,
         listen_port: port,
         mode: ModelRouteMode::parse(mode).ok_or_else(|| {
@@ -288,20 +332,22 @@ pub fn setup_supported(
     let authentication = parse_authentication(authentication)?;
     let (prefix, protocol, upstream, default_port, auth_suffix) = match surface {
         SurfaceId::Codex => {
-            let suffix = match authentication {
-                AuthenticationMode::ApiKey => "api",
-                AuthenticationMode::ChatGptLogin => anyhow::bail!(
-                    "Codex chatgpt-login setup remains held until its fixed backend, WebSocket, refresh, and account-UI contracts pass live capture; use api-key only for the current experimental route"
+            let (suffix, upstream, default_port) = match authentication {
+                AuthenticationMode::ApiKey => ("api", ProviderTarget::OpenAi, 8871),
+                AuthenticationMode::ChatGptLogin => (
+                    "chatgpt",
+                    ProviderTarget::OpenAiChatGpt,
+                    8873,
                 ),
                 _ => anyhow::bail!(
-                    "Codex setup currently supports only --authentication api-key"
+                    "Codex setup supports --authentication api-key or chatgpt-login"
                 ),
             };
             (
                 "codex",
                 WireProtocol::OpenAiResponses,
-                ProviderTarget::OpenAi,
-                8871,
+                upstream,
+                default_port,
                 suffix,
             )
         }
@@ -518,6 +564,18 @@ mod tests {
         }
     }
 
+    fn chatgpt_route(id: &str, port: u16) -> ModelRoute {
+        ModelRoute {
+            id: id.into(),
+            surface: SurfaceId::Codex,
+            protocol: WireProtocol::OpenAiResponses,
+            authentication: AuthenticationMode::ChatGptLogin,
+            upstream: ProviderTarget::OpenAiChatGpt,
+            listen_port: port,
+            mode: ModelRouteMode::Shadow,
+        }
+    }
+
     #[test]
     fn cursor_fails_closed_while_testing_is_explicit() {
         let mut route = codex_route("codex", 8871);
@@ -577,6 +635,38 @@ mod tests {
             codex_route("codex", 8871).local_base_url(),
             "http://127.0.0.1:8871/v1"
         );
+        assert_eq!(
+            chatgpt_route("codex-chatgpt", 8873)
+                .upstream_url()
+                .unwrap()
+                .as_str(),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            chatgpt_route("codex-chatgpt", 8873)
+                .websocket_upstream_url()
+                .unwrap()
+                .as_str(),
+            "wss://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            chatgpt_route("codex-chatgpt", 8873).local_base_url(),
+            "http://127.0.0.1:8873/backend-api/codex"
+        );
+        assert!(chatgpt_route("codex-chatgpt", 8873).supports_websockets());
+        assert!(chatgpt_route("codex-chatgpt", 8873)
+            .supports_auxiliary_path(&axum::http::Method::GET, "/backend-api/codex/models"));
+        assert!(!chatgpt_route("codex-chatgpt", 8873)
+            .supports_auxiliary_path(&axum::http::Method::POST, "/backend-api/codex/models"));
+        assert!(
+            !chatgpt_route("codex-chatgpt", 8873).supports_auxiliary_path(
+                &axum::http::Method::GET,
+                "/backend-api/codex/realtime/calls"
+            )
+        );
+        let mut invalid = chatgpt_route("wrong-auth", 8874);
+        invalid.authentication = AuthenticationMode::ApiKey;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
@@ -639,7 +729,13 @@ mod tests {
         assert_eq!(route.protocol, WireProtocol::OpenAiResponses);
         assert_eq!(route.upstream, ProviderTarget::OpenAi);
         assert_eq!(route.listen_port, 8871);
-        assert!(setup_supported("codex", "chatgpt-login", None, None, "shadow").is_err());
+        setup_supported("codex", "chatgpt-login", None, None, "shadow").unwrap();
+        let registry = RouteRegistry::load().unwrap();
+        assert_eq!(registry.routes.len(), 2);
+        let chatgpt = &registry.routes["codex-chatgpt"];
+        assert_eq!(chatgpt.authentication, AuthenticationMode::ChatGptLogin);
+        assert_eq!(chatgpt.upstream, ProviderTarget::OpenAiChatGpt);
+        assert_eq!(chatgpt.listen_port, 8873);
         assert!(setup_supported("cursor", "api-key", None, None, "shadow").is_err());
 
         if let Some(value) = old_home {
