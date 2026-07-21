@@ -1,4 +1,4 @@
-# CTX v0.5 claim ledger
+# CTX claim ledger
 
 This is the canonical language for active product, portfolio, release, and interview surfaces.
 
@@ -22,6 +22,25 @@ separate.
 ## Privacy claim
 
 > CTX has no background telemetry. Reports and beta check-ins leave the machine only after the user reviews the payload and chooses Send.
+
+## Model-path claim
+
+> When a named model route is explicitly enabled, requests pass through a CTX process on this
+> device before CTX forwards them to the displayed model provider. CTX operates no cloud relay for
+> this traffic. Only supported client-side tool-result fields may change; exact originals are kept
+> locally only for accepted trims.
+
+“Local” describes the CTX process, not the final model destination. Do not say prompts stay local,
+that every request from a supported agent crosses CTX, that hosted tools are controllable, or that a
+registered/shadow route is actively trimming. The exact surface, client version, authentication,
+protocol, mode, lifecycle state, and fixed upstream are the claim boundary.
+
+## Compaction claim
+
+> Only a native post-compaction event proves completion. Pre hooks and historical transcript
+> `pre_compact` markers are attempts; absent or unmatched completion evidence remains unknown.
+
+Do not infer completed compaction from context-size or token drops.
 
 ## Historical evidence labels
 

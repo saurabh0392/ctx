@@ -1,6 +1,6 @@
 # CTX model-path gateway implementation plan
 
-Status: M0-M4 implemented; M3 live-provider and M4 live lifecycle evidence pending
+Status: M0-M5 implemented; M3 live-provider, M4 live lifecycle, and M6 beta evidence pending
 Date: 2026-07-21
 Owner: Saurabh
 Target: post-v0.6 cross-surface coverage wave
@@ -9,7 +9,7 @@ Surface plans: `docs/codex-model-gateway-implementation-plan.md`
 Companions: ADR 0015, ADR 0046, ADR 0047, ADR 0048,
 `docs/model-gateway-m0-compatibility.md`, `docs/model-gateway-m1-runtime.md`,
 `docs/model-gateway-m2-protocol-adapters.md`, `docs/model-gateway-m3-atomic-apply.md`,
-`docs/model-gateway-m4-surface-lifecycle.md`,
+`docs/model-gateway-m4-surface-lifecycle.md`, `docs/model-gateway-m5-product-proof.md`,
 `docs/claims.md`, and `SECURITY.md`
 
 ## Decision summary
@@ -529,6 +529,8 @@ Exit gate: a beta user can enable, verify, use, bypass, disable, reinstall, and 
 supported route without hand-editing files after the documented setup flow.
 
 ### M5 — Evidence, dashboard, and claim migration
+
+Implementation ledger: `docs/model-gateway-m5-product-proof.md`.
 
 - Add surface/protocol/auth/upstream dimensions to activation and product-proof receipts.
 - Show attempted, accepted, applied, held-whole, already-shortened, unknown, hosted, and bypassed
