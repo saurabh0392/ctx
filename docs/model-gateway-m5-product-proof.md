@@ -40,7 +40,8 @@ For each current route the dashboard shows:
 - which client-side result path can cross the adapter and which hosted/direct/unsupported paths do
   not;
 - the in-memory visibility boundary, absence of a CTX cloud relay, and raw-request non-persistence;
-- local exact-original retention only for accepted trims, plus recovery and purge commands; and
+- local exact-original retention before a proposed trim is sent, explicit accepted-vs-applied proof,
+  plus recovery and purge controls; and
 - the immediate route-scoped bypass command.
 
 Disabled routes leave content-free historical proof but no longer claim traffic control.
