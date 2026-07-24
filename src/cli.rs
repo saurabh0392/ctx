@@ -110,6 +110,9 @@ pub enum Commands {
         /// Shell contract used to execute the command.
         #[arg(long, value_enum, default_value_t = crate::cmd_run::ShellKind::Auto)]
         shell: crate::cmd_run::ShellKind,
+        /// Internal receipt that the trusted pre-tool hook already passed the activation gate.
+        #[arg(long, hide = true)]
+        hook_authorized: bool,
         /// The command to run, exactly as it would be typed in a shell.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,

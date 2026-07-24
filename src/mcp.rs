@@ -228,24 +228,51 @@ fn tool_expand(args: &Value) -> Result<Value, String> {
     if id.is_empty() {
         return Err("Pass the id from the ctx trim marker.".to_string());
     }
-    let conn = crate::db::open_db().map_err(|e| e.to_string())?;
-    let _ = crate::db::ensure_schema(&conn);
-    match crate::db::get_rewind(&conn, id) {
-        Some(e) => {
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        if let Some(e) = crate::db::get_rewind(&conn, id) {
             crate::db::mark_rewind_expanded(&conn, id);
             let _ = crate::db::record_product_event(&conn, "rewind_expanded", "mcp", None);
-            Ok(json!({
+            return Ok(json!({
                 "id": e.id,
                 "tool": e.tool_name,
                 "source": e.command_or_path,
                 "chars": e.chars,
                 "original": e.original,
-            }))
+            }));
         }
-        None => Err(format!(
-            "No stored output for id \"{id}\". It may have aged out of the rewind store."
-        )),
     }
+
+    // PostToolUse may have been interrupted after the sandboxed wrapper emitted its marker. Import
+    // the durable temp receipt now; if SQLite is still unavailable, return its validated original
+    // directly so recovery never depends on accounting health.
+    let _ = crate::cmd_run::import_shell_trim(id);
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        if let Some(e) = crate::db::get_rewind(&conn, id) {
+            crate::db::mark_rewind_expanded(&conn, id);
+            let _ = crate::db::record_product_event(&conn, "rewind_expanded", "mcp", None);
+            return Ok(json!({
+                "id": e.id,
+                "tool": e.tool_name,
+                "source": e.command_or_path,
+                "chars": e.chars,
+                "original": e.original,
+            }));
+        }
+    }
+    if let Ok(Some(spooled)) = crate::shell_spool::load(id) {
+        return Ok(json!({
+            "id": spooled.rewind_id,
+            "tool": spooled.tool_name,
+            "source": spooled.command_or_path,
+            "chars": spooled.chars_in,
+            "original": spooled.original,
+        }));
+    }
+    Err(format!(
+        "No stored output for id \"{id}\". It may have aged out of the rewind store."
+    ))
 }
 
 fn tool_recovery_check() -> Result<Value, String> {
@@ -611,6 +638,55 @@ pub fn serve_stdio() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn restore_env(name: &str, previous: Option<String>) {
+        match previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    #[test]
+    fn expand_recovers_validated_spool_when_database_is_unwritable() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let blocked_home = temp.path().join("blocked-home");
+        std::fs::write(&blocked_home, "not a directory").unwrap();
+        let spool = temp.path().join("spool");
+        let previous_home = std::env::var("CTX_HOME").ok();
+        let previous_spool = std::env::var("CTX_TEST_SHELL_SPOOL").ok();
+        std::env::set_var("CTX_HOME", &blocked_home);
+        std::env::set_var("CTX_TEST_SHELL_SPOOL", &spool);
+
+        let command = "rg needle docs";
+        let original = "one\ntwo\nthree\n".repeat(1_000);
+        let rewind_id = crate::shell_spool::rewind_id(command, original.as_bytes());
+        let trimmed = format!("one\n{}", crate::compress::trim_marker(&rewind_id));
+        let record = crate::shell_spool::ShellTrimSpool::new(
+            command,
+            &original,
+            trimmed,
+            chrono::Utc::now().to_rfc3339(),
+            Some("session-1".into()),
+            command.into(),
+            "grep".into(),
+            "codex".into(),
+            "/work/repo".into(),
+        );
+        crate::shell_spool::write(&record).unwrap();
+
+        let expanded = tool_expand(&json!({"id": rewind_id})).unwrap();
+        assert_eq!(expanded["original"], json!(original));
+        assert_eq!(expanded["chars"], json!(original.chars().count()));
+        assert!(crate::shell_spool::load(&record.rewind_id)
+            .unwrap()
+            .is_some());
+
+        restore_env("CTX_HOME", previous_home);
+        restore_env("CTX_TEST_SHELL_SPOOL", previous_spool);
+    }
 
     #[test]
     fn status_combines_emitted_output_and_input_savings_without_calling_estimate_actual_spend() {

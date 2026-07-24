@@ -266,7 +266,7 @@ fn decide_pre_tool_use(cfg: &Config, payload: &Value) -> Option<Value> {
 /// trimming for this command's kind (trial, activation, or burn-in). The wrapper still re-checks the
 /// gate against the real output, so this is the cheap front gate, not the final say.
 pub(crate) fn decide_shell_rewrite(cfg: &Config, command: &str) -> Option<String> {
-    decide_shell_rewrite_for_surface(cfg, command, CURSOR_SURFACE, None)
+    decide_shell_rewrite_for_surface(cfg, command, CURSOR_SURFACE, None, false)
 }
 
 /// Shared conservative shell rewrite used by Cursor and Codex. The surface and session travel
@@ -277,6 +277,7 @@ pub(crate) fn decide_shell_rewrite_for_surface(
     command: &str,
     surface: &str,
     session_id: Option<&str>,
+    hook_authorized: bool,
 ) -> Option<String> {
     let trimmed = command.trim();
     if trimmed.is_empty() || is_ctx_run_wrapped(trimmed) {
@@ -303,20 +304,27 @@ pub(crate) fn decide_shell_rewrite_for_surface(
         .filter(|s| !s.is_empty())
         .map(|s| format!(" --session {}", shell_quote_for_host(s)))
         .unwrap_or_default();
+    let authorization = if hook_authorized {
+        " --hook-authorized"
+    } else {
+        ""
+    };
     #[cfg(windows)]
     let wrapped = format!(
-        "& {} run --surface {}{} -- {}",
+        "& {} run --surface {}{}{} -- {}",
         shell_quote_for_host(&ctx_exe()),
         shell_quote_for_host(surface),
         session,
+        authorization,
         shell_quote_for_host(trimmed)
     );
     #[cfg(not(windows))]
     let wrapped = format!(
-        "{} run --surface {}{} -- {}",
+        "{} run --surface {}{}{} -- {}",
         shell_quote_for_host(&ctx_exe()),
         shell_quote_for_host(surface),
         session,
+        authorization,
         shell_quote_for_host(trimmed)
     );
     Some(wrapped)

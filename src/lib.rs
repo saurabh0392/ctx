@@ -53,6 +53,7 @@ pub mod restore_queue;
 pub mod rule_signals;
 pub mod semantic_tools;
 pub mod setup;
+pub(crate) mod shell_spool;
 pub mod simulate;
 pub mod socket;
 pub mod stats;
@@ -156,8 +157,15 @@ pub async fn run() -> Result<()> {
             surface,
             session,
             shell,
+            hook_authorized,
             command,
-        } => cmd_run::exec(command, &surface, session.as_deref(), shell)?,
+        } => cmd_run::exec(
+            command,
+            &surface,
+            session.as_deref(),
+            shell,
+            hook_authorized,
+        )?,
         Commands::Mcp => mcp::serve_stdio()?,
         Commands::Gateway { command } => match command {
             GatewayCommand::AddStdio {
