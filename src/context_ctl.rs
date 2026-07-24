@@ -709,17 +709,31 @@ pub fn reset(yes: bool) -> Result<()> {
 /// Print the verbatim original of a trim, looked up by its rewind id (CTX-51). Backs the
 /// `ctx expand <id>` fallback the trim marker points at; the agent path is the ctx_expand MCP tool.
 pub fn expand(id: &str) -> Result<()> {
-    let conn = crate::db::open_db()?;
-    let _ = crate::db::ensure_schema(&conn);
-    match crate::db::get_rewind(&conn, id) {
-        Some(e) => {
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        if let Some(e) = crate::db::get_rewind(&conn, id) {
             crate::db::mark_rewind_expanded(&conn, id);
             let _ = crate::db::record_product_event(&conn, "rewind_expanded", "cli", None);
-            println!("{}", e.original);
-            Ok(())
+            print!("{}", e.original);
+            return Ok(());
         }
-        None => anyhow::bail!("No stored output for id \"{id}\"."),
     }
+
+    let _ = crate::cmd_run::import_shell_trim(id);
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = crate::db::ensure_schema(&conn);
+        if let Some(e) = crate::db::get_rewind(&conn, id) {
+            crate::db::mark_rewind_expanded(&conn, id);
+            let _ = crate::db::record_product_event(&conn, "rewind_expanded", "cli", None);
+            print!("{}", e.original);
+            return Ok(());
+        }
+    }
+    if let Some(spooled) = crate::shell_spool::load(id)? {
+        print!("{}", spooled.original);
+        return Ok(());
+    }
+    anyhow::bail!("No stored output for id \"{id}\".")
 }
 
 pub fn set_preset(value: &str) -> Result<()> {

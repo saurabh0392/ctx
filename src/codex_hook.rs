@@ -86,16 +86,22 @@ pub fn pre_tool_use() -> Result<()> {
 
 pub fn post_tool_use() -> Result<()> {
     let payload = read_payload()?;
-    if !claim_event(&payload, "PostToolUse") {
+    let wrapped_shell = shell_command(&payload)
+        .map(|(_, command)| crate::cursor_hook::is_ctx_run_wrapped(command))
+        .unwrap_or(false);
+    if wrapped_shell {
+        // The wrapped process prepared an exact recovery receipt in the temp directory because it
+        // could not write SQLite WAL/SHM files from inside Codex's sandbox. Import before claiming
+        // the hook event so a delivery retry can repair a transient import failure.
+        if let Some(rewind_id) = wrapped_trim_id(&payload) {
+            if let Err(error) = crate::cmd_run::import_shell_trim(&rewind_id) {
+                eprintln!("ctx Codex hook: shell trim import failed: {error}");
+            }
+        }
+        record_event(&payload, "PostToolUse");
         return emit(&json!({}));
     }
-
-    // `ctx run` owns both the applied decision and the output accounting. The resulting Bash tool
-    // event is only an envelope around that already-recorded wrapper execution.
-    if shell_command(&payload)
-        .map(|(_, command)| crate::cursor_hook::is_ctx_run_wrapped(command))
-        .unwrap_or(false)
-    {
+    if !claim_event(&payload, "PostToolUse") {
         return emit(&json!({}));
     }
 
@@ -126,6 +132,11 @@ pub fn post_tool_use() -> Result<()> {
         );
     }
     emit(&json!({}))
+}
+
+fn wrapped_trim_id(payload: &Value) -> Option<String> {
+    extract_tool_result(payload, false)
+        .and_then(|result| crate::shell_spool::id_from_text(&result.raw_output))
 }
 
 pub fn pre_compact() -> Result<()> {
@@ -200,6 +211,7 @@ fn decide_pre_tool_use(cfg: &Config, payload: &Value) -> Option<Value> {
         command,
         CODEX_SURFACE,
         session_id,
+        true,
     )?;
     let mut updated = payload
         .get("tool_input")
@@ -350,21 +362,42 @@ mod tests {
     }
 
     #[test]
-    fn emits_live_unified_exec_cmd_rewrite_shape() {
+    fn emits_live_unified_exec_command_rewrite_shape() {
         let payload = json!({
             "hook_event_name": "PreToolUse",
             "session_id": "session-1",
             "tool_name": "exec_command",
-            "tool_input": {"cmd": "rg -n TODO src", "workdir": "/work/repo"}
+            "tool_input": {"command": "rg -n TODO src", "workdir": "/work/repo"}
         });
         let out = decide_pre_tool_use(&trial_cfg(), &payload).expect("rewrite");
         let updated = &out["hookSpecificOutput"]["updatedInput"];
-        assert!(updated["cmd"]
+        assert!(updated["command"]
             .as_str()
             .unwrap()
             .contains("--surface 'codex'"));
+        assert!(updated["command"]
+            .as_str()
+            .unwrap()
+            .contains("--hook-authorized"));
         assert_eq!(updated["workdir"], json!("/work/repo"));
-        assert!(updated.get("command").is_none());
+        assert!(updated.get("cmd").is_none());
+    }
+
+    #[test]
+    fn recognizes_spooled_rewind_marker_in_wrapped_output() {
+        let rewind_id = format!("shell-{}", "a".repeat(64));
+        let payload = json!({
+            "tool_name": "exec_command",
+            "tool_input": {"command": "ctx run --hook-authorized -- 'rg x'"},
+            "tool_response": format!(
+                "short\n{}",
+                crate::compress::trim_marker(&rewind_id)
+            )
+        });
+        assert_eq!(
+            wrapped_trim_id(&payload).as_deref(),
+            Some(rewind_id.as_str())
+        );
     }
 
     #[test]

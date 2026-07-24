@@ -23,6 +23,7 @@ use clap::ValueEnum;
 
 use crate::agent::ToolResult;
 use crate::config::Config;
+use crate::shell_spool::ShellTrimSpool;
 
 /// What `ctx run` decided to do with a command's output, kept separate from any I/O or process exit
 /// so the core is unit-testable.
@@ -31,24 +32,7 @@ struct RunOutcome {
     raw_stdout: Vec<u8>,
     raw_stderr: Vec<u8>,
     /// `Some` when ctx prepared a recoverable stdout compaction. Stderr always remains separate.
-    compacted: Option<PreparedShellTrim>,
-}
-
-#[derive(Debug, Clone)]
-struct PreparedShellTrim {
-    text: String,
-    rewind_id: String,
-    session_id: Option<String>,
-    tool_name: String,
-    command_or_path: String,
-    strategy: String,
-    chars_in: usize,
-    chars_out: usize,
-    lines_in: usize,
-    lines_out: usize,
-    surface: String,
-    cwd: String,
-    prepared_at: String,
+    compacted: Option<ShellTrimSpool>,
 }
 
 /// Explicit cross-platform execution contract for the wrapper.
@@ -69,6 +53,7 @@ pub fn exec(
     surface: &str,
     session_id: Option<&str>,
     shell: ShellKind,
+    hook_authorized: bool,
 ) -> Result<()> {
     if crate::surface::SurfaceId::parse(surface).is_none() {
         anyhow::bail!("unknown agent surface `{surface}`; expected claude-code, cursor, or codex");
@@ -95,11 +80,16 @@ pub fn exec(
         std::process::exit(code);
     }
 
-    let outcome = run_command(&command, surface, session_id, shell);
+    let outcome = run_command(&command, surface, session_id, shell, hook_authorized);
     write_outcome(&outcome)?;
     if let Some(prepared) = &outcome.compacted {
-        if let Err(error) = mark_shell_trim_emitted(prepared) {
-            eprintln!("ctx run: output was emitted but applied receipt failed: {error}");
+        // A hook-authorized Codex child cannot write beside ~/.ctx; its PostToolUse hook imports the
+        // already-durable temp receipt outside the sandbox. Legacy/unsandboxed callers keep their
+        // direct persistence path and delete the spool only after the accounting transaction lands.
+        if !hook_authorized {
+            if let Err(error) = mark_shell_trim_emitted(prepared) {
+                eprintln!("ctx run: output was emitted but applied receipt failed: {error}");
+            }
         }
     }
     std::process::exit(outcome.code);
@@ -113,6 +103,7 @@ fn run_command(
     surface: &str,
     session_id: Option<&str>,
     shell: ShellKind,
+    hook_authorized: bool,
 ) -> RunOutcome {
     let mut shell_cmd = shell_command(shell, command);
     let output = shell_cmd
@@ -137,7 +128,7 @@ fn run_command(
     let compacted = if output.status.success() {
         std::str::from_utf8(&output.stdout)
             .ok()
-            .and_then(|stdout| try_compact(command, stdout, surface, session_id))
+            .and_then(|stdout| try_compact(command, stdout, surface, session_id, hook_authorized))
     } else {
         None
     };
@@ -155,8 +146,8 @@ fn run_command(
 fn write_outcome(outcome: &RunOutcome) -> Result<()> {
     if let Some(prepared) = &outcome.compacted {
         let mut out = std::io::stdout().lock();
-        out.write_all(prepared.text.as_bytes())?;
-        if !prepared.text.ends_with('\n') {
+        out.write_all(prepared.trimmed.as_bytes())?;
+        if !prepared.trimmed.ends_with('\n') {
             out.write_all(b"\n")?;
         }
         out.flush()?;
@@ -183,7 +174,8 @@ fn try_compact(
     stdout: &str,
     surface: &str,
     session_id: Option<&str>,
-) -> Option<PreparedShellTrim> {
+    hook_authorized: bool,
+) -> Option<ShellTrimSpool> {
     let cfg = Config::load();
     if !cfg.compress_enabled {
         return None;
@@ -216,20 +208,29 @@ fn try_compact(
         recent_intent_text: None,
     };
 
-    let decision = crate::agent::decide_for_surface(&cfg, &tr, surface);
     let command_or_path = crate::surface::fingerprint_tool_input(&tr.tool_name, &tr.tool_input);
-    if !decision.apply {
-        crate::compress::record_shadow_decision(
-            tr.session_id.as_deref(),
-            &tr.tool_name,
-            &command_or_path,
-            decision.shadow.as_ref(),
-            false,
-            decision.explore_arm,
-            Some(surface),
-        );
-        return None;
-    }
+    // The trusted pre-tool hook already performed the DB-backed activation/burn-in check outside
+    // Codex's sandbox. Repeating it here is what made every normal Codex command fail closed:
+    // SQLite could not create its WAL/SHM files under ~/.ctx. Direct callers still use the complete
+    // controller locally.
+    let decision = if hook_authorized {
+        None
+    } else {
+        let decision = crate::agent::decide_for_surface(&cfg, &tr, surface);
+        if !decision.apply {
+            crate::compress::record_shadow_decision(
+                tr.session_id.as_deref(),
+                &tr.tool_name,
+                &command_or_path,
+                decision.shadow.as_ref(),
+                false,
+                decision.explore_arm,
+                Some(surface),
+            );
+            return None;
+        }
+        Some(decision)
+    };
 
     let result = crate::compress::compress_tool_output(
         &tr.tool_name,
@@ -241,31 +242,35 @@ fn try_compact(
         false,
     );
     let Some(result) = result else {
-        crate::compress::record_shadow_decision(
-            tr.session_id.as_deref(),
-            &tr.tool_name,
-            &command_or_path,
-            decision.shadow.as_ref(),
-            false,
-            decision.explore_arm,
-            Some(surface),
-        );
+        if let Some(decision) = decision.as_ref() {
+            crate::compress::record_shadow_decision(
+                tr.session_id.as_deref(),
+                &tr.tool_name,
+                &command_or_path,
+                decision.shadow.as_ref(),
+                false,
+                decision.explore_arm,
+                Some(surface),
+            );
+        }
         return None;
     };
     if result.chars_saved() == 0 {
-        crate::compress::record_shadow_decision(
-            tr.session_id.as_deref(),
-            &tr.tool_name,
-            &command_or_path,
-            decision.shadow.as_ref(),
-            false,
-            decision.explore_arm,
-            Some(surface),
-        );
+        if let Some(decision) = decision.as_ref() {
+            crate::compress::record_shadow_decision(
+                tr.session_id.as_deref(),
+                &tr.tool_name,
+                &command_or_path,
+                decision.shadow.as_ref(),
+                false,
+                decision.explore_arm,
+                Some(surface),
+            );
+        }
         return None;
     }
 
-    let rewind_id = sha256_rewind_id(command, stdout.as_bytes());
+    let rewind_id = crate::shell_spool::rewind_id(command, stdout.as_bytes());
     let prepared_at = chrono::Utc::now().to_rfc3339();
     let marked = format!(
         "{}{}",
@@ -275,50 +280,73 @@ fn try_compact(
     if marked.chars().count() >= stdout.chars().count() {
         return None;
     }
-    let lines_out = marked.lines().count();
-    let mut conn = crate::db::open_db().ok()?;
-    crate::db::ensure_schema(&conn).ok()?;
-    let transaction = conn.transaction().ok()?;
-    crate::db::insert_rewind_checked(
-        &transaction,
-        &rewind_id,
-        &prepared_at,
-        tr.session_id.as_deref(),
-        &tr.tool_name,
-        &command_or_path,
+    let prepared = ShellTrimSpool::new(
+        command,
         stdout,
-        &marked,
-    )
-    .ok()?;
-    transaction.commit().ok()?;
-
-    Some(PreparedShellTrim {
-        chars_out: marked.chars().count(),
-        text: marked,
-        rewind_id,
-        session_id: tr.session_id,
-        tool_name: tr.tool_name,
-        command_or_path,
-        strategy: result.strategy,
-        chars_in: stdout.chars().count(),
-        lines_in: stdout.lines().count(),
-        lines_out,
-        surface: surface.to_owned(),
-        cwd: tr.cwd,
+        marked,
         prepared_at,
-    })
+        tr.session_id,
+        command_or_path,
+        result.strategy,
+        surface.to_owned(),
+        tr.cwd,
+    );
+    debug_assert_eq!(prepared.rewind_id, rewind_id);
+    // The exact original must be durable before the shortened text can reach the model. This temp
+    // receipt is writable inside Codex's sandbox and remains available to ctx_expand if import
+    // fails, so a database outage can never make a trim irreversible.
+    crate::shell_spool::write(&prepared).ok()?;
+    Some(prepared)
 }
 
-/// Record a live Cursor Shell trim as a real apply: a compress_event for the savings feed plus the
-/// analytics counter, stamped `surface = "cursor"`. Mirrors the MCP apply path in `cursor_hook` so
-/// the cross-surface dashboard reflects Shell savings honestly (CTX-41).
-fn mark_shell_trim_emitted(prepared: &PreparedShellTrim) -> Result<()> {
+/// Import a sandbox-safe shell receipt into the normal CTX database. Idempotent across hook retries
+/// and crashes after commit: an already-emitted rewind is never counted twice.
+pub(crate) fn import_shell_trim(rewind_id: &str) -> Result<bool> {
+    let Some(prepared) = crate::shell_spool::load(rewind_id)? else {
+        return Ok(false);
+    };
+    persist_shell_trim(&prepared)?;
+    crate::shell_spool::remove(rewind_id)?;
+    Ok(true)
+}
+
+/// Record a live Shell trim as a real apply: one decision, one compress event, and the analytics
+/// counter, stamped with the originating surface. The spool is removed only after this succeeds.
+fn mark_shell_trim_emitted(prepared: &ShellTrimSpool) -> Result<()> {
+    persist_shell_trim(prepared)?;
+    crate::shell_spool::remove(&prepared.rewind_id)
+}
+
+fn persist_shell_trim(prepared: &ShellTrimSpool) -> Result<()> {
     let mut conn = crate::db::open_db()?;
     crate::db::ensure_schema(&conn)?;
     let transaction = conn.transaction()?;
+    crate::db::insert_rewind_checked(
+        &transaction,
+        &prepared.rewind_id,
+        &prepared.prepared_at,
+        prepared.session_id.as_deref(),
+        &prepared.tool_name,
+        &prepared.command_or_path,
+        &prepared.original,
+        &prepared.trimmed,
+    )?;
+    let already_emitted: i64 = transaction.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM compress_decisions
+             WHERE applied=1 AND rewind_id=?1
+         )",
+        [&prepared.rewind_id],
+        |row| row.get(0),
+    )?;
+    if already_emitted == 1 {
+        transaction.commit()?;
+        return Ok(());
+    }
     let features_json = serde_json::json!({
-        "adapter": "shell-wrapper-v2",
+        "adapter": "shell-wrapper-v3",
         "rewind": true,
+        "sandbox_spool": true,
     })
     .to_string();
     crate::db::insert_compress_decision(
@@ -439,23 +467,20 @@ fn shell_output_semantically_safe(command: &str) -> bool {
         && !normalized.trim_end().ends_with('&')
 }
 
-fn sha256_rewind_id(command: &str, stdout: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hash = Sha256::new();
-    hash.update(b"ctx-shell-rewind-v1\0");
-    hash.update(command.as_bytes());
-    hash.update([0]);
-    hash.update(stdout);
-    format!("shell-{:x}", hash.finalize())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn restore_env(name: &str, previous: Option<String>) {
+        match previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+
     #[test]
     fn preserves_exit_code() {
-        let outcome = run_command("exit 7", "cursor", None, ShellKind::Auto);
+        let outcome = run_command("exit 7", "cursor", None, ShellKind::Auto, false);
         assert_eq!(outcome.code, 7);
     }
 
@@ -465,7 +490,7 @@ mod tests {
         let command = "printf 'hello world'";
         #[cfg(windows)]
         let command = "[Console]::Out.Write('hello world')";
-        let outcome = run_command(command, "cursor", None, ShellKind::Auto);
+        let outcome = run_command(command, "cursor", None, ShellKind::Auto, false);
         assert_eq!(outcome.code, 0);
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stdout), "hello world");
     }
@@ -476,7 +501,7 @@ mod tests {
         let command = "printf 'oops' 1>&2";
         #[cfg(windows)]
         let command = "[Console]::Error.Write('oops')";
-        let outcome = run_command(command, "cursor", None, ShellKind::Auto);
+        let outcome = run_command(command, "cursor", None, ShellKind::Auto, false);
         assert_eq!(outcome.code, 0);
         assert!(outcome.raw_stdout.is_empty());
         assert_eq!(String::from_utf8_lossy(&outcome.raw_stderr), "oops");
@@ -490,7 +515,7 @@ mod tests {
         let command = "echo small";
         #[cfg(windows)]
         let command = "[Console]::Out.WriteLine('small')";
-        let outcome = run_command(command, "cursor", None, ShellKind::Auto);
+        let outcome = run_command(command, "cursor", None, ShellKind::Auto, false);
         assert!(
             outcome.compacted.is_none(),
             "small output must not be compacted"
@@ -510,6 +535,7 @@ mod tests {
             "cursor",
             None,
             ShellKind::Auto,
+            false,
         );
         assert_eq!(outcome.code, 2);
         assert_eq!(
@@ -527,6 +553,7 @@ mod tests {
             "cursor",
             None,
             ShellKind::Auto,
+            false,
         );
         assert_eq!(outcome.code, 2);
         assert_eq!(
@@ -541,5 +568,73 @@ mod tests {
         assert!(!shell_output_semantically_safe("watch cargo test"));
         assert!(!shell_output_semantically_safe("server &"));
         assert!(shell_output_semantically_safe("cargo test --locked"));
+    }
+
+    #[test]
+    fn hook_authorized_trim_spools_then_imports_exactly_once() {
+        let _guard = crate::test_lock::CTX_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let ctx_home = temp.path().join("ctx-home");
+        let spool = temp.path().join("spool");
+        let previous_home = std::env::var("CTX_HOME").ok();
+        let previous_spool = std::env::var("CTX_TEST_SHELL_SPOOL").ok();
+        std::env::set_var("CTX_HOME", &ctx_home);
+        std::env::set_var("CTX_TEST_SHELL_SPOOL", &spool);
+
+        let original = (0..5_000)
+            .map(|line| format!("docs/file-{line}.md: repeated needle and surrounding context\n"))
+            .collect::<String>();
+        let prepared = try_compact(
+            "rg needle docs",
+            &original,
+            "codex",
+            Some("session-1"),
+            true,
+        )
+        .expect("authorized output should trim without opening the database");
+        assert!(prepared.trimmed.len() < original.len());
+        assert!(!crate::config::db_path().exists());
+        assert!(crate::shell_spool::load(&prepared.rewind_id)
+            .unwrap()
+            .is_some());
+
+        assert!(import_shell_trim(&prepared.rewind_id).unwrap());
+        let conn = crate::db::open_db().unwrap();
+        crate::db::ensure_schema(&conn).unwrap();
+        let stored = crate::db::get_rewind(&conn, &prepared.rewind_id).unwrap();
+        assert_eq!(stored.original, original);
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM compress_decisions
+                 WHERE applied=1 AND rewind_id=?1",
+                [&prepared.rewind_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+        drop(conn);
+        assert!(crate::shell_spool::load(&prepared.rewind_id)
+            .unwrap()
+            .is_none());
+
+        // Simulate a crash after the database commit but before spool deletion. Re-importing the
+        // same validated receipt must clean it up without duplicating the applied decision.
+        crate::shell_spool::write(&prepared).unwrap();
+        assert!(import_shell_trim(&prepared.rewind_id).unwrap());
+        let conn = crate::db::open_db().unwrap();
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM compress_decisions
+                 WHERE applied=1 AND rewind_id=?1",
+                [&prepared.rewind_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+
+        restore_env("CTX_HOME", previous_home);
+        restore_env("CTX_TEST_SHELL_SPOOL", previous_spool);
     }
 }
