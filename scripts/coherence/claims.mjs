@@ -3,7 +3,7 @@
 
 import { readFileSync } from 'fs';
 
-const files = ['README.md', 'src/dashboard.html', 'src/report.rs', 'docs/portfolio/index.html'];
+const files = ['README.md', 'src/dashboard.html', 'src/report.rs'];
 const forbidden = [
   { re: /\bprove(?:d|s|n)? safe\b/i, why: 'use observed-harm-bar language, not causal safety proof' },
   { re: /\bproven across\b|\bfinish the proof\b|\bproof (?:is )?(?:not )?locked\b/i, why: 'describe the evidence threshold without causal-certainty language' },

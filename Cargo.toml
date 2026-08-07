@@ -8,7 +8,7 @@ repository = "https://github.com/saurabh0392/ctx"
 readme = "README.md"
 keywords = ["claude-code", "mcp", "context", "agent", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["docs/portfolio", "docs/prototypes", "services", ".github", "tests"]
+exclude = ["docs/prototypes", ".github", "tests"]
 
 [lib]
 name = "ctx"

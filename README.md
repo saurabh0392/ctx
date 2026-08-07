@@ -4,32 +4,37 @@ CTX shows where a coding agent's context goes, then reclaims noisy tool output w
 
 It runs locally beside coding agents, records a Context Bill from real tool results, and applies reversible output trims only after comparable randomized runs pass a plain-language safety check.
 
-CTX v0.5 is a token-gated beta for small engineering teams. macOS with Claude Code is the supported path for this wave; Cursor and Windows are experimental.
+Development ended in August 2026. The source is MIT licensed and the tool works as documented; no new features are planned. The full story of why I built it, what I learned, and why it ended: [saurabhsharan.dev](https://saurabhsharan.dev).
 
-## Beta install
-
-Ask for a beta invite, then run the command provided with it:
+## Install
 
 ```bash
-curl -fsSL <distribution-endpoint>/install.sh | CTX_TOKEN=<one-time-invite> sh
+brew install saurabh0392/ctx/ctx   # macOS, Apple Silicon
+cargo install ctx-agent            # builds anywhere Rust runs
 ```
 
-The installer downloads a SHA-256-verified binary, stores a scoped and revocable 90-day beta capability, runs `ctx setup --beta --yes`, wires Claude Code hooks and recovery tools, installs the CTX plugin when Codex is present, and starts the dashboard at [http://127.0.0.1:8789](http://127.0.0.1:8789). Codex requires one explicit hook review: open `/hooks` in Codex and trust the CTX hooks.
+Then wire it into your agent and start the dashboard:
 
-The macOS beta is not yet Developer ID signed or notarized. The installer clears quarantine and adds an ad-hoc signature as a temporary beta bridge. Do not treat this release as production-grade software distribution.
+```bash
+ctx setup
+```
+
+`ctx setup` wires Claude Code hooks and recovery tools, installs the CTX plugin when Codex is present, and starts the dashboard at [http://127.0.0.1:8789](http://127.0.0.1:8789). Codex requires one explicit hook review: open `/hooks` in Codex and trust the CTX hooks. macOS with Claude Code is the supported path; Cursor and Windows are experimental.
+
+The macOS binary is not Developer ID signed or notarized; install through brew or cargo above rather than downloading release assets directly.
 
 After installation:
 
 ```bash
 ctx doctor             # local install, DB, hooks, MCP, dashboard, capability
 ctx doctor --json      # stable machine-readable diagnostics
-ctx update --check     # check the token-gated beta channel
+ctx update --check     # check for a newer release
 ctx update             # checksum-verify, atomically replace, and refresh setup
 ```
 
 ## The first-run contract
 
-A fresh `--beta` install uses these defaults:
+A fresh install uses these defaults:
 
 - Output autopilot: `full`, with bounded burn-in and the existing evidence gate.
 - Reversibility: every applied trim keeps the verbatim original for `ctx expand` / `ctx_expand`.
@@ -77,17 +82,17 @@ Aggregate privacy is the default. It omits commands, paths, absolute repo paths,
 
 An “eligible” token in a report means CTX's current transform can remove it. Eligibility and evidence-gated activation are reported separately.
 
-## Privacy and beta evidence
+## Privacy
 
 CTX's evidence database, recovery copies, commands, paths, repo names, and observed tool results stay on your device. CTX has no background telemetry and operates no cloud relay. If you explicitly route a remote MCP server through the gateway, MCP requests still go from your device to the exact destination you approved; CTX shows that destination, blocks redirects and private-network pivots, and never sends the traffic to a CTX-operated service. OAuth tokens live in the operating-system credential store, not SQLite or CTX config files.
 
-At 7 and 21 active days, a beta install may offer an optional check-in. The dashboard shows the exact `ctx.beta-checkin.v1` JSON before Send becomes available. The allowlist contains only installation/version metadata, activity counts, Context Bill totals, trim/recovery counts, tool-stage counts, and four short product questions. Dismissing it waits seven days. A failed send is preserved locally for retry.
+At 7 and 21 active days, an install enrolled during the beta may offer an optional check-in. The dashboard shows the exact `ctx.beta-checkin.v1` JSON before Send becomes available. The allowlist contains only installation/version metadata, activity counts, Context Bill totals, trim/recovery counts, tool-stage counts, and four short product questions. Dismissing it waits seven days. A failed send is preserved locally for retry.
 
 Issue reports follow the same preview-and-send rule. The localhost dashboard adds the scoped capability server-side, so browser JavaScript never receives it. Screenshots are optional, limited to three files of 5 MB, stored privately, linked for seven days, and deleted after 30 days.
 
 ## Compatibility
 
-| Surface | Beta status | Observation | Reversible output control | Tool-menu pruning |
+| Surface | Status | Observation | Reversible output control | Tool-menu pruning |
 | --- | --- | --- | --- | --- |
 | Claude Code on macOS | Supported | Yes | Yes | Opt-in |
 | Claude Code on Linux x86_64 | Best effort | Yes | Yes | Opt-in |
@@ -195,9 +200,6 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --all-targets --locked
 
-cd services/ctx-dist && npx tsc --noEmit && npm run synth
-cd services/report-intake && npx tsc --noEmit && npm run synth
-
 # After pushing a PR, run the local persona gate on its exact head.
 make pr-fitcheck PR=<number>
 ```
@@ -213,22 +215,15 @@ Architecture and decision history:
 - [Strategy](docs/strategy-context-truth-layer.md)
 - [ADRs](docs/adr)
 
-## Beta services
-
-- [`services/ctx-dist`](services/ctx-dist): private artifacts, invite-to-capability exchange, revocation, and presigned downloads.
-- [`services/report-intake`](services/report-intake): capability-authenticated private issue reports and aggregate check-ins.
-
-Operator data is not committed. Cohort labels remain in the encrypted SSM roster; summaries use pseudonymous participant IDs and aggregate counts.
-
 ## Uninstall
 
 ```bash
 ctx setup --uninstall
 ```
 
-This removes CTX-managed services, hooks, MCP registrations, the CTX-owned Codex plugin/marketplace, filter rules, and the stored beta capability. Unrelated Codex configuration is preserved. Indexed local data remains under `~/.ctx` so uninstall is not a destructive data wipe.
+This removes CTX-managed services, hooks, MCP registrations, the CTX-owned Codex plugin/marketplace, filter rules, and any stored beta capability. Unrelated Codex configuration is preserved. Indexed local data remains under `~/.ctx` so uninstall is not a destructive data wipe.
 
-To perform a clean beta-user reinstall, permanently delete all CTX-owned state after restoring agent
+To perform a clean reinstall, permanently delete all CTX-owned state after restoring agent
 configuration:
 
 ```bash
