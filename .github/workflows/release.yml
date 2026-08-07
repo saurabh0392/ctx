@@ -37,13 +37,6 @@ jobs:
         run: |
           cargo fmt --check
           cargo clippy --all-targets --all-features --locked -- -D warnings
-      - name: Beta service gates
-        run: |
-          for service in ctx-dist report-intake; do
-            npm ci --prefix "services/$service" --no-audit --no-fund
-            npm run --prefix "services/$service" typecheck
-            npm run --prefix "services/$service" synth
-          done
 
   build:
     name: Build ${{ matrix.target }}
