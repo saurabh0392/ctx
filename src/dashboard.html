@@ -3042,9 +3042,6 @@
     $("rp-sentBox").innerHTML = `<div class="rp-sent">&#10003; Opened a prefilled GitHub issue in a new tab. Nothing is posted until you submit it there.</div>`;
   }
 
-
-  }
-
   // The modal markup is injected after this script, so wire it once the DOM (including it) exists.
   function rpWire() {
     if (!$("rp-title")) return;
@@ -3052,7 +3049,7 @@
     $("report-ov").addEventListener("click", (e) => { if (e.target.id === "report-ov") closeReport(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("report-ov").hidden) closeReport(); });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => { rpWire(); bcWire(); }); else { rpWire(); bcWire(); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", rpWire); else rpWire();
 
   // ── boot + live refresh ──
   render();
