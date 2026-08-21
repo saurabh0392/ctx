@@ -1,6 +1,6 @@
 [package]
 name = "ctx-agent"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 description = "Context bill and evidence-gated tool-result trimming for coding agents (Claude Code, Cursor, Codex): see what context costs, trim what randomized checks clear, undo byte for byte"
 license = "MIT"
