@@ -1,7 +1,6 @@
 # Changelog
 
-All notable CTX changes are recorded here. Versions follow semantic versioning while the product is
-in beta.
+All notable CTX changes are recorded here. Versions follow semantic versioning.
 
 ## [Unreleased]
 
@@ -9,6 +8,15 @@ in beta.
 
 ### Changed
 
+- Remove the beta program from the product: no enrollment, no check-ins, no token-gated
+  capability. Fresh installs get the full evidence-gated output autopilot by default, and
+  `ctx setup --beta` is a deprecated no-op.
+- `ctx update` now checks and installs checksum-verified releases from public GitHub releases;
+  Homebrew installs are directed to `brew upgrade`.
+- The dashboard's Report action opens a prefilled public GitHub issue instead of posting to the
+  retired private intake; the counts-only diagnostic snapshot is included as text.
+- Rename `--accept-remote-beta` to `--accept-remote-preview` (the old flag remains as a hidden
+  alias).
 - Relicense from proprietary to MIT and rename the crate to `ctx-agent` for crates.io; the binary
   is still `ctx`.
 - Distribute through public channels: a Homebrew tap (`brew install saurabh0392/ctx/ctx`),

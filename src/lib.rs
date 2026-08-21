@@ -12,7 +12,7 @@ pub mod allowance;
 pub mod analytics;
 pub mod behavior_guard;
 pub mod bench;
-pub mod beta;
+pub mod product;
 pub mod budget_guard;
 pub mod claude_settings;
 pub mod cli;
@@ -126,7 +126,10 @@ pub async fn run() -> Result<()> {
             if uninstall {
                 setup::uninstall(purge_data, yes)?;
             } else {
-                setup::run(no_install, no_zshrc_prompt, dry_run, yes, beta).await?;
+                if beta {
+                    eprintln!("note: --beta is deprecated and has no effect; the standard install is the full product");
+                }
+                setup::run(no_install, no_zshrc_prompt, dry_run, yes).await?;
             }
         }
         Commands::Doctor { json } => doctor::run(json)?,
@@ -171,14 +174,14 @@ pub async fn run() -> Result<()> {
                 id,
                 url,
                 bearer_token_env,
-                accept_remote_beta,
-            } => mcp_gateway::registry::add_http(&id, &url, bearer_token_env, accept_remote_beta)?,
+                accept_remote_preview,
+            } => mcp_gateway::registry::add_http(&id, &url, bearer_token_env, accept_remote_preview)?,
             GatewayCommand::List => mcp_gateway::registry::list()?,
             GatewayCommand::Remove { id } => mcp_gateway::registry::remove(&id)?,
             GatewayCommand::CodexEnable {
                 name,
-                accept_remote_beta,
-            } => mcp_gateway::registry::codex_enable(&name, accept_remote_beta)?,
+                accept_remote_preview,
+            } => mcp_gateway::registry::codex_enable(&name, accept_remote_preview)?,
             GatewayCommand::CodexDisable { name } => mcp_gateway::registry::codex_disable(&name)?,
             GatewayCommand::Login { id, yes } => mcp_gateway::oauth::login(&id, yes).await?,
             GatewayCommand::Logout { id } => mcp_gateway::oauth::logout(&id)?,

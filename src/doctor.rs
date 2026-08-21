@@ -1,4 +1,4 @@
-//! Read-only installation diagnostics for beta support.
+//! Read-only installation diagnostics.
 
 use serde::Serialize;
 
@@ -188,38 +188,8 @@ pub fn inspect() -> DoctorReport {
         format!("http://127.0.0.1:{port}"),
     ));
 
-    let beta = crate::beta::load_state();
-    checks.push(match beta {
-        Some(state) => match crate::beta::capability_details(&state.credential) {
-            Some((participant, expiry)) if expiry > chrono::Utc::now() => check(
-                "beta_capability",
-                participant == state.participant_id,
-                format!(
-                    "participant {} ({}; expires {})",
-                    state.participant_id,
-                    state.release_channel,
-                    expiry.format("%Y-%m-%d")
-                ),
-            ),
-            Some((_, expiry)) => check(
-                "beta_capability",
-                false,
-                format!(
-                    "expired {}; reinstall with a current invite",
-                    expiry.format("%Y-%m-%d")
-                ),
-            ),
-            None => check(
-                "beta_capability",
-                false,
-                "scoped capability is missing or malformed; reinstall with a current invite",
-            ),
-        },
-        None => check("beta_capability", true, "not enrolled (standard install)"),
-    });
-
     DoctorReport {
-        schema_version: 2,
+        schema_version: 3,
         healthy: checks.iter().all(|c| c.status == "ok"),
         ctx_version: env!("CARGO_PKG_VERSION"),
         checks,
@@ -287,7 +257,7 @@ mod tests {
     #[test]
     fn report_has_stable_machine_readable_shape() {
         let value = serde_json::to_value(inspect()).unwrap();
-        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["schema_version"], 3);
         assert!(value["healthy"].is_boolean());
         assert!(value["checks"].is_array());
     }

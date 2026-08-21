@@ -127,7 +127,7 @@ pub fn run(
             "Aggregate mode omits commands, paths, absolute repo paths, and tool/server names."
         );
     }
-    crate::beta::record_event(
+    crate::product::record_event(
         "context_report_exported",
         "cli",
         Some(match privacy {
