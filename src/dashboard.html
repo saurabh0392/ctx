@@ -984,6 +984,29 @@
         /* light overrides for reused narrative helpers (longStory/deltaLine emit .good/.bad/.ev-callout) */
         #view-save .good { color: var(--accent-ink); font-weight: 600; }
         #view-save .bad { color: var(--crit); font-weight: 600; }
+        #view-save .sv-group { border:1px solid var(--line); border-radius:12px; background:var(--paper); margin-top:10px; }
+        #view-save .sv-group > summary { display:flex; align-items:baseline; gap:12px; padding:13px 16px; cursor:pointer; list-style:none; }
+        #view-save .sv-group > summary::-webkit-details-marker { display:none; }
+        #view-save .sv-group > summary::after { content:"\25B8"; margin-left:auto; color:var(--faint); transition:transform .15s; }
+        #view-save .sv-group[open] > summary::after { transform:rotate(90deg); }
+        #view-save .sv-g-name { font-family:var(--fserif); font-size:15.5px; font-weight:600; color:var(--ink); }
+        #view-save .sv-g-meta { font-family:var(--fsans); font-size:11.5px; color:var(--faint); }
+        #view-save .sv-g-rows { padding:2px 8px 10px; }
+        #view-save .sv-row { border-top:1px solid var(--line); }
+        #view-save .sv-row > summary { display:flex; align-items:center; gap:10px; padding:9px 8px; cursor:pointer; list-style:none; }
+        #view-save .sv-row > summary::-webkit-details-marker { display:none; }
+        #view-save .sv-row-name { font-family:var(--fsans); font-size:12.5px; color:var(--ink); font-weight:600; }
+        #view-save .sv-row-metric { margin-left:auto; font-family:var(--fmono); font-size:11px; color:var(--faint); }
+        #view-save .sv-row-body { padding:4px 8px 12px; }
+        #view-save .sv-pill { font-family:var(--fmono); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase; padding:3px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); flex-shrink:0; min-width:74px; text-align:center; }
+        #view-save .sv-pill.earned { color:var(--accent-ink); border-color:rgba(15,122,84,.3); background:var(--accent-soft); }
+        #view-save .sv-pill.trial { color:#8a6d00; border-color:rgba(178,142,0,.3); background:rgba(178,142,0,.08); }
+        #view-save .sv-pill.off { color:var(--crit); border-color:rgba(170,60,50,.25); background:rgba(170,60,50,.06); }
+        #view-save .sv-fold > summary { display:flex; align-items:baseline; gap:12px; cursor:pointer; list-style:none; padding:4px 0; }
+        #view-save .sv-fold > summary::-webkit-details-marker { display:none; }
+        #view-save .sv-fold > summary::after { content:"\25B8"; margin-left:auto; color:var(--faint); transition:transform .15s; }
+        #view-save .sv-fold[open] > summary::after { transform:rotate(90deg); }
+        #view-save .sv-fold-sum { font-family:var(--fsans); font-size:11.5px; color:var(--faint); }
         #view-save .ev-callout { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 12px; line-height: 1.5; }
       </style>
       <div class="sv-wrap">
@@ -1618,6 +1641,15 @@
   // Codex app tools carry one extra segment (`mcp__codex_apps__notion__fetch`). Preserve the
   // concrete app and operation so unrelated Notion tools do not all collapse to "apps: notion";
   // that collision could make a held mutation and an eligible read look like the same tool.
+  function serverLabel(name) {
+    if (!name || !name.startsWith("mcp__")) return "Claude Code";
+    const parts = name.split("__");
+    if (parts[1] === "codex_apps") return "Codex apps";
+    const raw = (parts[1] || "").replace(/^claude_ai_/, "").replace(/_/g, " ").trim();
+    if (!raw) return "MCP";
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+
   function prettyTool(name) {
     if (name && name.startsWith("mcp__")) {
       const parts = name.split("__");
@@ -2409,41 +2441,59 @@
     const heldParked = heldAll.length
       ? `<div class="sv-parked"><b>${num(heldAll.length)}</b> held out of trimming by design, watched for cost only. ctx's own recovery tools and one-shot mutations never climb the ladder.</div>`
       : "";
-    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Testing", gTrial.length, "part", "building comparable runs")}${rung("Evaluating", gProving.length, "part", "gathering evidence")}${rung("Trimming", gEarned.length, "on", "safety check passed")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}<section class="sv-sec">${wnadScoreboard(ctx.wnad || [], ctx.insight_actions || {})}</section>`;
+    $("save-ladder").innerHTML = `<div class="sv-ladder"><div class="sv-rungs">${rung("Watching", eligibleWatch.length, "on", "measured, not touched")}${rung("Testing", gTrial.length, "part", "building comparable runs")}${rung("Evaluating", gProving.length, "part", "gathering evidence")}${rung("Trimming", gEarned.length, "on", "safety check passed")}</div>${heldParked}<div class="sv-harm">${harm}${keptLine}</div></div>${recoverModule}<section class="sv-sec"><details class="sv-fold"><summary><span class="sv-sec-eyebrow">Weekly ledger</span><span class="sv-fold-sum">net-ahead verdict, week by week</span></summary>${wnadScoreboard(ctx.wnad || [], ctx.insight_actions || {})}</details></section>`;
 
-    // Tool cards, grouped like the old report: spotlight, proving, then a quiet watch list.
+    // Tools grouped by the platform that owns them: Claude Code built-ins, then each MCP server.
+    // Summary rows stay one line; every number lives behind the row's expander.
     let body = "";
     if (!rows.length) {
       body = `<div class="sv-empty">No tool has enough trim-eligible runs yet. As you work, each tool gets a verdict here.</div>`;
     } else {
-      const spotlight = [...gEarned, ...gTrial, ...gOff];
-      if (spotlight.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Active decisions</div><h2 class="sv-sec-h">What CTX is trimming, testing, or keeping unchanged.</h2><p class="sv-note">Tools always run in full. CTX shortens only what the agent reads back, and the original is one command away. Each card uses the same randomized comparison as the automatic decision.</p>${spotlight.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
-      if (gProving.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Close to a verdict</div><h2 class="sv-sec-h">Some evidence, not enough yet.</h2><p class="sv-note">Output stays unchanged until the safety check passes. Nothing here is being trimmed.</p>${gProving.map((r) => saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])).join("")}</section>`;
-      // eligibleWatch and heldAll are computed above, where the ladder counts its rungs and the parked
-      // held count. Reuse them here so the tool cards and the rung counts can never drift apart.
       const trialSet = new Set(proof.trial_tools || []);
-
-      // Eligible: genuinely earning a trim. Same watch copy as before, now with a trial button.
-      const watchShown = eligibleWatch.filter((r) => (r.c && r.c.decisions >= 10) || (r.p && (r.p.baseline_n || r.p.trimmed_n))).slice(0, 12);
-      // The "why traces for some tools and not others" answer: no trim means no before/after to show.
-      const watchNote = `No before/after traces here yet, and that is expected: ctx has not trimmed these tools' output yet. A tool earns a trace once it produces output long enough to trim. Put one on trial to start collecting the trimmed half now.`;
-      const trialCell = (r) => trialSet.has(r.tool)
-        ? `<span class="p on">On trial</span>`
-        : `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
-      if (watchShown.length) body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Watching, earning a trim</div><h2 class="sv-sec-h">Measured now, trimming once the runs add up.</h2><p class="sv-note">${watchNote}</p>${watchShown.map((r) => `<div class="sv-mini"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${shortMsg(r, autopilot, minB)}</span>${trialCell(r)}</div>`).join("")}</section>`;
-      const watchMore = eligibleWatch.length - watchShown.length;
-      if (watchMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(watchMore)} more eligible tools with lighter usage are not shown.</p>`;
-
-      // Held: measured for cost, never trimmed. No trial button, reason shown per row. heldAll covers
-      // every stage, so a mutation that carries stale proof (e.g. TodoWrite) shows here as held, not
-      // as a Proving card with a dead trial button.
-      const heldShown = heldAll.filter((r) => r.c && r.c.decisions >= 1).slice(0, 16);
-      if (heldShown.length) {
-        const heldNote = `These are held out of trimming on purpose. CTX's own recovery tools stay unchanged so a trim is always reversible, and one-shot mutations do not produce a meaningful comparison for the safety check. They are watched for cost, not for trimming, so there is no test here.`;
-        body += `<section class="sv-sec"><div class="sv-sec-eyebrow">Held, measured but never trimmed</div><h2 class="sv-sec-h">Watched for cost, kept whole on purpose.</h2><p class="sv-note">${heldNote}</p>${heldShown.map((r) => `<div class="sv-mini held"><span class="n">${esc(prettyTool(r.tool))}</span><span class="s">${esc(r.c.held_reason)}</span><span class="p">held</span></div>`).join("")}</section>`;
-        const heldMore = heldAll.length - heldShown.length;
-        if (heldMore > 0) body += `<p class="sv-note" style="margin-top:8px">${num(heldMore)} more held tools with lighter usage are not shown.</p>`;
-      }
+      const stageMeta = {
+        earned: { label: "Trimming", cls: "earned", rank: 0 },
+        trial: { label: "Testing", cls: "trial", rank: 1 },
+        off: { label: "Kept whole", cls: "off", rank: 2 },
+        proving: { label: "Evaluating", cls: "proving", rank: 3 },
+        watch: { label: "Watching", cls: "watch", rank: 4 },
+        held: { label: "Held", cls: "held", rank: 5 },
+      };
+      const groups = new Map();
+      rows.forEach((r) => {
+        const key = serverLabel(r.tool);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+      });
+      const reclaimedOf = (r) => (attrBy[r.tool] && attrBy[r.tool].reclaimed_chars) || (r.c && r.c.reclaimed_chars) || 0;
+      const stageOf = (r) => (isHeld(r) ? "held" : r.stage);
+      const rowLine = (r) => {
+        const st = stageMeta[stageOf(r)];
+        const detail = isHeld(r)
+          ? `<div class="sv-row-body"><p class="sv-note">Held out of trimming on purpose: ${esc((r.c && r.c.held_reason) || "no comparable safety test exists for this tool")}. Watched for cost only.</p></div>`
+          : (stageOf(r) === "watch"
+            ? `<div class="sv-row-body"><p class="sv-note">${esc(shortMsg(r, autopilot, minB))} No before/after trace yet: ctx has not trimmed this tool's output. ${trialSet.has(r.tool) ? '<span class="p on">On trial</span>' : `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`}</p></div>`
+            : `<div class="sv-row-body">${saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])}</div>`);
+        const runs = (r.c && r.c.decisions) || 0;
+        const metric = reclaimedOf(r) > 0 ? `${fmtK(tok(reclaimedOf(r)))} reclaimed` : runs > 0 ? `${num(runs)} runs` : "";
+        return `<details class="sv-row"><summary><span class="sv-pill ${st.cls}">${st.label}</span><span class="sv-row-name">${esc(prettyTool(r.tool))}</span><span class="sv-row-metric">${metric}</span></summary>${detail}</details>`;
+      };
+      const groupCards = [...groups.entries()]
+        .map(([server, list]) => {
+          list.sort((a, b) => (stageMeta[stageOf(a)].rank - stageMeta[stageOf(b)].rank) || (reclaimedOf(b) - reclaimedOf(a)));
+          const active = list.filter((r) => stageOf(r) === "earned" || stageOf(r) === "trial").length;
+          const reclaimed = list.reduce((t, r) => t + reclaimedOf(r), 0);
+          return { server, list, active, reclaimed };
+        })
+        .sort((a, b) => (b.active - a.active) || (b.reclaimed - a.reclaimed) || (b.list.length - a.list.length));
+      const groupHtml = groupCards.map((gc, i) => {
+        const meta = [
+          `${num(gc.list.length)} tool${gc.list.length === 1 ? "" : "s"}`,
+          gc.active ? `${num(gc.active)} trimming or testing` : null,
+          gc.reclaimed ? `${fmtK(tok(gc.reclaimed))} reclaimed` : null,
+        ].filter(Boolean).join(" · ");
+        return `<details class="sv-group"${i === 0 && gc.active ? " open" : ""}><summary><span class="sv-g-name">${esc(gc.server)}</span><span class="sv-g-meta">${meta}</span></summary><div class="sv-g-rows">${gc.list.map(rowLine).join("")}</div></details>`;
+      }).join("");
+      body = `<section class="sv-sec"><div class="sv-sec-eyebrow">Tools by platform</div><h2 class="sv-sec-h">Every tool, under the platform it belongs to.</h2><p class="sv-note">Tools always run in full; ctx shortens only what the agent reads back, and the original is one command away. Open a platform for its tools, and a tool for its evidence.</p>${groupHtml}</section>`;
     }
     $("save-tools").innerHTML = body;
 
@@ -2460,7 +2510,7 @@
         const caps = receipts.map((r) => `<b>${esc(r.label)}:</b> ${esc(capabilityMode(r))}<br><span style="color:var(--faint)">${esc(r.proof)}${r.limitation ? " · " + esc(r.limitation) : ""}</span>`).join("<br>");
         return `<div class="sv-agent"><div class="sv-agent-top"><span class="sv-agent-name">${esc(name)}</span><span class="sv-agent-pill ${act}">${esc(status)}</span></div><div class="sv-agent-cap">${caps || "No capability receipt"}</div><div class="sv-agent-meta">receipt v${num(s.capability_contract_version || 0)} · last seen ${ago}</div></div>`;
       }).join("");
-      $("save-agents").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Where ctx acts</div><h2 class="sv-sec-h">One honest layer under every agent.</h2><p class="sv-note">No agent vendor measures the others. This is the only place they sit together, on your own work.</p><div class="sv-agents">${cards}</div></section>`;
+      $("save-agents").innerHTML = `<section class="sv-sec"><details class="sv-fold"><summary><span class="sv-sec-eyebrow">Where ctx acts</span><span class="sv-fold-sum">${seen.length} agent surface${seen.length === 1 ? "" : "s"} observed</span></summary><p class="sv-note">No agent vendor measures the others. This is the only place they sit together, on your own work.</p><div class="sv-agents">${cards}</div></details></section>`;
     } else { $("save-agents").innerHTML = ""; }
 
     // Model routes: lifecycle truth and content-free transport receipts are separate. A registered
@@ -2498,9 +2548,9 @@
       ? `<p class="sv-note" style="margin-top:12px"><b>Disabled route history:</b> ${historical.map((e) => `${esc(e.routeId)} — ${num(e.applied || 0)} applied, ${fmtK(tok(e.charsSaved || 0))} estimated tokens reclaimed`).join(" · ")}. These content-free receipts remain local; the routes no longer control traffic.</p>`
       : "";
     if (currentRoutes.length || historical.length) {
-      $("save-model-routes").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Model routes</div><h2 class="sv-sec-h">Exactly what crosses CTX, what changed, and how to get out.</h2><p class="sv-note">Model routing is opt-in. “Active” requires the client setting, local service, and exact route identity to agree. Shadow means observe only; Testing allows only the narrow contracts that passed the implementation gates.</p><div class="sv-routes">${currentRoutes.map(routeCard).join("")}</div>${historyRows}</section>`;
+      $("save-model-routes").innerHTML = `<section class="sv-sec"><details class="sv-fold"><summary><span class="sv-sec-eyebrow">Model routes</span><span class="sv-fold-sum">${currentRoutes.length} route${currentRoutes.length === 1 ? "" : "s"} configured</span></summary><p class="sv-note">Model routing is opt-in. “Active” requires the client setting, local service, and exact route identity to agree. Shadow means observe only; Testing allows only the narrow contracts that passed the implementation gates.</p><div class="sv-routes">${currentRoutes.map(routeCard).join("")}</div>${historyRows}</details></section>`;
     } else {
-      $("save-model-routes").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Model routes</div><h2 class="sv-sec-h">Off by default. No model traffic crosses CTX.</h2><p class="sv-note">Codex Responses traffic can be configured with API-key or existing ChatGPT-login authentication over HTTP/SSE/WebSocket. Claude Code Anthropic Messages traffic is also supported. Every route starts in observation-only shadow mode. Cursor model traffic and provider-hosted tools remain unavailable. Setup never happens from this dashboard; review the terminal consent receipt first with <code>ctx model-gateway setup --help</code>.</p></section>`;
+      $("save-model-routes").innerHTML = `<section class="sv-sec"><details class="sv-fold"><summary><span class="sv-sec-eyebrow">Model routes</span><span class="sv-fold-sum">off by default, none configured</span></summary><p class="sv-note">Codex Responses traffic can be configured with API-key or existing ChatGPT-login authentication over HTTP/SSE/WebSocket. Claude Code Anthropic Messages traffic is also supported. Every route starts in observation-only shadow mode. Cursor model traffic and provider-hosted tools remain unavailable. Setup never happens from this dashboard; review the terminal consent receipt first with <code>ctx model-gateway setup --help</code>.</p></details></section>`;
     }
 
     // Context pressure: the health read plus the one lever. No by-agent grid, no correlation footnote.
@@ -2516,7 +2566,7 @@
     } else {
       compCard = `<div class="sv-comp"><div class="sv-comp-h">Nothing to read yet.</div><div class="sv-comp-cap">ctx has not indexed Claude Code sessions on this machine yet. Once you run a few, this shows how often your agent hits its context limit.</div></div>`;
     }
-    $("save-comp").innerHTML = `<section class="sv-sec"><div class="sv-sec-eyebrow">Context pressure</div><h2 class="sv-sec-h">How close your sessions run to the limit.</h2>${compCard}</section>`;
+    $("save-comp").innerHTML = `<section class="sv-sec"><details class="sv-fold"><summary><span class="sv-sec-eyebrow">Context pressure</span><span class="sv-fold-sum">how close sessions run to the limit</span></summary>${compCard}</details></section>`;
   }
 
   async function loadLoop() {
