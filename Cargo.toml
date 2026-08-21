@@ -1,8 +1,8 @@
 [package]
 name = "ctx-agent"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
-description = "Local context truth, recovery, and tool-result control for coding agents"
+description = "Context bill and evidence-gated tool-result trimming for coding agents (Claude Code, Cursor, Codex): see what context costs, trim what randomized checks clear, undo byte for byte"
 license = "MIT"
 repository = "https://github.com/saurabh0392/ctx"
 readme = "README.md"

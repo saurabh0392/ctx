@@ -118,9 +118,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
         )
         .route("/api/onboarding", get(api_onboarding))
         .route("/api/product-event", post(api_product_event))
-        .route("/api/beta/snapshot", get(api_beta_snapshot))
-        .route("/api/beta/checkin", post(api_beta_checkin))
-        .route("/api/report-intake", post(api_report_intake))
+        .route("/api/product-snapshot", get(api_product_snapshot))
         .route(
             "/api/context/model-progress",
             get(api_context_model_progress),
@@ -171,21 +169,18 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
 }
 
 async fn serve_html() -> axum::response::Html<&'static str> {
-    crate::beta::record_event("dashboard_opened", "dashboard", None);
+    crate::product::record_event("dashboard_opened", "dashboard", None);
     axum::response::Html(HTML)
 }
 
-async fn api_onboarding() -> Json<crate::beta::OnboardingView> {
+async fn api_onboarding() -> Json<crate::product::OnboardingView> {
     match open_ctx_db() {
-        Some(conn) => Json(crate::beta::onboarding(&conn)),
-        None => Json(crate::beta::OnboardingView {
-            enrolled: crate::beta::load_state().is_some(),
+        Some(conn) => Json(crate::product::onboarding(&conn)),
+        None => Json(crate::product::OnboardingView {
             stage: "installed".into(),
             autopilot_enabled: false,
             bill_ready: false,
             reclaimed_tokens: 0,
-            checkin_due: false,
-            checkin_target_day: None,
         }),
     }
 }
@@ -211,76 +206,11 @@ async fn api_product_event(Json(body): Json<ProductEventBody>) -> impl IntoRespo
     }
 }
 
-async fn api_beta_snapshot() -> impl IntoResponse {
+async fn api_product_snapshot() -> impl IntoResponse {
     let Some(conn) = open_ctx_db() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "database unavailable").into_response();
     };
-    Json(crate::beta::build_snapshot(&conn)).into_response()
-}
-
-#[derive(Deserialize)]
-struct BetaCheckinBody {
-    action: String,
-    #[serde(default)]
-    learned_something: String,
-    #[serde(default)]
-    changed_behavior: String,
-    #[serde(default)]
-    keep_using: String,
-    #[serde(default)]
-    price_interest_25_per_developer: String,
-}
-
-impl BetaCheckinBody {
-    fn answers(&self) -> crate::beta::CheckinAnswers {
-        crate::beta::CheckinAnswers {
-            learned_something: self.learned_something.chars().take(500).collect(),
-            changed_behavior: self.changed_behavior.chars().take(500).collect(),
-            keep_using: self.keep_using.chars().take(100).collect(),
-            price_interest_25_per_developer: self
-                .price_interest_25_per_developer
-                .chars()
-                .take(100)
-                .collect(),
-        }
-    }
-}
-
-async fn api_beta_checkin(Json(body): Json<BetaCheckinBody>) -> impl IntoResponse {
-    if body.action == "dismiss" {
-        return match crate::beta::dismiss_checkin() {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-        };
-    }
-    let Some(conn) = open_ctx_db() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "database unavailable").into_response();
-    };
-    match body.action.as_str() {
-        "preview" => match crate::beta::preview_checkin(&conn, body.answers()) {
-            Ok(envelope) => Json(envelope).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        },
-        "send" => {
-            drop(conn);
-            match crate::beta::send_checkin().await {
-                Ok(value) => Json(value).into_response(),
-                Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
-            }
-        }
-        _ => (StatusCode::BAD_REQUEST, "unknown check-in action").into_response(),
-    }
-}
-
-async fn api_report_intake(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
-    match crate::beta::proxy_feedback(body).await {
-        Ok(proxy) => {
-            let status =
-                StatusCode::from_u16(proxy.status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            (status, Json(proxy.body)).into_response()
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
-    }
+    Json(crate::product::build_snapshot(&conn)).into_response()
 }
 
 /// Claude Code async HTTP hooks (PostToolUse, SessionStart, SessionEnd, Stop).
@@ -530,7 +460,7 @@ async fn api_context_rewind(Json(body): Json<serde_json::Value>) -> Json<serde_j
     let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
     match open_ctx_db().and_then(|c| crate::db::get_rewind(&c, id)) {
         Some(e) => {
-            crate::beta::record_event("rewind_expanded", "dashboard", None);
+            crate::product::record_event("rewind_expanded", "dashboard", None);
             Json(serde_json::json!({
                 "id": e.id,
                 "source": e.command_or_path,
@@ -557,7 +487,7 @@ async fn api_context_recovery_check() -> impl IntoResponse {
 /// GET /api/context/bill: where your context goes, per tool. The education front door, ranked
 /// output sinks with reclaimable and reclaimed room. Populates from the first session, no labels.
 async fn api_context_bill() -> Json<crate::db::ContextBill> {
-    crate::beta::record_event("context_bill_viewed", "dashboard", None);
+    crate::product::record_event("context_bill_viewed", "dashboard", None);
     match open_ctx_db() {
         Some(conn) => Json(crate::db::context_bill(&conn)),
         None => Json(crate::db::ContextBill::default()),
@@ -630,7 +560,7 @@ async fn api_context_prune_server(Json(body): Json<PruneServerBody>) -> impl Int
     };
     match res {
         Ok(_) => {
-            crate::beta::record_event(
+            crate::product::record_event(
                 if body.unprune {
                     "server_unpruned"
                 } else {

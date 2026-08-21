@@ -540,7 +540,7 @@
         <a data-view="see" onclick="go('see')">See</a>
         <a data-view="save" onclick="go('save')">Save</a>
         <a data-view="settings" onclick="go('settings')">Settings</a>
-        <span class="nav-report" onclick="openReport()" title="Report an issue to the ctx team">Report</span>
+        <span class="nav-report" onclick="openReport()" title="Report an issue on GitHub">Report</span>
         <span class="health" id="health"><span class="pip"></span><span id="health-txt">connecting</span></span>
         <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle light and dark"></button>
       </nav>
@@ -574,20 +574,20 @@
           --measure: 60ch;
         }
         .h2-wrap { max-width: 720px; margin: 0 auto; }
-        .beta-onboard { display:none; margin-top:30px; border:1px solid var(--line); border-radius:14px;
+        .ctx-onboard { display:none; margin-top:30px; border:1px solid var(--line); border-radius:14px;
           background:var(--raised); padding:18px 20px; box-shadow:0 1px 2px rgba(20,30,24,.03); }
-        .beta-onboard.on { display:block; }
-        .beta-ob-top { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; }
-        .beta-ob-k { font-family:var(--fmono); font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--accent-ink); }
-        .beta-ob-h { font-family:var(--fserif); font-size:20px; font-weight:600; color:var(--ink); margin-top:5px; }
-        .beta-ob-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-        .beta-ob-btn { border:1px solid var(--line); background:var(--paper); color:var(--muted); border-radius:9px; padding:8px 11px; font:600 12px var(--fsans); cursor:pointer; }
-        .beta-ob-btn.primary { color:var(--accent-ink); border-color:rgba(15,122,84,.24); background:var(--accent-soft); }
-        .beta-ob-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:16px; }
-        .beta-ob-step { border-top:2px solid var(--line); padding-top:9px; font:12px/1.45 var(--fsans); color:var(--faint); }
-        .beta-ob-step.done { border-color:var(--accent); color:var(--muted); }
-        .beta-ob-step b { display:block; color:var(--ink); font-weight:600; }
-        @media (max-width:640px) { .beta-ob-top { display:block; } .beta-ob-actions { justify-content:flex-start; margin-top:12px; } }
+        .ctx-onboard.on { display:block; }
+        .ob-top { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; }
+        .ob-k { font-family:var(--fmono); font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--accent-ink); }
+        .ob-h { font-family:var(--fserif); font-size:20px; font-weight:600; color:var(--ink); margin-top:5px; }
+        .ob-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+        .ob-btn { border:1px solid var(--line); background:var(--paper); color:var(--muted); border-radius:9px; padding:8px 11px; font:600 12px var(--fsans); cursor:pointer; }
+        .ob-btn.primary { color:var(--accent-ink); border-color:rgba(15,122,84,.24); background:var(--accent-soft); }
+        .ob-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:16px; }
+        .ob-step { border-top:2px solid var(--line); padding-top:9px; font:12px/1.45 var(--fsans); color:var(--faint); }
+        .ob-step.done { border-color:var(--accent); color:var(--muted); }
+        .ob-step b { display:block; color:var(--ink); font-weight:600; }
+        @media (max-width:640px) { .ob-top { display:block; } .ob-actions { justify-content:flex-start; margin-top:12px; } }
         .h2-rail { position: fixed; left: max(20px, calc(50vw - 470px)); top: 50%;
           transform: translateY(-50%); z-index: 10; display: flex; flex-direction: column; }
         .h2-seg { display: flex; flex-direction: column; align-items: center; }
@@ -703,7 +703,7 @@
       </nav>
 
       <div class="h2-wrap">
-        <div class="beta-onboard" id="h2-onboarding"></div>
+        <div class="ctx-onboard" id="h2-onboarding"></div>
         <section class="h2-beat h2-first" id="h2-see">
           <div class="h2-reveal">
             <div class="h2-eyebrow"><span class="ix">01</span> See where your context goes</div>
@@ -1481,17 +1481,16 @@
       '<div class="taxes-tie">' + harm + '</div>';
   }
 
-  function renderBetaOnboarding(o) {
+  function renderOnboarding(o) {
     const el = $("h2-onboarding"); if (!el) return;
     if (!o || !o.enrolled) { el.classList.remove("on"); el.innerHTML = ""; return; }
     const rank = { installed:0, observing:1, bill_ready:2, trialing:2, reclaiming:3 }[o.stage] || 0;
-    const step = (at, title, body) => `<div class="beta-ob-step ${rank >= at ? "done" : ""}"><b>${title}</b>${body}</div>`;
+    const step = (at, title, body) => `<div class="ob-step ${rank >= at ? "done" : ""}"><b>${title}</b>${body}</div>`;
     const autopilot = o.autopilot_enabled
-      ? `<button class="beta-ob-btn" onclick="setPreset('off')">Pause autopilot</button>`
-      : `<button class="beta-ob-btn primary" onclick="setPreset('full')">Resume autopilot</button>`;
-    const checkin = o.checkin_due ? `<button class="beta-ob-btn primary" onclick="openBetaCheckin()">Preview beta check-in</button>` : "";
-    el.innerHTML = `<div class="beta-ob-top"><div><div class="beta-ob-k">Token-gated beta</div><div class="beta-ob-h">${o.autopilot_enabled ? "Autopilot is on, and still evidence-gated." : "Autopilot is paused. Observation continues."}</div></div><div class="beta-ob-actions">${checkin}${autopilot}</div></div>`
-      + `<div class="beta-ob-steps">${step(0,"1. Installed","Hooks and recovery are wired.")}${step(1,"2. Build your Context Bill","Use Claude Code normally; no project data leaves this machine.")}${step(3,"3. Reclaim with a way back","Every applied trim keeps the original for rewind.")}</div>`;
+      ? `<button class="ob-btn" onclick="setPreset('off')">Pause autopilot</button>`
+      : `<button class="ob-btn primary" onclick="setPreset('full')">Resume autopilot</button>`;
+    el.innerHTML = `<div class="ob-top"><div><div class="ob-k">Evidence-gated autopilot</div><div class="ob-h">${o.autopilot_enabled ? "Autopilot is on, and still evidence-gated." : "Autopilot is paused. Observation continues."}</div></div><div class="ob-actions">${autopilot}</div></div>`
+      + `<div class="ob-steps">${step(0,"1. Installed","Hooks and recovery are wired.")}${step(1,"2. Build your Context Bill","Use Claude Code normally; no project data leaves this machine.")}${step(3,"3. Reclaim with a way back","Every applied trim keeps the original for rewind.")}</div>`;
     el.classList.add("on");
   }
 
@@ -1500,7 +1499,7 @@
     try { [ctx, proof, bill, tbill, onboarding, mp] = await Promise.all([getJSON("/api/context"), getJSON("/api/context/proof").catch(() => ({ tools: [] })), getJSON("/api/context/bill").catch(() => ({})), getJSON("/api/context/tool-bill").catch(() => ({})), getJSON("/api/onboarding").catch(() => null), getJSON("/api/context/model-progress").catch(() => null)]); setHealth(true); }
     catch (e) { setHealth(false); const h = $("h2-hero"); if (h) h.innerHTML = `<div class="h2-warm">Could not reach ctx.</div><p class="h2-subline">Is the dashboard running? Start it and this page fills in.</p>`; return; }
 
-    renderBetaOnboarding(onboarding);
+    renderOnboarding(onboarding);
 
     const stats = ctx.stats || {};
     const on = (ctx.preset || "off") !== "off";
@@ -2983,14 +2982,11 @@
   }
   updateThemeIcon();
 
-  // ── Report an issue: opt-in, redacted feedback that opens a GitHub issue via the intake endpoint.
-  // The diagnostic snapshot is built from the same aggregates the dashboard already shows: counts and
-  // rates only, never paths, commands, or output. Nothing is sent until Send, and the user reviews the
-  // whole body first. The localhost proxy adds the scoped beta capability server-side; browser JS
-  // never receives it, and the remote intake rejects unauthenticated requests.
-  const REPORT_ENDPOINT = "/api/report-intake";
+  // ── Report an issue: builds a prefilled public GitHub issue from the fields below. The diagnostic
+  // snapshot is counts and rates only, never paths, commands, or output. Nothing leaves the browser
+  // until the user submits the issue on GitHub.
+  const REPORT_REPO = "saurabh0392/ctx";
   let rpKind = "bug", rpIncludeSnap = true, rpBundle = null;
-  const rpShots = [];
 
   async function openReport() { $("report-ov").hidden = false; document.body.style.overflow = "hidden"; await rpLoadBundle(); rpRenderPreview(); }
   function closeReport() { $("report-ov").hidden = true; document.body.style.overflow = ""; }
@@ -3029,86 +3025,31 @@
 
   function rpSetKind(el) { [...$("rp-seg").children].forEach((x) => x.classList.remove("on")); el.classList.add("on"); rpKind = el.dataset.v; rpRenderPreview(); }
   function rpToggleSnap() { rpIncludeSnap = !rpIncludeSnap; $("rp-snapToggle").classList.toggle("on", rpIncludeSnap); rpRenderPreview(); }
-  function rpAddImgs(files) { [...files].slice(0, Math.max(0, 3 - rpShots.length)).forEach((f) => { if (!f.type.startsWith("image/") || f.size > 5 * 1024 * 1024) return; const r = new FileReader(); r.onload = () => { rpShots.push({ name: f.name, contentType: f.type, dataUrl: r.result }); rpRenderShots(); rpRenderPreview(); }; r.readAsDataURL(f); }); }
-  function rpDataUrlToBlob(dataUrl) { const [meta, b64] = dataUrl.split(","); const mime = (meta.match(/:(.*?);/) || [])[1] || "image/png"; const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i); return new Blob([arr], { type: mime }); }
-  function rpRenderShots() { $("rp-shots").innerHTML = rpShots.map((s, i) => `<div class="rp-shot" onclick="rpRemoveShot(${i})"><img src="${s.dataUrl}"/><div class="rp-x">Remove</div></div>`).join(""); }
-  function rpRemoveShot(i) { rpShots.splice(i, 1); rpRenderShots(); rpRenderPreview(); }
 
   function rpRenderPreview() {
     const title = $("rp-title").value || "(no title yet)", desc = $("rp-desc").value || "(describe what happened)", ex = $("rp-example").value;
     let b = `type: ${rpKind}\ntitle: ${esc(title)}\n\n${esc(desc)}\n`;
     if (ex.trim()) b += `\nexample:\n\`\`\`\n${esc(ex.trim())}\n\`\`\`\n`;
     if (rpIncludeSnap && rpBundle && rpBundle.tools.length) b += `\ndiagnostic snapshot (counts only):\n` + rpBundle.tools.slice(0, 6).map((t) => `${prettyTool(t.tool)} ${t.stage} ${fmtK(t.reclaimed)}${t.recoveries ? " rec" + t.recoveries : ""}`).join(" | ") + "\n";
-    if (rpShots.length) b += `\nscreenshots: ${rpShots.length} attached\n`;
     $("rp-preview").textContent = b;
   }
 
-  async function rpSend() {
-    const btn = $("rp-send"); btn.textContent = "Sending..."; btn.disabled = true;
-    if (!REPORT_ENDPOINT) { $("rp-sentBox").innerHTML = `<div class="rp-sent">No intake endpoint set in this build, so nothing was sent. The preview above is what will post once it is wired.</div>`; btn.textContent = "Send report"; btn.disabled = false; return; }
-    const post = (body) => fetch(REPORT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    try {
-      // 1) images: presign, then upload each straight to S3, collecting the object keys.
-      let imageKeys = [];
-      if (rpShots.length) {
-        const pres = await post({ action: "presign", images: rpShots.map((s) => ({ name: s.name, contentType: s.contentType || "image/png" })) });
-        if (!pres.ok) throw new Error("presign " + pres.status);
-        const { uploads } = await pres.json();
-        for (let i = 0; i < uploads.length; i++) {
-          const u = uploads[i], form = new FormData();
-          Object.entries(u.fields).forEach(([k, v]) => form.append(k, v));
-          form.append("file", rpDataUrlToBlob(rpShots[i].dataUrl));
-          const up = await fetch(u.url, { method: "POST", body: form });
-          if (!up.ok) throw new Error("upload " + up.status);
-          imageKeys.push(u.key);
-        }
-      }
-      // 2) submit the report; the Lambda creates the GitHub issue and links the images.
-      const res = await post({ action: "submit", report: { kind: rpKind, title: $("rp-title").value, description: $("rp-desc").value, example: $("rp-example").value, bundle: rpIncludeSnap ? rpBundle : null }, imageKeys });
-      if (!res.ok) throw new Error("submit " + res.status);
-      const out = await res.json().catch(() => ({}));
-      $("rp-sentBox").innerHTML = `<div class="rp-sent">&#10003; Sent. Thanks for the report.${out.url ? ` <a href="${esc(out.url)}" target="_blank">Track it</a>.` : ""}</div>`; btn.textContent = "Sent";
-    } catch (e) { $("rp-sentBox").innerHTML = `<div class="rp-sent bad">Could not send (${esc(String(e.message || e))}). Try again, or copy the preview and send it manually.</div>`; btn.textContent = "Send report"; btn.disabled = false; }
-  }
-
-  // ── Beta check-in: four product questions plus the allowlisted aggregate snapshot. Preview is a
-  // separate action from Send; edits invalidate the preview so the visible JSON always matches.
-  let bcPreviewed = false;
-  function openBetaCheckin() { const o = $("checkin-ov"); if (!o) return; o.hidden = false; document.body.style.overflow = "hidden"; bcInvalidate(); }
-  function closeBetaCheckin() { const o = $("checkin-ov"); if (o) o.hidden = true; document.body.style.overflow = ""; }
-  function bcBody(action) { return { action, learned_something: $("bc-learned").value, changed_behavior: $("bc-changed").value, keep_using: $("bc-keep").value, price_interest_25_per_developer: $("bc-price").value }; }
-  function bcInvalidate() { bcPreviewed = false; const b = $("bc-send"); if (b) b.disabled = true; const s = $("bc-status"); if (s) s.textContent = "Preview the exact JSON before Send becomes available."; }
-  async function bcPreview() {
-    const pre = $("bc-preview"), status = $("bc-status"); status.textContent = "Building local preview...";
-    try { const r = await post("/api/beta/checkin", bcBody("preview")); if (!r.ok) throw new Error(await r.text()); const out = await r.json(); pre.textContent = JSON.stringify(out, null, 2); bcPreviewed = true; $("bc-send").disabled = false; status.textContent = "Nothing has been sent. Review the JSON, then choose Send or Not now."; }
-    catch (e) { status.textContent = "Could not build preview: " + String(e.message || e); }
-  }
-  async function bcSend() {
-    if (!bcPreviewed) return;
-    const btn = $("bc-send"), status = $("bc-status"); btn.disabled = true; btn.textContent = "Sending...";
-    try { const r = await post("/api/beta/checkin", { action:"send" }); if (!r.ok) throw new Error(await r.text()); status.textContent = "Sent. Thank you — only the JSON you reviewed left this machine."; btn.textContent = "Sent"; setTimeout(() => { closeBetaCheckin(); loadHome(); }, 900); }
-    catch (e) { status.textContent = "Could not send. The reviewed payload is preserved locally so you can retry. " + String(e.message || e); btn.textContent = "Send"; btn.disabled = false; }
-  }
-  async function bcDismiss() { await post("/api/beta/checkin", { action:"dismiss" }); closeBetaCheckin(); loadHome(); }
-
-  function bcWire() {
-    ["bc-learned","bc-changed","bc-keep","bc-price"].forEach((id) => { const el = $(id); if (el) el.addEventListener("input", bcInvalidate); });
-    const ov = $("checkin-ov"); if (ov) ov.addEventListener("click", (e) => { if (e.target.id === "checkin-ov") closeBetaCheckin(); });
+  function rpSend() {
+    const title = ($("rp-title").value || "").trim() || `[${rpKind}] ctx report`;
+    const body = $("rp-preview").textContent || "";
+    const url = `https://github.com/${REPORT_REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+    window.open(url, "_blank", "noopener");
+    $("rp-sentBox").innerHTML = `<div class="rp-sent">&#10003; Opened a prefilled GitHub issue in a new tab. Nothing is posted until you submit it there.</div>`;
   }
 
   // The modal markup is injected after this script, so wire it once the DOM (including it) exists.
   function rpWire() {
-    const drop = $("rp-drop"), file = $("rp-file"); if (!drop) return;
-    drop.onclick = () => file.click();
-    file.onchange = (e) => { rpAddImgs(e.target.files); file.value = ""; };
-    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
-    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); rpAddImgs(e.dataTransfer.files); });
+    if (!$("rp-title")) return;
     ["rp-title", "rp-desc", "rp-example"].forEach((id) => $(id).addEventListener("input", rpRenderPreview));
     $("report-ov").addEventListener("click", (e) => { if (e.target.id === "report-ov") closeReport(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("report-ov").hidden) closeReport(); });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => { rpWire(); bcWire(); }); else { rpWire(); bcWire(); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", rpWire); else rpWire();
 
   // ── boot + live refresh ──
   render();
@@ -3174,8 +3115,6 @@
   #report-ov .rp-chev { color:var(--faint); font-size:11px; transition:transform .15s; }
   #report-ov .rp-raw-link { color:var(--accent-ink); cursor:pointer; white-space:nowrap; }
   #report-ov .rp-raw { margin-top:10px; background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-family:var(--fmono); font-size:10.5px; color:var(--muted); max-height:220px; overflow:auto; white-space:pre; }
-  #report-ov .rp-drop { border:1px dashed var(--line); border-radius:12px; padding:18px; text-align:center; color:var(--faint); font-size:13px; cursor:pointer; }
-  #report-ov .rp-drop:hover, #report-ov .rp-drop.over { border-color:var(--accent); color:var(--muted); }
   #report-ov .rp-shots { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
   #report-ov .rp-shot { position:relative; width:96px; height:70px; border-radius:8px; overflow:hidden; border:1px solid var(--line); cursor:pointer; }
   #report-ov .rp-shot img { width:100%; height:100%; object-fit:cover; }
@@ -3204,8 +3143,8 @@
     </div>
     <div class="m-body">
       <div class="rp-privacy"><span class="lock">&#128274;</span>
-        <span>Nothing is sent until you press <b>Send</b>. ctx's attachment is <b>counts only</b>, never your code,
-        file paths, or tool output. Anything you type or attach is sent as-is, so take out anything sensitive first.</span></div>
+        <span>Nothing leaves this page until you submit the issue on <b>GitHub</b>. ctx's attachment is <b>counts only</b>, never your code,
+        file paths, or tool output. Anything you type is included as-is, so take out anything sensitive first.</span></div>
 
       <div class="rp-field"><span class="rp-lbl">What kind</span>
         <div class="rp-seg" id="rp-seg">
@@ -3237,10 +3176,7 @@
         </div></div>
 
       <div class="rp-field"><span class="rp-lbl">Screenshots <span class="opt">(optional)</span></span>
-        <div class="rp-drop" id="rp-drop">Click to attach, or drop an image here</div>
-        <input type="file" id="rp-file" accept="image/*" multiple hidden />
-        <div class="rp-shots" id="rp-shots"></div>
-        <div class="rp-hint">Crop or black out anything sensitive before you attach. ctx does not read or change your images.</div></div>
+        <div class="rp-hint">Paste images directly into the GitHub issue after it opens. Crop or black out anything sensitive first.</div></div>
 
       <div class="rp-field"><span class="rp-lbl">Review what gets sent</span>
         <div class="rp-prev" id="rp-preview"></div></div>
@@ -3248,51 +3184,12 @@
       <div id="rp-sentBox"></div>
     </div>
     <div class="rp-foot">
-      <div class="note">Opens a private GitHub issue for the ctx team, not public. No account needed, and you can ask us to delete it any time.</div>
+      <div class="note">Opens a prefilled public issue on GitHub in a new tab. Nothing is posted until you submit it there.</div>
       <button class="rp-cta ghost" onclick="closeReport()">Cancel</button>
-      <button class="rp-cta primary" id="rp-send" onclick="rpSend()">Send report</button>
+      <button class="rp-cta primary" id="rp-send" onclick="rpSend()">Open GitHub issue</button>
     </div>
   </div>
 </div>
-<style>
-  #checkin-ov { position:fixed; inset:0; z-index:70; background:rgba(6,9,8,.58); display:flex; align-items:flex-start; justify-content:center; padding:5vh 16px; color:#161a18; }
-  #checkin-ov[hidden] { display:none; }
-  .bc-modal { width:min(720px,100%); max-height:90vh; overflow:auto; background:#fff; border:1px solid #e3e7e1; border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.25); padding:24px; }
-  .bc-k { font:11px ui-monospace,"SF Mono",monospace; letter-spacing:.12em; text-transform:uppercase; color:#0b5c40; }
-  .bc-title { font:600 26px ui-serif,Georgia,serif; margin-top:7px; }
-  .bc-lede { color:#565e59; font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin-top:8px; }
-  .bc-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:20px; }
-  .bc-field { display:flex; flex-direction:column; gap:7px; font:600 12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#565e59; }
-  .bc-field textarea,.bc-field select { border:1px solid #e3e7e1; border-radius:9px; padding:10px 11px; color:#161a18; background:#f6f7f4; font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:42px; }
-  .bc-field textarea { min-height:74px; resize:vertical; }
-  .bc-preview { margin-top:18px; background:#f6f7f4; border:1px solid #e3e7e1; border-radius:10px; padding:12px; max-height:230px; overflow:auto; white-space:pre; font:10.5px/1.5 ui-monospace,"SF Mono",monospace; color:#565e59; }
-  .bc-status { font:12px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#565e59; margin-top:10px; }
-  .bc-actions { display:flex; gap:9px; justify-content:flex-end; margin-top:18px; }
-  .bc-btn { border:1px solid #e3e7e1; background:#fff; color:#565e59; border-radius:9px; padding:9px 14px; font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; cursor:pointer; }
-  .bc-btn.primary { background:#0f7a54; color:#fff; border-color:#0f7a54; }
-  .bc-btn:disabled { opacity:.45; cursor:not-allowed; }
-  @media(max-width:620px) { .bc-grid { grid-template-columns:1fr; } }
-</style>
 
-<div id="checkin-ov" hidden>
-  <div class="bc-modal" role="dialog" aria-label="Beta check-in">
-    <div class="bc-k">Opt-in beta check-in</div>
-    <h2 class="bc-title">What did CTX change for you?</h2>
-    <p class="bc-lede">CTX has no background telemetry. Your answers and an aggregate counts-only snapshot are shown below before anything is sent. No prompts, output, commands, paths, repos, or tool names are included.</p>
-    <div class="bc-grid">
-      <label class="bc-field">Did you learn something about your context?<textarea id="bc-learned" placeholder="A short observation, or ‘no’. "></textarea></label>
-      <label class="bc-field">Did you change anything because of it?<textarea id="bc-changed" placeholder="Paused a tool, rewound a trim, changed an MCP menu, or ‘no’. "></textarea></label>
-      <label class="bc-field">Would you keep using CTX?<select id="bc-keep"><option value="">Choose one</option><option>yes</option><option>maybe</option><option>no</option></select></label>
-      <label class="bc-field">Would a team lead consider $25/developer/month?<select id="bc-price"><option value="">Choose one</option><option>yes</option><option>maybe</option><option>no</option><option>not sure / not a lead</option></select></label>
-    </div>
-    <pre class="bc-preview" id="bc-preview">Preview will appear here.</pre>
-    <div class="bc-status" id="bc-status">Preview the exact JSON before Send becomes available.</div>
-    <div class="bc-actions">
-      <button class="bc-btn" onclick="bcDismiss()">Not now</button>
-      <button class="bc-btn" onclick="bcPreview()">Preview JSON</button>
-      <button class="bc-btn primary" id="bc-send" onclick="bcSend()" disabled>Send</button>
-    </div>
-  </div>
-</div>
 </body>
 </html>

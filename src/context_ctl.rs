@@ -728,7 +728,7 @@ pub fn set_preset(value: &str) -> Result<()> {
     let mut cfg = Config::load();
     cfg.compress_preset = preset;
     cfg.save()?;
-    crate::beta::record_event(
+    crate::product::record_event(
         if preset == CompressPreset::Off {
             "autopilot_paused"
         } else {

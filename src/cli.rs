@@ -60,17 +60,17 @@ pub enum Commands {
         /// Skip the interactive confirmation prompt (for scripts / CI)
         #[arg(long)]
         yes: bool,
-        /// Enroll a fresh install in the token-gated beta and enable evidence-gated full autopilot
-        #[arg(long)]
+        /// Deprecated no-op kept for old installer scripts
+        #[arg(long, hide = true)]
         beta: bool,
     },
-    /// Check local configuration, database, Claude hooks, dashboard, and beta credentials
+    /// Check local configuration, database, Claude hooks, and the dashboard
     Doctor {
         /// Print the stable machine-readable diagnostic schema
         #[arg(long)]
         json: bool,
     },
-    /// Check for or install a checksum-verified beta release
+    /// Check for or install a checksum-verified release from GitHub
     Update {
         /// Only report whether a newer release exists
         #[arg(long)]
@@ -234,9 +234,9 @@ pub enum GatewayCommand {
         /// Environment variable containing a bearer token; its value is never persisted.
         #[arg(long)]
         bearer_token_env: Option<String>,
-        /// Acknowledge that remote gateway support remains a security-reviewed beta.
-        #[arg(long)]
-        accept_remote_beta: bool,
+        /// Acknowledge that remote gateway support is experimental pending independent security review.
+        #[arg(long = "accept-remote-preview", alias = "accept-remote-beta")]
+        accept_remote_preview: bool,
     },
     /// List registered gateway destinations without printing credentials.
     List,
@@ -246,9 +246,9 @@ pub enum GatewayCommand {
     CodexEnable {
         /// Existing name under `[mcp_servers.<name>]` in ~/.codex/config.toml.
         name: String,
-        /// Acknowledge remote HTTP gateway beta when importing a URL server.
-        #[arg(long)]
-        accept_remote_beta: bool,
+        /// Acknowledge the experimental remote HTTP gateway when importing a URL server.
+        #[arg(long = "accept-remote-preview", alias = "accept-remote-beta")]
+        accept_remote_preview: bool,
     },
     /// Restore the exact pre-gateway Codex MCP server definition.
     CodexDisable { name: String },

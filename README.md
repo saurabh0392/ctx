@@ -1,6 +1,14 @@
 # CTX
 
+[![crates.io](https://img.shields.io/crates/v/ctx-agent)](https://crates.io/crates/ctx-agent) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![CI](https://github.com/saurabh0392/ctx/actions/workflows/ci.yml/badge.svg)](https://github.com/saurabh0392/ctx/actions/workflows/ci.yml)
+
 CTX shows where a coding agent's context goes, then reclaims noisy tool output without losing the original.
+
+- An itemized **Context Bill** built from your agent's real tool results: output read back, and the tool menus carried on every request.
+- **Evidence-gated trimming**: a tool's output is shortened only after randomized comparisons on your own sessions clear a safety check. Unclear evidence means no change.
+- **Byte-for-byte replay**: every trim keeps the original; `ctx expand <id>` restores it exactly.
+- **Local by default**: SQLite on your machine, no account, no background telemetry.
+- Works beside **Claude Code** (full), **Codex** via a protocol-preserving MCP gateway, and **Cursor** and **Claude Desktop** (observation and insight).
 
 It runs locally beside coding agents, records a Context Bill from real tool results, and applies reversible output trims only after comparable randomized runs pass a plain-language safety check.
 
@@ -86,8 +94,6 @@ An “eligible” token in a report means CTX's current transform can remove it.
 
 CTX's evidence database, recovery copies, commands, paths, repo names, and observed tool results stay on your device. CTX has no background telemetry and operates no cloud relay. If you explicitly route a remote MCP server through the gateway, MCP requests still go from your device to the exact destination you approved; CTX shows that destination, blocks redirects and private-network pivots, and never sends the traffic to a CTX-operated service. OAuth tokens live in the operating-system credential store, not SQLite or CTX config files.
 
-At 7 and 21 active days, an install enrolled during the beta may offer an optional check-in. The dashboard shows the exact `ctx.beta-checkin.v1` JSON before Send becomes available. The allowlist contains only installation/version metadata, activity counts, Context Bill totals, trim/recovery counts, tool-stage counts, and four short product questions. Dismissing it waits seven days. A failed send is preserved locally for retry.
-
 Issue reports follow the same preview-and-send rule. The localhost dashboard adds the scoped capability server-side, so browser JavaScript never receives it. Screenshots are optional, limited to three files of 5 MB, stored privately, linked for seven days, and deleted after 30 days.
 
 ## Compatibility
@@ -126,13 +132,13 @@ therefore uses an explicit, reversible transport wrapper instead of pretending t
 act:
 
 ```bash
-ctx gateway codex-enable <existing-server> --accept-remote-beta # flag only for remote HTTP
+ctx gateway codex-enable <existing-server> --accept-remote-preview # flag only for remote HTTP
 ctx gateway login <existing-server>                             # OAuth remote servers
 ctx gateway codex-disable <existing-server>                     # restore exact direct definition
 ```
 
 Local stdio definitions run as child processes without a shell and with an isolated environment.
-Remote support is opt-in beta pending independent security review. Built-in Codex Read/search output
+Remote support is opt-in and experimental pending independent security review. Built-in Codex Read/search output
 remains observation-only because Codex exposes no model-visible replacement contract for it.
 
 ### Experimental model-path routes
@@ -221,7 +227,7 @@ Architecture and decision history:
 ctx setup --uninstall
 ```
 
-This removes CTX-managed services, hooks, MCP registrations, the CTX-owned Codex plugin/marketplace, filter rules, and any stored beta capability. Unrelated Codex configuration is preserved. Indexed local data remains under `~/.ctx` so uninstall is not a destructive data wipe.
+This removes CTX-managed services, hooks, MCP registrations, the CTX-owned Codex plugin/marketplace, filter rules, and any legacy enrollment state. Unrelated Codex configuration is preserved. Indexed local data remains under `~/.ctx` so uninstall is not a destructive data wipe.
 
 To perform a clean reinstall, permanently delete all CTX-owned state after restoring agent
 configuration:
@@ -231,7 +237,7 @@ ctx setup --uninstall --purge-data
 ```
 
 The command requires typing `DELETE CTX DATA`. For automation, add `--yes`. It deletes `~/.ctx`
-(database, retained originals, configuration, logs, gateway registry, and beta state), CTX's separate
+(database, retained originals, configuration, logs, gateway registry, and legacy enrollment state), CTX's separate
 experiment backup, and CTX OAuth credentials from the operating-system credential store. It does not
 delete the installed binary; remove `~/.local/bin/ctx` (macOS/Linux) or
 `%LOCALAPPDATA%\ctx\ctx.exe` (Windows) after the command succeeds.

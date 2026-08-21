@@ -55,25 +55,14 @@ fn autorun_summary(periodic_ingest: bool) -> String {
     }
 }
 
-fn setup_preview_lines(periodic_ingest: bool, beta: bool) -> Vec<String> {
-    let config = if beta {
-        format!(
-            "Create {} and write beta config (evidence-gated Full output autopilot; MCP filtering off)",
-            crate::config::ctx_dir().display()
-        )
-    } else {
-        format!(
-            "Create {} and write config (MCP filtering off by default)",
-            crate::config::ctx_dir().display()
-        )
-    };
-    let availability = if beta {
+fn setup_preview_lines(periodic_ingest: bool) -> Vec<String> {
+    let config = format!(
+        "Create {} and write config (evidence-gated Full output autopilot; MCP filtering off)",
+        crate::config::ctx_dir().display()
+    );
+    let availability =
         "Keep every tool available; output changes still fail closed behind safety and evidence gates"
-            .to_string()
-    } else {
-        "Keep all tools available; profile filtering stays an opt-in (`ctx use <profile>`)"
-            .to_string()
-    };
+            .to_string();
     vec![
         config,
         crate::daemon::dashboard_ingest_summary(DASHBOARD_PORT, periodic_ingest),
@@ -114,26 +103,24 @@ fn maybe_offer_editor_rule(host: &dyn crate::host::HostAdapter) -> Result<()> {
     Ok(())
 }
 
-fn apply_fresh_install_defaults(cfg: &mut crate::config::Config, beta: bool) {
+fn apply_fresh_install_defaults(cfg: &mut crate::config::Config) {
     cfg.filter_mode = crate::config::FilterMode::Off;
     cfg.active_profile = Some("all".to_string());
     cfg.auto_profile_enabled = false;
     cfg.dashboard_port = Some(DASHBOARD_PORT);
     cfg.experiment_hooks_enabled = true;
-    if beta {
-        // The beta defaults to full output autopilot, but the evidence gate, bounded burn-in,
-        // deny-set, and Read edit-intent guard still fail closed. MCP filtering remains off:
-        // output control and input-menu pruning are separate bets.
-        cfg.compress_preset = crate::config::CompressPreset::Full;
-        cfg.compress_enabled = true;
-        cfg.compress_shadow_enabled = true;
-        cfg.compress_auto_trial = true;
-        cfg.compress_force_active = false;
-        cfg.compress_trim_all = true;
-        cfg.compress_read_edit_guard = true;
-        cfg.compress_explore_read_rate = 0.20;
-        cfg.pruned_servers.clear();
-    }
+    // Fresh installs get full output autopilot, but the evidence gate, bounded burn-in,
+    // deny-set, and Read edit-intent guard still fail closed. MCP filtering remains off:
+    // output control and input-menu pruning are separate bets.
+    cfg.compress_preset = crate::config::CompressPreset::Full;
+    cfg.compress_enabled = true;
+    cfg.compress_shadow_enabled = true;
+    cfg.compress_auto_trial = true;
+    cfg.compress_force_active = false;
+    cfg.compress_trim_all = true;
+    cfg.compress_read_edit_guard = true;
+    cfg.compress_explore_read_rate = 0.20;
+    cfg.pruned_servers.clear();
 }
 
 pub async fn run(
@@ -141,7 +128,6 @@ pub async fn run(
     _no_zshrc_prompt: bool,
     dry_run: bool,
     yes: bool,
-    beta: bool,
 ) -> Result<()> {
     let config_existed_before = crate::config::ctx_dir().join("config.toml").exists();
     let host = crate::host::detect_primary_host();
@@ -160,7 +146,7 @@ pub async fn run(
     }
     println!();
     println!("{} ctx will:", "i".cyan());
-    for (i, line) in setup_preview_lines(host.needs_periodic_ingest(), beta)
+    for (i, line) in setup_preview_lines(host.needs_periodic_ingest())
         .into_iter()
         .enumerate()
     {
@@ -188,14 +174,6 @@ pub async fn run(
     }
 
     crate::config::ensure_dir()?;
-    if beta {
-        let state = crate::beta::activate_from_environment()?;
-        println!(
-            "{} Beta channel enrolled as {}. Feedback remains preview-and-send only.",
-            "✓".green(),
-            state.participant_id
-        );
-    }
     if crate::experiment_plan::restore_experiment_state_if_missing()? {
         println!(
             "{} Restored experiment plan from persistent backup (survives rm -rf ~/.ctx)",
@@ -221,7 +199,9 @@ pub async fn run(
         let cfg_path = crate::config::ctx_dir().join("config.toml");
         if !cfg_path.exists() {
             let mut cfg = crate::config::Config::load();
-            apply_fresh_install_defaults(&mut cfg, beta && !config_existed_before);
+            if !config_existed_before {
+                apply_fresh_install_defaults(&mut cfg);
+            }
             let _ = cfg.save();
         }
     }
@@ -460,11 +440,7 @@ pub async fn run(
         let _ = maybe_offer_editor_rule(&*host);
     }
 
-    crate::beta::record_event(
-        "setup_completed",
-        "cli",
-        Some(if beta { "beta" } else { "standard" }),
-    );
+    crate::product::record_event("setup_completed", "cli", Some("standard"));
 
     Ok(())
 }
@@ -570,9 +546,10 @@ pub fn uninstall(purge_data: bool, yes: bool) -> Result<()> {
         ),
     }
 
-    if crate::beta::state_path().exists() {
-        crate::beta::remove_state()?;
-        println!("{} Removed the stored beta capability", "✓".green());
+    let legacy_beta = crate::product::legacy_beta_state_path();
+    if legacy_beta.exists() {
+        std::fs::remove_file(&legacy_beta)?;
+        println!("{} Removed legacy enrollment state", "✓".green());
     }
 
     if purge_data {
@@ -603,7 +580,7 @@ fn confirm_data_purge(yes: bool) -> Result<()> {
         );
     }
     println!(
-        "{} This permanently deletes {}, including the database, retained originals, settings, logs, gateway registry, and beta state.",
+        "{} This permanently deletes {}, including the database, retained originals, settings, logs, gateway registry, and legacy enrollment state.",
         "!".red(),
         crate::config::ctx_dir().display()
     );
@@ -935,14 +912,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn beta_defaults_are_full_but_still_fail_closed() {
+    fn fresh_install_defaults_are_full_but_still_fail_closed() {
         let mut cfg = crate::config::Config {
             compress_force_active: true,
             pruned_servers: vec!["mcp__unused".into()],
             ..Default::default()
         };
 
-        apply_fresh_install_defaults(&mut cfg, true);
+        apply_fresh_install_defaults(&mut cfg);
 
         assert_eq!(cfg.filter_mode, crate::config::FilterMode::Off);
         assert_eq!(cfg.compress_preset, crate::config::CompressPreset::Full);
@@ -956,17 +933,10 @@ mod tests {
         assert!(cfg.pruned_servers.is_empty());
     }
 
-    #[test]
-    fn standard_defaults_do_not_enable_output_autopilot() {
-        let mut cfg = crate::config::Config::default();
-        apply_fresh_install_defaults(&mut cfg, false);
-        assert_eq!(cfg.filter_mode, crate::config::FilterMode::Off);
-        assert_eq!(cfg.compress_preset, crate::config::CompressPreset::Off);
-    }
 
     #[test]
-    fn beta_preview_describes_the_defaults_that_setup_applies() {
-        let preview = setup_preview_lines(false, true).join("\n");
+    fn preview_describes_the_defaults_that_setup_applies() {
+        let preview = setup_preview_lines(false).join("\n");
         assert!(preview.contains("evidence-gated Full output autopilot"));
         assert!(preview.contains("MCP filtering off"));
         assert!(preview.contains("fail closed"));

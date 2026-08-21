@@ -1,4 +1,4 @@
-//! Capability-authenticated binary updater for the unsigned Mac/Linux beta.
+//! Self-updater backed by public GitHub releases, with checksum verification and staged swap.
 
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
@@ -7,13 +7,24 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::time::Duration;
 
+const REPO: &str = "saurabh0392/ctx";
+
 #[derive(Debug, Deserialize)]
-struct ReleaseResponse {
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubAsset>,
+}
+
+struct ReleaseInfo {
     version: String,
     url: String,
     sha256: String,
-    #[serde(default)]
-    credential: Option<String>,
 }
 
 fn target() -> Result<&'static str> {
@@ -22,7 +33,7 @@ fn target() -> Result<&'static str> {
         ("x86_64", "macos") => Ok("x86_64-apple-darwin"),
         ("x86_64", "linux") => Ok("x86_64-unknown-linux-gnu"),
         (_, "windows") => bail!("in-place update is experimental on Windows; rerun install.ps1"),
-        (arch, os) => bail!("no beta build for {arch}-{os}"),
+        (arch, os) => bail!("no prebuilt release for {arch}-{os}; use `cargo install ctx-agent`"),
     }
 }
 
@@ -35,66 +46,80 @@ fn semver_tuple(value: &str) -> Option<(u64, u64, u64)> {
     Some((p[0].parse().ok()?, p[1].parse().ok()?, p[2].parse().ok()?))
 }
 
-fn require_secure_url(value: &str, label: &str) -> Result<()> {
-    let url = reqwest::Url::parse(value).with_context(|| format!("parse {label} URL"))?;
-    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        bail!("{label} must use HTTPS (HTTP is allowed only for loopback testing)");
-    }
-    Ok(())
+fn client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent(concat!("ctx/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(30))
+        .build()?)
 }
 
-async fn release(state: &crate::beta::BetaState) -> Result<ReleaseResponse> {
-    if state.credential.is_empty() {
-        bail!("beta capability is missing; reinstall with your current invite");
-    }
-    require_secure_url(&state.dist_endpoint, "distribution endpoint")?;
-    let response = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?
-        .post(&state.dist_endpoint)
-        .json(&serde_json::json!({
-            "credential": state.credential,
-            "target": target()?,
-        }))
+async fn latest_release() -> Result<ReleaseInfo> {
+    let asset_name = format!("ctx-{}.tar.gz", target()?);
+    let release: GithubRelease = client()?
+        .get(format!(
+            "https://api.github.com/repos/{REPO}/releases/latest"
+        ))
         .send()
         .await
-        .context("contact ctx distribution service")?;
-    let status = response.status();
-    if !status.is_success() {
-        let detail = response.text().await.unwrap_or_default();
-        bail!("distribution service returned {status}: {detail}");
+        .context("contact GitHub releases")?
+        .error_for_status()
+        .context("GitHub releases request")?
+        .json()
+        .await
+        .context("parse GitHub release")?;
+    if semver_tuple(&release.tag_name).is_none() {
+        bail!("latest release tag is not a version: {}", release.tag_name);
     }
-    let release: ReleaseResponse = response.json().await.context("parse release manifest")?;
-    if semver_tuple(&release.version).is_none() {
-        bail!("distribution service returned an invalid release version");
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == asset_name)
+        .with_context(|| {
+            format!("release {} has no {asset_name}; use `cargo install ctx-agent` or `brew upgrade ctx`", release.tag_name)
+        })?;
+    let checksums_url = release
+        .assets
+        .iter()
+        .find(|a| a.name == "checksums.txt")
+        .context("release has no checksums.txt")?
+        .browser_download_url
+        .clone();
+    let checksums = client()?
+        .get(checksums_url)
+        .send()
+        .await
+        .context("download checksums.txt")?
+        .error_for_status()?
+        .text()
+        .await?;
+    let sha256 = checksums
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.split_whitespace();
+            let hash = parts.next()?;
+            let name = parts.next()?;
+            (name == asset_name).then(|| hash.to_string())
+        })
+        .context("checksums.txt has no entry for this target")?;
+    if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("release checksum is not a valid SHA-256");
     }
-    if release.sha256.len() != 64 || !release.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("distribution service returned an invalid SHA-256");
-    }
-    require_secure_url(&release.url, "binary download")?;
-    if let Some(credential) = &release.credential {
-        let (participant, expiry) = crate::beta::capability_details(credential)
-            .context("distribution service returned a malformed capability")?;
-        if participant != state.participant_id || expiry <= chrono::Utc::now() {
-            bail!("distribution service returned a capability for the wrong participant or expiry");
-        }
-    }
-    Ok(release)
+    Ok(ReleaseInfo {
+        version: release.tag_name,
+        url: asset.browser_download_url.clone(),
+        sha256,
+    })
 }
 
 pub async fn run(check_only: bool) -> Result<()> {
-    let state = crate::beta::load_state().context(
-        "ctx update is available to token-gated beta installs; run the beta installer first",
-    )?;
-    let release = release(&state).await?;
+    let release = latest_release().await?;
     let current = env!("CARGO_PKG_VERSION");
     let newer = match (semver_tuple(&release.version), semver_tuple(current)) {
         (Some(remote), Some(local)) => remote > local,
-        _ => release.version != current,
+        _ => release.version.trim_start_matches('v') != current,
     };
     if !newer {
-        println!("ctx {current} is current (beta channel).");
+        println!("ctx {current} is current.");
         return Ok(());
     }
     println!(
@@ -102,7 +127,13 @@ pub async fn run(check_only: bool) -> Result<()> {
         release.version
     );
     if check_only {
+        println!("Upgrade with `brew upgrade ctx`, `cargo install ctx-agent`, or `ctx update`.");
         return Ok(());
+    }
+
+    let current_path = std::env::current_exe()?.canonicalize()?;
+    if current_path.components().any(|c| c.as_os_str() == "Cellar") {
+        bail!("this ctx was installed with Homebrew; run `brew upgrade ctx` instead");
     }
 
     let updates = crate::config::ctx_dir().join("updates");
@@ -110,6 +141,7 @@ pub async fn run(check_only: bool) -> Result<()> {
     let archive = updates.join(format!("ctx-{}.tar.gz", release.version));
     let mut file = std::fs::File::create(&archive)?;
     let response = reqwest::Client::builder()
+        .user_agent(concat!("ctx/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(300))
         .build()?
         .get(&release.url)
@@ -174,7 +206,6 @@ pub async fn run(check_only: bool) -> Result<()> {
         bail!("update archive did not contain ctx; the installed binary was not changed");
     }
 
-    let current_path = std::env::current_exe()?.canonicalize()?;
     let parent = current_path
         .parent()
         .context("installed binary has no parent")?;
@@ -209,11 +240,6 @@ pub async fn run(check_only: bool) -> Result<()> {
         let _ = std::fs::rename(&backup, &current_path);
         bail!("could not activate update ({e}); restored the previous binary");
     }
-    if let Some(credential) = release.credential {
-        if let Err(error) = crate::beta::refresh_credential(&credential) {
-            eprintln!("warning: update installed, but capability rotation was not saved: {error}");
-        }
-    }
     let _ = std::fs::remove_dir_all(&extract_dir);
     let _ = std::fs::remove_file(&archive);
 
@@ -222,7 +248,7 @@ pub async fn run(check_only: bool) -> Result<()> {
         release.version
     );
     let setup_status = std::process::Command::new(&current_path)
-        .args(["setup", "--beta", "--yes"])
+        .args(["setup", "--yes"])
         .status();
     if !matches!(setup_status, Ok(status) if status.success()) {
         let failed = parent.join(".ctx-update-failed");
@@ -234,7 +260,7 @@ pub async fn run(check_only: bool) -> Result<()> {
             bail!("setup refresh failed; restored ctx {current}");
         }
         bail!(
-            "setup refresh failed and automatic rollback could not restore {}; reinstall with your beta invite",
+            "setup refresh failed and automatic rollback could not restore {}; reinstall via brew or cargo",
             current_path.display(),
         );
     }
@@ -258,7 +284,7 @@ mod tests {
     #[test]
     fn semver_comparison_ignores_v_and_prerelease() {
         assert_eq!(semver_tuple("v0.5.2"), Some((0, 5, 2)));
-        assert_eq!(semver_tuple("0.5.2-beta.1"), Some((0, 5, 2)));
+        assert_eq!(semver_tuple("0.5.2-rc.1"), Some((0, 5, 2)));
         assert!(semver_tuple("0.5.2") > semver_tuple("0.5.1"));
     }
 }
