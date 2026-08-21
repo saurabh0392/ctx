@@ -83,9 +83,10 @@ fn blob_to_vec(blob: &[u8]) -> Option<Vec<f32>> {
     if blob.len() != EMBED_DIM * 4 {
         return None;
     }
+    let (chunks, _) = blob.as_chunks::<4>();
     let mut v = Vec::with_capacity(EMBED_DIM);
-    for chunk in blob.chunks_exact(4) {
-        v.push(f32::from_le_bytes(chunk.try_into().ok()?));
+    for chunk in chunks {
+        v.push(f32::from_le_bytes(*chunk));
     }
     Some(v)
 }
