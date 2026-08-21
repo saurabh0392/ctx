@@ -123,12 +123,7 @@ fn apply_fresh_install_defaults(cfg: &mut crate::config::Config) {
     cfg.pruned_servers.clear();
 }
 
-pub async fn run(
-    no_install: bool,
-    _no_zshrc_prompt: bool,
-    dry_run: bool,
-    yes: bool,
-) -> Result<()> {
+pub async fn run(no_install: bool, _no_zshrc_prompt: bool, dry_run: bool, yes: bool) -> Result<()> {
     let config_existed_before = crate::config::ctx_dir().join("config.toml").exists();
     let host = crate::host::detect_primary_host();
     println!("{} Detected: {}", "i".cyan(), host.label());
@@ -932,7 +927,6 @@ mod tests {
         assert_eq!(cfg.compress_explore_read_rate, 0.20);
         assert!(cfg.pruned_servers.is_empty());
     }
-
 
     #[test]
     fn preview_describes_the_defaults_that_setup_applies() {
