@@ -4,6 +4,20 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-21
+
+### Changed
+
+- Redesign the dashboard's Save page: tools group under the platform that owns them
+  (Claude Code, each MCP server, Codex apps) with one summary line per tool and the full
+  evidence card behind an expander; the weekly ledger, agent surfaces, model routes, and
+  context pressure fold into collapsed sections.
+- Update the behavioral coherence suite to the redesigned Save structure.
+
+### Removed
+
+- Remove the retired beta-summary operator script.
+
 ## [0.7.1] - 2026-08-20
 
 ### Changed
