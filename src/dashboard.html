@@ -2465,7 +2465,9 @@
         groups.get(key).push(r);
       });
       const reclaimedOf = (r) => (attrBy[r.tool] && attrBy[r.tool].reclaimed_chars) || (r.c && r.c.reclaimed_chars) || 0;
-      const stageOf = (r) => (isHeld(r) ? "held" : r.stage);
+      // A tool the user just put on trial is Testing, even before its first comparable run lands;
+      // the pill and the group counter must move the moment the action is taken.
+      const stageOf = (r) => (isHeld(r) ? "held" : (r.stage === "watch" && trialSet.has(r.tool)) ? "trial" : r.stage);
       const rowLine = (r) => {
         const st = stageMeta[stageOf(r)];
         const detail = isHeld(r)
