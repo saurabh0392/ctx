@@ -92,7 +92,7 @@ async function main() {
         const label = (await h.textContent() || '').trim().slice(0, 30);
         if (label !== key.label) continue;
         if (key.tool) {
-          const tool = await h.evaluate((e) => (e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || '');
+          const tool = await h.evaluate((e) => (e.closest('.sv-row')?.querySelector('.sv-row-name') || e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || '');
           if (tool !== key.tool) continue;
         }
         return h;
@@ -100,6 +100,14 @@ async function main() {
       return null;
     },
     async clickAndSettle(handle) {
+      // Controls may sit inside collapsed <details> rows; open the chain so the click lands and
+      // the innerText signature can observe the result.
+      try {
+        await handle.evaluate((e) => {
+          let d = e.closest('details');
+          while (d) { d.open = true; d = d.parentElement ? d.parentElement.closest('details') : null; }
+        });
+      } catch { /* detached */ }
       try { await handle.click({ timeout: 2000 }); } catch { /* detached */ }
       try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* no net */ }
     },

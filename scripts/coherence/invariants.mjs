@@ -44,7 +44,7 @@ export const invariants = [
         const keys = await H.$$(`#view-${view} [onclick]`, (els, re) =>
           els.filter((e) => new RegExp(re).test(e.getAttribute('onclick') || ''))
              .map((e) => ({ label: (e.textContent || '').trim().slice(0, 30),
-                            tool: (e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || '' })),
+                            tool: (e.closest('.sv-row')?.querySelector('.sv-row-name') || e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || '' })),
           MUTATION_RE.source);
         for (const k of keys) {
           await H.resetConfig();
@@ -75,7 +75,7 @@ export const invariants = [
       await H.goto('save');
       const offenders = await H.$$('#view-save [onclick]', (els) =>
         els.filter((e) => /\btrial\(/.test(e.getAttribute('onclick') || '') && /trial/i.test(e.textContent || ''))
-           .map((e) => (e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || ''));
+           .map((e) => (e.closest('.sv-row')?.querySelector('.sv-row-name') || e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || ''));
       const bad = offenders.filter((name) => held.has(name));
       return bad.length
         ? fail(`${bad.length} held tool(s) show a trial button that no-ops`, bad)
@@ -90,7 +90,7 @@ export const invariants = [
       const ctx = await H.api('/api/context');
       const apiHeld = new Set(ctx.tools.filter((t) => t.held_reason).map((t) => H.pretty(t.tool)));
       await H.goto('save');
-      const shownHeld = new Set(await H.$$('#view-save .sv-mini.held .n', (els) => els.map((e) => e.textContent)));
+      const shownHeld = new Set(await H.$$('#view-save .sv-pill.held', (els) => els.map((e) => (e.closest('.sv-row')?.querySelector('.sv-row-name') || {}).textContent || '')));
       // Every held tool that has any decisions and is prominent enough to render should be in the held
       // section; nothing in the held section should be trim-eligible.
       const elig = new Set(ctx.tools.filter((t) => !t.held_reason).map((t) => H.pretty(t.tool)));
@@ -169,14 +169,13 @@ export const invariants = [
         (e.querySelector('.sv-rname') || {}).textContent.trim(), Number((e.querySelector('.sv-rcount') || {}).textContent.replace(/[^\d]/g, '')) ])));
       // Trimming rung == cards in the active spotlight that read TRIMMING. The underlying stage is
       // still named `earned`; the dashboard label is deliberately plain-language product copy.
-      const trimmingCards = await H.$$('#view-save .sv-card .sv-pill', (els) => els.filter((p) => /trimming/i.test(p.textContent)).length);
+      const trimmingCards = await H.$$('#view-save .sv-row > summary .sv-pill', (els) => els.filter((p) => /^trimming$/i.test(p.textContent.trim())).length);
       const problems = [];
       if (rungs.Trimming !== trimmingCards) problems.push(`Trimming rung ${rungs.Trimming} != ${trimmingCards} trimming cards`);
       // Parked held count == rows in the Held section (when all are shown).
       const parked = H.parseK((await H.text('#save-ladder .sv-parked b')) || '0');
-      const heldRows = await H.$$('#view-save .sv-mini.held', (els) => els.length);
-      const heldMoreShown = await H.$$('#view-save .sv-note', (els) => els.some((e) => /more held tools/.test(e.textContent)));
-      if (!heldMoreShown && parked && parked !== heldRows) problems.push(`parked held ${parked} != ${heldRows} held rows`);
+      const heldRows = await H.$$('#view-save .sv-row > summary .sv-pill.held', (els) => els.length);
+      if (parked && parked !== heldRows) problems.push(`parked held ${parked} != ${heldRows} held rows`);
       return problems.length ? fail(problems.join('; '), { rungs, trimmingCards, parked, heldRows }) : ok('ladder counts match their sections');
     },
   },
