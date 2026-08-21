@@ -1,6 +1,14 @@
 # CTX
 
+[![crates.io](https://img.shields.io/crates/v/ctx-agent)](https://crates.io/crates/ctx-agent) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![CI](https://github.com/saurabh0392/ctx/actions/workflows/ci.yml/badge.svg)](https://github.com/saurabh0392/ctx/actions/workflows/ci.yml)
+
 CTX shows where a coding agent's context goes, then reclaims noisy tool output without losing the original.
+
+- An itemized **Context Bill** built from your agent's real tool results: output read back, and the tool menus carried on every request.
+- **Evidence-gated trimming**: a tool's output is shortened only after randomized comparisons on your own sessions clear a safety check. Unclear evidence means no change.
+- **Byte-for-byte replay**: every trim keeps the original; `ctx expand <id>` restores it exactly.
+- **Local by default**: SQLite on your machine, no account, no background telemetry.
+- Works beside **Claude Code** (full), **Codex** via a protocol-preserving MCP gateway, and **Cursor** and **Claude Desktop** (observation and insight).
 
 It runs locally beside coding agents, records a Context Bill from real tool results, and applies reversible output trims only after comparable randomized runs pass a plain-language safety check.
 
