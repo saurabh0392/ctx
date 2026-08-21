@@ -12,7 +12,6 @@ pub mod allowance;
 pub mod analytics;
 pub mod behavior_guard;
 pub mod bench;
-pub mod product;
 pub mod budget_guard;
 pub mod claude_settings;
 pub mod cli;
@@ -46,6 +45,7 @@ pub mod mcp_gateway;
 pub mod model_gateway;
 pub mod modes;
 pub mod outcome_signals;
+pub mod product;
 pub mod profiles;
 pub mod quality_guard;
 pub mod report;
@@ -175,7 +175,9 @@ pub async fn run() -> Result<()> {
                 url,
                 bearer_token_env,
                 accept_remote_preview,
-            } => mcp_gateway::registry::add_http(&id, &url, bearer_token_env, accept_remote_preview)?,
+            } => {
+                mcp_gateway::registry::add_http(&id, &url, bearer_token_env, accept_remote_preview)?
+            }
             GatewayCommand::List => mcp_gateway::registry::list()?,
             GatewayCommand::Remove { id } => mcp_gateway::registry::remove(&id)?,
             GatewayCommand::CodexEnable {
