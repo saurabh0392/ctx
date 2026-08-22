@@ -35,6 +35,9 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   git status --short --untracked-files=no
   exit 2
 fi
+# Snapshot what was already untracked. The check afterwards is "did the review add anything", not
+# "is the tree pristine": residue that predates the run is not something the review did.
+UNTRACKED_BEFORE="$(git status --porcelain --untracked-files=all | grep '^??' | sort || true)"
 
 PR_REF="${1:-}"
 PR_ARGS=()
@@ -86,15 +89,16 @@ fi
 
 # The invariant that matters: the review must not touch the code it is judging. Its own report under
 # docs/fitcheck/ is the paper trail the skill exists to produce, so that one path is allowed.
-STRAY="$(git status --porcelain --untracked-files=no; git status --porcelain --untracked-files=all \
-  | grep '^??' | grep -v '^?? docs/fitcheck/' || true)"
+UNTRACKED_AFTER="$(git status --porcelain --untracked-files=all | grep '^??' | sort || true)"
+ADDED="$(comm -13 <(printf '%s\n' "$UNTRACKED_BEFORE") <(printf '%s\n' "$UNTRACKED_AFTER") || true)"
+STRAY="$(git status --porcelain --untracked-files=no; printf '%s\n' "$ADDED" | grep '^??' | grep -v '^?? docs/fitcheck/' || true)"
 if [[ -n "$STRAY" ]]; then
   post_status failure "Local Fitcheck modified the worktree for PR #${PR_NUMBER}"
   echo "pr-fitcheck: FAILED; Fitcheck must not change anything outside docs/fitcheck/"
   echo "$STRAY"
   exit 2
 fi
-NEW_REPORT="$(git status --porcelain --untracked-files=all | grep '^?? docs/fitcheck/' | sed 's/^?? //' || true)"
+NEW_REPORT="$(printf '%s\n' "$ADDED" | grep '^?? docs/fitcheck/' | sed 's/^?? //' || true)"
 [[ -n "$NEW_REPORT" ]] && echo "pr-fitcheck: review saved its report to ${NEW_REPORT} (untracked; commit it to keep the trail)"
 
 LATEST_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
