@@ -1006,6 +1006,7 @@
         #view-save .wnad.ahead { background: linear-gradient(150deg, var(--accent-soft) 0%, var(--raised) 74%); border-color: rgba(15,122,84,.3); }
         #view-save .wnad-c.pass { border-color: rgba(15,122,84,.3); }
         #view-save .wnad-c-mark.pass { background: var(--accent); color: #fff; }
+        #view-save .sv-trial-error { font-family:var(--fsans); font-size:12.5px; color:var(--crit); background:var(--crit-soft); border:1px solid rgba(165,34,24,.24); border-radius:8px; padding:8px 11px; margin-bottom:10px; }
         #view-save .sv-ontrial { font-family:var(--fmono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-ink); background:var(--accent-soft); border:1px solid rgba(15,122,84,.24); border-radius:999px; padding:4px 10px; }
         @media (max-width: 640px) {
           #view-save .sv-body { padding-left:0; }
@@ -1848,7 +1849,22 @@
   // started inside a collapsed platform group updates a pill nobody can see, and the click reads as
   // a dead button.
   let revealTool = null;
-  async function trial(tool, on) { revealTool = tool; await post("/api/context/trial", { tool, on }); loadSave(); }
+  // Starting or stopping a trial is a live intervention on real output, so a rejected request must
+  // not look like a no-op. post() resolves on 4xx as happily as on 204, and the old code ignored the
+  // status: a refused trial redrew the page unchanged and the button read as dead.
+  async function trial(tool, on) {
+    revealTool = tool;
+    try {
+      const response = await post("/api/context/trial", { tool, on });
+      if (!response.ok) throw new Error(await responseError(response));
+      trialError = null;
+    } catch (error) {
+      revealTool = null;
+      trialError = { tool, message: String(error && error.message ? error.message : error) };
+    }
+    await loadSave();
+  }
+  let trialError = null;
 
   // Aggregate "suspected trim cost" across tools (CTX-54). Replaces the always-zero gate-corrections
   // count. A suspect is an applied trim the agent behaved as if it needed back (worked around, re-read,
@@ -2538,6 +2554,17 @@
       $("save-tools").querySelectorAll("details[data-key]").forEach((d) => {
         d.open = savedOpen.has(d.dataset.key);
       });
+    }
+    if (trialError) {
+      const errRow = [...$("save-tools").querySelectorAll("details.sv-row[data-key]")].find((d) => d.dataset.key === `row:${trialError.tool}`);
+      if (errRow) {
+        errRow.open = true;
+        const g = errRow.closest("details.sv-group");
+        if (g) g.open = true;
+        const body = errRow.querySelector(".sv-body");
+        if (body) body.insertAdjacentHTML("afterbegin", `<div class="sv-trial-error">ctx could not change this trial: ${esc(trialError.message)}</div>`);
+      }
+      trialError = null;
     }
     if (revealTool) {
       const key = `row:${revealTool}`;

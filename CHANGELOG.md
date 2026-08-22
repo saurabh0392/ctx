@@ -39,6 +39,12 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
   the review to save its report, and refused to start at all when unrelated untracked files were
   present. It now blocks on tracked modifications and on any change outside `docs/fitcheck/`, which
   is the invariant it was actually defending.
+- A rejected trial looked like a dead button. `post()` resolves on 4xx exactly as it does on 204 and
+  the status was ignored, so a refused start or stop redrew the page unchanged with no explanation.
+  Failures now surface on the row you clicked.
+- The coherence suite's dead-button check judged a control by diffing the entire view's text, which
+  on a large profile depended on everything else re-rendering in time. It now judges the control's
+  own row.
 - Model gateway tests no longer fail on slow CI runners: the 500 ms transform budget is a
   production latency guard, and holding tests to it made trim assertions flaky on Windows.
 

@@ -59,9 +59,9 @@ export const invariants = [
           // Expand first, then take the baseline, so the signature measures the click's effect and
           // not the expansion that made the control reachable.
           await H.reveal(handle);
-          const before = await H.viewSignature(view);
+          const before = await H.controlSignature(view, k.key);
           await H.clickAndSettle(handle);
-          const observed = await H.waitForViewChange(view, before);
+          const observed = await H.waitForViewChange(view, before, k.key);
           if (!observed.changed) dead.push(`${view}: "${k.label}"${k.tool ? ` on ${k.tool}` : ''}`);
         }
       }

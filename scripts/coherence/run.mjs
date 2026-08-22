@@ -78,6 +78,23 @@ async function main() {
     },
     $$(sel, fn, arg) { return page.$$eval(sel, fn, arg); },
     async text(sel) { const el = await page.$(sel); return el ? (await el.textContent()).trim() : ''; },
+    // A control that lives in a keyed row is judged on that row alone: its pill and its buttons.
+    // Diffing the whole view's innerText made the verdict depend on everything else re-rendering in
+    // time, which produced dead-button reports for controls that demonstrably work (each reported
+    // one flipped Watching to Testing when driven by hand). Falls back to the view signature for
+    // controls that have no row of their own.
+    async controlSignature(view, key) {
+      if (!key) return H.viewSignature(view);
+      return page.evaluate(({ v, k }) => {
+        const root = document.getElementById('view-' + v);
+        const row = root && [...root.querySelectorAll('[data-key]')].find((d) => d.dataset.key === k);
+        if (!row) return 'MISSING';
+        const pill = (row.querySelector('.sv-pill')?.textContent || '').trim();
+        const acts = [...row.querySelectorAll('[onclick]')].map((e) => (e.textContent || '').trim()).join('|');
+        const metric = (row.querySelector('.sv-row-metric')?.textContent || '').trim();
+        return `${pill}::${acts}::${metric}`;
+      }, { v: view, k: key });
+    },
     async viewSignature(view) {
       return page.evaluate((v) => {
         const root = document.getElementById('view-' + v);
@@ -121,9 +138,13 @@ async function main() {
       try { await handle.click({ timeout: 2000 }); } catch { /* detached */ }
       try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* no net */ }
     },
-    async waitForViewChange(view, before) {
-      return waitForChange(() => H.viewSignature(view), before, {
-        timeoutMs: 5000,
+    async waitForViewChange(view, before, key) {
+      return waitForChange(() => H.controlSignature(view, key), before, {
+        // A mutation re-renders the view from three sequential API fetches. Under a full suite run
+        // the dashboard is busy enough that this can exceed a 5s budget, and a slow render then
+        // reads as a dead button: the reported control always turns out to work when driven by
+        // hand. Wait long enough that the verdict is about the control, not the machine.
+        timeoutMs: 15000,
         intervalMs: 100,
         sleep: (ms) => page.waitForTimeout(ms),
       });
