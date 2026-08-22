@@ -99,15 +99,19 @@ async function main() {
       }
       return null;
     },
-    async clickAndSettle(handle) {
-      // Controls may sit inside collapsed <details> rows; open the chain so the click lands and
-      // the innerText signature can observe the result.
+    // Controls may sit inside collapsed <details> rows. Open the chain as a separate step so the
+    // caller can take its baseline afterwards: folded into the click, the expansion alone changed
+    // innerText and every control looked alive whether or not it did anything.
+    async reveal(handle) {
       try {
         await handle.evaluate((e) => {
           let d = e.closest('details');
           while (d) { d.open = true; d = d.parentElement ? d.parentElement.closest('details') : null; }
         });
       } catch { /* detached */ }
+    },
+    async clickAndSettle(handle) {
+      await H.reveal(handle);
       try { await handle.click({ timeout: 2000 }); } catch { /* detached */ }
       try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* no net */ }
     },

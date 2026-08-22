@@ -49,9 +49,12 @@ export const invariants = [
         for (const k of keys) {
           await H.resetConfig();
           await H.goto(view);
-          const before = await H.viewSignature(view);
           const handle = await H.findControl(view, k);
           if (!handle) continue; // superseded by a prior mutation; not a dead-button signal
+          // Expand first, then take the baseline, so the signature measures the click's effect and
+          // not the expansion that made the control reachable.
+          await H.reveal(handle);
+          const before = await H.viewSignature(view);
           await H.clickAndSettle(handle);
           const observed = await H.waitForViewChange(view, before);
           if (!observed.changed) dead.push(`${view}: "${k.label}"${k.tool ? ` on ${k.tool}` : ''}`);

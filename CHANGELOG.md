@@ -20,14 +20,27 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 - Save page: acting on a tool re-rendered the whole list and collapsed the platform group under the
   pointer. Open sections now survive a re-render.
 - Platform group headers lead with what ctx is doing and what it reclaimed, not the tool count.
+- Save page: shared widgets (the weekly ledger, the insight scoreboard) read the global dark theme
+  tokens, so they rendered as dark islands inside the light page. The page now remaps those tokens
+  once at its own scope, which also covers any shared widget added later.
+- Acting on a tool inside a collapsed platform group left no visible trace; the affected row and its
+  group now open so the change is on screen.
+- The coherence suite's dead-button check took its baseline before expanding the control's parent
+  fold, so the expansion alone counted as a change and every control looked alive. It now measures
+  the click.
 - Model gateway tests no longer fail on slow CI runners: the 500 ms transform budget is a
   production latency guard, and holding tests to it made trim assertions flaky on Windows.
 
 ### Changed
 
+- Publishing to crates.io uses an `include` allowlist instead of `exclude`. A denylist only removes
+  what it names, so untracked files in a working tree (a sibling service's `node_modules`, a demo
+  video) landed in the package: 156 MiB compressed against a 10 MiB limit. The crate is now 2.3 MiB
+  and identical from any checkout.
 - fitcheck now reviews rendered screenshots instead of reading `src/dashboard.html`. It boots an
-  isolated dashboard, captures every view via `scripts/coherence/shoot.mjs`, diffs against the
-  previous report, and saves its own report. The merge bar moved from Iterate to Ship.
+  isolated dashboard, captures every view via `scripts/coherence/shoot.mjs` (slicing tall pages so
+  they stay legible), diffs against the previous report, and saves its own report. The merge bar
+  moved from Iterate to Ship.
 - fitcheck rubric: journey coherence also hunts one-state-two-names, and a Visual execution
   dimension scored from the screenshots was added (rubric version 2026-08-21).
 

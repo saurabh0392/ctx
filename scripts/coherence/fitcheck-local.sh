@@ -106,7 +106,7 @@ echo "fitcheck-local: reviewing (minimum verdict: ${MIN}, mode: ${MODE})…"
 OUT="$(cd "$REPO" && "$CLAUDE_BIN" -p "$PROMPT" \
   --model "$MODEL" \
   --tools "Read,Grep,Glob,Write" \
-  --permission-mode dontAsk \
+  --permission-mode acceptEdits \
   --strict-mcp-config \
   --mcp-config '{"mcpServers":{}}' \
   --no-chrome \

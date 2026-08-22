@@ -32,11 +32,39 @@ for (const view of targets) {
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   await page.goto(`${base}/#${view}`, { waitUntil: 'load' });
   await page.waitForTimeout(2500);
-  await page.evaluate(() => document.querySelectorAll('details').forEach((d) => (d.open = true)));
+  // Open the outer folds, and only the first few rows inside each. Expanding every row turned Save
+  // into a 25,000px page that downscaled to an unreadable thumbnail, so the reviewer could not see
+  // the very thing it was told to judge.
+  await page.evaluate(() => {
+    const outer = [...document.querySelectorAll('details')].filter((d) => !d.parentElement.closest('details'));
+    outer.forEach((d) => {
+      d.open = true;
+      [...d.querySelectorAll('details')].forEach((n, i) => (n.open = i < 3));
+    });
+  });
   await page.waitForTimeout(500);
-  const path = `${outDir}/${view}.png`;
-  await page.screenshot({ path, fullPage: true });
-  written.push({ view, path, errors });
+  // Split anything taller than one screen into readable slices rather than one squashed image.
+  const height = await page.evaluate(() => document.documentElement.scrollHeight);
+  const SLICE = 1400;
+  const slices = Math.min(Math.ceil(height / SLICE), 6);
+  if (slices <= 1) {
+    const path = `${outDir}/${view}.png`;
+    await page.screenshot({ path, fullPage: true });
+    written.push({ view, path, errors });
+  } else {
+    // Scroll and shoot the viewport. `clip` is relative to the viewport, so pairing it with a
+    // full-page capture throws; scrolling is the reliable way to slice a tall page.
+    for (let i = 0; i < slices; i++) {
+      await page.evaluate((y) => window.scrollTo(0, y), i * SLICE);
+      await page.waitForTimeout(180);
+      const path = `${outDir}/${view}-${i + 1}.png`;
+      await page.screenshot({ path });
+      written.push({ view, path, errors: i === 0 ? errors : [] });
+    }
+    if (slices * SLICE < height) {
+      console.log(`${view}\tNOTE: page is ${height}px; captured the first ${slices * SLICE}px`);
+    }
+  }
   await page.close();
 }
 await browser.close();

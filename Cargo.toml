@@ -8,7 +8,22 @@ repository = "https://github.com/saurabh0392/ctx"
 readme = "README.md"
 keywords = ["claude-code", "mcp", "context", "agent", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["docs/prototypes", ".github", "tests"]
+# Allowlist, not a denylist. `exclude` only removes what it names, so anything untracked sitting in
+# the working tree (a node_modules from a sibling service, a demo video) lands in the published
+# crate and blows past the 10 MiB limit. This names exactly what the crate needs to build and run.
+include = [
+    "/src/**/*",
+    "/assets/**/*",
+    "/plugins/**/*",
+    "/scripts/ctx-statusline.sh",
+    "/scripts/ctx-statusline.ps1",
+    "/docs/experiment-plan.ctx.toml",
+    "/docs/experiment-plan.gaffer.toml",
+    "/docs/experiment-plan.tool-mix.toml",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
 
 [lib]
 name = "ctx"

@@ -992,6 +992,20 @@
         #view-save .sv-body .sv-chips { padding:10px 0 0; }
         #view-save .sv-body .sv-foot2 { padding:12px 0 0; }
         #view-save .sv-body .sv-evidence { padding:12px 0 0; }
+        /* Shared widgets (the weekly ledger, the insight scoreboard) are built for the dark shell and
+           read the global dark tokens, so dropped into the light Save page they rendered as dark
+           islands. Remap the tokens once at the page scope: the sv-* classes have their own palette
+           and never read these, so this only reaches the borrowed markup, including any added later.
+           The few hardcoded dark hexes still need explicit overrides. */
+        #view-save {
+          --surface: var(--raised); --surface2: var(--paper); --surface3: var(--line-soft);
+          --border: var(--line); --border2: var(--line);
+          --t1: var(--ink); --t2: var(--muted); --t3: var(--muted); --t4: var(--faint);
+          --primary: var(--accent); --primary-lt: var(--accent-ink); --danger: var(--crit);
+        }
+        #view-save .wnad.ahead { background: linear-gradient(150deg, var(--accent-soft) 0%, var(--raised) 74%); border-color: rgba(15,122,84,.3); }
+        #view-save .wnad-c.pass { border-color: rgba(15,122,84,.3); }
+        #view-save .wnad-c-mark.pass { background: var(--accent); color: #fff; }
         #view-save .sv-ontrial { font-family:var(--fmono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-ink); background:var(--accent-soft); border:1px solid rgba(15,122,84,.24); border-radius:999px; padding:4px 10px; }
         @media (max-width: 640px) {
           #view-save .sv-body { padding-left:0; }
@@ -1830,7 +1844,11 @@
     </div>`;
   }
 
-  async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadSave(); }
+  // The tool you just acted on, so the re-render can show you what changed. Without this a trial
+  // started inside a collapsed platform group updates a pill nobody can see, and the click reads as
+  // a dead button.
+  let revealTool = null;
+  async function trial(tool, on) { revealTool = tool; await post("/api/context/trial", { tool, on }); loadSave(); }
 
   // Aggregate "suspected trim cost" across tools (CTX-54). Replaces the always-zero gate-corrections
   // count. A suspect is an applied trim the agent behaved as if it needed back (worked around, re-read,
@@ -2520,6 +2538,17 @@
       $("save-tools").querySelectorAll("details[data-key]").forEach((d) => {
         d.open = savedOpen.has(d.dataset.key);
       });
+    }
+    if (revealTool) {
+      const key = `row:${revealTool}`;
+      const row = [...$("save-tools").querySelectorAll("details.sv-row[data-key]")].find((d) => d.dataset.key === key);
+      if (row) {
+        row.open = true;
+        const group = row.closest("details.sv-group");
+        if (group) group.open = true;
+        row.scrollIntoView({ block: "nearest" });
+      }
+      revealTool = null;
     }
 
     // Where CTX acts: capability comes from the API, not a browser-side platform guess.
