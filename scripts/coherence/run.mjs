@@ -133,10 +133,25 @@ async function main() {
         });
       } catch { /* detached */ }
     },
-    async clickAndSettle(handle) {
-      await H.reveal(handle);
-      try { await handle.click({ timeout: 2000 }); } catch { /* detached */ }
-      try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* no net */ }
+    // Returns true when the control was actually clicked. The dashboard re-renders on its own (live
+    // refresh), which detaches a handle taken moments earlier; swallowing that error made an
+    // unclicked control indistinguishable from a dead one, and it was the whole of the suite's
+    // dead-button noise on a large profile. Re-find and retry, and tell the caller if it never landed.
+    async clickAndSettle(handle, refind) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const h = attempt === 0 ? handle : await refind?.();
+        if (!h) break;
+        try {
+          await H.reveal(h);
+          await h.click({ timeout: 2000 });
+          try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* no net */ }
+          return true;
+        } catch (error) {
+          if (!/not attached to the DOM|Element is not|detached/i.test(String(error))) throw error;
+          await page.waitForTimeout(300);
+        }
+      }
+      return false;
     },
     async waitForViewChange(view, before, key) {
       return waitForChange(() => H.controlSignature(view, key), before, {

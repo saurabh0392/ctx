@@ -4,6 +4,16 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- The coherence suite's dead-button check swallowed click failures. The dashboard live-refreshes and
+  detaches an element handle taken moments earlier, so `elementHandle.click` threw "not attached to
+  the DOM", the error was discarded, and a control that was never clicked was reported as one that
+  did nothing. That was the entire source of the check's noise on a large profile: one to five
+  phantom dead buttons per run, none reproducible by hand. Clicks now retry against a freshly found
+  handle, and a control that still cannot be clicked is reported separately instead of counted as
+  dead. Six consecutive 9/9 runs on a 57-tool profile and on the CI fixture.
+
 ## [0.7.3] - 2026-08-21
 
 ### Fixed
