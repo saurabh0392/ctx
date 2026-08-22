@@ -35,6 +35,10 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 - The coherence suite identified mutation controls by the name on screen, but several MCP tools
   render the same display name under different servers, so two rows resolved to one control. It now
   uses each row's stable key.
+- `pr-fitcheck.sh` required a byte-identical worktree after the review, which contradicted asking
+  the review to save its report, and refused to start at all when unrelated untracked files were
+  present. It now blocks on tracked modifications and on any change outside `docs/fitcheck/`, which
+  is the invariant it was actually defending.
 - Model gateway tests no longer fail on slow CI runners: the 500 ms transform budget is a
   production latency guard, and holding tests to it made trim assertions flaky on Windows.
 
