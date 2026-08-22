@@ -1175,6 +1175,11 @@ mod tests {
     ) -> (String, tokio::task::JoinHandle<()>) {
         let mut state =
             RelayState::new(route, reqwest::Url::parse(upstream).unwrap(), test_client()).unwrap();
+        // The 500 ms production budget is a latency guard, not the behaviour under test. A cold CI
+        // runner (Windows in particular) can spend longer than that on the first transform, which
+        // cancels it and turns every "did it trim" assertion into a coin flip. Tests that do
+        // exercise the deadline set it themselves via with_test_processing_timing.
+        state.processing_deadline = Duration::from_secs(30);
         if evidence {
             state = state.with_test_evidence();
         }

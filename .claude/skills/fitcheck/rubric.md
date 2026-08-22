@@ -15,8 +15,16 @@ Score each 1 to 5, per persona, grounded in what is actually on the screen.
 4. **Cognitive load.** Numbers, words, colors, choices. Calm and scannable, or a wall?
 5. **Action clarity.** Do they know the one next thing to do, if any?
 6. **Journey coherence.** Does the narrative hold without contradiction? One concept, one number,
-   consistent framing from landing to goal. This dimension hunts the "figures disagree" failure.
-7. **Delight.** Does it feel alive, considered, and worth keeping open, or static and cheap? Motion
+   one name, consistent framing from landing to goal. This dimension hunts "figures disagree" and
+   its quieter twin, "the same state is called two things" (a row reading Evaluating above a card
+   reading Waiting for data is the same defect as two token totals, and shipped once because this
+   dimension only looked at numbers).
+7. **Visual execution.** Does the rendered page hold together: one element per thing, aligned to a
+   shared rail, consistent treatment for controls that do the same job? Score this from the
+   screenshot, never from source. Duplicated headers, a control loose in a paragraph, ragged left
+   edges, and text that overflows or collides are all 1s or 2s here regardless of how good the copy
+   is.
+8. **Delight.** Does it feel alive, considered, and worth keeping open, or static and cheap? Motion
    that marks real events counts here; motion for its own sake does not.
 
 ## Scoring anchors
@@ -34,13 +42,13 @@ Half points are allowed (3.5) when a dimension sits between anchors.
 Weighted average over the seven dimensions gives each persona's score. Weights are 0 to 3; 0 means
 that dimension barely matters to this person.
 
-| Persona | Compr | Time | Trust | Load | Action | Coher | Delight |
-|---|---|---|---|---|---|---|---|
-| Sam (pragmatist)     | 1 | 3 | 0 | 3 | 2 | 1 | 1 |
-| Priya (power user)   | 3 | 1 | 2 | 0 | 3 | 1 | 1 |
-| Marcus (skeptic)     | 2 | 0 | 3 | 1 | 1 | 3 | 0 |
-| Alex (first-run)     | 3 | 1 | 1 | 2 | 1 | 2 | 2 |
-| Jordan (budget)      | 2 | 1 | 2 | 1 | 1 | 3 | 0 |
+| Persona | Compr | Time | Trust | Load | Action | Coher | Visual | Delight |
+|---|---|---|---|---|---|---|---|---|
+| Sam (pragmatist)     | 1 | 3 | 0 | 3 | 2 | 1 | 2 | 1 |
+| Priya (power user)   | 3 | 1 | 2 | 0 | 3 | 1 | 1 | 1 |
+| Marcus (skeptic)     | 2 | 0 | 3 | 1 | 1 | 3 | 1 | 0 |
+| Alex (first-run)     | 3 | 1 | 1 | 2 | 1 | 2 | 3 | 2 |
+| Jordan (budget)      | 2 | 1 | 2 | 1 | 1 | 3 | 1 | 0 |
 
 Persona score = sum(weight × dimension score) / sum(weights), rounded to one decimal.
 
@@ -67,3 +75,9 @@ but pulls apart as a whole. Report both.
 
 A regression on any single persona versus the prior version blocks a Ship even if the overall rose.
 Say so plainly.
+
+## Rubric version
+
+2026-08-21. Changed from 2026-07-04: journey coherence now also hunts one-state-two-names, and
+**Visual execution** was added as an eighth dimension scored from rendered screenshots. Scores are
+not directly comparable across that boundary; note it in any diff that crosses it.

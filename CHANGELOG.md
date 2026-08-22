@@ -4,6 +4,33 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-21
+
+### Fixed
+
+- Save page: each expanded tool row rendered a second header inside itself, so the tool name and
+  its stage appeared twice, and the same state was labelled two different things ("Evaluating" in
+  the row, "Waiting for data" in the card below it). Stage wording now comes from one map, and the
+  row body carries no header of its own.
+- Save page: watching and held rows rendered as loose note text with a button dropped inside a
+  paragraph, while other rows rendered as bordered cards. Every row now expands to the same shape,
+  aligned to one left rail.
+- Trials are additive. Starting a trial used to overwrite the list, silently cancelling the trial
+  already running, which made "Put on trial" look dead on every tool but the last one clicked.
+- Save page: acting on a tool re-rendered the whole list and collapsed the platform group under the
+  pointer. Open sections now survive a re-render.
+- Platform group headers lead with what ctx is doing and what it reclaimed, not the tool count.
+- Model gateway tests no longer fail on slow CI runners: the 500 ms transform budget is a
+  production latency guard, and holding tests to it made trim assertions flaky on Windows.
+
+### Changed
+
+- fitcheck now reviews rendered screenshots instead of reading `src/dashboard.html`. It boots an
+  isolated dashboard, captures every view via `scripts/coherence/shoot.mjs`, diffs against the
+  previous report, and saves its own report. The merge bar moved from Iterate to Ship.
+- fitcheck rubric: journey coherence also hunts one-state-two-names, and a Visual execution
+  dimension scored from the screenshots was added (rubric version 2026-08-21).
+
 ## [0.7.2] - 2026-08-21
 
 ### Changed
