@@ -95,7 +95,10 @@ else
   # transcripts on boot and repopulates within seconds, so the "empty" shots came out fully
   # populated. CTX_TEST_HOME redirects transcript discovery as well, which makes it genuinely empty.
   EMPTY_HOME="$WORK/empty"; mkdir -p "$EMPTY_HOME/ctx"
+  # Pick a genuinely free port. PORT+1 once landed on a leftover dashboard from another session, so
+  # the cold-start check queried a populated instance and reported 57 tools.
   EMPTY_PORT=$((PORT + 1))
+  while lsof -ti ":$EMPTY_PORT" >/dev/null 2>&1; do EMPTY_PORT=$((EMPTY_PORT + 1)); done
   CTX_HOME="$EMPTY_HOME/ctx" CTX_TEST_HOME="$EMPTY_HOME" "$BIN" dashboard --port "$EMPTY_PORT" --no-open >"$WORK/dash-empty.log" 2>&1 &
   EMPTY_PID=$!
   for _ in $(seq 1 40); do
