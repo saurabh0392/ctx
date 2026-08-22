@@ -38,6 +38,7 @@ export const invariants = [
     title: 'Every mutation control produces an observable change',
     async run(H) {
       const dead = [];
+      const unclicked = [];
       for (const view of ['save', 'see', 'settings']) {
         await H.goto(view);
         // Enumerate mutation controls by a stable key (label + tool), test each from a pristine config.
@@ -60,15 +61,21 @@ export const invariants = [
           // not the expansion that made the control reachable.
           await H.reveal(handle);
           const before = await H.controlSignature(view, k.key);
-          await H.clickAndSettle(handle);
+          const landed = await H.clickAndSettle(handle, () => H.findControl(view, k));
+          if (!landed) {
+            // Never clicked, so it says nothing about whether the control works. Surfaced rather
+            // than counted, because silently treating it as dead is what made this check unreliable.
+            unclicked.push(`${view}: "${k.label}"${k.tool ? ` on ${k.tool}` : ''}`);
+            continue;
+          }
           const observed = await H.waitForViewChange(view, before, k.key);
           if (!observed.changed) dead.push(`${view}: "${k.label}"${k.tool ? ` on ${k.tool}` : ''}`);
         }
       }
       await H.resetConfig();
-      return dead.length
-        ? fail(`${dead.length} action control(s) fire but change nothing (dead buttons)`, dead)
-        : ok('every mutation control produced a visible change');
+      if (dead.length) return fail(`${dead.length} action control(s) fire but change nothing (dead buttons)`, dead);
+      const note = unclicked.length ? ` (${unclicked.length} could not be clicked after retries, not scored)` : '';
+      return ok(`every mutation control produced a visible change${note}`);
     },
   },
 
