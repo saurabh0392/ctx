@@ -637,7 +637,8 @@ pub struct Config {
     /// Deliberate before/after trial (SAU-150). Tool names in this list are trimmed live
     /// even while `compress_preset` stays off, so a single tool can be measured (trimmed vs
     /// baseline) without the evidence gate, which cannot pass before any trimmed data exists.
-    /// This is the only way to generate the "after" arm; keep it scoped to one tool at a time.
+    /// This is the only way to generate the "after" arm. Additive: each tool's comparison is scored
+    /// on its own runs, so any number of tools can build their trimmed arms at once.
     #[serde(default)]
     pub compress_trial_tools: Vec<String>,
     /// Automatic bounded burn-in (ADR 0012 / CTX-23). When on, a compressible tool starts trimming

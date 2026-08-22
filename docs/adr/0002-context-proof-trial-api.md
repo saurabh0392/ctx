@@ -49,8 +49,13 @@ honest "what unlocks the after" state.
 - The Proof page and the activation gate can never silently diverge, because both call
   `causal_clears_bar` over `causal_tool_outcomes`.
 - Trial start/stop is now possible from the browser, which is a live intervention on real output.
-  It is intentionally one tool at a time (enforced by `context_ctl::trial`) and surfaced with a
-  clear banner on the page.
+  Each trial has to be asked for by name and stopped by name, and is surfaced on the page.
+
+  Superseded 2026-08-21: this originally read "intentionally one tool at a time", enforced by
+  `context_ctl::trial` replacing the whole list. That was wrong in practice. Each tool's comparison
+  is scored on its own runs, so concurrent trials cannot contaminate each other, while replacing the
+  list meant starting a trial silently cancelled the one already running and every "Put on trial"
+  button but the last one clicked looked dead. Trials are additive.
 - New response contract (`ProofView`) is now a public-ish surface the frontend depends on; changes
   to it must keep the client in sync. It is server-owned and versioned implicitly with the build.
 - Read proof numbers remain "reference reads only" until CTX-9 lands the stratification (noted in
