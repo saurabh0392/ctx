@@ -29,20 +29,27 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Refuse to point the formula at a release that does not exist yet: a formula with a good-looking
 # checksum and a 404 url fails at install time, on the user's machine, not here.
-declare -A SHA
-for arch in aarch64-apple-darwin x86_64-apple-darwin; do
-  url="$BASE/ctx-${arch}.tar.gz"
-  echo "release-brew: fetching ${arch}…"
+# Two plain variables, not an associative array: macOS ships bash 3.2, where `declare -A` is a
+# syntax error, and this script is meant to run on the maintainer's Mac.
+fetch_sha() {
+  # Separate statements: bash 3.2 does not reliably see an earlier name assigned in the same
+  # `local`, and `set -u` turns that into an unbound-variable abort.
+  local arch="$1"
+  local url="$BASE/ctx-${arch}.tar.gz"
+  echo "release-brew: fetching ${arch}…" >&2
   curl -fsSL --retry 3 -o "$WORK/$arch.tar.gz" "$url" || {
-    echo "release-brew: cannot download $url"
-    echo "  Is the v${VERSION} GitHub release published and are its assets uploaded?"
-    exit 2
+    echo "release-brew: cannot download $url" >&2
+    echo "  Is the v${VERSION} GitHub release published and are its assets uploaded?" >&2
+    return 2
   }
-  SHA[$arch]="$(shasum -a 256 "$WORK/$arch.tar.gz" | awk '{print $1}')"
-  echo "release-brew:   ${SHA[$arch]}"
-done
+  shasum -a 256 "$WORK/$arch.tar.gz" | awk '{print $1}'
+}
+SHA_ARM="$(fetch_sha aarch64-apple-darwin)" || exit 2
+echo "release-brew:   arm   $SHA_ARM"
+SHA_INTEL="$(fetch_sha x86_64-apple-darwin)" || exit 2
+echo "release-brew:   intel $SHA_INTEL"
 
-python3 - "$FORMULA" "$VERSION" "${SHA[aarch64-apple-darwin]}" "${SHA[x86_64-apple-darwin]}" <<'PY'
+python3 - "$FORMULA" "$VERSION" "$SHA_ARM" "$SHA_INTEL" <<'PY'
 import re, sys
 path, version, arm_sha, intel_sha = sys.argv[1:5]
 s = open(path).read()
