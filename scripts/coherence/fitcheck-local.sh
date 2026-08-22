@@ -91,17 +91,25 @@ else
   # Alex, the first-run evaluator, only ever sees the cold start, so a shot set of populated views
   # leaves his most important dimension unscoreable. Boot a second dashboard on an empty CTX_HOME
   # and capture that too.
-  EMPTY_HOME="$WORK/empty"; mkdir -p "$EMPTY_HOME"
+  # CTX_HOME alone is not a cold start: the dashboard ingests the developer's real Claude Code
+  # transcripts on boot and repopulates within seconds, so the "empty" shots came out fully
+  # populated. CTX_TEST_HOME redirects transcript discovery as well, which makes it genuinely empty.
+  EMPTY_HOME="$WORK/empty"; mkdir -p "$EMPTY_HOME/ctx"
   EMPTY_PORT=$((PORT + 1))
-  CTX_HOME="$EMPTY_HOME" "$BIN" dashboard --port "$EMPTY_PORT" --no-open >"$WORK/dash-empty.log" 2>&1 &
+  CTX_HOME="$EMPTY_HOME/ctx" CTX_TEST_HOME="$EMPTY_HOME" "$BIN" dashboard --port "$EMPTY_PORT" --no-open >"$WORK/dash-empty.log" 2>&1 &
   EMPTY_PID=$!
   for _ in $(seq 1 40); do
     [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$EMPTY_PORT/" 2>/dev/null)" == "200" ]] && break
     sleep 0.5
   done
   if [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$EMPTY_PORT/" 2>/dev/null)" == "200" ]]; then
-    (cd "$REPO/scripts/coherence" && node shoot.mjs "http://127.0.0.1:$EMPTY_PORT" "$SHOTS/empty" home save see settings 2>&1) || true
-    echo "fitcheck-local: captured the empty first-run state too"
+    empty_tools="$(curl -s "http://127.0.0.1:$EMPTY_PORT/api/context" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("tools",[])))' 2>/dev/null || echo -1)"
+    if [[ "$empty_tools" != "0" ]]; then
+      echo "fitcheck-local: the empty instance reports ${empty_tools} tools, so it is not a cold start; skipping rather than passing off populated screens as empty"
+    else
+      (cd "$REPO/scripts/coherence" && node shoot.mjs "http://127.0.0.1:$EMPTY_PORT" "$SHOTS/empty" home save see settings 2>&1) || true
+      echo "fitcheck-local: captured the empty first-run state too"
+    fi
   else
     echo "fitcheck-local: could not boot an empty-state dashboard; first-run render not captured"
   fi
