@@ -91,6 +91,12 @@ async function main() {
       for (const h of handles) {
         const label = (await h.textContent() || '').trim().slice(0, 30);
         if (label !== key.label) continue;
+        // Prefer the row's stable data-key: display names collide across MCP servers.
+        if (key.key) {
+          const dk = await h.evaluate((e) => e.closest('[data-key]')?.dataset.key || '');
+          if (dk !== key.key) continue;
+          return h;
+        }
         if (key.tool) {
           const tool = await h.evaluate((e) => (e.closest('.sv-row')?.querySelector('.sv-row-name') || e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || '');
           if (tool !== key.tool) continue;

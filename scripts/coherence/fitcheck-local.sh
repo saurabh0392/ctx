@@ -87,14 +87,35 @@ else
     echo "fitcheck-local: screenshot step failed"; echo "$SHOT_LOG"; exit 2
   }
   echo "$SHOT_LOG"
-  TARGET="http://127.0.0.1:$PORT (live) with rendered screenshots in target/fitcheck-shots"
+
+  # Alex, the first-run evaluator, only ever sees the cold start, so a shot set of populated views
+  # leaves his most important dimension unscoreable. Boot a second dashboard on an empty CTX_HOME
+  # and capture that too.
+  EMPTY_HOME="$WORK/empty"; mkdir -p "$EMPTY_HOME"
+  EMPTY_PORT=$((PORT + 1))
+  CTX_HOME="$EMPTY_HOME" "$BIN" dashboard --port "$EMPTY_PORT" --no-open >"$WORK/dash-empty.log" 2>&1 &
+  EMPTY_PID=$!
+  for _ in $(seq 1 40); do
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$EMPTY_PORT/" 2>/dev/null)" == "200" ]] && break
+    sleep 0.5
+  done
+  if [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$EMPTY_PORT/" 2>/dev/null)" == "200" ]]; then
+    (cd "$REPO/scripts/coherence" && node shoot.mjs "http://127.0.0.1:$EMPTY_PORT" "$SHOTS/empty" home save see settings 2>&1) || true
+    echo "fitcheck-local: captured the empty first-run state too"
+  else
+    echo "fitcheck-local: could not boot an empty-state dashboard; first-run render not captured"
+  fi
+  kill -9 "$EMPTY_PID" 2>/dev/null || true
+
+  TARGET="http://127.0.0.1:$PORT (live) with rendered screenshots in target/fitcheck-shots, and the cold first-run state in target/fitcheck-shots/empty"
 fi
 
 COMPARE_LINE=""
 [[ -n "$COMPARE" && -f "$COMPARE" ]] && COMPARE_LINE="Compare against the prior report at ${COMPARE} and report per-persona and per-dimension movement. A regression on ANY persona blocks a ship even if the overall rose. "
 
 PROMPT="Read and follow .claude/skills/fitcheck/SKILL.md against the target ${TARGET}, scope all, mode ${MODE}. \
-Read every PNG in target/fitcheck-shots with the Read tool before scoring; those are the rendered views and \
+Read every PNG in target/fitcheck-shots, including target/fitcheck-shots/empty (the cold first-run \
+state, which is what Alex sees), with the Read tool before scoring; those are the rendered views and \
 they are the primary evidence. Score the Visual execution dimension from the images alone. Also read \
 src/dashboard.html for structure and empty states. ${COMPARE_LINE}\
 Do the full persona walkthrough and score every dimension per rubric.md, including the empty state. \

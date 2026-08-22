@@ -28,6 +28,13 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 - The coherence suite's dead-button check took its baseline before expanding the control's parent
   fold, so the expansion alone counted as a change and every control looked alive. It now measures
   the click.
+- "Prune" named two different things: Save counted MCP servers dropped from a profile, See counted
+  tool-menu tokens pruned per request, so "3 MCP prunes" sat next to "0 pruned / request" and read
+  as a contradiction. Save now says servers dropped and points at the difference; See's label says
+  what it prunes.
+- The coherence suite identified mutation controls by the name on screen, but several MCP tools
+  render the same display name under different servers, so two rows resolved to one control. It now
+  uses each row's stable key.
 - Model gateway tests no longer fail on slow CI runners: the 500 ms transform budget is a
   production latency guard, and holding tests to it made trim assertions flaky on Windows.
 
@@ -39,7 +46,8 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
   and identical from any checkout.
 - fitcheck now reviews rendered screenshots instead of reading `src/dashboard.html`. It boots an
   isolated dashboard, captures every view via `scripts/coherence/shoot.mjs` (slicing tall pages so
-  they stay legible), diffs against the previous report, and saves its own report. The merge bar
+  they stay legible, and capturing the cold first-run state so the empty screens are scored too),
+  diffs against the previous report, and saves its own report. The merge bar
   moved from Iterate to Ship.
 - fitcheck rubric: journey coherence also hunts one-state-two-names, and a Visual execution
   dimension scored from the screenshots was added (rubric version 2026-08-21).

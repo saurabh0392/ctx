@@ -41,9 +41,14 @@ export const invariants = [
       for (const view of ['save', 'see', 'settings']) {
         await H.goto(view);
         // Enumerate mutation controls by a stable key (label + tool), test each from a pristine config.
+        // Identify a control by its row's stable data-key, not by the name on screen. Several MCP
+        // tools render the same display name ("Linear: fetch" exists under two servers), so a
+        // text-only identity resolved two different rows to one control and the result depended on
+        // which one the DOM handed back.
         const keys = await H.$$(`#view-${view} [onclick]`, (els, re) =>
           els.filter((e) => new RegExp(re).test(e.getAttribute('onclick') || ''))
              .map((e) => ({ label: (e.textContent || '').trim().slice(0, 30),
+                            key: e.closest('[data-key]')?.dataset.key || '',
                             tool: (e.closest('.sv-row')?.querySelector('.sv-row-name') || e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || '' })),
           MUTATION_RE.source);
         for (const k of keys) {

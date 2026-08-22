@@ -1405,7 +1405,7 @@
       ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. That is the recovery path working: the original remained available locally.</div></div>`
       : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No trims recovered yet.</b> If an agent needs a trimmed block, it can call ctx_expand to retrieve the verbatim original. Recovery is available, but has not been exercised in this history.</div></div>`;
     const pruneRow = prunes > 0
-      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(prunes)} MCP prune${prunes === 1 ? "" : "s"}.</b> You switched to a leaner profile and dropped MCP servers that were loading their whole tool list into every request. That is context tax cut at the source.</div></div>`
+      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(prunes)} MCP server${prunes === 1 ? "" : "s"} dropped.</b> You switched to a leaner profile and stopped loading those servers' whole tool lists into every request. That is context tax cut at the source. It is a change you made to your setup, separate from the per-request tool-menu pruning counted on See.</div></div>`
       : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No MCP servers pruned yet.</b> Every MCP server you connect loads its full tool list into context on every request, whether you use it or not. The <span class="link" onclick="go('bill')">Context bill</span> shows which ones you load but rarely call, those are free to cut.</div></div>`;
     return `<div class="sec" style="margin-top:26px">
       <div class="sec-eyebrow">What you have done with what ctx showed you</div>
@@ -2064,7 +2064,7 @@
       seeTaxCard("Output tax", "variable &middot; per result", "what your agent reads back from every tool", fmtK(outSink), "tokens read back",
         [[fmtK(outReclaimable), "reclaimable", false], [fmtK(outReclaimed), "output reclaimed", true]]) +
       seeTaxCard("Input tax", "fixed &middot; per request", "the tool menu it carries whether it calls those tools or not", fmtK(carried), "tokens / request",
-        [[fmtK(dead), "dead weight / request", false], [fmtK(prunedPerReq), "pruned / request", true], [fmtK(inReclaimed), "input reclaimed, total", true]]) +
+        [[fmtK(dead), "dead weight / request", false], [fmtK(prunedPerReq), "tool menu pruned / request", true], [fmtK(inReclaimed), "input reclaimed, total", true]]) +
       '</div>';
 
     // Output section: itemized tool output, biggest first, expandable to sources and trim diffs.
