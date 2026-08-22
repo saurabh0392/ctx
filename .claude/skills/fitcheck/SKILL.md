@@ -27,15 +27,25 @@ for one of them and a 2 for another. Hold that tension; it is the whole value.
 - **mode** (optional): `full` (default, all five personas, full report) or `brief` (headline score,
   per-persona one-liner, the single biggest fix).
 
-No args means: fitcheck `src/dashboard.html`, scope Home, full mode.
+No args means: render the live dashboard, scope all, full mode.
 
 ## Procedure
 
-1. **Load the target.** For a file, read it (the HTML, CSS, and copy are the material). For a URL,
-   WebFetch it; if it is the live SPA, also read `src/dashboard.html` for the structure the fetch
-   won't render, and reason about both the empty and populated states. For a screenshot, read the
-   image. Always evaluate at least two states of any data-driven screen: cold/empty (Alex's first
-   run) and populated.
+1. **Look at the rendered page first.** Source is not the target. `src/dashboard.html` shows what
+   the author meant; only the built DOM shows what the user gets, and the gap between them is where
+   the worst defects live (a row and the card inside it both rendering a header, a button sitting
+   loose in a paragraph, five different left edges). Render before you score:
+
+   ```
+   node scripts/coherence/shoot.mjs http://127.0.0.1:<port> <outDir> home save see settings
+   ```
+
+   `scripts/coherence/fitcheck-local.sh` does this for you and hands you the PNGs. Read every image
+   with the Read tool. Then read `src/dashboard.html` for structure, copy, and the empty states the
+   screenshots cannot show. If you were handed only a file path or only a screenshot, say so in the
+   report's Evidence line and cap Visual execution at 3, because you could not verify the render.
+   Always evaluate at least two states of any data-driven screen: cold/empty (Alex's first run) and
+   populated.
 
 2. **Load the yardsticks.** Read `docs/personas-ctx.md` (canonical persona detail) and
    `rubric.md` in this skill folder (dimensions, 1 to 5 anchors, per-persona weights, verdict bands).
@@ -46,7 +56,7 @@ No args means: fitcheck `src/dashboard.html`, scope Home, full mode.
    Ground every claim in something actually on the screen (a specific number, label, color, motion,
    or its absence). Do not invent UI that isn't there.
 
-4. **Score.** Rate each of the seven dimensions 1 to 5 for each persona using the rubric anchors.
+4. **Score.** Rate each of the eight dimensions 1 to 5 for each persona using the rubric anchors.
    Compute each persona's weighted score with that persona's weights. Then the overall (mean of the
    five) and the coherence score (rubric defines it: are the four known tensions resolved or is one
    persona served by starving another).
@@ -86,8 +96,11 @@ No args means: fitcheck `src/dashboard.html`, scope Home, full mode.
   failed its most important persona.
 - **Honesty over flattery.** This gate exists to catch problems. A soft score that lets a weak
   version ship defeats the purpose. Reward honest limitation in the UI; penalize confident overclaim.
-- **One number, checked.** Journey-coherence specifically hunts the "figures disagree" failure. If the
-  same concept shows two values across the screen, that is a hard hit, not a nitpick.
+- **One number, one name.** Journey-coherence hunts both "figures disagree" and "the same state is
+  called two things". If one concept shows two values, or one state shows two labels, that is a hard
+  hit, not a nitpick.
+- **Score the render, not the intent.** Visual execution comes from the screenshots. If you did not
+  look at an image of the screen, you cannot score it, and you must say so.
 - **No em dashes** and none of the humanizer avoid-list words in the report (workspace rule).
 - **Keep it comparable.** Use the same rubric and weights every run so scores mean something over
   time. If the rubric or personas change, note it in the report so a score jump isn't misread as a

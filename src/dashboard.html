@@ -893,13 +893,6 @@
         .sv-sec-eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--accent); }
         .sv-sec-h { font-family: var(--fserif); font-weight: 500; font-size: clamp(20px,2.6vw,25px); margin-top: 10px; letter-spacing: -.01em; color: var(--ink); }
         .sv-note { font-family: var(--fsans); font-size: 13px; color: var(--muted); margin-top: 7px; max-width: 62ch; line-height: 1.5; }
-        .sv-card { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); margin-top: 12px; overflow: hidden; }
-        .sv-card.earned { border-left: 3px solid var(--accent); }
-        .sv-card.trial { border-left: 3px solid var(--warn); }
-        .sv-card.off { border-left: 3px solid var(--crit); }
-        .sv-card.proving, .sv-card.watch { border-left: 3px solid var(--line); }
-        .sv-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 0; }
-        .sv-name { font-family: var(--fmono); font-size: 14px; font-weight: 700; color: var(--ink); flex: 1; word-break: break-all; }
         .sv-pill { font-family: var(--fmono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
         .sv-pill.earned { color: var(--accent-ink); background: var(--accent-soft); }
         .sv-pill.trial { color: var(--warn); background: var(--warn-soft); }
@@ -918,7 +911,7 @@
         .sv-act { font-family: var(--fsans); font-size: 12.5px; font-weight: 600; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid rgba(15,122,84,.24); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
         .sv-act:hover { background: rgba(15,122,84,.13); }
         .sv-evidence { display: none; padding: 0 20px 18px; }
-        .sv-card.open .sv-evidence { display: block; }
+        .sv-body.open .sv-evidence { display: block; }
         .sv-arms { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
         .sv-arm { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--paper); }
         .sv-arm-h { font-family: var(--fmono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
@@ -940,14 +933,6 @@
         .sv-recover-by { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
         .sv-recover-chip { font-family: var(--fmono); font-size: 11px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 8px; padding: 4px 9px; }
         .sv-recover-chip b { color: var(--accent-ink); }
-        .sv-mini { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); margin-top: 8px; }
-        .sv-mini .n { font-family: var(--fmono); font-size: 12.5px; font-weight: 700; color: var(--ink); min-width: 120px; word-break: break-all; }
-        .sv-mini .s { font-family: var(--fsans); font-size: 12.5px; color: var(--muted); flex: 1; line-height: 1.45; }
-        .sv-mini .p { font-family: var(--fmono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); background: var(--line-soft); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
-        .sv-mini .p.on { color: var(--accent-ink); background: var(--accent-soft); }
-        .sv-mini.held { background: var(--line-soft); border-style: dashed; }
-        .sv-mini.held .n { color: var(--muted); }
-        .sv-mini.held .s { font-style: italic; }
         .sv-agents { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
         .sv-agent { border: 1px solid var(--line); border-radius: 14px; background: var(--raised); padding: 18px 20px; }
         .sv-agent-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -997,7 +982,35 @@
         #view-save .sv-row > summary::-webkit-details-marker { display:none; }
         #view-save .sv-row-name { font-family:var(--fsans); font-size:12.5px; color:var(--ink); font-weight:600; }
         #view-save .sv-row-metric { margin-left:auto; font-family:var(--fmono); font-size:11px; color:var(--faint); }
-        #view-save .sv-row-body { padding:4px 8px 12px; }
+        #view-save .sv-row-body { padding:0 8px 14px; }
+        /* One rail for every expanded row. The summary puts the tool name at 8px padding + 74px pill
+           + 10px gap, so the body starts at the same 92px and the page reads as a single column
+           instead of five ragged left edges. The inner blocks carried 20px side padding from the old
+           card shell; zero it here so nothing indents twice. */
+        #view-save .sv-body { padding-left:84px; }
+        #view-save .sv-body .sv-story { padding:2px 0 0; font-size:13px; }
+        #view-save .sv-body .sv-chips { padding:10px 0 0; }
+        #view-save .sv-body .sv-foot2 { padding:12px 0 0; }
+        #view-save .sv-body .sv-evidence { padding:12px 0 0; }
+        /* Shared widgets (the weekly ledger, the insight scoreboard) are built for the dark shell and
+           read the global dark tokens, so dropped into the light Save page they rendered as dark
+           islands. Remap the tokens once at the page scope: the sv-* classes have their own palette
+           and never read these, so this only reaches the borrowed markup, including any added later.
+           The few hardcoded dark hexes still need explicit overrides. */
+        #view-save {
+          --surface: var(--raised); --surface2: var(--paper); --surface3: var(--line-soft);
+          --border: var(--line); --border2: var(--line);
+          --t1: var(--ink); --t2: var(--muted); --t3: var(--muted); --t4: var(--faint);
+          --primary: var(--accent); --primary-lt: var(--accent-ink); --danger: var(--crit);
+        }
+        #view-save .wnad.ahead { background: linear-gradient(150deg, var(--accent-soft) 0%, var(--raised) 74%); border-color: rgba(15,122,84,.3); }
+        #view-save .wnad-c.pass { border-color: rgba(15,122,84,.3); }
+        #view-save .wnad-c-mark.pass { background: var(--accent); color: #fff; }
+        #view-save .sv-trial-error { font-family:var(--fsans); font-size:12.5px; color:var(--crit); background:var(--crit-soft); border:1px solid rgba(165,34,24,.24); border-radius:8px; padding:8px 11px; margin-bottom:10px; }
+        #view-save .sv-ontrial { font-family:var(--fmono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-ink); background:var(--accent-soft); border:1px solid rgba(15,122,84,.24); border-radius:999px; padding:4px 10px; }
+        @media (max-width: 640px) {
+          #view-save .sv-body { padding-left:0; }
+        }
         #view-save .sv-pill { font-family:var(--fmono); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase; padding:3px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); flex-shrink:0; min-width:74px; text-align:center; }
         #view-save .sv-pill.earned { color:var(--accent-ink); border-color:rgba(15,122,84,.3); background:var(--accent-soft); }
         #view-save .sv-pill.trial { color:#8a6d00; border-color:rgba(178,142,0,.3); background:rgba(178,142,0,.08); }
@@ -1393,7 +1406,7 @@
       ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(rec)} trim${rec === 1 ? "" : "s"} recovered with ctx_expand.</b> Your agent hit a trimmed block and pulled the full text back. That is the recovery path working: the original remained available locally.</div></div>`
       : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No trims recovered yet.</b> If an agent needs a trimmed block, it can call ctx_expand to retrieve the verbatim original. Recovery is available, but has not been exercised in this history.</div></div>`;
     const pruneRow = prunes > 0
-      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(prunes)} MCP prune${prunes === 1 ? "" : "s"}.</b> You switched to a leaner profile and dropped MCP servers that were loading their whole tool list into every request. That is context tax cut at the source.</div></div>`
+      ? `<div class="ins-row"><span class="ins-mark done">✓</span><div><b>${num(prunes)} MCP server${prunes === 1 ? "" : "s"} dropped.</b> You switched to a leaner profile and stopped loading those servers' whole tool lists into every request. That is context tax cut at the source. It is a change you made to your setup, separate from the per-request tool-menu pruning counted on See.</div></div>`
       : `<div class="ins-row"><span class="ins-mark todo">○</span><div><b>No MCP servers pruned yet.</b> Every MCP server you connect loads its full tool list into context on every request, whether you use it or not. The <span class="link" onclick="go('bill')">Context bill</span> shows which ones you load but rarely call, those are free to cut.</div></div>`;
     return `<div class="sec" style="margin-top:26px">
       <div class="sec-eyebrow">What you have done with what ctx showed you</div>
@@ -1832,7 +1845,26 @@
     </div>`;
   }
 
-  async function trial(tool, on) { await post("/api/context/trial", { tool, on }); loadSave(); }
+  // The tool you just acted on, so the re-render can show you what changed. Without this a trial
+  // started inside a collapsed platform group updates a pill nobody can see, and the click reads as
+  // a dead button.
+  let revealTool = null;
+  // Starting or stopping a trial is a live intervention on real output, so a rejected request must
+  // not look like a no-op. post() resolves on 4xx as happily as on 204, and the old code ignored the
+  // status: a refused trial redrew the page unchanged and the button read as dead.
+  async function trial(tool, on) {
+    revealTool = tool;
+    try {
+      const response = await post("/api/context/trial", { tool, on });
+      if (!response.ok) throw new Error(await responseError(response));
+      trialError = null;
+    } catch (error) {
+      revealTool = null;
+      trialError = { tool, message: String(error && error.message ? error.message : error) };
+    }
+    await loadSave();
+  }
+  let trialError = null;
 
   // Aggregate "suspected trim cost" across tools (CTX-54). Replaces the always-zero gate-corrections
   // count. A suspect is an applied trim the agent behaved as if it needed back (worked around, re-read,
@@ -2048,7 +2080,7 @@
       seeTaxCard("Output tax", "variable &middot; per result", "what your agent reads back from every tool", fmtK(outSink), "tokens read back",
         [[fmtK(outReclaimable), "reclaimable", false], [fmtK(outReclaimed), "output reclaimed", true]]) +
       seeTaxCard("Input tax", "fixed &middot; per request", "the tool menu it carries whether it calls those tools or not", fmtK(carried), "tokens / request",
-        [[fmtK(dead), "dead weight / request", false], [fmtK(prunedPerReq), "pruned / request", true], [fmtK(inReclaimed), "input reclaimed, total", true]]) +
+        [[fmtK(dead), "dead weight / request", false], [fmtK(prunedPerReq), "tool menu pruned / request", true], [fmtK(inReclaimed), "input reclaimed, total", true]]) +
       '</div>';
 
     // Output section: itemized tool output, biggest first, expandable to sources and trim diffs.
@@ -2337,9 +2369,22 @@
     }
     return `<div class="sv-exp"><div class="sv-exp-h">How CTX decides</div><div class="sv-arms">${arm("Trimmed", e.treatment_n, e.treatment_collected, e.treatment_reread, "trimmed")}${arm("Left unchanged", e.control_n, e.control_collected, e.control_reread, "unchanged")}</div><div class="sv-exp-note">${note}<br><br><b>Safety check:</b> CTX acts only when 20 randomly selected runs on each side rule out more than 10 extra re-reads or corrections per 100 runs, using a 95% interval.</div></div>`;
   }
-  function saveCard(r, autopilot, minB, minT, e, attr) {
+  // One name per stage, used by the row pill, the group counts and the sort order. Two maps for the
+  // same five states is how "Evaluating" and "Waiting for data" ended up on screen 20px apart.
+  const STAGE_META = {
+    earned: { label: "Trimming", cls: "earned", rank: 0 },
+    trial: { label: "Testing", cls: "trial", rank: 1 },
+    off: { label: "Kept whole", cls: "off", rank: 2 },
+    proving: { label: "Evaluating", cls: "proving", rank: 3 },
+    watch: { label: "Watching", cls: "watch", rank: 4 },
+    held: { label: "Held", cls: "held", rank: 5 },
+  };
+
+  // Body of one tool row. Deliberately headerless: the row summary above it already carries the
+  // tool name and the stage pill, and rendering them again here was the duplicate-title defect.
+  // Stage wording lives in one place (STAGE_META) so a row and its body can never disagree.
+  function saveRowBody(r, autopilot, minB, minT, e, attr) {
     const p = r.p || {}, stage = r.stage;
-    const PILL = { earned: "Trimming", trial: "Testing", off: "Kept whole", proving: "Waiting for data", watch: "Watching" };
     let story = longStory(r, autopilot, minB);
     if (e) {
       const trimRate = e.treatment_reread, wholeRate = e.control_reread;
@@ -2376,7 +2421,7 @@
     if (attr && (attr.reexpanded || 0) > 0) chips.push(`<span class="sv-chip good" title="Times the agent pulled this tool's trimmed output back verbatim with ctx_expand. The original is always one call away.">${num(attr.reexpanded)} pulled back</span>`);
     const exp = svExpArms(e, minT);
     const evidence = exp;
-    const evBtn = evidence ? `<button class="sv-ev" onclick="this.closest('.sv-card').classList.toggle('open')">Show the evidence</button>` : "";
+    const evBtn = evidence ? `<button class="sv-ev" onclick="this.closest('.sv-body').classList.toggle('open')">Show the evidence</button>` : "";
     // A held tool never trims, so a trial on it no-ops in the backend. Offer no action button (the
     // held section renders it without one anyway; this just guards against a held tool reaching here).
     const held = !!(r.c && r.c.held_reason);
@@ -2387,7 +2432,7 @@
     else if (stage === "proving" && p.verdict !== "unclear") act = `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
     else if (stage === "off") act = `<button class="sv-ev" onclick="trial('${esc(r.tool)}',true)">Run the test again</button>`;
     const foot = (evBtn || act) ? `<div class="sv-foot2">${evBtn}${act}</div>` : "";
-    return `<div class="sv-card ${stage}"><div class="sv-head"><span class="sv-name">${esc(prettyTool(r.tool))}</span><span class="sv-pill ${stage}">${PILL[stage] || stage}</span></div><div class="sv-story">${story}</div>${chips.length ? `<div class="sv-chips">${chips.join("")}</div>` : ""}${foot}<div class="sv-evidence">${evidence}</div></div>`;
+    return `<div class="sv-body"><div class="sv-story">${story}</div>${chips.length ? `<div class="sv-chips">${chips.join("")}</div>` : ""}${foot}<div class="sv-evidence">${evidence}</div></div>`;
   }
   async function loadSave() {
     let ctx, proof, mp;
@@ -2450,14 +2495,6 @@
       body = `<div class="sv-empty">No tool has enough trim-eligible runs yet. As you work, each tool gets a verdict here.</div>`;
     } else {
       const trialSet = new Set(proof.trial_tools || []);
-      const stageMeta = {
-        earned: { label: "Trimming", cls: "earned", rank: 0 },
-        trial: { label: "Testing", cls: "trial", rank: 1 },
-        off: { label: "Kept whole", cls: "off", rank: 2 },
-        proving: { label: "Evaluating", cls: "proving", rank: 3 },
-        watch: { label: "Watching", cls: "watch", rank: 4 },
-        held: { label: "Held", cls: "held", rank: 5 },
-      };
       const groups = new Map();
       rows.forEach((r) => {
         const key = serverLabel(r.tool);
@@ -2468,36 +2505,78 @@
       // A tool the user just put on trial is Testing, even before its first comparable run lands;
       // the pill and the group counter must move the moment the action is taken.
       const stageOf = (r) => (isHeld(r) ? "held" : (r.stage === "watch" && trialSet.has(r.tool)) ? "trial" : r.stage);
+      // Every row expands to the same shape: one story paragraph, then whatever action it offers.
+      // Held and watching rows used to render as a bare note with a button loose inside it, which is
+      // why they read as a different page from the rows that carry evidence.
+      const bodyFor = (r) => {
+        if (isHeld(r)) {
+          return `<div class="sv-body"><div class="sv-story">Held out of trimming on purpose: ${esc((r.c && r.c.held_reason) || "no comparable safety test exists for this tool")} It is watched for cost only, so there is no test here.</div></div>`;
+        }
+        if (stageOf(r) === "watch") {
+          const act = trialSet.has(r.tool)
+            ? `<span class="sv-ontrial">On trial</span>`
+            : `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`;
+          return `<div class="sv-body"><div class="sv-story">${esc(shortMsg(r, autopilot, minB))} No before/after trace yet, because ctx has not trimmed this tool's output.</div><div class="sv-foot2">${act}</div></div>`;
+        }
+        return saveRowBody(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool]);
+      };
       const rowLine = (r) => {
-        const st = stageMeta[stageOf(r)];
-        const detail = isHeld(r)
-          ? `<div class="sv-row-body"><p class="sv-note">Held out of trimming on purpose: ${esc((r.c && r.c.held_reason) || "no comparable safety test exists for this tool")}. Watched for cost only.</p></div>`
-          : (stageOf(r) === "watch"
-            ? `<div class="sv-row-body"><p class="sv-note">${esc(shortMsg(r, autopilot, minB))} No before/after trace yet: ctx has not trimmed this tool's output. ${trialSet.has(r.tool) ? '<span class="p on">On trial</span>' : `<button class="sv-act" onclick="trial('${esc(r.tool)}',true)">Put on trial</button>`}</p></div>`
-            : `<div class="sv-row-body">${saveCard(r, autopilot, minB, minT, expBy[r.tool], attrBy[r.tool])}</div>`);
+        const st = STAGE_META[stageOf(r)];
         const runs = (r.c && r.c.decisions) || 0;
         const metric = reclaimedOf(r) > 0 ? `${fmtK(tok(reclaimedOf(r)))} reclaimed` : runs > 0 ? `${num(runs)} runs` : "";
-        return `<details class="sv-row"><summary><span class="sv-pill ${st.cls}">${st.label}</span><span class="sv-row-name">${esc(prettyTool(r.tool))}</span><span class="sv-row-metric">${metric}</span></summary>${detail}</details>`;
+        return `<details class="sv-row" data-key="row:${esc(r.tool)}"><summary><span class="sv-pill ${st.cls}">${st.label}</span><span class="sv-row-name">${esc(prettyTool(r.tool))}</span><span class="sv-row-metric">${metric}</span></summary><div class="sv-row-body">${bodyFor(r)}</div></details>`;
       };
       const groupCards = [...groups.entries()]
         .map(([server, list]) => {
-          list.sort((a, b) => (stageMeta[stageOf(a)].rank - stageMeta[stageOf(b)].rank) || (reclaimedOf(b) - reclaimedOf(a)));
+          list.sort((a, b) => (STAGE_META[stageOf(a)].rank - STAGE_META[stageOf(b)].rank) || (reclaimedOf(b) - reclaimedOf(a)));
           const active = list.filter((r) => stageOf(r) === "earned" || stageOf(r) === "trial").length;
           const reclaimed = list.reduce((t, r) => t + reclaimedOf(r), 0);
           return { server, list, active, reclaimed };
         })
         .sort((a, b) => (b.active - a.active) || (b.reclaimed - a.reclaimed) || (b.list.length - a.list.length));
       const groupHtml = groupCards.map((gc, i) => {
+        // Lead with what ctx is actually doing here and what it bought, not the inventory count.
+        // "14 tools" first buried the two that were acting behind twelve that were not.
         const meta = [
-          `${num(gc.list.length)} tool${gc.list.length === 1 ? "" : "s"}`,
           gc.active ? `${num(gc.active)} trimming or testing` : null,
           gc.reclaimed ? `${fmtK(tok(gc.reclaimed))} reclaimed` : null,
+          `${num(gc.list.length)} tool${gc.list.length === 1 ? "" : "s"}`,
         ].filter(Boolean).join(" · ");
-        return `<details class="sv-group"${i === 0 && gc.active ? " open" : ""}><summary><span class="sv-g-name">${esc(gc.server)}</span><span class="sv-g-meta">${meta}</span></summary><div class="sv-g-rows">${gc.list.map(rowLine).join("")}</div></details>`;
+        return `<details class="sv-group" data-key="grp:${esc(gc.server)}"${i === 0 && gc.active ? " open" : ""}><summary><span class="sv-g-name">${esc(gc.server)}</span><span class="sv-g-meta">${meta}</span></summary><div class="sv-g-rows">${gc.list.map(rowLine).join("")}</div></details>`;
       }).join("");
       body = `<section class="sv-sec"><div class="sv-sec-eyebrow">Tools by platform</div><h2 class="sv-sec-h">Every tool, under the platform it belongs to.</h2><p class="sv-note">Tools always run in full; ctx shortens only what the agent reads back, and the original is one command away. Open a platform for its tools, and a tool for its evidence.</p>${groupHtml}</section>`;
     }
+    const savedOpen = new Set(
+      [...$("save-tools").querySelectorAll("details[data-key]")].filter((d) => d.open).map((d) => d.dataset.key)
+    );
     $("save-tools").innerHTML = body;
+    if (savedOpen.size) {
+      $("save-tools").querySelectorAll("details[data-key]").forEach((d) => {
+        d.open = savedOpen.has(d.dataset.key);
+      });
+    }
+    if (trialError) {
+      const errRow = [...$("save-tools").querySelectorAll("details.sv-row[data-key]")].find((d) => d.dataset.key === `row:${trialError.tool}`);
+      if (errRow) {
+        errRow.open = true;
+        const g = errRow.closest("details.sv-group");
+        if (g) g.open = true;
+        const body = errRow.querySelector(".sv-body");
+        if (body) body.insertAdjacentHTML("afterbegin", `<div class="sv-trial-error">ctx could not change this trial: ${esc(trialError.message)}</div>`);
+      }
+      trialError = null;
+    }
+    if (revealTool) {
+      const key = `row:${revealTool}`;
+      const row = [...$("save-tools").querySelectorAll("details.sv-row[data-key]")].find((d) => d.dataset.key === key);
+      if (row) {
+        row.open = true;
+        const group = row.closest("details.sv-group");
+        if (group) group.open = true;
+        row.scrollIntoView({ block: "nearest" });
+      }
+      revealTool = null;
+    }
 
     // Where CTX acts: capability comes from the API, not a browser-side platform guess.
     const seen = ctx.surfaces || [];

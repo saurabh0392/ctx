@@ -10,7 +10,8 @@ in chat; the file is the record.
 - Date: <yyyy-mm-dd>
 - Target: <file path / URL / screenshot>
 - Compare: <prior target or report, or "none">
-- Rubric version: 2026-07-04
+- Evidence: <the rendered screenshots you actually read, or "source only, render not verified">
+- Rubric version: 2026-08-21
 
 ## Headline
 
@@ -38,6 +39,7 @@ in chat; the file is the record.
 | Cognitive load   | | | | | |
 | Action clarity   | | | | | |
 | Journey coherence| | | | | |
+| Visual execution | | | | | |
 | Delight          | | | | | |
 
 ## Walkthroughs

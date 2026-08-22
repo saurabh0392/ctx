@@ -41,19 +41,27 @@ export const invariants = [
       for (const view of ['save', 'see', 'settings']) {
         await H.goto(view);
         // Enumerate mutation controls by a stable key (label + tool), test each from a pristine config.
+        // Identify a control by its row's stable data-key, not by the name on screen. Several MCP
+        // tools render the same display name ("Linear: fetch" exists under two servers), so a
+        // text-only identity resolved two different rows to one control and the result depended on
+        // which one the DOM handed back.
         const keys = await H.$$(`#view-${view} [onclick]`, (els, re) =>
           els.filter((e) => new RegExp(re).test(e.getAttribute('onclick') || ''))
              .map((e) => ({ label: (e.textContent || '').trim().slice(0, 30),
+                            key: e.closest('[data-key]')?.dataset.key || '',
                             tool: (e.closest('.sv-row')?.querySelector('.sv-row-name') || e.closest('.sv-mini')?.querySelector('.n') || e.closest('.sv-card')?.querySelector('.sv-name') || {}).textContent || '' })),
           MUTATION_RE.source);
         for (const k of keys) {
           await H.resetConfig();
           await H.goto(view);
-          const before = await H.viewSignature(view);
           const handle = await H.findControl(view, k);
           if (!handle) continue; // superseded by a prior mutation; not a dead-button signal
+          // Expand first, then take the baseline, so the signature measures the click's effect and
+          // not the expansion that made the control reachable.
+          await H.reveal(handle);
+          const before = await H.controlSignature(view, k.key);
           await H.clickAndSettle(handle);
-          const observed = await H.waitForViewChange(view, before);
+          const observed = await H.waitForViewChange(view, before, k.key);
           if (!observed.changed) dead.push(`${view}: "${k.label}"${k.tool ? ` on ${k.tool}` : ''}`);
         }
       }

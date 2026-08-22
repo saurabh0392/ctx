@@ -476,8 +476,9 @@ fn one_line(s: &str, max: usize) -> String {
 
 /// Start or stop a deliberate trim trial (SAU-150). A trialed tool is trimmed live even while
 /// the preset stays off and the evidence gate is unmet, which is the only honest way to gather
-/// the trimmed "after" arm. We keep it scoped to one tool at a time on purpose: a trial is a
-/// real intervention on the user's live output, so it should be explicit and narrow.
+/// the trimmed "after" arm. Trials are additive: each tool's comparison is scored on its own runs,
+/// so any number of tools can build their trimmed arms at once. A trial is still a real
+/// intervention on live output, so each one has to be asked for by name and stopped by name.
 pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
     let mut cfg = Config::load();
 
@@ -521,15 +522,25 @@ pub fn trial(tool: Option<&str>, on: bool, off: bool) -> Result<()> {
         if !cfg.compress_tools.iter().any(|x| x == t) {
             println!("Heads up: {t} is not in compress_tools, so the heuristic may rarely want to trim it.");
         }
-        // One tool at a time. Replace any prior trial so the before/after stays clean.
-        if !cfg.compress_trial_tools.is_empty() && cfg.compress_trial_tools != vec![t.to_string()] {
+        // Additive. Each tool's randomized comparison is scored on its own runs (the control and
+        // treatment arms are per tool), so a second trial cannot contaminate the first. Replacing
+        // the list instead meant every new trial silently cancelled the running one, which read on
+        // the dashboard as a dead "Put on trial" button on every tool but the last one clicked.
+        if !cfg.compress_trial_tools.iter().any(|x| x == t) {
+            cfg.compress_trial_tools.push(t.to_string());
+        }
+        cfg.save()?;
+        if cfg.compress_trial_tools.len() > 1 {
             println!(
-                "Replacing the previous trial ({}).",
-                cfg.compress_trial_tools.join(", ")
+                "Also still on trial: {}.",
+                cfg.compress_trial_tools
+                    .iter()
+                    .filter(|x| x.as_str() != t)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
-        cfg.compress_trial_tools = vec![t.to_string()];
-        cfg.save()?;
         println!("Trial on for {t}. ctx will trim it live whenever the heuristic wants to, even with the preset off.");
         println!("This builds the trimmed side of the before/after. Watch it with `ctx context proof --tool {t}`.");
         println!("Stop any time with `ctx context trial {t} --off`.");

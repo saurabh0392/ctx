@@ -4,6 +4,64 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-21
+
+### Fixed
+
+- Save page: each expanded tool row rendered a second header inside itself, so the tool name and
+  its stage appeared twice, and the same state was labelled two different things ("Evaluating" in
+  the row, "Waiting for data" in the card below it). Stage wording now comes from one map, and the
+  row body carries no header of its own.
+- Save page: watching and held rows rendered as loose note text with a button dropped inside a
+  paragraph, while other rows rendered as bordered cards. Every row now expands to the same shape,
+  aligned to one left rail.
+- Trials are additive. Starting a trial used to overwrite the list, silently cancelling the trial
+  already running, which made "Put on trial" look dead on every tool but the last one clicked.
+- Save page: acting on a tool re-rendered the whole list and collapsed the platform group under the
+  pointer. Open sections now survive a re-render.
+- Platform group headers lead with what ctx is doing and what it reclaimed, not the tool count.
+- Save page: shared widgets (the weekly ledger, the insight scoreboard) read the global dark theme
+  tokens, so they rendered as dark islands inside the light page. The page now remaps those tokens
+  once at its own scope, which also covers any shared widget added later.
+- Acting on a tool inside a collapsed platform group left no visible trace; the affected row and its
+  group now open so the change is on screen.
+- The coherence suite's dead-button check took its baseline before expanding the control's parent
+  fold, so the expansion alone counted as a change and every control looked alive. It now measures
+  the click.
+- "Prune" named two different things: Save counted MCP servers dropped from a profile, See counted
+  tool-menu tokens pruned per request, so "3 MCP prunes" sat next to "0 pruned / request" and read
+  as a contradiction. Save now says servers dropped and points at the difference; See's label says
+  what it prunes.
+- The coherence suite identified mutation controls by the name on screen, but several MCP tools
+  render the same display name under different servers, so two rows resolved to one control. It now
+  uses each row's stable key.
+- `pr-fitcheck.sh` required a byte-identical worktree after the review, which contradicted asking
+  the review to save its report, and refused to start at all when unrelated untracked files were
+  present. It now blocks on tracked modifications and on any change outside `docs/fitcheck/`, which
+  is the invariant it was actually defending.
+- A rejected trial looked like a dead button. `post()` resolves on 4xx exactly as it does on 204 and
+  the status was ignored, so a refused start or stop redrew the page unchanged with no explanation.
+  Failures now surface on the row you clicked.
+- The coherence suite's dead-button check judged a control by diffing the entire view's text, which
+  on a large profile depended on everything else re-rendering in time. It now judges the control's
+  own row.
+- Model gateway tests no longer fail on slow CI runners: the 500 ms transform budget is a
+  production latency guard, and holding tests to it made trim assertions flaky on Windows.
+
+### Changed
+
+- Publishing to crates.io uses an `include` allowlist instead of `exclude`. A denylist only removes
+  what it names, so untracked files in a working tree (a sibling service's `node_modules`, a demo
+  video) landed in the package: 156 MiB compressed against a 10 MiB limit. The crate is now 2.3 MiB
+  and identical from any checkout.
+- fitcheck now reviews rendered screenshots instead of reading `src/dashboard.html`. It boots an
+  isolated dashboard, captures every view via `scripts/coherence/shoot.mjs` (slicing tall pages so
+  they stay legible, and capturing the cold first-run state so the empty screens are scored too),
+  diffs against the previous report, and saves its own report. The merge bar
+  moved from Iterate to Ship.
+- fitcheck rubric: journey coherence also hunts one-state-two-names, and a Visual execution
+  dimension scored from the screenshots was added (rubric version 2026-08-21).
+
 ## [0.7.2] - 2026-08-21
 
 ### Changed
