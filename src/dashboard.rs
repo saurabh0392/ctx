@@ -160,9 +160,7 @@ pub async fn serve(port: u16, no_open: bool) -> anyhow::Result<()> {
     crate::socket::spawn_socket_task();
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(crate::binary_watch::shutdown_or_upgrade("dashboard"))
         .await?;
     crate::socket::cleanup_socket_file();
     Ok(())

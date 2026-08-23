@@ -62,7 +62,7 @@ pub async fn serve(route_id: &str, health_nonce: Option<&str>) -> Result<()> {
 }
 
 async fn shutdown_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("ctx model gateway could not install shutdown signal: {error}");
-    }
+    // Graceful either way: this gateway sits in an agent's request path, so an upgrade must drain
+    // in-flight requests rather than drop them.
+    crate::binary_watch::shutdown_or_upgrade("model gateway").await;
 }
