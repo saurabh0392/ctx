@@ -604,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-agent"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "axum",

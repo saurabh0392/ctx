@@ -4,6 +4,8 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-08-23
+
 ### Added
 
 - Supervised services notice when the ctx binary underneath them is replaced and exit so their
