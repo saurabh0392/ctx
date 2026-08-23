@@ -12,6 +12,7 @@ pub mod allowance;
 pub mod analytics;
 pub mod behavior_guard;
 pub mod bench;
+pub mod binary_watch;
 pub mod budget_guard;
 pub mod claude_settings;
 pub mod cli;

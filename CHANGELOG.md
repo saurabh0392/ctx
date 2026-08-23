@@ -4,6 +4,23 @@ All notable CTX changes are recorded here. Versions follow semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Supervised services notice when the ctx binary underneath them is replaced and exit so their
+  supervisor restarts them on the new version. Upgrading swaps the file on disk but leaves running
+  processes on the old inode, and `brew upgrade ctx` has no idea ctx runs background services, so
+  an upgrade could report success while the dashboard and model gateways served the previous
+  version indefinitely. The launchd plists and systemd units already set KeepAlive/Restart and
+  invoke ctx through a stable path, so for these services exiting is upgrading; the only missing
+  piece was noticing. Watches file identity rather than the install method, so it covers Homebrew
+  retargeting a symlink, `cargo install` rewriting the file, and the installer renaming over it.
+  Shutdown is graceful, which matters for the gateways because they sit in an agent's request path.
+- `ctx doctor` reports ctx processes running a binary older than the file they were launched from,
+  judged per process against its own argv[0] so multiple installs are not confused for one another.
+  A stale supervised service fails the check, because it should have restarted itself. An
+  editor-owned `ctx mcp` server is listed but does not fail it: ctx cannot restart one without
+  pulling tools out from under a live agent, so it is expected to lag until that session restarts.
+
 ### Fixed
 
 - The coherence suite's dead-button check swallowed click failures. The dashboard live-refreshes and
